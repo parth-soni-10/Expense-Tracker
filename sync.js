@@ -92,7 +92,11 @@ export async function syncTestConnection(endpoint, password) {
     return { ok: false, reason: 'network', message: e?.message || 'fetch failed' };
   }
   if (resp.status === 401) return { ok: false, reason: 'auth' };
-  if (!resp.ok) return { ok: false, reason: 'http', status: resp.status };
+  if (!resp.ok) {
+    let msg = '';
+    try { msg = (await resp.json()).error || ''; } catch {}
+    return { ok: false, reason: 'http', status: resp.status, message: msg || `HTTP ${resp.status}` };
+  }
   return { ok: true };
 }
 

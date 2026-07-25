@@ -107,7 +107,8 @@ function renderSyncIndicator() {
   const node = document.getElementById('sync-indicator');
   if (!node) return;
   const s = getSyncSettings();
-  if (!s.enabled) { node.textContent = ''; return; }
+  if (!s.enabled) { node.style.display = 'none'; return; }
+  node.style.display = '';
   const status = syncStatus();
   node.innerHTML = '';
   node.append($('span', { 'aria-hidden': 'true', style: `width:6px;height:6px;border-radius:50%;background:${status.state === 'ok' ? 'var(--positive)' : status.state === 'error' ? 'var(--negative)' : 'var(--muted)'};display:inline-block;flex-shrink:0;` }));
@@ -193,16 +194,15 @@ function renderHeader() {
       $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:26px;letter-spacing:-0.02em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary' },
-      $('div', { class: 'row nav-row', style: 'gap:28px;' },
-        ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : 'false' }, titleFor(r))),
-        $('span', { style: 'margin-left:auto;display:flex;gap:8px;align-items:center;' },
-          $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:6px;font-family:"Instrument Serif",serif;font-style:italic;font-size:13px;color:var(--muted);' }),
-          $('button', { class: 'nav-action', onClick: openSyncSettings }, 'Sync'),
-          $('button', { class: 'nav-action', onClick: () => { exportJSON(state); toast('Exported.'); } }, 'Export'),
-          $('button', { class: 'nav-action', onClick: () => triggerImport() }, 'Import'),
-        ),
-      ),
-    ),  );
+      ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : 'false' }, titleFor(r))),
+    ),
+    $('div', { class: 'header-actions' },
+      $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:6px;font-family:"Instrument Serif",serif;font-style:italic;font-size:13px;color:var(--muted);' }),
+      $('button', { class: 'nav-action', onClick: openSyncSettings }, 'Sync'),
+      $('button', { class: 'nav-action', onClick: () => { exportJSON(state); toast('Exported.'); } }, 'Export'),
+      $('button', { class: 'nav-action', onClick: () => triggerImport() }, 'Import'),
+    ),
+  );
   queueMicrotask(renderSyncIndicator);
 }
 
@@ -371,10 +371,11 @@ function screenDashboard() {
       $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 20px;' },
         $('div', { style: `height:100%;width:${pct}%;background:${pct > 90 ? 'var(--negative)' : 'var(--accent)'};transition:width .4s ease;` }),
       ),
-      $('div', { style: 'display:grid;grid-template-columns:repeat(3,1fr);gap:24px;padding-top:20px;border-top:1px solid var(--line);' },
+      $('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:24px;padding-top:20px;border-top:1px solid var(--line);' },
         stat('Net', fmt(net)),
         stat('Entries', String(monthEntries.length)),
         stat('Avg / day', fmt(monthSum / Math.max(now.getDate(), 1))),
+        stat('Month elapsed', Math.round((now.getDate() / new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()) * 100) + '%'),
       ),
     ));
   }
@@ -1008,32 +1009,15 @@ function _render() {
   }
   main.appendChild(screen);
 
-  // Two-stage reset control: trigger -> italic "Wipes every entry · Yes / cancel"
-  let resetStage = 0;
-  const resetTrigger = $('button', { type: 'button', class: 'btn-link', onClick: () => {
-    resetStage = 1;
-    resetTrigger.style.display = 'none';
-    resetPanel.style.display = '';
-    yesReset.focus();
-  } }, 'Reset');
-  const yesReset = $('button', { type: 'button', class: 'btn-link', style: 'color:var(--negative);font-weight:600;border-bottom:1px solid var(--negative);', onClick: () => {
-    state = resetToBlank(); render(); toast('All entries cleared.');
-  } }, 'Yes, reset');
-  const cancelReset = $('button', { type: 'button', class: 'btn-link', onClick: () => {
-    resetStage = 0;
-    resetPanel.style.display = 'none';
-    resetTrigger.style.display = '';
-    resetTrigger.focus();
-  } }, 'cancel');
-  const resetPanel = $('span', { style: 'display:none;margin-left:8px;font-family:"Instrument Serif",serif;font-style:italic;color:var(--negative);' },
-    'Wipes every entry \u00b7 ', yesReset, ' / ', cancelReset,
-  );
-
   main.appendChild($('footer', { style: 'max-width:980px;margin:0 auto;padding:32px 28px 64px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line);' },
     $('span', null, String(state.entries.length), ' entries \u00b7 stored locally'),
     $('span', { style: 'display:flex;justify-content:flex-end;flex-wrap:wrap;gap:0 8px;align-items:center;' },
-      $('button', { type: 'button', class: 'btn-link', onClick: () => exportJSON(state) }, 'Export'),
-      $('span', { style: 'display:inline-flex;align-items:center;' }, resetTrigger, resetPanel),
+      $('button', { type: 'button', class: 'footer-action danger', onClick: function() {
+        if (this.textContent === 'Reset') { this.textContent = 'Confirm reset'; return; }
+        resetToBlank(); render(); toast('All entries cleared.');
+        this.textContent = 'Reset';
+      } }, 'Reset'),
+      $('button', { type: 'button', class: 'footer-action', onClick: () => window.scrollTo({ top: 0, behavior: 'smooth' }) }, '↑ Top'),
     ),
   ));
 
