@@ -967,6 +967,34 @@ function toast(text) {
 
 // ---------- top-level render ----------
 function render() {
+  try {
+    _render();
+  } catch (e) {
+    // Error boundary: if anything in the render pipeline throws,
+    // show the error ON THE PAGE so we can see it without DevTools.
+    var mount = document.getElementById('app');
+    if (!mount) return;
+    // Escape error text for safe HTML injection.
+    var errText = String(e.stack || e.message || e).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    mount.innerHTML =
+      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;background:#FAF8F3;font-family:Inter,system-ui,sans-serif;z-index:9999;">' +
+        '<div style="max-width:560px;padding:32px 36px;border:1px solid #e4e0d6;border-radius:16px;background:#fff;line-height:1.55;font-size:14px;box-shadow:0 8px 32px rgba(0,0,0,0.06);">' +
+          '<div style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-size:22px;color:#1a1a1a;">cents.</div>' +
+          '<h1 style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-weight:400;font-size:28px;margin:4px 0 8px;">Render crashed.</h1>' +
+          '<p style="color:#6d6457;font-size:12px;margin:0 0 16px;">Build v5-2026-07-25</p>' +
+          '<div style="margin:12px 0 16px;padding:10px 12px;background:#fff5f0;border:1px solid #f4d7c8;border-radius:8px;font-size:12px;">' +
+            '<span style="font-style:italic;color:#6d6457;font-family:&quot;Instrument Serif&quot;,Georgia,serif;">Error</span>' +
+            '<code style="display:block;margin-top:4px;font-size:11px;word-break:break-word;white-space:pre-wrap;line-height:1.4;">' + errText + '</code>' +
+          '</div>' +
+          '<ol style="padding-left:22px;margin:12px 0 0;"><li>Copy the error above.</li><li>Hard refresh — <kbd style="background:#f4f0e7;padding:1px 6px;border-radius:4px;border:1px solid #e4e0d6;font-family:ui-monospace,monospace;font-size:12px;">Ctrl</kbd>+<kbd style="background:#f4f0e7;padding:1px 6px;border-radius:4px;border:1px solid #e4e0d6;font-family:ui-monospace,monospace;font-size:12px;">Shift</kbd>+<kbd style="background:#f4f0e7;padding:1px 6px;border-radius:4px;border:1px solid #e4e0d6;font-family:ui-monospace,monospace;font-size:12px;">R</kbd></li></ol>' +
+        '</div>' +
+      '</div>';
+    // Also log so we can see it in DevTools
+    console.error('Render crashed:', e);
+  }
+}
+
+function _render() {
   const main = document.getElementById('app');
   if (!main) return;
   // Save scroll to restore after re-render
