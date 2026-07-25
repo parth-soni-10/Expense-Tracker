@@ -3,7 +3,7 @@
    Strict validation: NaN amounts and empty dates are filtered.
    UUID fallback for older browsers / file:// previews.
    ============================================================ */
-import { SEED_ENTRIES, SEED_SETTINGS } from './seed.js';
+import { SEED_SETTINGS } from './seed.js';
 
 const KEY = 'expense-tracker:v1';
 
@@ -39,7 +39,7 @@ function validateEntry(e) {
 
 function defaultState() {
   return {
-    entries: SEED_ENTRIES.map(e => ({ ...e, id: uid() })).filter(Boolean),
+    entries: [],
     settings: { ...SEED_SETTINGS },
     schemaVersion: 1,
   };
@@ -74,7 +74,7 @@ export function saveState(state) {
   catch (e) { console.warn('Failed to save state:', e); }
 }
 
-export function resetToSeed() {
+export function resetToBlank() {
   const fresh = defaultState();
   saveState(fresh);
   return fresh;

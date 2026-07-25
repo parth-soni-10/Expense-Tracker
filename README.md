@@ -14,15 +14,16 @@ A minimal, aesthetic single-page expense tracker. Pure static site, hosted on Ne
 ## Files
 
 ```
-expense-tracker/
+.
 ├── index.html                shell, fonts, loads app.js
 ├── styles.css                editorial palette + components
 ├── app.js                    hash router, 4 screens, modals (edit, import, sync)
 ├── sync.js                   client-side GitHub-sync primitives
 ├── settings.js               sync configuration in localStorage
 ├── storage.js                localStorage CRUD, strict validation, JSON I/O
-├── seed.js                   sample data (categories, methods, 4 months of entries)
+├── seed.js                   structural defaults (categories, methods, settings)
 ├── netlify.toml              static + SPA fallback
+├── README.md
 └── netlify/
     └── functions/
         └── sync.mjs          the GitHub proxy (one PUT/GET endpoint, app-password gated)
@@ -36,20 +37,17 @@ expense-tracker/
 - `#insights` — 90-day analytics: averages, top method, category bars, payment mix
 - **Sync** modal — connect to GitHub, see status, manual Pull/Push, Disconnect
 
-## Local preview (do this first)
+## Local preview
 
 The app uses ES modules (`<script type="module">`), so opening `index.html` directly via `file://` won't work — browsers block module loads from local files.
 
 ```bash
-cd expense-tracker
-python3 -m http.server 8080   # or `npx serve .`
+python -m http.server 8080   # or `npx serve .`
 ```
 
 Open `http://localhost:8080`. **Sync won't work here** — it needs the Netlify Function. Everything else (Add, Edit, History, Insights, Import/Export, Reset) works fully offline.
 
 `localStorage` is scoped per-origin, so data created at `localhost:8080` won't follow you to your Netlify URL — Export → JSON and Import to move it.
-
-A first-time load also needs internet for the Google Fonts stylesheet. Once cached, the app degrades cleanly to system fonts if offline.
 
 ## Deploy to Netlify
 
@@ -57,15 +55,15 @@ Two ways, no build step:
 
 **A — drag-and-drop** (zero git):
 
-1. Zip this `expense-tracker/` folder.
+1. Zip this project root (the folder containing `netlify.toml`).
 2. Netlify dashboard → "Add new site" → "Deploy manually" → drop the zip.
-3. Done. URL works immediately.
+3. Done. URL works in ~30 seconds.
 
 **B — connect to git** (auto-deploy on push):
 
-1. Push the folder to a GitHub repo.
+1. Push the project root to a GitHub repo.
 2. Netlify → "Add new site" → "Import from Git".
-3. Build command: *(leave empty)*. Publish directory: `expense-tracker`.
+3. Build command: *(leave empty)*. Publish directory: `.` *(the repo root, where `netlify.toml` lives)*.
 4. Every `git push` redeploys.
 
 The included `netlify.toml` makes `/*` routes fall back to `index.html`, so direct links like `…/#history?month=2026-07` and page refreshes work.
@@ -80,7 +78,7 @@ A tiny serverless function (`netlify/functions/sync.mjs`) reads and writes **one
 
 #### 1. Create a private repo just for the data
 
-Pick a name like `cents-data`. Initialise it empty (no README, no `.gitignore` needed). The repo URL will look like `github.com/<yourname>/cents-data`.
+Pick a name like `cents-data`. Initialise it empty (no README, no `.gitignore`). The repo URL will look like `github.com/<yourname>/cents-data`.
 
 #### 2. Create a fine-grained Personal Access Token
 
@@ -158,7 +156,7 @@ netlify dev            # in this folder
 - **Categories?** `CATEGORIES` in `seed.js` *and* `CATEGORIES_OK` in `storage.js`
 - **Methods?**    `METHODS` in `seed.js` *and* `METHODS_OK` in `storage.js`
 - **Default budget?** `SEED_SETTINGS.monthlyBudget` in `seed.js`
-- **Reset everything on this device?** Use the "Reset to seed" link in the footer, or in DevTools: `__cents.state = resetToSeed(); __cents.render();`
+- **Reset everything on this device?** Use the "Reset" link in the footer, or in DevTools: `__cents.state = resetToBlank(); __cents.render();`
 
 ## Privacy
 

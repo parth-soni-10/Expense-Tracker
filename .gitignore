@@ -1,10 +1,6 @@
 # Freebuff (local app / assistant data — do NOT upload)
 .freebuff/
 
-# Personal finance spreadsheet (private records)
-Expense.xlsx
-~$Expense.xlsx
-
 # OS / editor noise
 .DS_Store
 Thumbs.db

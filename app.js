@@ -2,7 +2,7 @@
    Expense Tracker — editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #insights
    ============================================================ */
-import { loadState, saveState, resetToSeed, exportJSON, parseImportFile, applyImport, validateState, uid } from './storage.js';
+import { loadState, saveState, resetToBlank, exportJSON, parseImportFile, applyImport, validateState, uid } from './storage.js';
 import { CATEGORIES, METHODS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, notifySyncChange, subscribeSync } from './sync.js';
@@ -985,9 +985,9 @@ function render() {
     resetTrigger.style.display = 'none';
     resetPanel.style.display = '';
     yesReset.focus();
-  } }, 'Reset to seed');
+  } }, 'Reset');
   const yesReset = $('button', { type: 'button', class: 'btn-link', style: 'color:var(--negative);font-weight:600;border-bottom:1px solid var(--negative);', onClick: () => {
-    state = resetToSeed(); render(); toast('Reset to seed.');
+    state = resetToBlank(); render(); toast('All entries cleared.');
   } }, 'Yes, reset');
   const cancelReset = $('button', { type: 'button', class: 'btn-link', onClick: () => {
     resetStage = 0;
@@ -1016,7 +1016,7 @@ window.addEventListener('DOMContentLoaded', () => { render(); initSync(); });
 window.__cents = {
   get state() { return state; },
   set state(v) { state = v; render(); },
-  resetToSeed, render, toast,
+  resetToBlank, render, toast,
   initSync, scheduleSyncPush, doAutoPush,
   renderSyncIndicator, openSyncSettings,
   syncPull, syncPush,
