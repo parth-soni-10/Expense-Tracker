@@ -1,0 +1,24 @@
+# Don't drag development-only artefacts into the Netlify deploy.
+# Mirrors .gitignore plus anything that's only needed locally.
+
+# JSDOM smoke tests were created for one debugging session.
+smoke*.mjs
+
+# Cruft from the npm install that brought in JSDOM for the smoke tests —
+# none of this is needed by the static site or the function, and uploading
+# node_modules to Netlify wastes both time and bandwidth. List exact names
+# so user-named `client-package.json` etc. is NOT excluded by accident.
+node_modules/
+package.json
+package-lock.json
+
+# Standard noise
+.DS_Store
+*.log
+*.tlog
+*.swp
+*.swo
+.idea/
+.vscode/
+.env
+.env.*

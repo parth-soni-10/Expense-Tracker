@@ -22,9 +22,11 @@
        ============================================================ -->
   <script>
     (function () {
-      var buildId = 'v4-2026-07-25-r2';
+      var buildId = 'v5-2026-07-25';
       window.__centsBuildId = buildId;
       try { localStorage.setItem('cents:buildId', buildId); } catch (e) {}
+      // Update tab title immediately so you can tell if THIS build loaded.
+      try { document.title = 'cents. \u2014 expense tracker (v5)'; } catch (e) {}
       // Capture the most recent error so we can show it inline if the module fails.
       window.__centsLastError = '';
       window.addEventListener('error', function (ev) {

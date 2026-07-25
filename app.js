@@ -7,6 +7,9 @@ import { CATEGORIES, METHODS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, notifySyncChange, subscribeSync } from './sync.js';
 
+// Diagnostic: confirm module loaded. Check DevTools console on Netlify.
+console.log('%c cents. %capp.js loaded %cbuild v5-2026-07-25', 'font-family:"Instrument Serif",serif;font-style:italic;font-size:18px;', '', 'color:#C2410C;');
+
 // ---------- state ----------
 let state = loadState();
 const today = () => new Date().toISOString().slice(0, 10);
@@ -1017,7 +1020,7 @@ window.addEventListener('DOMContentLoaded', () => { render(); initSync(); });
 
 // Expose tiny global for DevTools tinkering
 window.__cents = {
-  buildId: typeof window.__centsBuildId === 'string' ? window.__centsBuildId : 'unknown',
+  buildId: 'v5-2026-07-25',
   get state() { return state; },
   set state(v) { state = v; render(); },
   resetToBlank, render, toast,
