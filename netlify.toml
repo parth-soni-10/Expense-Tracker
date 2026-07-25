@@ -1,15 +1,55 @@
-# Netlify config — pure static site, no build step
+# Netlify config — pure static site, no build step.
+#
+# We deliberately do NOT have a `/* -> /index.html` rewrite:
+#   1) The app uses HASH routing (#dashboard, #history, ...) — server-side
+#      deep-link fallback is unnecessary.
+#   2) Eliminating the rewrite removes any chance of an asset request being
+#      served as index.html with status 200, which is the classic "blank
+#      page" failure mode on Netlify when the rewrite is too greedy.
+
 [build]
   publish = "."
 
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
+# Multiple `[[headers]]` blocks (note the DOUBLE brackets — this is TOML
+# array-of-tables form) so each rule stands on its own. Single `[headers]`
+# is "extend this table" — last declaration wins, and we lose every other rule.
+#
+# Explicit Content-Type + Cache-Control on every asset. Defense in depth:
+#   * `charset=utf-8` prevents CDN/browser combos from falling back to
+#     Latin-1 — the codebase has many multi-byte UTF-8 characters
+#     (minus signs, arrows, dots) and the failure is silent (parse fail
+#     on first Unicode literal, body stays empty).
+#   * `no-cache, must-revalidate` means the browser always checks back,
+#     so a redeploy is never masked by a stale cached copy.
+#   * `X-Content-Type-Options: nosniff` keeps the browser from MIME-sniffing
+#     and interpreting our `.js` as HTML by accident.
 
-[headers]
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Content-Type = "text/javascript; charset=utf-8"
+    Cache-Control = "no-cache, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Content-Type = "text/css; charset=utf-8"
+    Cache-Control = "no-cache, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Content-Type = "text/html; charset=utf-8"
+    Cache-Control = "no-cache, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+
+# Catch-all: only generic safety headers, no Cache-Control (each specific
+# rule above already owns that for the paths it covers, and we don't want
+# duplicate Cache-Control values to fight over the response).
+[[headers]]
   for = "/*"
   [headers.values]
-    Cache-Control = "public, max-age=0, must-revalidate"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "no-referrer"

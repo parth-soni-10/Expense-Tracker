@@ -13,12 +13,124 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 
   <link rel="stylesheet" href="styles.css">
+
+  <!-- ============================================================
+       Self-diagnostic — runs BEFORE the module script.
+       If app.js fails to load, parse, or initialize, this paints a
+       styled "blank-page" panel with concrete next steps instead of
+       dead air. The build marker lets you verify which deploy you got.
+       ============================================================ -->
+  <script>
+    (function () {
+      var buildId = 'v4-2026-07-25-r2';
+      window.__centsBuildId = buildId;
+      try { localStorage.setItem('cents:buildId', buildId); } catch (e) {}
+      // Capture the most recent error so we can show it inline if the module fails.
+      window.__centsLastError = '';
+      window.addEventListener('error', function (ev) {
+        try {
+          var src = ev.filename || ev.sourceURL || '(unknown source)';
+          var line = ev.lineno != null ? (':' + ev.lineno + (ev.colno != null ? ':' + ev.colno : '')) : '';
+          var msg  = (ev.error && (ev.error.stack || ev.error.message)) || ev.message || 'unknown';
+          window.__centsLastError = src + line + '  ' + msg;
+          if (window.__centsLastError.length > 1200) window.__centsLastError = window.__centsLastError.slice(0, 1200);
+        } catch (e) {}
+      });
+      window.addEventListener('unhandledrejection', function (ev) {
+        try {
+          var r = ev.reason;
+          var detail;
+          if (r && r.message) detail = r.stack || r.message;
+          else if (typeof r === 'string') detail = r;
+          else if (r != null) { try { detail = JSON.stringify(r); } catch (e) { detail = String(r); } }
+          else detail = 'unknown rejection';
+          window.__centsLastError = 'unhandledrejection: ' + detail;
+          if (window.__centsLastError.length > 1200) window.__centsLastError = window.__centsLastError.slice(0, 1200);
+        } catch (e) {}
+      });
+      // Known-fast-path: file:// cannot run ES modules at all (browser security
+      // model). Show the file-specific message in 250ms instead of waiting
+      // 2.5s for the dual-signal check to elapse.
+      var isFileProtocol = location.protocol === 'file:';
+      var waitMs = isFileProtocol ? 250 : 2500;
+      setTimeout(function () {
+        // Two signals must hold before we conclude boot failure:
+        //   (a) app.js never set window.__cents, AND
+        //   (b) the app mount is still empty (render() never ran either).
+        // Either alone is a false positive risk on slow networks.
+        if (window.__cents) return;
+        var mount = document.getElementById('app');
+        if (mount && mount.children && mount.children.length > 0) return;
+        var panel = document.getElementById('boot-fail');
+        if (!panel) return;
+        panel.hidden = false;
+        var err = window.__centsLastError
+          ? '<div class="bf-err"><span>Last error captured</span><code>' + escapeHtml(window.__centsLastError) + '</code></div>'
+          : '';
+        // Two different messages: one for the file:// case (almost certainly
+        // the actual cause), one for the http(s) case (could be stale cache,
+        // a Netlify deploy missing files, etc.).
+        var headline, blurb, steps;
+        if (isFileProtocol) {
+          headline = 'App can&rsquo;t run from <code>file://</code>.';
+          blurb = 'Browsers block ES&ndash;module imports over the <code>file://</code> protocol for security. You opened this page by double&ndash;clicking <code>index.html</code> instead of running a local web server.';
+          steps =
+            '<ol>' +
+              '<li>Open a terminal in this directory (the one containing <code>index.html</code>).</li>' +
+              '<li>Run: <code>./serve.sh</code> &nbsp;(or on Windows native cmd: <code>serve.bat</code>). It picks the first available static server and prints its URL.</li>' +
+              '<li>Open that URL in your browser &mdash; default is <a href="http://localhost:8080/">http://localhost:8080/</a> if you didn&rsquo;t pass a port.</li>' +
+            '</ol>';
+        } else {
+          headline = 'App didn&rsquo;t start.';
+          blurb = 'The JavaScript module did not finish loading or initializing. Most often this is a stale browser cache or a Netlify deploy that&rsquo;s missing files.';
+          steps =
+            '<ol>' +
+              '<li>Hard refresh &mdash; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> &nbsp;/&nbsp; macOS: <kbd>&#8984;</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></li>' +
+              '<li>If still blank: DevTools (<kbd>F12</kbd>) &rarr; <strong>Console</strong>. The first red line is the real cause &mdash; paste it back if you need help.</li>' +
+              '<li>If you just redeployed: Netlify dashboard &rarr; <strong>Deploys</strong> &rarr; <em>Trigger deploy</em> &rarr; tick <strong>Clear cache and deploy</strong>.</li>' +
+            '</ol>';
+        }
+        panel.innerHTML =
+          '<div class="bf-card">' +
+            '<div class="bf-mark">cents.</div>' +
+            '<h1>' + headline + '</h1>' +
+            '<p class="bf-build">Build <code>' + escapeHtml(buildId) + '</code></p>' +
+            err +
+            '<p>' + blurb + '</p>' +
+            steps +
+          '</div>';
+      }, waitMs);
+      function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, function (c) {
+          return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+        });
+      }
+    })();
+  </script>
+
+  <style>
+    #boot-fail { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 32px; background: #FAF8F3; font-family: Inter, system-ui, sans-serif; color: #1a1a1a; z-index: 9999; }
+    #boot-fail[hidden] { display: none; }
+    #boot-fail .bf-card { max-width: 560px; padding: 32px 36px; border: 1px solid #e4e0d6; border-radius: 16px; background: #fff; line-height: 1.55; font-size: 14px; box-shadow: 0 8px 32px rgba(0,0,0,0.06); }
+    #boot-fail .bf-mark { font-family: "Instrument Serif", Georgia, serif; font-style: italic; font-size: 22px; letter-spacing: -0.02em; color: #1a1a1a; }
+    #boot-fail h1 { font-family: "Instrument Serif", Georgia, serif; font-style: italic; font-weight: 400; font-size: 28px; margin: 4px 0 8px; }
+    #boot-fail .bf-build { color: #6d6457; font-size: 12px; margin: 0 0 16px; }
+    #boot-fail ol { padding-left: 22px; margin: 12px 0 0; }
+    #boot-fail li { margin-bottom: 10px; }
+    #boot-fail kbd { background: #f4f0e7; padding: 1px 6px; border-radius: 4px; border: 1px solid #e4e0d6; font-family: ui-monospace, monospace; font-size: 12px; }
+    #boot-fail code { background: #f4f0e7; padding: 1px 6px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 12px; color: #6d6457; }
+    #boot-fail em { font-family: "Instrument Serif", Georgia, serif; font-style: italic; }
+    #boot-fail .bf-err { margin: 12px 0 16px; padding: 10px 12px; background: #fff5f0; border: 1px solid #f4d7c8; border-radius: 8px; font-size: 12px; }
+    #boot-fail .bf-err span { font-style: italic; color: #6d6457; font-family: "Instrument Serif", Georgia, serif; }
+    #boot-fail .bf-err code { display: block; margin-top: 4px; font-size: 11px; word-break: break-word; white-space: pre-wrap; line-height: 1.4; background: transparent; padding: 0; }
+  </style>
 </head>
 <body>
   <noscript>
     <div style="padding:32px;font-family:serif;">This app needs JavaScript enabled to run.</div>
   </noscript>
   <div id="app"></div>
+  <div id="boot-fail" hidden></div>
   <script type="module" src="app.js"></script>
 </body>
 </html>

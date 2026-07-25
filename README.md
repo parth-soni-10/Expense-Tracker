@@ -41,11 +41,16 @@ A minimal, aesthetic single-page expense tracker. Pure static site, hosted on Ne
 
 The app uses ES modules (`<script type="module">`), so opening `index.html` directly via `file://` won't work — browsers block module loads from local files.
 
+Use one of these commands from the project root (the folder containing `index.html`):
+
 ```bash
-python -m http.server 8080   # or `npx serve .`
+./serve.sh                  # bash / Git Bash / macOS / Linux          (port 8080)
+serve.bat                   # Windows native cmd                       (port 8080)
+python -m http.server 8080  # if you'd rather run it yourself
+npx --yes serve -l 8080 .    # if you'd rather run it yourself (Node)
 ```
 
-Open `http://localhost:8080`. **Sync won't work here** — it needs the Netlify Function. Everything else (Add, Edit, History, Insights, Import/Export, Reset) works fully offline.
+Then open `http://localhost:8080`. **Sync won't work here** — it needs the Netlify Function. Everything else (Add, Edit, History, Insights, Import/Export, Reset) works fully offline.
 
 `localStorage` is scoped per-origin, so data created at `localhost:8080` won't follow you to your Netlify URL — Export → JSON and Import to move it.
 

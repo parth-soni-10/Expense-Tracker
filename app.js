@@ -1014,6 +1014,7 @@ window.addEventListener('DOMContentLoaded', () => { render(); initSync(); });
 
 // Expose tiny global for DevTools tinkering
 window.__cents = {
+  buildId: typeof window.__centsBuildId === 'string' ? window.__centsBuildId : 'unknown',
   get state() { return state; },
   set state(v) { state = v; render(); },
   resetToBlank, render, toast,
