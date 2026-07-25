@@ -1,0 +1,32 @@
+# Freebuff (local app / assistant data — do NOT upload)
+.freebuff/
+
+# Personal finance spreadsheet (private records)
+Expense.xlsx
+~$Expense.xlsx
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+# Build outputs (when scaffolding the real app)
+node_modules/
+dist/
+build/
+
+# Netlify
+.netlify/
