@@ -54,6 +54,26 @@
       var isFileProtocol = location.protocol === 'file:';
       var waitMs = isFileProtocol ? 250 : 2500;
       setTimeout(function () {
+        // Runtime error during render: app.js loaded, partial render happened, but a screen or
+        // a later step threw. In this case the header is visible (`mount.children.length > 0`)
+        // but the body is blank, and clicks keep retriggering `render()` → same throw → still
+        // only the header. The original boot-fail logic muted itself in this exact situation;
+        // surface the captured error now so the user has something to react to.
+        if (window.__cents && window.__centsLastError) {
+          var errPanel = document.getElementById('boot-fail');
+          if (errPanel && errPanel.hidden) {
+            errPanel.removeAttribute('hidden');
+            errPanel.innerHTML = '<div class="bf-card">' +
+              '<div class="bf-mark">cents.</div>' +
+              '<h1>Render error.</h1>' +
+              '<p class="bf-build">Build <code>' + escapeHtml(buildId) + '</code></p>' +
+              '<div class="bf-err"><span>Last error captured</span><code>' + escapeHtml(window.__centsLastError) + '</code></div>' +
+              '<p>JavaScript loaded but rendering threw. The header is up but the body never finished. Every click on a nav link re-runs <code>render()</code> and re-hits the same throw.</p>' +
+              '<ol><li>Hard refresh &mdash; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> &nbsp;/&nbsp; macOS: <kbd>&#8984;</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></li></ol>' +
+              '</div>';
+          }
+          return;
+        }
         // Two signals must hold before we conclude boot failure:
         //   (a) app.js never set window.__cents, AND
         //   (b) the app mount is still empty (render() never ran either).

@@ -167,7 +167,10 @@ window.addEventListener('hashchange', render);
 // ---------- DOM helpers ----------
 function $(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(attrs)) {
+  // Default `= {}` only applies to `undefined`. The codebase explicitly passes
+  // `null` for "no attributes needed" in many places (e.g. `$('div', null, …)`);
+  // without this fallback, Object.entries(null) throws and aborts the entire render.
+  for (const [k, v] of Object.entries(attrs || {})) {
     if (k === 'class') el.className = v;
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
     else if (k === 'data' && typeof v === 'object') Object.assign(el.dataset, v);
