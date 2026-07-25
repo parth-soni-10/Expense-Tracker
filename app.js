@@ -7,9 +7,6 @@ import { CATEGORIES, METHODS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, notifySyncChange, subscribeSync } from './sync.js';
 
-// Diagnostic: confirm module loaded. Check DevTools console on Netlify.
-console.log('%c cents. %capp.js loaded %cbuild v5-2026-07-25', 'font-family:"Instrument Serif",serif;font-style:italic;font-size:18px;', '', 'color:#C2410C;');
-
 // ---------- state ----------
 let state = loadState();
 const today = () => new Date().toISOString().slice(0, 10);
@@ -193,16 +190,16 @@ function renderHeader() {
   return $('header', { class: 'app-header', 'aria-label': 'App header' },
     $('div', { class: 'logo' },
       $('div', { class: 'mark' }, '€'),
-      $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:22px;letter-spacing:-0.02em;' }, 'cents.'),
+      $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:26px;letter-spacing:-0.02em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary' },
-      $('div', { class: 'row nav-row', style: 'gap:24px;' },
+      $('div', { class: 'row nav-row', style: 'gap:28px;' },
         ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : 'false' }, titleFor(r))),
-        $('span', { style: 'margin-left:auto;display:flex;gap:16px;align-items:center;' },
+        $('span', { style: 'margin-left:auto;display:flex;gap:8px;align-items:center;' },
           $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:6px;font-family:"Instrument Serif",serif;font-style:italic;font-size:13px;color:var(--muted);' }),
-          $('button', { class: 'nav-link', style: 'background:none;color:var(--accent);font-size:13px;', onClick: openSyncSettings }, 'Sync'),
-          $('button', { class: 'nav-link', style: 'background:none;color:var(--accent);font-size:13px;', onClick: () => { exportJSON(state); toast('Exported.'); } }, 'Export'),
-          $('button', { class: 'nav-link', style: 'background:none;color:var(--accent);font-size:13px;', onClick: () => triggerImport() }, 'Import'),
+          $('button', { class: 'nav-action', onClick: openSyncSettings }, 'Sync'),
+          $('button', { class: 'nav-action', onClick: () => { exportJSON(state); toast('Exported.'); } }, 'Export'),
+          $('button', { class: 'nav-action', onClick: () => triggerImport() }, 'Import'),
         ),
       ),
     ),  );
@@ -225,7 +222,7 @@ function formView({ initial = null, onSubmit, onDelete }) {
   // Type tabs — use role-based selectors, not firstChild/lastChild
   const tabs = $('div', { class: 'row', role: 'tablist', 'aria-label': 'Transaction type', style: 'gap:32px;padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:32px;' });
   const expenseTab = pillTab('Expense', data.type === 'expense');
-  const creditTab  = pillTab('Credit',  data.type === 'credit');
+  const creditTab  = pillTab('Credit/Income',  data.type === 'credit');
   tabs.append(expenseTab, creditTab);
   function pillTab(label, active) {
     const btn = $('button', { type: 'button', class: 'pill', role: 'tab', 'data-id': label.toLowerCase(), 'aria-selected': active ? 'true' : 'false', style: `padding:8px 18px;font-size:12px;cursor:pointer;background:${active ? 'var(--accent-soft)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};border-color:${active ? 'transparent' : 'var(--line)'};`, onClick: () => {
@@ -981,7 +978,6 @@ function render() {
         '<div style="max-width:560px;padding:32px 36px;border:1px solid #e4e0d6;border-radius:16px;background:#fff;line-height:1.55;font-size:14px;box-shadow:0 8px 32px rgba(0,0,0,0.06);">' +
           '<div style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-size:22px;color:#1a1a1a;">cents.</div>' +
           '<h1 style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-weight:400;font-size:28px;margin:4px 0 8px;">Render crashed.</h1>' +
-          '<p style="color:#6d6457;font-size:12px;margin:0 0 16px;">Build v5-2026-07-25</p>' +
           '<div style="margin:12px 0 16px;padding:10px 12px;background:#fff5f0;border:1px solid #f4d7c8;border-radius:8px;font-size:12px;">' +
             '<span style="font-style:italic;color:#6d6457;font-family:&quot;Instrument Serif&quot;,Georgia,serif;">Error</span>' +
             '<code style="display:block;margin-top:4px;font-size:11px;word-break:break-word;white-space:pre-wrap;line-height:1.4;">' + errText + '</code>' +
@@ -1048,9 +1044,6 @@ window.addEventListener('DOMContentLoaded', () => { render(); initSync(); });
 
 // Expose tiny global for DevTools tinkering
 window.__cents = {
-  buildId: 'v5-2026-07-25',
-  get state() { return state; },
-  set state(v) { state = v; render(); },
   resetToBlank, render, toast,
   initSync, scheduleSyncPush, doAutoPush,
   renderSyncIndicator, openSyncSettings,
