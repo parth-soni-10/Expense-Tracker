@@ -175,7 +175,7 @@ function $(tag, attrs = {}, ...children) {
   // without this fallback, Object.entries(null) throws and aborts the entire render.
   for (const [k, v] of Object.entries(attrs || {})) {
     if (k === 'class') el.className = v;
-    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
+    else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'data' && typeof v === 'object') Object.assign(el.dataset, v);
     else if (v === true) el.setAttribute(k, '');
     else if (v === false || v == null) {}
