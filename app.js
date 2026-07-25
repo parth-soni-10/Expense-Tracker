@@ -44,17 +44,17 @@ async function doAutoPush() {
   }
   if (r.ok) {
     patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
-  } else {
-    patchSyncSettings({ lastError: r.reason || 'error', lastErrorAt: new Date().toISOString() });
-    // First failure in this session: toast once. Stay quiet until sync recovers.
-    if (!sessionSyncFailed && r.reason !== 'conflict') {
-      toast('☠ Cloud sync failed: ' + (r.reason || 'error') + '. Changes saved locally.');
-      sessionSyncFailed = true;
-    }
-  } else {
+    // Success: if a previous sync in this session failed and we're now back, toast once and reset.
     if (sessionSyncFailed) {
       toast('✨ Cloud sync recovered.');
       sessionSyncFailed = false;
+    }
+  } else {
+    patchSyncSettings({ lastError: r.reason || 'error', lastErrorAt: new Date().toISOString() });
+    // First failure in this session: toast once. Stay quiet on subsequent failures until a sync succeeds again.
+    if (!sessionSyncFailed && r.reason !== 'conflict') {
+      toast('☠ Cloud sync failed: ' + (r.reason || 'error') + '. Changes saved locally.');
+      sessionSyncFailed = true;
     }
   }
   notifySyncChange();
