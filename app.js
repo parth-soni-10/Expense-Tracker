@@ -221,7 +221,7 @@ function formView({ initial = null, onSubmit, onDelete }) {
   // Type tabs — use role-based selectors, not firstChild/lastChild
   const tabs = $('div', { class: 'row', role: 'tablist', 'aria-label': 'Transaction type', style: 'gap:32px;padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:32px;' });
   const expenseTab = pillTab('Expense', data.type === 'expense');
-  const creditTab  = pillTab('Credit/Income',  data.type === 'credit');
+  const creditTab  = pillTab('Income', data.type === 'credit');
   tabs.append(expenseTab, creditTab);
   function pillTab(label, active) {
     const btn = $('button', { type: 'button', class: 'pill', role: 'tab', 'data-id': label.toLowerCase(), 'aria-selected': active ? 'true' : 'false', style: `padding:8px 18px;font-size:12px;cursor:pointer;background:${active ? 'var(--accent-soft)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};border-color:${active ? 'transparent' : 'var(--line)'};`, onClick: () => {
@@ -233,6 +233,8 @@ function formView({ initial = null, onSubmit, onDelete }) {
         t.style.color = isActive ? 'var(--accent)' : 'var(--muted)';
         t.style.borderColor = isActive ? 'transparent' : 'var(--line)';
       });
+      rebuildMethodOpts();
+      catSection.style.display = isCredit() ? 'none' : '';
     } }, label);
     return btn;
   }
@@ -243,9 +245,23 @@ function formView({ initial = null, onSubmit, onDelete }) {
 
   const dateInput = $('input', { type: 'date', value: data.date, 'aria-label': 'Date', required: true, onInput: (e) => data.date = e.target.value });
 
-  const methodSel = $('select', { 'aria-label': 'Payment method', onChange: (e) => data.method = e.target.value },
-    ...METHODS.map(m => $('option', { value: m.id, selected: data.method === m.id ? '' : null }, m.label)),
-  );
+  const creditMethods = METHODS.filter(m => m.id === 'AIB' || m.id === 'Revolut');
+  const isCredit = () => data.type === 'credit';
+  const methodLabel = $('label', { class: 'eyebrow', for: 'f-method' }, 'Method');
+  const methodOpts = () => (isCredit() ? creditMethods : METHODS);
+  const methodSel = $('select', { 'aria-label': 'Payment method', id: 'f-method', onChange: (e) => data.method = e.target.value });
+  function rebuildMethodOpts() {
+    methodLabel.textContent = isCredit() ? 'Income sent to' : 'Method';
+    methodSel.innerHTML = '';
+    for (const m of methodOpts()) {
+      methodSel.appendChild($('option', { value: m.id, selected: data.method === m.id ? '' : null }, m.label));
+    }
+    // Ensure selected method is valid for current type
+    const valid = methodOpts().find(m => m.id === data.method);
+    if (!valid) { data.method = methodOpts()[0].id; methodSel.value = data.method; }
+  }
+  rebuildMethodOpts();
+  catSection.style.display = isCredit() ? 'none' : '';
 
   const catChips = $('div', { role: 'radiogroup', 'aria-label': 'Category', style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;' },
     ...CATEGORIES.map(c => {
@@ -256,6 +272,9 @@ function formView({ initial = null, onSubmit, onDelete }) {
       } }, c.label);
       return btn;
     }),
+  );
+  const catSection = $('div', { style: 'margin-bottom:24px;' },
+    $('label', { class: 'eyebrow' }, 'Category'), catChips,
   );
 
   const noteInput = $('input', { type: 'text', value: data.note || '', 'aria-label': 'Optional note', placeholder: 'optional', onInput: (e) => data.note = e.target.value });
@@ -270,7 +289,7 @@ function formView({ initial = null, onSubmit, onDelete }) {
       id: initial?.id || uid(),
       date: data.date,
       type: data.type,
-      category: data.category,
+      category: data.type === 'credit' ? 'misc' : data.category,
       details: data.details.trim(),
       amount: amt,
       method: data.method,
@@ -290,11 +309,9 @@ function formView({ initial = null, onSubmit, onDelete }) {
     ),
     $('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;' },
       $('div', null, $('label', { class: 'eyebrow', for: 'f-date' }, 'Date'), Object.assign(dateInput, { id: 'f-date' })),
-      $('div', null, $('label', { class: 'eyebrow', for: 'f-method' }, 'Method'), Object.assign(methodSel, { id: 'f-method' })),
+      $('div', null, methodLabel, methodSel),
     ),
-    $('div', { style: 'margin-bottom:24px;' },
-      $('label', { class: 'eyebrow' }, 'Category'), catChips,
-    ),
+    catSection,
     $('div', { style: 'margin-bottom:24px;' },
       $('label', { class: 'eyebrow', for: 'f-details' }, 'Description'), Object.assign(detailsInput, { id: 'f-details' }),
     ),
