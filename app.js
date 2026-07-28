@@ -220,12 +220,12 @@ function formView({ initial = null, onSubmit, onDelete }) {
 
   // Type tabs — use role-based selectors, not firstChild/lastChild
   const tabs = $('div', { class: 'row', role: 'tablist', 'aria-label': 'Transaction type', style: 'gap:32px;padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:32px;' });
-  const expenseTab = pillTab('Expense', data.type === 'expense');
-  const creditTab  = pillTab('Income', data.type === 'credit');
+  const expenseTab = pillTab('Expense', 'expense', data.type === 'expense');
+  const creditTab  = pillTab('Income', 'credit', data.type === 'credit');
   tabs.append(expenseTab, creditTab);
-  function pillTab(label, active) {
+  function pillTab(label, type, active) {
     const btn = $('button', { type: 'button', class: 'pill', role: 'tab', 'data-id': label.toLowerCase(), 'aria-selected': active ? 'true' : 'false', style: `padding:8px 18px;font-size:12px;cursor:pointer;background:${active ? 'var(--accent-soft)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};border-color:${active ? 'transparent' : 'var(--line)'};`, onClick: () => {
-      data.type = label.toLowerCase();
+      data.type = type;
       tabs.querySelectorAll('[role=tab]').forEach(t => {
         const isActive = t.dataset.id === label.toLowerCase();
         t.setAttribute('aria-selected', isActive ? 'true' : 'false');
