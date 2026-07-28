@@ -127,7 +127,7 @@ export function syncStatus() {
   return { state: 'ok', label: `Synced ${relativeTime(s.lastSyncAt)}` };
 }
 
-function relativeTime(iso) {
+export function relativeTime(iso) {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return '';
   const diff = Date.now() - t;
@@ -140,15 +140,6 @@ function relativeTime(iso) {
   if (hr < 24) return `${hr}h ago`;
   const d = Math.round(hr / 24);
   return `${d}d ago`;
-}
-
-/** Debounce helper used by the auto-push scheduler. */
-export function debounce(fn, ms) {
-  let t = null;
-  return (...args) => {
-    if (t) clearTimeout(t);
-    t = setTimeout(() => { t = null; fn(...args); }, ms);
-  };
 }
 
 /** Tiny pub/sub so the header indicator can re-render after sync state changes. */

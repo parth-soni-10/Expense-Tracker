@@ -13,7 +13,7 @@ export const uid = () =>
     : Date.now().toString(36) + '-' + Math.random().toString(16).slice(2);
 
 const CATEGORIES_OK = new Set(['gro','travel','misc','rent','GC']);
-const METHODS_OK    = new Set(['AIB','Revolut','TG','LG','AG']);
+const METHODS_OK    = new Set(['AIB','Revolut','RS','TG','LG','AG']);
 const TYPES_OK      = new Set(['expense','credit']);
 
 function validateEntry(e) {
@@ -25,7 +25,9 @@ function validateEntry(e) {
   if (!CATEGORIES_OK.has(e.category)) return null;
   // method: must match the configured list (forward-compat kept by editing seed.js)
   if (!METHODS_OK.has(e.method)) return null;
-  return {
+  // Base fields + pass through any extra keys (e.g. transferId, settled) so
+  // cloud sync and import don't silently strip metadata added by newer clients.
+  const base = {
     id: typeof e.id === 'string' && e.id ? e.id : uid(),
     date: e.date,
     type: e.type,
@@ -35,6 +37,10 @@ function validateEntry(e) {
     method: e.method,
     note: typeof e.note === 'string' ? e.note : '',
   };
+  // Preserve transfer metadata if present
+  if (typeof e.transferId === 'string') base.transferId = e.transferId;
+  if (typeof e.settled === 'boolean') base.settled = e.settled;
+  return base;
 }
 
 function defaultState() {
@@ -90,21 +96,3 @@ export function exportJSON(state) {
   setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
 }
 
-/**
- * Parse a JSON file into a candidate state. Does NOT write — caller decides
- * replace vs merge after asking the user.
- */
-export async function parseImportFile(file) {
-  const text = await file.text();
-  const parsed = JSON.parse(text);
-  const valid = validateState(parsed);
-  return { valid, raw: parsed };
-}
-
-/**
- * Replace current state wholesale with the validated import.
- */
-export function applyImport(validState) {
-  saveState(validState);
-  return validState;
-}

@@ -45,8 +45,3 @@ export function patchSyncSettings(patch) {
 export function clearSyncSettings() {
   localStorage.removeItem(KEY);
 }
-
-export function isSyncConfigured() {
-  const s = getSyncSettings();
-  return s.enabled && s.endpoint && s.password;
-}
