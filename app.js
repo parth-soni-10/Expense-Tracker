@@ -146,10 +146,6 @@ function entriesForMonth(key) {
 function totalForMonth(key) {
   return entriesForMonth(key).reduce((s, e) => s + (e.type === 'expense' ? e.amount : -e.amount), 0);
 }
-function lastNinetyDays() {
-  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 90);
-  return state.entries.filter(e => new Date(e.date + 'T00:00:00') >= cutoff);
-}
 function parseAmount(raw) {
   if (raw == null) return NaN;
   const v = parseFloat(String(raw).replace(',', '.'));
@@ -174,11 +170,13 @@ function computeBalance(entries, openingBalance = 0) {
   const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : 1));
   let balance = openingBalance;
   const byId = {};
+  const points = [];
   for (const e of sorted) {
     balance += e.type === 'credit' ? e.amount : -e.amount;
     byId[e.id] = balance;
+    points.push({ date: e.date, balance });
   }
-  return { balance, byId };
+  return { balance, byId, points };
 }
 
 /** Returns per-method running balances (income adds, expenses subtract). */
@@ -274,11 +272,17 @@ function paidRecurring(rec) {
     category: rec.category || 'misc', details: rec.details,
     amount: rec.amount, method: rec.method, note: rec.note || '',
   };
+  const oldDate = rec.nextDate;
   state.entries.push(entry);
   state.entries.sort((a, b) => a.date.localeCompare(b.date));
   // Advance nextDate
   rec.nextDate = advanceRecurringDate(rec.nextDate, rec.frequency, rec.dayOfMonth);
   persist();
+  trackAction(() => {
+    state.entries = state.entries.filter(e => e.id !== entry.id);
+    rec.nextDate = oldDate;
+    persist();
+  }, `Paid ${rec.details}`);
   toast(`Paid: ${rec.details} — ${fmt(rec.amount)}`);
   render();
 }
@@ -288,9 +292,11 @@ function fillThursday(dateStr) {
   const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG');
   const defaultAmt = lastTesco ? lastTesco.amount : 0;
   if (defaultAmt > 0) {
-    state.entries.push({ id: uid(), date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
+    const eid = uid();
+    state.entries.push({ id: eid, date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
+    trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); persist(); }, `Tesco ${friendlyDate(dateStr)}`);
     toast(`Filled Tesco pay for ${friendlyDate(dateStr)} — ${fmt(defaultAmt)}`);
     render();
   } else {
@@ -361,8 +367,124 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
   queueMicrotask(() => amtInput.focus());
 }
 
+// ---------- undo system ----------
+let _lastAction = null;
+function trackAction(undoFn, label) {
+  _lastAction = { undo: undoFn, label, ts: Date.now() };
+}
+function undoLastAction() {
+  if (!_lastAction) return;
+  _lastAction.undo();
+  const lbl = _lastAction.label;
+  _lastAction = null;
+  toast(`Undone: ${lbl}`);
+  render();
+}
+
+// ---------- confetti ----------
+function triggerConfetti() {
+  const colors = ['#C2410C','#F59E0B','#10B981','#3B82F6','#EC4899','#8B5CF6'];
+  for (let i = 0; i < 60; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    piece.style.left = Math.random() * 100 + '%';
+    piece.style.animationDelay = Math.random() * 1.5 + 's';
+    piece.style.animationDuration = (2 + Math.random() * 2) + 's';
+    piece.style.background = colors[Math.floor(Math.random() * colors.length)];
+    piece.style.width = (5 + Math.random() * 8) + 'px';
+    piece.style.height = (5 + Math.random() * 8) + 'px';
+    document.body.appendChild(piece);
+    setTimeout(() => piece.remove(), 4000);
+  }
+}
+
+// ---------- fuzzy search ----------
+function fuzzyMatch(text, query) {
+  if (!query) return true;
+  const t = text.toLowerCase();
+  const q = query.toLowerCase();
+  let qi = 0;
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) qi++;
+  }
+  return qi === q.length;
+}
+function searchEntries(entries, query, filters) {
+  return entries.filter(e => {
+    if (query && !fuzzyMatch(e.details + ' ' + (e.note||''), query)) return false;
+    if (filters.type && filters.type !== 'all' && e.type !== filters.type) return false;
+    if (filters.category && filters.category !== 'all' && e.category !== filters.category) return false;
+    if (filters.method && filters.method !== 'all' && e.method !== filters.method) return false;
+    return true;
+  });
+}
+
+// ---------- receipt parser ----------
+function parseReceiptLine(line) {
+  const s = line.trim();
+  if (!s) return null;
+  // Match: €amount description   or   amount description   or   description €amount
+  const m1 = s.match(/^[€$]?([\d,.]+)\s+(.+)/);
+  const m2 = s.match(/(.+)\s+[€$]([\d,.]+)$/);
+  let amt = null, desc = '';
+  if (m1) { amt = parseAmount(m1[1]); desc = m1[2]; }
+  else if (m2) { amt = parseAmount(m2[2]); desc = m2[1]; }
+  else { desc = s; }
+  // Guess category from keywords
+  let cat = 'misc';
+  const d = desc.toLowerCase();
+  if (/grocer|tesco|lidl|aldi|supervalu|dunnes/i.test(d)) cat = 'gro';
+  else if (/bus|train|luas|dart|leap|taxi|uber|petrol|diesel/i.test(d)) cat = 'travel';
+  else if (/rent|lease/i.test(d)) cat = 'rent';
+  else if (/gift.?card|voucher/i.test(d)) cat = 'GC';
+  return { details: desc || s, amount: amt || 0, category: cat };
+}
+
+// ---------- data health ----------
+function computeDataHealth(entries) {
+  if (entries.length === 0) return { score: 0, issues: ['No entries yet. Start tracking!'] };
+  const issues = [];
+  let score = 100;
+  // Check for entries with no category / default
+  const uncategorized = entries.filter(e => e.type === 'expense' && e.category === 'misc').length;
+  if (uncategorized > entries.length * 0.3) { score -= 15; issues.push(`${uncategorized} entries are "Misc" — try categorising them.`); }
+  // Large amounts
+  const avg = entries.reduce((s,e) => s + e.amount, 0) / entries.length;
+  const outliers = entries.filter(e => e.amount > avg * 5).length;
+  if (outliers > 0) { score -= 10; issues.push(`${outliers} entr${outliers===1?'y':'ies'} look unusually large.`); }
+  // Duplicates
+  const seen = new Set();
+  let dups = 0;
+  for (const e of entries) {
+    const key = `${e.date}|${e.amount}|${e.details}`;
+    if (seen.has(key)) dups++;
+    else seen.add(key);
+  }
+  if (dups > 0) { score -= 10; issues.push(`${dups} possible duplicate${dups===1?'':'s'} found.`); }
+  // Gaps
+  const dates = [...new Set(entries.map(e => e.date))].sort();
+  if (dates.length >= 2) {
+    let gaps = 0;
+    for (let i = 1; i < dates.length; i++) {
+      const d1 = new Date(dates[i-1]+'T00:00:00'), d2 = new Date(dates[i]+'T00:00:00');
+      if ((d2 - d1) / 86400000 > 7) gaps++;
+    }
+    if (gaps > 0) { score -= 10; issues.push(`${gaps} tracking gap${gaps===1?'':'s'} > 7 days.`); }
+  }
+  return { score: Math.max(0, score), issues };
+}
+
+// ---------- season detection ----------
+function setSeason() {
+  const m = new Date().getMonth();
+  const seasons = ['winter','winter','spring','spring','spring','summer','summer','summer','autumn','autumn','autumn','winter'];
+  document.documentElement.dataset.season = seasons[m];
+}
+
 // ---------- router ----------
 const ROUTES = ['dashboard', 'add', 'history', 'insights'];
+const isNarrow = () => typeof window !== 'undefined' && window.innerWidth < 640;
+const isTiny = () => typeof window !== 'undefined' && window.innerWidth < 480;
 function currentRoute() {
   const r = (location.hash || '#dashboard').slice(1).split('?')[0];
   return ROUTES.includes(r) ? r : 'dashboard';
@@ -402,6 +524,12 @@ function renderHeader() {
     ),
     $('div', { class: 'header-actions' },
       $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Instrument Serif",serif;font-style:italic;font-size:14px;color:var(--muted);' }),
+      $('button', { class: 'dark-toggle', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', onClick: () => {
+        const html = document.documentElement;
+        const isDark = html.dataset.theme === 'dark';
+        html.dataset.theme = isDark ? '' : 'dark';
+        try { localStorage.setItem('cents-theme', isDark ? 'light' : 'dark'); } catch(e) {}
+      } }, '🌙'),
       $('button', { class: 'nav-action', onClick: openSyncSettings }, 'Sync'),
       $('button', { class: 'nav-action', onClick: () => { exportJSON(state); toast('Exported.'); } }, 'Export'),
     ),
@@ -423,13 +551,13 @@ function formView({ initial = null, onSubmit }) {
   if (typeof data.amount === 'number') data.amount = String(data.amount);
 
   // Type tabs — use role-based selectors, not firstChild/lastChild
-  const tabs = $('div', { class: 'row', role: 'tablist', 'aria-label': 'Transaction type', style: 'gap:32px;padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:32px;' });
+  const tabs = $('div', { class: 'row', role: 'tablist', 'aria-label': 'Transaction type', style: `gap:${isNarrow() ? '16px' : '32px'};padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:32px;` });
   const expenseTab = pillTab('Expense', 'expense', data.type === 'expense');
   const creditTab  = pillTab('Income', 'credit', data.type === 'credit');
   const transferTab = pillTab('Transfer', 'transfer', data.type === 'transfer');
   tabs.append(expenseTab, creditTab, transferTab);
   function pillTab(label, type, active) {
-    const btn = $('button', { type: 'button', class: 'pill', role: 'tab', 'data-id': label.toLowerCase(), 'aria-selected': active ? 'true' : 'false', style: `padding:8px 18px;font-size:12px;cursor:pointer;background:${active ? 'var(--accent-soft)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};border-color:${active ? 'transparent' : 'var(--line)'};`, onClick: () => {
+    const btn = $('button', { type: 'button', class: 'pill', role: 'tab', 'data-id': label.toLowerCase(), 'aria-selected': active ? 'true' : 'false',          style: `padding:${isNarrow() ? '6px 14px' : '8px 18px'};font-size:12px;cursor:pointer;background:${active ? 'var(--accent-soft)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};border-color:${active ? 'transparent' : 'var(--line)'};`, onClick: () => {
       data.type = type;
       tabs.querySelectorAll('[role=tab]').forEach(t => {
         const isActive = t.dataset.id === label.toLowerCase();
@@ -536,16 +664,16 @@ function formView({ initial = null, onSubmit }) {
     onSubmit([entry]);
   };
 
-  const formEl = $('div', { class: 'card', style: 'padding:32px;max-width:540px;margin:0 auto;' },
+  const formEl = $('div', { class: 'card', style: `padding:${isNarrow() ? '20px' : '32px'};max-width:540px;margin:0 auto;` },
     tabs,
     $('div', { style: 'margin-bottom:24px;' },
       $('label', { class: 'eyebrow', for: 'f-amount' }, 'Amount'),
       $('div', { style: 'display:flex;align-items:baseline;gap:6px;margin-top:4px;' },
-        $('span', { class: 'serif', style: 'font-size:60px;color:var(--accent);', 'aria-hidden': 'true' }, '€'),
+        $('span', { class: 'serif', style: `font-size:${isNarrow() ? '36px' : '60px'};color:var(--accent);`, 'aria-hidden': 'true' }, '€'),
         Object.assign(amountInput, { id: 'f-amount' }),
       ),
     ),
-    $('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px;' },
+    $('div', { style: `display:grid;grid-template-columns:${isNarrow() ? '1fr' : '1fr 1fr'};gap:${isNarrow() ? '16px' : '24px'};margin-bottom:24px;` },
       $('div', null, $('label', { class: 'eyebrow', for: 'f-date' }, 'Date'), Object.assign(dateInput, { id: 'f-date' })),
       $('div', null, methodSection),
     ),
@@ -617,6 +745,31 @@ function screenDashboard() {
 
   const screen = $('section', { 'aria-label': 'Dashboard' });
 
+  // Net worth sparkline card (if enough data)
+  const { points } = computeBalance(state.entries, openingBalance);
+  if (points.length >= 2) {
+    const last30 = points.slice(-30);
+    const vals = last30.map(p => p.balance);
+    const mn = Math.min(...vals), mx = Math.max(...vals);
+    const rng = mx - mn || 1;
+    const isUp = vals[vals.length - 1] >= vals[0];
+    const sparkH = 40, sparkW = 300;
+    const step = sparkW / (vals.length - 1);
+    const pathD = vals.map((v, i) => `${i === 0 ? 'M' : 'L'} ${i * step} ${sparkH - ((v - mn) / rng) * (sparkH - 4) - 2}`).join(' ');
+    const areaD = pathD + ` L ${(vals.length - 1) * step} ${sparkH} L 0 ${sparkH} Z`;
+    const lastVal = vals[vals.length - 1];
+    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '14px 18px' : '18px 24px'};margin-bottom:24px;display:flex;align-items:center;gap:16px;` },
+      $('svg', { viewBox: `0 0 ${sparkW} ${sparkH}`, style: 'flex:1;min-width:120px;height:40px;', 'aria-label': 'Net worth trend' },
+        $('path', { d: areaD, style: `fill:${isUp ? 'var(--positive)' : 'var(--negative)'};opacity:0.1;` }),
+        $('path', { d: pathD, style: `fill:none;stroke:${isUp ? 'var(--positive)' : 'var(--negative)'};stroke-width:1.5;stroke-linecap:round;` }),
+      ),
+      $('div', { style: 'text-align:right;flex-shrink:0;' },
+        $('div', { class: 'eyebrow', style: 'font-size:10px;' }, 'Net worth'),
+        $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(lastVal)),
+      ),
+    ));
+  }
+
   // Resync button — only shown when sync is configured
   const syncS = getSyncSettings();
   const resyncBtn = (syncS.enabled && syncS.endpoint && syncS.password)
@@ -627,21 +780,21 @@ function screenDashboard() {
     : null;
 
   // Hero
-  screen.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:36px;flex-wrap:wrap;gap:16px;' },
+  screen.appendChild($('div', { style: `display:flex;justify-content:space-between;align-items:${isNarrow() ? 'flex-start' : 'flex-end'};margin-bottom:${isNarrow() ? '24px' : '36px'};flex-wrap:wrap;gap:${isNarrow() ? '10px' : '16px'};` },
     $('div', null,
       $('div', { class: 'eyebrow' }, monthLabel(key)),
-      $('p', { style: 'font-size:54px;line-height:1;margin:8px 0 0;' },
+      $('p', { style: `font-size:${isTiny() ? '32px' : isNarrow() ? '42px' : '54px'};line-height:1;margin:8px 0 0;` },
         $('span', { class: 'serif' }, fmt(net)),
-        $('span', { style: 'font-family:DM Sans,system-ui,sans-serif;font-style:normal;font-size:18px;color:var(--muted);margin-left:8px;' }, budget ? `/ ${fmt(budget)}` : ''),
+        $('span', { style: `font-family:DM Sans,system-ui,sans-serif;font-style:normal;font-size:${isNarrow() ? '14px' : '18px'};color:var(--muted);margin-left:8px;` }, budget ? `/ ${fmt(budget)}` : ''),
       ),
-      $('p', { style: 'font-size:15px;color:var(--muted);margin:6px 0 0;display:flex;align-items:center;gap:18px;' },
+      $('p', { style: `font-size:${isNarrow() ? '13px' : '15px'};color:var(--muted);margin:6px 0 0;display:flex;align-items:center;gap:${isNarrow() ? '10px' : '18px'};flex-wrap:wrap;` },
         $('span', null, 'Balance ', $('span', { class: 'display-num', style: `font-size:16px;color:${runningBalance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(runningBalance))),
         cashWidget(),
       ),
     ),
     $('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;' },
       $('label', { class: 'eyebrow', for: 'balance-input' }, 'Opening'),
-      $('input', { id: 'balance-input', type: 'text', inputmode: 'decimal', value: String(openingBalance || ''), placeholder: '—', 'aria-label': 'Opening bank balance in euros', autocomplete: 'off', style: 'width:92px;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;', onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
+      $('input', { id: 'balance-input', type: 'text', inputmode: 'decimal', value: String(openingBalance || ''), placeholder: '—', 'aria-label': 'Opening bank balance in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
         e.target.style.borderColor = 'var(--line)';
         const v = parseAmount(e.target.value);
         if (!Number.isFinite(v)) { e.target.value = String(openingBalance || ''); toast('Enter a valid number.'); return; }
@@ -651,7 +804,7 @@ function screenDashboard() {
         }
       }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
       $('label', { class: 'eyebrow', for: 'budget-input' }, 'Budget'),
-      $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '—', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: 'width:92px;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;', onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
+      $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '—', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
         e.target.style.borderColor = 'var(--line)';
         const v = parseAmount(e.target.value);
         if (!Number.isFinite(v) || v < 0) { e.target.value = String(budget || ''); toast('Enter a non-negative number.'); return; }
@@ -667,7 +820,7 @@ function screenDashboard() {
 
   // Budget bar card
   if (budget > 0) {
-    screen.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:32px;' },
+    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:${isNarrow() ? '22px' : '32px'};` },
       $('div', { class: 'row between' },
         $('span', { class: 'eyebrow' }, 'Spent of budget'),
         $('span', { class: 'serif', style: 'font-size:22px;' }, `${pct.toFixed(1)}%`),
@@ -675,13 +828,22 @@ function screenDashboard() {
       $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 20px;' },
         $('div', { style: `height:100%;width:${pct}%;background:${pct > 90 ? 'var(--negative)' : 'var(--accent)'};transition:width .4s ease;` }),
       ),
-      $('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:24px;padding-top:20px;border-top:1px solid var(--line);' },
+        // Confetti on last day of month if under budget (once per session)
+        ...((() => { if (pct <= 100 && now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() && !window.__confettiFired) { setTimeout(triggerConfetti, 600); window.__confettiFired = true; } return []; })()),
+      $('div', { style: `display:grid;grid-template-columns:repeat(auto-fill,minmax(${isNarrow() ? '90px' : '130px'},1fr));gap:${isNarrow() ? '12px' : '24px'};padding-top:20px;border-top:1px solid var(--line);` },
         stat('Net', fmt(net)),
         stat('Spent', fmt(expenseSum)),
         stat('Income', fmt(incomeSum)),
         stat('Balance', fmt(runningBalance)),
         stat('Avg / day', fmt(expenseSum / Math.max(now.getDate(), 1))),
         stat('Month elapsed', Math.round((now.getDate() / new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()) * 100) + '%'),
+        ...(budget && expenseSum > 0 ? [stat('Burn rate', (() => {
+          const daysLeft = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate();
+          const dailyAvg = expenseSum / Math.max(now.getDate(), 1);
+          const projected = expenseSum + dailyAvg * daysLeft;
+          const pctProj = Math.round((projected / budget) * 100);
+          return pctProj > 100 ? `⚠ ${pctProj}%` : `${pctProj}%`;
+        })())] : []),
       ),
     ));
   }
@@ -689,7 +851,7 @@ function screenDashboard() {
   // Recurring transactions — always show card so "+ New" is accessible
   const allRecurring = state.settings.recurring || [];
   const recurring = allRecurring.filter(r => r.nextDate <= key + '-31');
-  const recCard = $('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+  const recCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('span', { class: 'eyebrow' }, `Recurring · ${allRecurring.length}`),
       $('button', { type: 'button', style: 'font-size:11px;color:var(--accent);cursor:pointer;background:none;border:none;padding:0;', onClick: () => openNewRecurring() }, '+ New'),
@@ -723,11 +885,11 @@ function screenDashboard() {
   // Category breakdown + recent
   const grid = $('div', { class: 'dashboard-grid', style: 'display:grid;grid-template-columns:1fr;gap:24px;align-items:start;' });
   // Responsive: 2-col on >=760px (set inline because we want it to ship without extra CSS)
-  if (typeof window !== 'undefined' && window.matchMedia('(min-width: 1000px)').matches) {
+  if (typeof window !== 'undefined' && window.matchMedia('(min-width: 640px)').matches) {
     grid.style.gridTemplateColumns = 'minmax(0, 2fr) minmax(0, 3fr)';
   }
 
-  const catCard = $('div', { class: 'card', style: 'padding:24px;' },
+  const catCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('span', { class: 'eyebrow' }, 'By category'),
       $('span', { class: 'muted', style: 'font-size:11px;' }, 'this month'),
@@ -747,22 +909,22 @@ function screenDashboard() {
         ),
   );
 
-  const recentCard = $('div', { class: 'card', style: 'padding:24px;overflow-x:auto;' },
+  const recentCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};overflow-x:auto;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('span', { class: 'eyebrow' }, 'Recent'),
       $('a', { href: '#history', class: 'btn-link' }, 'See all →'),
     ),
     recent.length === 0
       ? $('div', { class: 'empty' }, 'No entries yet.')
-      : $('div', { style: 'display:grid;grid-template-columns:90px 1fr 110px 90px;gap:12px 24px;font-size:14px;min-width:520px;' },
+      : $('div', { style: `display:grid;grid-template-columns:${isNarrow() ? '75px 1fr 80px' : '90px 1fr 110px 90px'};gap:${isNarrow() ? '8px 12px' : '12px 24px'};font-size:${isNarrow() ? '12px' : '14px'};${isNarrow() ? '' : 'min-width:520px;'}` },
           ...recent.flatMap(e => [
             $('span', { class: 'muted', style: 'font-size:12px;' }, friendlyDate(e.date)),
             $('div', null,
               $('div', { style: 'font-weight:500;' }, e.details || '—'),
-              $('div', { style: 'font-size:11px;color:var(--muted);' }, `${CATEGORIES.find(c => c.id === e.category)?.label || e.category} · ${METHODS.find(m => m.id === e.method)?.label || e.method}`),
+              $('div', { style: `font-size:11px;color:var(--muted);${isNarrow() ? 'display:none;' : ''}` }, `${CATEGORIES.find(c => c.id === e.category)?.label || e.category} · ${METHODS.find(m => m.id === e.method)?.label || e.method}`),
             ),
-            $('span', { class: 'display-num', style: 'text-align:right;font-size:15px;color:' + (e.type === 'credit' ? 'var(--positive)' : 'var(--ink)') }, (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
-            $('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method)),
+            $('span', { class: 'display-num', style: `text-align:right;font-size:${isNarrow() ? '13px' : '15px'};color:${e.type === 'credit' ? 'var(--positive)' : 'var(--ink)'}` }, (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
+            ...(isNarrow() ? [] : [$('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method))]),
           ]),
         ),
   );
@@ -782,7 +944,7 @@ function screenDashboard() {
   }
   const activeMethods = Object.entries(methodBalances).filter(([, v]) => v.balance !== 0);
   if (activeMethods.length > 0) {
-    const accountsCard = $('div', { class: 'card', style: 'padding:24px;margin-top:24px;' },
+    const accountsCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
       $('div', { class: 'eyebrow', style: 'margin-bottom:16px;' }, 'Per-account balances'),
       $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
         ...activeMethods.map(([id, v]) => {
@@ -811,7 +973,7 @@ function screenDashboard() {
     const { balance, loaded, spent } = computeGiftCardBalance(state.entries, id, gcOpenings[id] || 0);
     return { id, label: m ? m.label : id, balance, loaded, spent, opening: gcOpenings[id] || 0 };
   });
-  const gcCard = $('div', { class: 'card', style: 'padding:24px;margin-top:24px;' },
+  const gcCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
     $('div', { class: 'eyebrow', style: 'margin-bottom:16px;' }, 'Gift card balances'),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
       ...giftCardBalances.map(gc => {
@@ -847,7 +1009,7 @@ function screenDashboard() {
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const unpaidThursdays = thursdays.filter(d => !incomeByDate[d] && d <= todayStr);
 
-  const payCard = $('div', { class: 'card', style: 'padding:24px;margin-top:24px;' },
+  const payCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('span', { class: 'eyebrow' }, 'Tesco pay · Thursdays'),
       $('div', { style: 'display:flex;align-items:center;gap:10px;' },
@@ -892,7 +1054,7 @@ function screenDashboard() {
 function stat(label, value) {
   return $('div', null,
     $('div', { class: 'eyebrow' }, label),
-    $('div', { class: 'display-num', style: 'font-size:22px;margin-top:4px;' }, value),
+    $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '18px' : '22px'};margin-top:4px;` }, value),
   );
 }
 
@@ -1217,6 +1379,96 @@ function screenAdd() {
   c.appendChild($('div', { style: 'margin-bottom:24px;' },
     $('h1', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:34px;' }, 'New entry'),
   ));
+
+  // Quick-add receipt parser section
+  const qTextarea = $('textarea', { placeholder: 'Quick-add: paste receipt lines…\ne.g. €12.50 Tesco groceries\n5.00 bus fare', 'aria-label': 'Quick-add receipt', rows: '2', style: 'width:100%;max-width:540px;margin:0 auto 16px;display:block;font-size:13px;', onInput: (e) => {
+    const text = e.target.value;
+    if (text.includes('\n')) {
+      qPreview.innerHTML = '';
+      const lines = text.split('\n').filter(l => l.trim());
+      for (const line of lines) {
+        const parsed = parseReceiptLine(line);
+        if (parsed) {
+          qPreview.appendChild($('div', { style: 'display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid var(--line);' },
+            $('span', null, parsed.details, $('span', { class: 'pill pill-cat', style: 'margin-left:6px;font-size:10px;padding:1px 6px;' }, CATEGORIES.find(c=>c.id===parsed.category)?.label||parsed.category)),
+            $('span', { class: 'tnum' }, parsed.amount > 0 ? fmt(parsed.amount) : '—'),
+          ));
+        }
+      }
+      qPreview.style.display = qPreview.children.length ? '' : 'none';
+    }
+  } });
+  const qPreview = $('div', { style: 'max-width:540px;margin:0 auto 20px;display:none;padding:12px;background:var(--accent-soft);border-radius:8px;' });
+  const qActions = $('div', { style: 'max-width:540px;margin:0 auto 16px;display:none;gap:8px;justify-content:flex-end;' },
+    $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => { qTextarea.value = ''; qPreview.innerHTML = ''; qPreview.style.display = 'none'; qActions.style.display = 'none'; } }, 'Clear'),
+    $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: () => {
+      const lines = qTextarea.value.split('\n').filter(l => l.trim());
+      let added = 0;
+      for (const line of lines) {
+        const parsed = parseReceiptLine(line);
+        if (parsed && parsed.amount > 0) {
+          state.entries.push({ id: uid(), date: today(), type: 'expense', category: parsed.category, details: parsed.details, amount: parsed.amount, method: 'AIB', note: '' });
+          added++;
+        }
+      }
+      if (added > 0) {
+        state.entries.sort((a,b) => a.date.localeCompare(b.date));
+        persist();
+        toast(`Added ${added} entries.`);
+        location.hash = '#dashboard';
+      } else {
+        toast('No valid entries found. Try "€amount description" format.');
+      }
+    } }, `Add entries`),
+  );
+  // Show actions when preview has content
+  const qObserver = new MutationObserver(() => {
+    if (qPreview.children.length > 0) qActions.style.display = 'flex';
+    else qActions.style.display = 'none';
+  });
+  qObserver.observe(qPreview, { childList: true });
+
+  c.appendChild($('div', { style: 'max-width:540px;margin:0 auto;' },
+    $('div', { class: 'eyebrow', style: 'margin-bottom:6px;cursor:pointer;display:flex;align-items:center;gap:4px;', onClick: (e) => {
+      const wrap = e.target.closest('.quick-add-wrap');
+      if (wrap) { const body = wrap.querySelector('.quick-add-body'); body.style.display = body.style.display === 'none' ? '' : 'none'; }
+    } }, '⚡ Quick-add (paste receipt)'),
+    $('div', { class: 'quick-add-wrap' }, $('div', { class: 'quick-add-body' }, qTextarea, qPreview, qActions)),
+  ));
+
+  // Audio note button
+  let mediaRecorder, audioChunks;
+  const audioBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;display:flex;align-items:center;gap:4px;', onClick: async () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+      audioBtn.innerHTML = '🎤 Record note…';
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream);
+      audioChunks = [];
+      mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(audioChunks, { type: 'audio/webm' });
+        const url = URL.createObjectURL(blob);
+        const note = prompt('Label for this audio note:', 'Voice note ' + friendlyDate(today()));
+        if (note) {
+          state.entries.push({ id: uid(), date: today(), type: 'expense', category: 'misc', details: note, amount: 0, method: 'AIB', note: `🎙 Audio note: ${url}` });
+          persist();
+          toast('Audio note saved.');
+          render();
+        }
+      };
+      mediaRecorder.start();
+      audioBtn.innerHTML = '⏹ Stop recording';
+    } catch(err) {
+      toast('Microphone access denied.');
+    }
+  } }, '🎤 Record note…');
+  c.appendChild($('div', { style: 'max-width:540px;margin:0 auto 24px;text-align:right;' }, audioBtn));
+
   c.appendChild(formView({
     onSubmit: (entryOrEntries) => {
       const entries = Array.isArray(entryOrEntries) ? entryOrEntries : [entryOrEntries];
@@ -1237,21 +1489,27 @@ function screenHistory() {
   const params = new URLSearchParams((location.hash.split('?')[1]) || '');
   let activeMonth = params.get('month') || monthKey(today());
   let activeCat = params.get('cat') || 'all';
+  let searchQuery = params.get('q') || '';
 
   const months = Array.from(new Set(state.entries.map(e => monthKey(e.date)))).sort().reverse();
   if (!months.includes(activeMonth) && months.length) activeMonth = months[0];
 
   const monthEntries = entriesForMonth(activeMonth);
-  const visible = activeCat === 'all' ? monthEntries : monthEntries.filter(e => e.category === activeCat);
+  const filtered = searchEntries(monthEntries, searchQuery, { type: 'all', category: activeCat, method: 'all' });
+  const visible = filtered.sort((a, b) => b.date.localeCompare(a.date));
   const expenseSum = monthEntries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
   const openingBalance = +state.settings.openingBalance || 0;
   const { byId: balanceById } = computeBalance(state.entries, openingBalance);
 
   const update = (next = {}) => {
-    if (next.month) params.set('month', next.month);
+    if (next.month !== undefined) params.set('month', next.month);
     if (next.cat !== undefined) {
       if (next.cat === 'all') params.delete('cat');
       else params.set('cat', next.cat);
+    }
+    if (next.q !== undefined) {
+      if (next.q) params.set('q', next.q);
+      else params.delete('q');
     }
     const qs = params.toString();
     location.hash = qs ? `history?${qs}` : 'history';
@@ -1265,6 +1523,20 @@ function screenHistory() {
       monthNav('←', () => { const i = months.indexOf(activeMonth); if (i < months.length - 1) update({ month: months[i + 1] }); }, months.indexOf(activeMonth) >= months.length - 1),
       monthNav(monthKey(today()) === activeMonth ? 'Today' : 'Jump', () => update({ month: monthKey(today()) }), false),
       monthNav('→', () => { const i = months.indexOf(activeMonth); if (i > 0) update({ month: months[i - 1] }); }, months.indexOf(activeMonth) <= 0),
+    ),
+  ));
+
+  // Search bar
+  const searchInput = $('input', { type: 'text', value: searchQuery, placeholder: 'Search descriptions, notes…', 'aria-label': 'Search entries', autocomplete: 'off', style: 'width:100%;max-width:320px;', onInput: (e) => {
+    // Debounced update
+    clearTimeout(searchInput._timer);
+    searchInput._timer = setTimeout(() => update({ q: e.target.value }), 250);
+  } });
+  c.appendChild($('div', { style: 'margin-bottom:16px;' },
+    $('div', { style: 'display:flex;gap:8px;align-items:center;' },
+      $('span', { style: 'font-size:16px;color:var(--muted);', 'aria-hidden': 'true' }, '🔍'),
+      searchInput,
+      searchQuery ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:12px;', onClick: () => { searchInput.value = ''; update({ q: '' }); } }, 'Clear') : null,
     ),
   ));
 
@@ -1283,7 +1555,7 @@ function screenHistory() {
 
   const tableWrap = $('div', { class: 'card', style: 'overflow-x:auto;' });
   if (visible.length === 0) {
-    tableWrap.appendChild($('div', { class: 'empty' }, 'Nothing here for this filter.'));
+    tableWrap.appendChild($('div', { class: 'empty' }, searchQuery ? 'No results for this search.' : 'Nothing here for this filter.'));
   } else {
     tableWrap.appendChild($('div', { role: 'row', style: 'display:grid;grid-template-columns:90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);min-width:740px;' },
       $('span', { role: 'columnheader' }, 'Date'),
@@ -1294,7 +1566,7 @@ function screenHistory() {
       $('span'),
     ));
 
-    for (const e of visible.sort((a, b) => b.date.localeCompare(a.date))) {
+    for (const e of visible) {
       const isTransfer = !!e.transferId;
       const settledLabel = isTransfer ? (e.settled ? '✓ settled' : '● unsettled') : '';
       const settleColor = e.settled ? 'var(--positive)' : 'var(--muted)';
@@ -1304,7 +1576,6 @@ function screenHistory() {
           $('div', { style: 'font-size:14px;display:flex;align-items:center;gap:6px;' }, e.details || '—',
             isTransfer ? $('span', { style: `font-size:10px;color:${settleColor};cursor:pointer;user-select:none;`, onClick: (ev) => {
               ev.stopPropagation();
-              // Toggle settled on both linked entries
               const newVal = !e.settled;
               for (const x of state.entries) {
                 if (x.transferId === e.transferId) x.settled = newVal;
@@ -1342,13 +1613,35 @@ function monthNav(label, onClick, disabled) {
 
 // ---------- screens: insights ----------
 function screenInsights() {
+  const params = new URLSearchParams((location.hash.split('?')[1]) || '');
+  const fromParam = params.get('from') || '';
+  const toParam = params.get('to') || '';
+  const fromDate = fromParam || (() => { const d = new Date(); d.setDate(d.getDate() - 90); return d.toISOString().slice(0,10); })();
+  const toDate = toParam || today();
+
+  const rangeEntries = state.entries.filter(e => e.date >= fromDate && e.date <= toDate);
+  const recent = rangeEntries;
+
   const c = $('section', { 'aria-label': 'Insights' });
-  c.appendChild($('div', { style: 'margin-bottom:24px;' },
+
+  // Date range picker
+  const fromInput = $('input', { type: 'date', value: fromDate, 'aria-label': 'From date', style: 'width:auto;font-size:13px;', onChange: (e) => {
+    params.set('from', e.target.value); location.hash = 'insights?' + params.toString();
+  } });
+  const toInput = $('input', { type: 'date', value: toDate, 'aria-label': 'To date', style: 'width:auto;font-size:13px;', onChange: (e) => {
+    params.set('to', e.target.value); location.hash = 'insights?' + params.toString();
+  } });
+
+  c.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:24px;flex-wrap:wrap;gap:12px;' },
     $('h1', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:34px;' }, 'Where it goes.'),
-    $('p', { class: 'muted', style: 'margin-top:6px;font-size:14px;max-width:520px;' }, 'A 90-day look at where your money has been going.'),
+    $('div', { style: 'display:flex;align-items:center;gap:8px;' },
+      fromInput,
+      $('span', { class: 'muted', style: 'font-size:13px;' }, '→'),
+      toInput,
+      (fromParam || toParam) ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:12px;', onClick: () => { location.hash = 'insights'; } }, 'Reset') : null,
+    ),
   ));
 
-  const recent = lastNinetyDays();
   const months = {};
   for (const e of recent.filter(e => e.type === 'expense')) {
     const k = monthKey(e.date);
@@ -1368,15 +1661,56 @@ function screenInsights() {
     statCard('Categories active', String(new Set(recent.filter(e => e.type === 'expense').map(e => e.category)).size)),
   ));
 
+  // Calendar heatmap — current month
+  const now = new Date();
+  const heatKey = monthKey(now.toISOString().slice(0, 10));
+  const heatEntries = entriesForMonth(heatKey).filter(e => e.type === 'expense');
+  const heatByDay = {};
+  for (const e of heatEntries) heatByDay[e.date] = (heatByDay[e.date] || 0) + e.amount;
+  const maxDay = Math.max(1, ...Object.values(heatByDay));
+  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const firstDow = new Date(now.getFullYear(), now.getMonth(), 1).getDay(); // 0=Sun
+  // Mon-start: shift Sun→6, Mon→0 … Sat→5
+  const monAdjusted = (firstDow + 6) % 7;
+  
+  const heatCells = [];
+  for (let i = 0; i < monAdjusted; i++) heatCells.push($('div')); // empty leading cells
+  for (let d = 1; d <= lastDay; d++) {
+    const ds = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const val = heatByDay[ds] || 0;
+    const intensity = maxDay > 0 ? val / maxDay : 0;
+    const color = intensity === 0 ? 'var(--line)' :
+      intensity < 0.25 ? 'color-mix(in srgb, var(--accent) 30%, var(--bg))' :
+      intensity < 0.5 ? 'color-mix(in srgb, var(--accent) 55%, var(--bg))' :
+      intensity < 0.75 ? 'color-mix(in srgb, var(--accent) 75%, var(--bg))' : 'var(--accent)';
+    const tip = val > 0 ? fmt(val) : '';
+    heatCells.push($('div', { class: 'heat-cell', title: tip, style: `border-radius:3px;aspect-ratio:1;background:${color};cursor:default;font-size:9px;display:flex;align-items:center;justify-content:center;${val === 0 ? 'opacity:0.5;' : ''}${ds === today() ? 'box-shadow:0 0 0 1.5px var(--ink);' : ''}` },
+      val > 0 ? $('span', { style: 'color:#fff;font-weight:600;font-size:8px;' }, String(d)) : null,
+    ));
+  }
+
+  c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+    $('div', { class: 'eyebrow', style: 'margin-bottom:12px;' }, `Spending heatmap · ${monthLabel(heatKey)}`),
+    $('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:3px;' },
+      ...['M','T','W','T','F','S','S'].map(l => $('div', { style: 'text-align:center;font-size:10px;color:var(--muted);padding-bottom:4px;' }, l)),
+      ...heatCells,
+    ),
+    $('div', { style: 'margin-top:8px;font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;' },
+      $('span', null, 'Less'),
+      ...[0, 0.25, 0.5, 0.75, 1].map(i => $('span', { style: `display:inline-block;width:12px;height:12px;border-radius:2px;background:${i===0?'var(--line)':`color-mix(in srgb, var(--accent) ${i*100}%, var(--bg))`};` })),
+      $('span', null, 'More'),
+    ),
+  ));
+
   const catTotals = {};
   for (const e of recent.filter(e => e.type === 'expense')) catTotals[e.category] = (catTotals[e.category]||0) + e.amount;
   const catRows = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]);
   const maxCat = catRows[0]?.[1] || 1;
 
   c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'By category · 90 days'),
+    $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'By category'),
     catRows.length === 0
-      ? $('div', { class: 'empty' }, 'No expenses in the last 90 days.')
+      ? $('div', { class: 'empty' }, 'No expenses in this range.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
           ...catRows.map(([cat, val]) => bar(CATEGORIES.find(c=>c.id===cat)?.label || cat, val, maxCat, val === maxCat)),
         ),
@@ -1386,12 +1720,32 @@ function screenInsights() {
   const maxMethod = methodRows[0]?.[1] || 1;
 
   c.appendChild($('div', { class: 'card', style: 'padding:24px;' },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Payment mix · 90 days'),
+    $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Payment mix'),
     methodRows.length === 0
-      ? $('div', { class: 'empty' }, 'No expenses in the last 90 days.')
+      ? $('div', { class: 'empty' }, 'No expenses in this range.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
           ...methodRows.map(([m, val]) => bar(METHODS.find(x=>x.id===m)?.label || m, val, maxMethod, val === maxMethod)),
         ),
+  ));
+
+  // Data health card
+  const health = computeDataHealth(state.entries);
+  const healthColor = health.score >= 80 ? 'var(--positive)' : health.score >= 50 ? 'var(--accent)' : 'var(--negative)';
+  c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' },
+      $('div', { class: 'eyebrow' }, 'Data health'),
+      $('span', { class: 'display-num', style: `font-size:22px;color:${healthColor};` }, `${health.score}%`),
+    ),
+    health.issues.length === 0
+      ? $('div', { class: 'empty', style: 'padding:8px 0;' }, 'Your data looks clean! ✨')
+      : $('div', { style: 'display:flex;flex-direction:column;gap:6px;' },
+          ...health.issues.map(issue => $('div', { style: 'font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);' }, '· ', issue)),
+        ),
+  ));
+
+  // Year-in-review button
+  c.appendChild($('div', { style: 'text-align:center;padding:16px 0;' },
+    $('button', { type: 'button', class: 'btn btn-ghost', onClick: openYearInReview }, '📊 Year in review'),
   ));
 
   return c;
@@ -1412,6 +1766,61 @@ function bar(label, value, max, isMax) {
       $('div', { style: `height:100%;width:${(value/max)*100}%;background:${isMax ? 'var(--accent)' : 'var(--ink)'};` }),
     ),
   );
+}
+
+// ---------- modal: year in review ----------
+function openYearInReview() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const yearEntries = state.entries.filter(e => e.date >= `${year}-01-01` && e.date <= `${year}-12-31`);
+  const expOnly = yearEntries.filter(e => e.type === 'expense');
+  const incOnly = yearEntries.filter(e => e.type === 'credit');
+  const totalSpent = expOnly.reduce((s,e) => s + e.amount, 0);
+  const totalEarned = incOnly.reduce((s,e) => s + e.amount, 0);
+  const topCat = Object.entries(expOnly.reduce((a,e) => { a[e.category] = (a[e.category]||0) + e.amount; return a; }, {})).sort((a,b) => b[1]-a[1])[0];
+  const busiestDay = Object.entries(expOnly.reduce((a,e) => { const v = a[e.date]||{count:0,total:0}; a[e.date] = {count:v.count+1,total:v.total+e.amount}; return a; }, {})).sort((a,b) => b[1].total - a[1].total)[0];
+  const months = {};
+  for (const e of expOnly) { const k = monthKey(e.date); months[k] = (months[k]||0) + e.amount; }
+  const bestMonth = Object.entries(months).sort((a,b) => a[1]-b[1])[0];
+  const worstMonth = Object.entries(months).sort((a,b) => b[1]-a[1])[0];
+
+  const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Year in review', tabindex: '-1', style: 'max-width:560px;' });
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onEsc, true);
+
+  modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;' },
+    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:28px;' }, `Your ${year} in review`),
+    $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close'),
+  ));
+
+  const rows = [
+    ['Total earned', fmt(totalEarned), 'var(--positive)'],
+    ['Total spent', fmt(totalSpent), 'var(--ink)'],
+    ['Net', fmt(totalEarned - totalSpent), (totalEarned - totalSpent) >= 0 ? 'var(--positive)' : 'var(--negative)'],
+    ['Entries logged', String(yearEntries.length), ''],
+    ['Top category', topCat ? `${CATEGORIES.find(c=>c.id===topCat[0])?.label||topCat[0]} · ${fmt(topCat[1])}` : '—', ''],
+    ['Best month', bestMonth ? `${monthLabel(bestMonth[0])} · ${fmt(bestMonth[1])}` : '—', ''],
+    ['Toughest month', worstMonth ? `${monthLabel(worstMonth[0])} · ${fmt(worstMonth[1])}` : '—', ''],
+    ['Busiest day', busiestDay ? `${friendlyDate(busiestDay[0])} — ${busiestDay[1].count} entries, ${fmt(busiestDay[1].total)}` : '—', ''],
+  ];
+  for (const [label, value, color] of rows) {
+    modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px;' },
+      $('span', { class: 'muted' }, label),
+      $('span', { class: 'display-num', style: color ? `color:${color};font-size:16px;` : 'font-size:16px;' }, value),
+    ));
+  }
+
+  modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:16px;' },
+    $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Close'),
+    $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
+      const text = rows.map(([l,v]) => `${l}: ${v}`).join('\n');
+      navigator.clipboard?.writeText(text).then(() => toast('Copied to clipboard!'), () => toast('Could not copy.'));
+    } }, 'Copy summary'),
+  ));
 }
 
 // ---------- modal: transfer delete ----------
@@ -1739,10 +2148,17 @@ function openSyncSettings() {
 
 // ---------- toast ----------
 let toastTimer;
-function toast(text) {
+function toast(text, undoFn, undoLabel) {
   let host = document.querySelector('.toast-host');
   if (!host) { host = $('div', { class: 'toast-host' }); document.body.appendChild(host); }
-  const t = $('div', { class: 'toast', role: 'status', 'aria-live': 'polite' }, text);
+  const children = [text];
+  // If explicit undoFn passed, use it; otherwise auto-detect _lastAction
+  const effectiveUndo = undoFn || (_lastAction ? (() => undoLastAction()) : null);
+  const effectiveLabel = undoLabel || (_lastAction ? 'Undo' : '');
+  if (effectiveUndo) {
+    children.push($('button', { type: 'button', class: 'toast-undo', onClick: () => { effectiveUndo(); t.remove(); } }, effectiveLabel));
+  }
+  const t = $('div', { class: 'toast', role: 'status', 'aria-live': 'polite' }, ...children);
   host.appendChild(t);
   toastTimer && clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.remove(); }, 2200);
@@ -1779,6 +2195,14 @@ function render() {
 function _render() {
   const main = document.getElementById('app');
   if (!main) return;
+  // Init dark mode + season on first render
+  if (!document.documentElement.dataset.themeInit) {
+    document.documentElement.dataset.themeInit = '1';
+    try {
+      if (localStorage.getItem('cents-theme') === 'dark') document.documentElement.dataset.theme = 'dark';
+    } catch(e) {}
+    setSeason();
+  }
   // Save scroll to restore after re-render
   const scrollY = window.scrollY;
   main.innerHTML = '';
