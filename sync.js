@@ -14,6 +14,14 @@ import { getSyncSettings, patchSyncSettings } from './settings.js';
 
 const TIMEOUT_MS = 12000;
 
+const HINT_BY_STATUS = {
+  400: ' — bad request, check endpoint',
+  404: ' — endpoint not found, check URL',
+  500: ' — server error, check Netlify env vars (GITHUB_TOKEN, REPO_OWNER, REPO_NAME, APP_PASSWORD)',
+  502: ' — gateway error, function crashed — check Netlify function logs & env vars',
+  503: ' — function unavailable, may be cold-starting — retry',
+};
+
 function withTimeout(p, ms) {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('timeout')), ms);
@@ -95,7 +103,9 @@ export async function syncTestConnection(endpoint, password) {
   if (!resp.ok) {
     let msg = '';
     try { msg = (await resp.json()).error || ''; } catch {}
-    const hint = resp.status >= 400 && resp.status < 500 ? ' — check endpoint URL' : '';
+    const hint = HINT_BY_STATUS[resp.status]
+      || (resp.status >= 500 ? ' — server error, check Netlify function logs' : '')
+      || (resp.status >= 400 ? ' — check endpoint URL' : '');
     return { ok: false, reason: 'http', status: resp.status, message: msg || 'HTTP ' + resp.status + hint };
   }
   return { ok: true };
