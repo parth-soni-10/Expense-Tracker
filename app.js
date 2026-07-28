@@ -261,7 +261,6 @@ function formView({ initial = null, onSubmit, onDelete }) {
     if (!valid) { data.method = methodOpts()[0].id; methodSel.value = data.method; }
   }
   rebuildMethodOpts();
-  catSection.style.display = isCredit() ? 'none' : '';
 
   const catChips = $('div', { role: 'radiogroup', 'aria-label': 'Category', style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;' },
     ...CATEGORIES.map(c => {
@@ -276,6 +275,7 @@ function formView({ initial = null, onSubmit, onDelete }) {
   const catSection = $('div', { style: 'margin-bottom:24px;' },
     $('label', { class: 'eyebrow' }, 'Category'), catChips,
   );
+  catSection.style.display = isCredit() ? 'none' : '';
 
   const noteInput = $('input', { type: 'text', value: data.note || '', 'aria-label': 'Optional note', placeholder: 'optional', onInput: (e) => data.note = e.target.value });
 
