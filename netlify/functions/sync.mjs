@@ -25,11 +25,10 @@ const CORS = {
   'Access-Control-Max-Age': '86400',
 };
 
-const ok  = (body, status = 200) => ({
-  statusCode: status,
-  headers: { 'Content-Type': 'application/json', ...CORS },
-  body: typeof body === 'string' ? body : JSON.stringify(body),
-});
+const ok = (body, status = 200) => new Response(
+  typeof body === 'string' ? body : JSON.stringify(body),
+  { status, headers: { 'Content-Type': 'application/json', ...CORS } },
+);
 const err = (msg, status = 400) => ok({ error: msg, code: status }, status);
 
 const GH_API = 'https://api.github.com';
