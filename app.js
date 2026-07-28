@@ -357,15 +357,17 @@ function screenDashboard() {
   const monthEntries = entriesForMonth(key);
   const net = totalForMonth(key);
   const budget = +state.settings.monthlyBudget || 0;
-  const pct = budget ? Math.min(100, (net / budget) * 100) : 0;
+  const pct = budget ? Math.min(100, (expenseSum / budget) * 100) : 0;
 
+  const expensesOnly = monthEntries.filter(e => e.type === 'expense');
+  const incomeOnly = monthEntries.filter(e => e.type === 'credit');
   const catTotals = {};
-  for (const e of monthEntries) {
-    if (e.type !== 'expense') continue;
+  for (const e of expensesOnly) {
     catTotals[e.category] = (catTotals[e.category] || 0) + e.amount;
   }
   const cats = Object.entries(catTotals).sort((a, b) => b[1] - a[1]);
-  const monthSum = monthEntries.reduce((s, e) => s + e.amount, 0);
+  const expenseSum = expensesOnly.reduce((s, e) => s + e.amount, 0);
+  const incomeSum = incomeOnly.reduce((s, e) => s + e.amount, 0);
 
   // Recent 5 — stable order: date desc, then id desc as tiebreaker
   const recent = [...state.entries]
@@ -420,8 +422,9 @@ function screenDashboard() {
       ),
       $('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:24px;padding-top:20px;border-top:1px solid var(--line);' },
         stat('Net', fmt(net)),
-        stat('Entries', String(monthEntries.length)),
-        stat('Avg / day', fmt(monthSum / Math.max(now.getDate(), 1))),
+        stat('Spent', fmt(expenseSum)),
+        stat('Income', fmt(incomeSum)),
+        stat('Avg / day', fmt(expenseSum / Math.max(now.getDate(), 1))),
         stat('Month elapsed', Math.round((now.getDate() / new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()) * 100) + '%'),
       ),
     ));
@@ -517,7 +520,7 @@ function screenHistory() {
 
   const monthEntries = entriesForMonth(activeMonth);
   const visible = activeCat === 'all' ? monthEntries : monthEntries.filter(e => e.category === activeCat);
-  const monthSum = monthEntries.reduce((s, e) => s + e.amount, 0);
+  const expenseSum = monthEntries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
 
   const update = (next = {}) => {
     if (next.month) params.set('month', next.month);
@@ -586,8 +589,8 @@ function screenHistory() {
   c.appendChild(tableWrap);
 
   c.appendChild($('div', { class: 'summary-row' },
-    $('span', { class: 'eyebrow' }, 'Monthly sum · all entries'),
-    $('span', { class: 'display-num', style: 'font-size:30px;' }, fmt(monthSum)),
+    $('span', { class: 'eyebrow' }, 'Monthly sum · expenses'),
+    $('span', { class: 'display-num', style: 'font-size:30px;' }, fmt(expenseSum)),
   ));
 
   return c;
@@ -607,7 +610,7 @@ function screenInsights() {
 
   const recent = lastNinetyDays();
   const months = {};
-  for (const e of recent) {
+  for (const e of recent.filter(e => e.type === 'expense')) {
     const k = monthKey(e.date);
     months[k] = (months[k] || 0) + e.amount;
   }
@@ -621,8 +624,8 @@ function screenInsights() {
   c.appendChild($('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px;margin-bottom:32px;' },
     statCard('Average / month', fmt(avg)),
     statCard('Top method', topMethodEntry ? `${(methodShort(topMethodEntry[0]))} · ${fmt(topMethodEntry[1])}` : '—'),
-    statCard('Entries', String(recent.length)),
-    statCard('Categories active', String(new Set(recent.map(e => e.category)).size)),
+    statCard('Entries', String(recent.filter(e => e.type === 'expense').length)),
+    statCard('Categories active', String(new Set(recent.filter(e => e.type === 'expense').map(e => e.category)).size)),
   ));
 
   const catTotals = {};
