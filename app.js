@@ -111,7 +111,7 @@ function renderSyncIndicator() {
   node.style.display = '';
   const status = syncStatus();
   node.innerHTML = '';
-  node.append($('span', { 'aria-hidden': 'true', style: `width:6px;height:6px;border-radius:50%;background:${status.state === 'ok' ? 'var(--positive)' : status.state === 'error' ? 'var(--negative)' : 'var(--muted)'};display:inline-block;flex-shrink:0;` }));
+  node.append($('span', { 'aria-hidden': 'true', style: `width:7px;height:7px;border-radius:50%;background:${status.state === 'ok' ? 'var(--positive)' : status.state === 'error' ? 'var(--negative)' : 'var(--muted)'};display:inline-block;flex-shrink:0;` }));
   const label = status.state === 'ok' ? status.label.replace(/^Synced /, 'synced ') : status.label;
   node.append($('span', null, label));
 }
@@ -191,13 +191,13 @@ function renderHeader() {
   return $('header', { class: 'app-header', 'aria-label': 'App header' },
     $('div', { class: 'logo' },
       $('div', { class: 'mark' }, '€'),
-      $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:26px;letter-spacing:-0.02em;' }, 'cents.'),
+      $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary' },
       ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : 'false' }, titleFor(r))),
     ),
     $('div', { class: 'header-actions' },
-      $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:6px;font-family:"Instrument Serif",serif;font-style:italic;font-size:13px;color:var(--muted);' }),
+      $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Instrument Serif",serif;font-style:italic;font-size:14px;color:var(--muted);' }),
       $('button', { class: 'nav-action', onClick: openSyncSettings }, 'Sync'),
       $('button', { class: 'nav-action', onClick: () => { exportJSON(state); toast('Exported.'); } }, 'Export'),
     ),
@@ -881,6 +881,7 @@ function openSyncSettings() {
         toast('Connected.');
         notifySyncChange();
         renderBody();
+        render();
       } else {
         patchSyncSettings({ endpoint: newEndpoint, password: newPassword, enabled: false, lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
         toast('Connection failed: ' + (r.message || r.reason || 'error'));

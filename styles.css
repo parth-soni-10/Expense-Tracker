@@ -119,8 +119,8 @@ select { background: var(--bg); padding: 12px 8px; border: 1px solid var(--line)
 
 /* Nav links — refined underline on hover */
 .nav-link {
-  font-size: 14px; color: var(--muted);
-  padding: 8px 2px;
+  font-size: 15px; color: var(--muted);
+  padding: 10px 2px;
   border-bottom: 2px solid transparent;
   font-weight: 500; letter-spacing: 0.02em;
   cursor: pointer;
@@ -131,12 +131,12 @@ select { background: var(--bg); padding: 12px 8px; border: 1px solid var(--line)
 .nav-link[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
 .nav-link:hover { color: var(--ink); border-bottom-color: var(--line); }
 
-/* Header action chips — Sync / Export / Import */
+/* Header action chips */
 .nav-action {
   display: inline-flex; align-items: center;
   font-size: 14px; font-weight: 500;
   color: var(--accent);
-  padding: 6px 14px;
+  padding: 8px 18px;
   border-radius: 999px;
   background: transparent;
   border: 1px solid var(--accent-soft);
@@ -181,24 +181,24 @@ select { background: var(--bg); padding: 12px 8px; border: 1px solid var(--line)
 .shell { max-width: 980px; margin: 0 auto; padding: 32px 28px 80px; }
 @media (min-width: 760px) { .shell { padding: 48px 40px 96px; } }
 
-/* Header — refined editorial bar */
+/* Header — generous editorial bar */
 .app-header {
   display: flex; align-items: center;
-  padding: 0 0 20px;
+  padding: 8px 0 28px;
   border-bottom: 1px solid var(--line);
-  margin-bottom: 40px;
-  gap: 36px;
+  margin-bottom: 44px;
+  gap: 40px;
 }
 .app-header .logo {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 12px;
   flex-shrink: 0;
 }
 .app-header .logo .mark {
-  width: 32px; height: 32px; border-radius: 8px;
+  width: 40px; height: 40px; border-radius: 10px;
   background: var(--ink); color: var(--bg);
   display: grid; place-items: center;
   font-family: 'Instrument Serif', serif; font-style: italic;
-  font-size: 17px; font-weight: 500;
+  font-size: 21px; font-weight: 500;
   transition: background 0.2s, transform 0.2s;
 }
 .app-header .logo:hover .mark {
@@ -208,13 +208,13 @@ select { background: var(--bg); padding: 12px 8px; border: 1px solid var(--line)
 
 /* Primary nav — centered between logo and actions */
 .nav {
-  display: flex; align-items: center; gap: 28px;
+  display: flex; align-items: center; gap: 32px;
   flex: 1; justify-content: center;
 }
 
 /* Header actions — right side pills */
 .header-actions {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: center; gap: 10px;
   flex-shrink: 0;
 }
 
@@ -281,8 +281,8 @@ hr.sep-light { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 
 /* Mobile tweaks */
 @media (max-width: 700px) {
-  .app-header { flex-wrap: wrap; gap: 10px; padding-bottom: 14px; margin-bottom: 28px; }
-  .app-header .nav { order: 3; flex-basis: 100%; justify-content: flex-start; overflow-x: auto; gap: 18px; }
+  .app-header { flex-wrap: wrap; gap: 12px; padding-bottom: 20px; margin-bottom: 32px; }
+  .app-header .nav { order: 3; flex-basis: 100%; justify-content: flex-start; overflow-x: auto; gap: 20px; }
   .app-header .header-actions { margin-left: auto; }
   .shell { padding: 20px 16px 48px; }
 }
