@@ -163,7 +163,7 @@ function thursdaysInMonth(year, month) {
   // Find first Thursday (getDay() 4 = Thursday)
   while (d.getDay() !== 4) d.setDate(d.getDate() + 1);
   while (d.getMonth() === month) {
-    dates.push(d.toISOString().slice(0, 10));
+    dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
     d.setDate(d.getDate() + 7);
   }
   return dates;
@@ -194,6 +194,30 @@ function computeMethodBalances(entries, methods, openings) {
     result[m.id] = { label: m.label, balance };
   }
   return result;
+}
+
+/** Gift card balance: loading (expense + category=GC) adds, spending (expense + category≠GC) subtracts, credits add. */
+const GIFT_CARD_IDS = ['TG', 'LG', 'AG'];
+function computeGiftCardBalance(entries, methodId, opening = 0) {
+  const methodEntries = entries.filter(e => e.method === methodId);
+  const sorted = [...methodEntries].sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : 1));
+  let balance = opening;
+  let loaded = 0;
+  let spent = 0;
+  for (const e of sorted) {
+    if (e.type === 'credit') {
+      balance += e.amount;
+    } else if (e.category === 'GC') {
+      // Buying/loading the gift card — adds to balance
+      balance += e.amount;
+      loaded += e.amount;
+    } else {
+      // Spending the gift card — subtracts from balance
+      balance -= e.amount;
+      spent += e.amount;
+    }
+  }
+  return { balance, loaded, spent };
 }
 
 // ---------- cash / coins ----------
@@ -257,6 +281,84 @@ function paidRecurring(rec) {
   persist();
   toast(`Paid: ${rec.details} — ${fmt(rec.amount)}`);
   render();
+}
+
+// ---------- Tesco pay helpers ----------
+function fillThursday(dateStr) {
+  const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG');
+  const defaultAmt = lastTesco ? lastTesco.amount : 0;
+  if (defaultAmt > 0) {
+    state.entries.push({ id: uid(), date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
+    state.entries.sort((a, b) => a.date.localeCompare(b.date));
+    persist();
+    toast(`Filled Tesco pay for ${friendlyDate(dateStr)} — ${fmt(defaultAmt)}`);
+    render();
+  } else {
+    openTescoFillModal(dateStr, []);
+  }
+}
+
+function autoFillAll(unpaidThursdays) {
+  const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG');
+  const defaultAmt = lastTesco ? lastTesco.amount : 0;
+  if (defaultAmt > 0 && unpaidThursdays.length > 0) {
+    for (const d of unpaidThursdays) {
+      state.entries.push({ id: uid(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
+    }
+    state.entries.sort((a, b) => a.date.localeCompare(b.date));
+    persist();
+    toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays — ${fmt(defaultAmt)} each`);
+    render();
+  } else if (unpaidThursdays.length === 0) {
+    toast('All Thursdays are already filled.');
+  } else {
+    openTescoFillModal(null, unpaidThursdays);
+  }
+}
+
+function openTescoFillModal(prefillDate, unpaidThursdays) {
+  const data = { amount: '', date: prefillDate };
+  const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Set Tesco pay amount', tabindex: '-1', style: 'max-width:360px;' });
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onEsc, true);
+
+  const amtInput = $('input', { type: 'text', inputmode: 'decimal', placeholder: '0.00', 'aria-label': 'Amount', autocomplete: 'off', onInput: (e) => data.amount = e.target.value });
+
+  modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;' },
+    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:22px;' }, 'Tesco pay amount'),
+    $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
+  ));
+  modal.appendChild($('div', { style: 'margin-bottom:20px;' },
+    $('label', { class: 'eyebrow', style: 'display:block;margin-bottom:4px;' }, 'Amount per Thursday'),
+    amtInput,
+  ));
+  modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' },
+    $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+    $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
+      const amt = parseAmount(data.amount);
+      if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); return; }
+      if (data.date) {
+        state.entries.push({ id: uid(), date: data.date, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
+        state.entries.sort((a, b) => a.date.localeCompare(b.date));
+        persist();
+        toast(`Filled Tesco pay for ${friendlyDate(data.date)} — ${fmt(amt)}`);
+      } else {
+        for (const d of unpaidThursdays) {
+          state.entries.push({ id: uid(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
+        }
+        state.entries.sort((a, b) => a.date.localeCompare(b.date));
+        persist();
+        toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays — ${fmt(amt)} each`);
+      }
+      close();
+      render();
+    } }, data.date ? 'Fill' : `Fill ${unpaidThursdays.length} Thursdays`),
+  ));
+  queueMicrotask(() => amtInput.focus());
 }
 
 // ---------- router ----------
@@ -668,8 +770,8 @@ function screenDashboard() {
   grid.append(catCard, recentCard);
   screen.appendChild(grid);
 
-  // Per-account running balances — Revolut + gift cards only (AIB covered by main Balance)
-  const trackedMethods = METHODS.filter(m => m.id !== 'AIB');
+  // Per-account running balances — bank / Revolut (exclude AIB and gift cards)
+  const trackedMethods = METHODS.filter(m => m.id !== 'AIB' && !GIFT_CARD_IDS.includes(m.id));
   const accountOpenings = state.settings.accountOpenings || {};
   const methodBalances = computeMethodBalances(state.entries, trackedMethods, accountOpenings);
   // Compute unsettled pending per method
@@ -702,16 +804,56 @@ function screenDashboard() {
     screen.appendChild(accountsCard);
   }
 
+  // Gift card balances — always show
+  const gcOpenings = state.settings.giftCardOpenings || {};
+  const giftCardBalances = GIFT_CARD_IDS.map(id => {
+    const m = METHODS.find(x => x.id === id);
+    const { balance, loaded, spent } = computeGiftCardBalance(state.entries, id, gcOpenings[id] || 0);
+    return { id, label: m ? m.label : id, balance, loaded, spent, opening: gcOpenings[id] || 0 };
+  });
+  const gcCard = $('div', { class: 'card', style: 'padding:24px;margin-top:24px;' },
+    $('div', { class: 'eyebrow', style: 'margin-bottom:16px;' }, 'Gift card balances'),
+    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
+      ...giftCardBalances.map(gc => {
+        const label = gc.label.includes(' · ') ? gc.label.split(' · ')[1] : gc.label;
+        return $('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;' },
+          $('div', { style: 'display:flex;align-items:center;gap:12px;flex:1;min-width:0;' },
+            $('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${gc.balance > 0 ? 'var(--positive)' : gc.balance < 0 ? 'var(--negative)' : 'var(--muted)'};flex-shrink:0;` }),
+            $('span', { style: 'font-weight:500;flex-shrink:0;' }, label),
+            gc.loaded > 0 || gc.spent > 0
+              ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' },
+                  (gc.loaded > 0 ? `+${fmt(gc.loaded)} loaded` : ''),
+                  (gc.loaded > 0 && gc.spent > 0 ? ' · ' : ''),
+                  (gc.spent > 0 ? `−${fmt(gc.spent)} spent` : ''),
+                )
+              : null,
+          ),
+          $('div', { style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;' },
+            $('span', { class: 'display-num', style: `font-size:14px;color:${gc.balance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(gc.balance)),
+            $('button', { type: 'button', style: 'font-size:10px;color:var(--accent);cursor:pointer;background:none;border:none;padding:2px 6px;', onClick: () => openGiftCardBalanceEditor(gc) }, '✎'),
+          ),
+        );
+      }),
+    ),
+  );
+  screen.appendChild(gcCard);
+
   // Tesco pay — Thursdays tracker
   const thursdays = thursdaysInMonth(now.getFullYear(), now.getMonth());
+  // Look across ALL entries (not just this month) so Thursdays match regardless of when entered
   const incomeByDate = {};
-  for (const e of incomeOnly) { incomeByDate[e.date] = (incomeByDate[e.date] || 0) + e.amount; }
-  const todayStr = now.toISOString().slice(0, 10);
+  for (const e of state.entries.filter(x => x.type === 'credit')) { incomeByDate[e.date] = (incomeByDate[e.date] || 0) + e.amount; }
+  // Build local today string the same way thursdaysInMonth does (no UTC shift)
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const unpaidThursdays = thursdays.filter(d => !incomeByDate[d] && d <= todayStr);
 
   const payCard = $('div', { class: 'card', style: 'padding:24px;margin-top:24px;' },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('span', { class: 'eyebrow' }, 'Tesco pay · Thursdays'),
-      $('span', { class: 'muted', style: 'font-size:11px;' }, `${thursdays.filter(d => !!incomeByDate[d]).length}/${thursdays.length} paid`),
+      $('div', { style: 'display:flex;align-items:center;gap:10px;' },
+        $('span', { class: 'muted', style: 'font-size:11px;' }, `${thursdays.filter(d => !!incomeByDate[d]).length}/${thursdays.length} paid`),
+        unpaidThursdays.length > 0 ? $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:4px 12px;font-size:11px;', onClick: () => autoFillAll(unpaidThursdays) }, `Auto-fill (${unpaidThursdays.length})`) : null,
+      ),
     ),
     thursdays.length === 0
       ? $('div', { class: 'empty' }, 'No Thursdays this month.')
@@ -725,14 +867,18 @@ function screenDashboard() {
             const dayName = dt.toLocaleString('en-GB', { weekday: 'short' });
             const dayNum = dt.getDate();
             const statusColor = paid ? 'var(--positive)' : isFuture ? 'var(--muted)' : 'var(--negative)';
+            const canFill = !paid && (isPast || isToday);
             return $('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;' },
               $('div', { style: 'display:flex;align-items:center;gap:12px;' },
                 $('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0;` }),
                 $('span', { style: 'font-weight:500;' }, `${dayName} ${dayNum}`),
                 isToday ? $('span', { class: 'pill', style: 'border-color:transparent;font-size:10px;padding:2px 8px;' }, 'today') : null,
               ),
-              $('span', { class: 'display-num', style: `font-size:14px;color:${paid ? 'var(--positive)' : 'var(--muted)'};` },
-                paid ? `+${fmt(incomeByDate[d])}` : (isPast ? '—' : '—'),
+              $('div', { style: 'display:flex;align-items:center;gap:8px;' },
+                $('span', { class: 'display-num', style: `font-size:14px;color:${paid ? 'var(--positive)' : 'var(--muted)'};` },
+                  paid ? `+${fmt(incomeByDate[d])}` : '—',
+                ),
+                canFill ? $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:3px 10px;font-size:10px;', onClick: () => fillThursday(d) }, 'Fill') : null,
               ),
             );
           }),
@@ -879,6 +1025,72 @@ function openNewRecurring() {
   ));
 
   queueMicrotask(() => amtInput.focus());
+}
+
+// ---------- modal: gift card balance editor ----------
+function openGiftCardBalanceEditor(gc) {
+  const label = gc.label.includes(' · ') ? gc.label.split(' · ')[1] : gc.label;
+  let val = gc.opening;
+
+  const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Edit ${label} balance`, tabindex: '-1', style: 'max-width:400px;' });
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+
+  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onEsc, true);
+
+  const input = $('input', { type: 'text', inputmode: 'decimal', value: String(val || ''), placeholder: '0.00', 'aria-label': 'Opening balance', autocomplete: 'off', style: 'width:100%;' });
+
+  const computed = gc.balance - gc.opening;
+  const displayTotal = $('span', { class: 'display-num', style: 'font-size:18px;' }, fmt(val + computed));
+
+  modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' },
+    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:26px;' }, label),
+    $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
+  ));
+
+  modal.appendChild($('div', { style: 'margin-bottom:16px;' },
+    $('label', { class: 'eyebrow', style: 'display:block;margin-bottom:4px;' }, 'Starting balance'),
+    input,
+    $('div', { class: 'muted', style: 'font-size:11px;margin-top:4px;' }, 'Set the balance that was already on the card before you started tracking.'),
+  ));
+
+  const openingPreview = $('span', { class: 'tnum' }, fmt(val));
+  modal.appendChild($('div', { style: 'display:flex;flex-direction:column;gap:6px;padding:12px;background:var(--accent-soft);border-radius:8px;margin-bottom:16px;' },
+    $('div', { style: 'display:flex;justify-content:space-between;font-size:12px;' },
+      $('span', { class: 'muted' }, `Loaded (${fmt(gc.loaded)}) – spent (${fmt(gc.spent)})`),
+      $('span', { class: 'tnum' }, fmt(computed)),
+    ),
+    $('div', { style: 'display:flex;justify-content:space-between;font-size:12px;' },
+      $('span', { class: 'muted' }, 'Starting balance'),
+      openingPreview,
+    ),
+    $('div', { style: 'display:flex;justify-content:space-between;font-size:14px;font-weight:600;padding-top:6px;border-top:1px solid var(--line);' },
+      $('span', null, 'Current balance'),
+      displayTotal,
+    ),
+  ));
+
+  input.addEventListener('input', () => {
+    val = parseAmount(input.value) || 0;
+    openingPreview.textContent = fmt(val);
+    displayTotal.textContent = fmt(val + computed);
+  });
+
+  modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' },
+    $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+    $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
+      if (!state.settings.giftCardOpenings) state.settings.giftCardOpenings = {};
+      state.settings.giftCardOpenings[gc.id] = val;
+      persist();
+      toast(`${label} starting balance updated.`);
+      close();
+    } }, 'Save'),
+  ));
+
+  queueMicrotask(() => input.focus());
 }
 
 // ---------- modal: account balance editor ----------
