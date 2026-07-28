@@ -99,7 +99,7 @@ export async function syncTestConnection(endpoint, password) {
   } catch (e) {
     return { ok: false, reason: 'network', message: e?.message || 'fetch failed' };
   }
-  if (resp.status === 401) return { ok: false, reason: 'auth' };
+  if (resp.status === 401) return { ok: false, reason: 'auth', status: 401, message: 'wrong app password — check Netlify env APP_PASSWORD' };
   if (!resp.ok) {
     let msg = '';
     try { msg = (await resp.json()).error || ''; } catch {}
