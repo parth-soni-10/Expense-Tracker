@@ -615,8 +615,6 @@ function screenDashboard() {
           );
         }),
       ),
-        }),
-      ),
   );
   screen.appendChild(recCard);
 
@@ -1352,6 +1350,10 @@ function openEdit(id) {
     if (first) first.focus();
   });
 }
+
+// ---------- modal: sync settings ----------
+function openSyncSettings() {
+  const opener = document.activeElement;
   const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
   const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Sync settings', tabindex: '-1', style: 'max-width:580px;' });
   bg.appendChild(modal);
