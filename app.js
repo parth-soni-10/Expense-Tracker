@@ -357,7 +357,6 @@ function screenDashboard() {
   const monthEntries = entriesForMonth(key);
   const net = totalForMonth(key);
   const budget = +state.settings.monthlyBudget || 0;
-  const pct = budget ? Math.min(100, (expenseSum / budget) * 100) : 0;
 
   const expensesOnly = monthEntries.filter(e => e.type === 'expense');
   const incomeOnly = monthEntries.filter(e => e.type === 'credit');
@@ -368,6 +367,7 @@ function screenDashboard() {
   const cats = Object.entries(catTotals).sort((a, b) => b[1] - a[1]);
   const expenseSum = expensesOnly.reduce((s, e) => s + e.amount, 0);
   const incomeSum = incomeOnly.reduce((s, e) => s + e.amount, 0);
+  const pct = budget ? Math.min(100, (expenseSum / budget) * 100) : 0;
 
   // Recent 5 — stable order: date desc, then id desc as tiebreaker
   const recent = [...state.entries]
