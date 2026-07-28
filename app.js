@@ -200,7 +200,6 @@ function renderHeader() {
       $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:6px;font-family:"Instrument Serif",serif;font-style:italic;font-size:13px;color:var(--muted);' }),
       $('button', { class: 'nav-action', onClick: openSyncSettings }, 'Sync'),
       $('button', { class: 'nav-action', onClick: () => { exportJSON(state); toast('Exported.'); } }, 'Export'),
-      $('button', { class: 'nav-action', onClick: () => triggerImport() }, 'Import'),
     ),
   );
   queueMicrotask(renderSyncIndicator);
@@ -314,6 +313,27 @@ function formView({ initial = null, onSubmit, onDelete }) {
 }
 
 // ---------- dashboard ----------
+/** Pull from cloud and re-render — used by both the dashboard resync button and manual sync. */
+async function doResync() {
+  const s = getSyncSettings();
+  if (!s.enabled || !s.endpoint || !s.password) { toast('Sync is not configured.'); return; }
+  const prevCount = state.entries.length;
+  const r = await syncPull();
+  if (r.ok && r.content) {
+    state = validateState(r.content);
+    saveState(state);
+    patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
+    const diff = state.entries.length - prevCount;
+    toast(diff > 0 ? `Pulled ${diff} new entr${diff === 1 ? 'y' : 'ies'}.` : diff < 0 ? `Cloud has ${state.entries.length} entries.` : 'Already up to date.');
+    notifySyncChange();
+    render();
+  } else if (r.ok && !r.content) {
+    toast('Cloud file is empty — nothing to pull.');
+  } else {
+    toast('Pull failed: ' + (r.message || r.reason));
+  }
+}
+
 function screenDashboard() {
   const now = new Date();
   const key = monthKey(now.toISOString().slice(0, 10));
@@ -337,13 +357,22 @@ function screenDashboard() {
 
   const screen = $('section', { 'aria-label': 'Dashboard' });
 
+  // Resync button — only shown when sync is configured
+  const syncS = getSyncSettings();
+  const resyncBtn = (syncS.enabled && syncS.endpoint && syncS.password)
+    ? $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:13px;gap:6px;', onClick: () => doResync() },
+        $('span', { style: 'font-size:15px;', 'aria-hidden': 'true' }, '↻'),
+        'Resync',
+      )
+    : null;
+
   // Hero
   screen.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:36px;flex-wrap:wrap;gap:16px;' },
     $('div', null,
       $('div', { class: 'eyebrow' }, monthLabel(key)),
       $('p', { style: 'font-size:54px;line-height:1;margin:8px 0 0;' },
         $('span', { class: 'serif' }, fmt(net)),
-        $('span', { style: 'font-family:Inter,sans-serif;font-style:normal;font-size:18px;color:var(--muted);margin-left:8px;' }, budget ? `/ ${fmt(budget)}` : ''),
+        $('span', { style: 'font-family:DM Sans,system-ui,sans-serif;font-style:normal;font-size:18px;color:var(--muted);margin-left:8px;' }, budget ? `/ ${fmt(budget)}` : ''),
       ),
     ),
     $('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;' },
@@ -358,6 +387,7 @@ function screenDashboard() {
         }
       }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
       $('a', { href: '#add', class: 'btn btn-primary' }, '+ New entry'),
+      resyncBtn,
     ),
   ));
 
@@ -982,7 +1012,7 @@ function render() {
     // Escape error text for safe HTML injection.
     var errText = String(e.stack || e.message || e).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     mount.innerHTML =
-      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;background:#FAF8F3;font-family:Inter,system-ui,sans-serif;z-index:9999;">' +
+      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;background:#FAF8F3;font-family:DM Sans,system-ui,sans-serif;z-index:9999;">' +
         '<div style="max-width:560px;padding:32px 36px;border:1px solid #e4e0d6;border-radius:16px;background:#fff;line-height:1.55;font-size:14px;box-shadow:0 8px 32px rgba(0,0,0,0.06);">' +
           '<div style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-size:22px;color:#1a1a1a;">cents.</div>' +
           '<h1 style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-weight:400;font-size:28px;margin:4px 0 8px;">Render crashed.</h1>' +

@@ -21,7 +21,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; }
 body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
   font-size: 15px;
   line-height: 1.5;
   background:
@@ -29,7 +29,6 @@ body {
     radial-gradient(at 100% 100%, rgba(22,22,22,0.04), transparent 40%),
     var(--bg);
   min-height: 100vh;
-  font-feature-settings: "ss01", "cv11";
 }
 
 h1, h2, h3 { margin: 0; font-weight: 500; letter-spacing: -0.01em; }
@@ -37,14 +36,14 @@ h1, h2, h3 { margin: 0; font-weight: 500; letter-spacing: -0.01em; }
 a { color: inherit; text-decoration: none; }
 button { font-family: inherit; cursor: pointer; }
 
-/* Serif display font + tabular numerals for currency */
+/* Serif display font for editorial accents */
 .serif, .display-num {
   font-family: 'Instrument Serif', 'Times New Roman', serif;
   font-style: italic;
   letter-spacing: -0.02em;
 }
-.display-num { font-feature-settings: "tnum"; }
-.tnum { font-feature-settings: "tnum"; }
+/* Tabular numerals not available in DM Sans — cleaned up */
+.tnum { font-variant-numeric: tabular-nums; }
 
 /* Small caps eyebrow labels */
 .eyebrow {
@@ -118,18 +117,19 @@ select { background: var(--bg); padding: 12px 8px; border: 1px solid var(--line)
 }
 .pill-cat[data-active="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
 
-/* Nav links */
+/* Nav links — refined underline on hover */
 .nav-link {
   font-size: 14px; color: var(--muted);
-  padding: 8px 4px;
+  padding: 8px 2px;
   border-bottom: 2px solid transparent;
   font-weight: 500; letter-spacing: 0.02em;
   cursor: pointer;
-  transition: color 0.18s, border-color 0.18s;
+  transition: color 0.2s, border-color 0.2s;
   white-space: nowrap;
+  position: relative;
 }
-.nav-link[aria-current="page"] { color: var(--ink); border-bottom-color: var(--ink); }
-.nav-link:hover { color: var(--ink); }
+.nav-link[aria-current="page"] { color: var(--ink); border-bottom-color: var(--accent); }
+.nav-link:hover { color: var(--ink); border-bottom-color: var(--line); }
 
 /* Header action chips — Sync / Export / Import */
 .nav-action {
@@ -181,35 +181,40 @@ select { background: var(--bg); padding: 12px 8px; border: 1px solid var(--line)
 .shell { max-width: 980px; margin: 0 auto; padding: 32px 28px 80px; }
 @media (min-width: 760px) { .shell { padding: 48px 40px 96px; } }
 
-/* Header */
+/* Header — refined editorial bar */
 .app-header {
   display: flex; align-items: center;
-  padding: 6px 0 24px;
+  padding: 0 0 20px;
   border-bottom: 1px solid var(--line);
-  margin-bottom: 36px;
-  gap: 32px;
+  margin-bottom: 40px;
+  gap: 36px;
 }
 .app-header .logo {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 10px;
   flex-shrink: 0;
 }
 .app-header .logo .mark {
-  width: 34px; height: 34px; border-radius: 50%;
+  width: 32px; height: 32px; border-radius: 8px;
   background: var(--ink); color: var(--bg);
   display: grid; place-items: center;
   font-family: 'Instrument Serif', serif; font-style: italic;
-  font-size: 19px;
+  font-size: 17px; font-weight: 500;
+  transition: background 0.2s, transform 0.2s;
+}
+.app-header .logo:hover .mark {
+  background: var(--accent);
+  transform: scale(1.06);
 }
 
 /* Primary nav — centered between logo and actions */
 .nav {
-  display: flex; align-items: center; gap: 24px;
+  display: flex; align-items: center; gap: 28px;
   flex: 1; justify-content: center;
 }
 
 /* Header actions — right side pills */
 .header-actions {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 8px;
   flex-shrink: 0;
 }
 
@@ -276,9 +281,10 @@ hr.sep-light { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 
 /* Mobile tweaks */
 @media (max-width: 700px) {
-  .app-header { flex-wrap: wrap; gap: 8px; }
-  .app-header .nav { order: 3; flex-basis: 100%; justify-content: flex-start; overflow-x: auto; gap: 16px; }
+  .app-header { flex-wrap: wrap; gap: 10px; padding-bottom: 14px; margin-bottom: 28px; }
+  .app-header .nav { order: 3; flex-basis: 100%; justify-content: flex-start; overflow-x: auto; gap: 18px; }
   .app-header .header-actions { margin-left: auto; }
+  .shell { padding: 20px 16px 48px; }
 }
 
 /* Print */
