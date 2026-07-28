@@ -45,8 +45,10 @@ async function authedFetch(url, init = {}) {
     return { ok: false, reason: 'network', message: e?.message || 'fetch failed' };
   }
   if (resp.status === 401) {
-    patchSyncSettings({ lastError: 'bad password', lastErrorAt: new Date().toISOString() });
-    return { ok: false, reason: 'auth', status: 401, message: 'wrong app password \u2014 check Netlify env APP_PASSWORD' };
+    let serverErr = '';
+    try { serverErr = (await resp.json()).error || ''; } catch {}
+    patchSyncSettings({ lastError: serverErr || 'auth failed', lastErrorAt: new Date().toISOString() });
+    return { ok: false, reason: 'auth', status: 401, message: serverErr ? `${serverErr} — check Netlify env APP_PASSWORD` : 'auth failed — check Netlify env APP_PASSWORD' };
   }
   return { ok: true, resp };
 }
@@ -99,7 +101,11 @@ export async function syncTestConnection(endpoint, password) {
   } catch (e) {
     return { ok: false, reason: 'network', message: e?.message || 'fetch failed' };
   }
-  if (resp.status === 401) return { ok: false, reason: 'auth', status: 401, message: 'wrong app password — check Netlify env APP_PASSWORD' };
+  if (resp.status === 401) {
+    let serverErr = '';
+    try { serverErr = (await resp.json()).error || ''; } catch {}
+    return { ok: false, reason: 'auth', status: 401, message: serverErr ? `${serverErr} — check Netlify env APP_PASSWORD` : 'auth failed — check Netlify env APP_PASSWORD' };
+  }
   if (!resp.ok) {
     let msg = '';
     try { msg = (await resp.json()).error || ''; } catch {}
