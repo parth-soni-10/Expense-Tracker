@@ -1,5 +1,5 @@
 /* ============================================================
-   Netlify Function — GitHub sync proxy for cents.
+   Netlify Function v2 — GitHub sync proxy for cents.
 
    Reads/writes a single JSON file in a configured GitHub repo via
    the Contents API, gated by an admin password sent via the
@@ -13,9 +13,6 @@
      REPO_BRANCH     default "main"
      REPO_FILE       default "data.json"
      APP_PASSWORD    any string the client sends in X-Cents-Password
-
-   The two cloud credentials never reach the browser: the browser
-   only ever talks to this function.
    ============================================================ */
 
 const CORS = {
@@ -58,15 +55,10 @@ function cfg() {
   };
 }
 
-function authenticate(event) {
+function authenticate(request) {
   const expected = process.env.APP_PASSWORD;
   if (!expected) return { ok: false, msg: 'APP_PASSWORD env var not set on the function' };
-  // Netlify v2 runtime: event.headers is a Headers object, not a plain object.
-  // Use .get() (case-insensitive per spec) for v2; fall back to bracket notation for v1.
-  const h = event.headers;
-  const got = typeof h.get === 'function'
-    ? (h.get('x-cents-password') || '')
-    : (h['x-cents-password'] || h['X-Cents-Password'] || '');
+  const got = request.headers.get('x-cents-password') || '';
   if (got !== expected) return { ok: false, msg: 'Bad app password' };
   return { ok: true };
 }
@@ -78,10 +70,10 @@ function encodeBase64(s) {
   return Buffer.from(s, 'utf8').toString('base64');
 }
 
-export default async (event) => {
-  if (event.httpMethod === 'OPTIONS') return ok({}, 200);
+export default async (request, _context) => {
+  if (request.method === 'OPTIONS') return ok({}, 200);
 
-  const auth = authenticate(event);
+  const auth = authenticate(request);
   if (!auth.ok) return err(auth.msg, 401);
 
   const { owner, repo, branch, file } = cfg();
@@ -89,7 +81,7 @@ export default async (event) => {
 
   try {
     // ---------- READ ----------
-    if (event.httpMethod === 'GET') {
+    if (request.method === 'GET') {
       const r = await ghFetch(`/repos/${owner}/${repo}/contents/${encodeURIComponent(file)}?ref=${encodeURIComponent(branch)}`);
       if (r.status === 404) return ok({ content: null, sha: null, branch });
       if (!r.ok) {
@@ -105,7 +97,6 @@ export default async (event) => {
         sha: j.sha,
         branch,
         size: j.size,
-        // These let the client honestly tell whether the cloud is fresher than local edits.
         lastModifiedAt: j.updated_at || j.commit?.author?.date || null,
         commitSha: j.commit?.sha || null,
         path: j.path || file,
@@ -113,9 +104,10 @@ export default async (event) => {
     }
 
     // ---------- WRITE ----------
-    if (event.httpMethod === 'PUT') {
+    if (request.method === 'PUT') {
+      const rawBody = await request.text();
       let body;
-      try { body = JSON.parse(event.body || '{}'); }
+      try { body = JSON.parse(rawBody || '{}'); }
       catch { return err('Body is not valid JSON', 400); }
 
       const incoming = body.content;
@@ -131,16 +123,15 @@ export default async (event) => {
       const encoded = encodeBase64(JSON.stringify(incoming, null, 2));
 
       const putBody = { message: msg, content: encoded, branch: branchParam };
-      if (sha) putBody.sha = sha; // GitHub requires sha for updates, optional for first write
+      if (sha) putBody.sha = sha;
 
       const r = await ghFetch(
         `/repos/${owner}/${repo}/contents/${encodeURIComponent(file)}`,
         { method: 'PUT', body: JSON.stringify(putBody) }
       );
 
-      // Conflict: cloud changed underneath us. Tell the client to re-GET and reconcile.
       if (r.status === 409 || r.status === 422) {
-        return ok({ conflict: true, status: r.status }, 200); // 200 with semantic flag
+        return ok({ conflict: true, status: r.status }, 200);
       }
       if (!r.ok) {
         const text = await r.text();
