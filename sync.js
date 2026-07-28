@@ -95,7 +95,8 @@ export async function syncTestConnection(endpoint, password) {
   if (!resp.ok) {
     let msg = '';
     try { msg = (await resp.json()).error || ''; } catch {}
-    return { ok: false, reason: 'http', status: resp.status, message: msg || `HTTP ${resp.status}` };
+    const hint = resp.status >= 400 && resp.status < 500 ? ' — check endpoint URL' : '';
+    return { ok: false, reason: 'http', status: resp.status, message: msg || 'HTTP ' + resp.status + hint };
   }
   return { ok: true };
 }

@@ -50,10 +50,10 @@ async function doAutoPush() {
       sessionSyncFailed = false;
     }
   } else {
-    patchSyncSettings({ lastError: r.reason || 'error', lastErrorAt: new Date().toISOString() });
+    patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
     // First failure in this session: toast once. Stay quiet on subsequent failures until a sync succeeds again.
     if (!sessionSyncFailed && r.reason !== 'conflict') {
-      toast('☠ Cloud sync failed: ' + (r.reason || 'error') + '. Changes saved locally.');
+      toast('☠ Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.');
       sessionSyncFailed = true;
     }
   }
@@ -98,7 +98,7 @@ async function initSync() {
     }
     render();
   } else if (!r.ok) {
-    patchSyncSettings({ lastError: r.reason || 'error', lastErrorAt: new Date().toISOString() });
+    patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
   }
   notifySyncChange();
 }
@@ -852,7 +852,7 @@ function openSyncSettings() {
         notifySyncChange();
         renderBody();
       } else {
-        patchSyncSettings({ endpoint: newEndpoint, password: newPassword, enabled: false, lastError: r.reason || 'error', lastErrorAt: new Date().toISOString() });
+        patchSyncSettings({ endpoint: newEndpoint, password: newPassword, enabled: false, lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
         toast('Connection failed: ' + (r.message || r.reason || 'error'));
         notifySyncChange();
         renderBody();
@@ -894,7 +894,7 @@ function openSyncSettings() {
         } else if (r.ok && !r.content) {
           toast('Cloud file is empty.');
         } else {
-          patchSyncSettings({ lastError: r.reason, lastErrorAt: new Date().toISOString() });
+          patchSyncSettings({ lastError: r.message || r.reason, lastErrorAt: new Date().toISOString() });
           toast('Pull failed: ' + (r.message || r.reason));
           notifySyncChange();
           renderBody();
@@ -918,7 +918,7 @@ function openSyncSettings() {
           notifySyncChange();
           renderBody();
         } else {
-          patchSyncSettings({ lastError: r.reason, lastErrorAt: new Date().toISOString() });
+          patchSyncSettings({ lastError: r.message || r.reason, lastErrorAt: new Date().toISOString() });
           toast('Push failed: ' + (r.message || r.reason));
           notifySyncChange();
           renderBody();
