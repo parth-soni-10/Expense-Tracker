@@ -868,7 +868,14 @@ function openSyncSettings() {
       ),
       $('div', null,
         $('label', { class: 'eyebrow', for: 'sync-password' }, 'App password'),
-        Object.assign(passwordInput, { id: 'sync-password' }),
+        $('div', { style: 'position:relative;' },
+          Object.assign(passwordInput, { id: 'sync-password' }),
+          $('button', { type: 'button', class: 'btn-link', 'aria-label': 'Toggle password visibility', style: 'position:absolute;right:8px;top:50%;transform:translateY(-50%);font-size:11px;padding:2px 6px;color:var(--muted);', onClick: function() {
+            const isHidden = passwordInput.type === 'password';
+            passwordInput.type = isHidden ? 'text' : 'password';
+            this.textContent = isHidden ? 'hide' : 'show';
+          } }, 'show'),
+        ),
       ),
       $('div', { style: 'display:flex;justify-content:flex-end;' }, saveBtn),
     ));

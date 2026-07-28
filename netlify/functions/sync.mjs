@@ -61,9 +61,12 @@ function cfg() {
 function authenticate(event) {
   const expected = process.env.APP_PASSWORD;
   if (!expected) return { ok: false, msg: 'APP_PASSWORD env var not set on the function' };
-  const got =
-    event.headers['x-cents-password'] ||
-    event.headers['X-Cents-Password'] || '';
+  // Netlify v2 runtime: event.headers is a Headers object, not a plain object.
+  // Use .get() (case-insensitive per spec) for v2; fall back to bracket notation for v1.
+  const h = event.headers;
+  const got = typeof h.get === 'function'
+    ? (h.get('x-cents-password') || '')
+    : (h['x-cents-password'] || h['X-Cents-Password'] || '');
   if (got !== expected) return { ok: false, msg: 'Bad app password' };
   return { ok: true };
 }
