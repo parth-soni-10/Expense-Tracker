@@ -32,6 +32,34 @@
   --negative: #ff453a;
 }
 
+/* Dark-mode specific overrides for elements that can't use variables alone */
+[data-theme="dark"] .modal-bg {
+  background: rgba(0, 0, 0, 0.65);
+}
+[data-theme="dark"] .swipe-action--delete,
+[data-theme="dark"] .swipe-action--edit {
+  color: #1a1a1c;
+}
+[data-theme="dark"] .nav-action:hover {
+  color: #1a1a1c;
+}
+[data-theme="dark"] select {
+  background: var(--card);
+}
+[data-theme="dark"] select option {
+  background: var(--card);
+  color: var(--ink);
+}
+[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.85);
+}
+[data-theme="dark"] .quick-add-body textarea {
+  background: var(--bg-deep);
+}
+[data-theme="dark"] .quick-add-body textarea::placeholder {
+  color: var(--muted);
+}
+
 /* ── Seasonal palette shifts (applied via JS month detection) ── */
 [data-season="spring"] { --accent: #C2410C; }
 [data-season="summer"] { --accent: #D97706; }
@@ -351,8 +379,8 @@ select { background: var(--bg); padding: 12px 8px; border: 1px solid var(--line)
   cursor: pointer; border: none;
   color: #fff;
 }
-.swipe-action--delete { background: var(--negative); }
-.swipe-action--edit { background: var(--accent); margin-right: 6px; }
+.swipe-action--delete { background: var(--negative); color: #fff; }
+.swipe-action--edit { background: var(--accent); margin-right: 6px; color: #fff; }
 
 /* ── Confetti ── */
 @keyframes confettiFall {

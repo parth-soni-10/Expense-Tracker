@@ -784,7 +784,7 @@ function screenDashboard() {
     $('div', null,
       $('div', { class: 'eyebrow' }, monthLabel(key)),
       $('p', { style: `font-size:${isTiny() ? '32px' : isNarrow() ? '42px' : '54px'};line-height:1;margin:8px 0 0;` },
-        $('span', { class: 'serif' }, fmt(net)),
+        $('span', { class: 'serif' }, fmt(expenseSum)),
         $('span', { style: `font-family:DM Sans,system-ui,sans-serif;font-style:normal;font-size:${isNarrow() ? '14px' : '18px'};color:var(--muted);margin-left:8px;` }, budget ? `/ ${fmt(budget)}` : ''),
       ),
       $('p', { style: `font-size:${isNarrow() ? '13px' : '15px'};color:var(--muted);margin:6px 0 0;display:flex;align-items:center;gap:${isNarrow() ? '10px' : '18px'};flex-wrap:wrap;` },
@@ -1073,9 +1073,9 @@ function cashWidget() {
     $('span', { class: 'display-num', style: `font-size:16px;color:${total > 0 ? 'var(--accent)' : 'var(--muted)'};` }, fmt(total)),
   );
 
-  const tip = $('div', { style: `position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;padding:12px 16px;background:var(--ink);color:#fff;border-radius:10px;font-size:12px;line-height:1.7;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s;z-index:100;box-shadow:0 4px 16px rgba(0,0,0,0.18);display:${hasAny ? '' : 'none'};` },
+  const tip = $('div', { style: `position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;padding:12px 16px;background:var(--ink);color:var(--bg);border-radius:10px;font-size:12px;line-height:1.7;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s;z-index:100;box-shadow:0 4px 16px rgba(0,0,0,0.18);display:${hasAny ? '' : 'none'};` },
     ...(hasAny ? tipLines.map(l => $('div', null, l)) : []),
-    hasAny ? $('div', { style: 'margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.2);font-weight:600;' }, `Total: ${fmt(total)}`) : null,
+    hasAny ? $('div', { style: 'margin-top:6px;padding-top:6px;border-top:1px solid rgba(0,0,0,0.15);font-weight:600;' }, `Total: ${fmt(total)}`) : null,
   );
   wrapper.appendChild(tip);
 
@@ -1103,10 +1103,10 @@ function openNewRecurring() {
   let activeTypeBtn;
   function typeBtn(label, type) {
     const active = data.type === type;
-    const btn = $('button', { type: 'button', style: `flex:1;padding:8px 0;font-size:12px;cursor:pointer;border:none;background:${active ? 'var(--ink)' : 'transparent'};color:${active ? '#fff' : 'var(--muted)'};transition:background .15s;`, onClick: function() {
+    const btn = $('button', { type: 'button', style: `flex:1;padding:8px 0;font-size:12px;cursor:pointer;border:none;background:${active ? 'var(--ink)' : 'transparent'};color:${active ? 'var(--bg)' : 'var(--muted)'};transition:background .15s;`, onClick: function() {
       data.type = type;
       if (activeTypeBtn) { activeTypeBtn.style.background = 'transparent'; activeTypeBtn.style.color = 'var(--muted)'; }
-      this.style.background = 'var(--ink)'; this.style.color = '#fff';
+      this.style.background = 'var(--ink)'; this.style.color = 'var(--bg)';
       activeTypeBtn = this;
       catRow.style.display = data.type === 'credit' ? 'none' : '';
     } }, label);
@@ -1685,7 +1685,7 @@ function screenInsights() {
       intensity < 0.75 ? 'color-mix(in srgb, var(--accent) 75%, var(--bg))' : 'var(--accent)';
     const tip = val > 0 ? fmt(val) : '';
     heatCells.push($('div', { class: 'heat-cell', title: tip, style: `border-radius:3px;aspect-ratio:1;background:${color};cursor:default;font-size:9px;display:flex;align-items:center;justify-content:center;${val === 0 ? 'opacity:0.5;' : ''}${ds === today() ? 'box-shadow:0 0 0 1.5px var(--ink);' : ''}` },
-      val > 0 ? $('span', { style: 'color:#fff;font-weight:600;font-size:8px;' }, String(d)) : null,
+      val > 0 ? $('span', { style: 'color:var(--ink);font-weight:600;font-size:8px;' }, String(d)) : null,
     ));
   }
 
@@ -2175,16 +2175,28 @@ function render() {
     if (!mount) return;
     // Escape error text for safe HTML injection.
     var errText = String(e.stack || e.message || e).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    var isDark = document.documentElement.dataset.theme === 'dark';
+    var c = {
+      bg: isDark ? '#1a1a1c' : '#FAF8F3',
+      card: isDark ? '#2c2c2e' : '#fff',
+      line: isDark ? '#3a3a3c' : '#e4e0d6',
+      ink: isDark ? '#e8e4dd' : '#1a1a1a',
+      muted: isDark ? '#8e8e93' : '#6d6457',
+      soft: isDark ? '#2d2019' : '#fff5f0',
+      softBorder: isDark ? '#4a3020' : '#f4d7c8',
+      kbdBg: isDark ? '#2c2c2e' : '#f4f0e7',
+      shadow: isDark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)',
+    };
     mount.innerHTML =
-      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;background:#FAF8F3;font-family:DM Sans,system-ui,sans-serif;z-index:9999;">' +
-        '<div style="max-width:560px;padding:32px 36px;border:1px solid #e4e0d6;border-radius:16px;background:#fff;line-height:1.55;font-size:14px;box-shadow:0 8px 32px rgba(0,0,0,0.06);">' +
-          '<div style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-size:22px;color:#1a1a1a;">cents.</div>' +
+      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;background:' + c.bg + ';font-family:DM Sans,system-ui,sans-serif;z-index:9999;">' +
+        '<div style="max-width:560px;padding:32px 36px;border:1px solid ' + c.line + ';border-radius:16px;background:' + c.card + ';line-height:1.55;font-size:14px;box-shadow:0 8px 32px ' + c.shadow + ';">' +
+          '<div style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-size:22px;color:' + c.ink + ';">cents.</div>' +
           '<h1 style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-weight:400;font-size:28px;margin:4px 0 8px;">Render crashed.</h1>' +
-          '<div style="margin:12px 0 16px;padding:10px 12px;background:#fff5f0;border:1px solid #f4d7c8;border-radius:8px;font-size:12px;">' +
-            '<span style="font-style:italic;color:#6d6457;font-family:&quot;Instrument Serif&quot;,Georgia,serif;">Error</span>' +
+          '<div style="margin:12px 0 16px;padding:10px 12px;background:' + c.soft + ';border:1px solid ' + c.softBorder + ';border-radius:8px;font-size:12px;">' +
+            '<span style="font-style:italic;color:' + c.muted + ';font-family:&quot;Instrument Serif&quot;,Georgia,serif;">Error</span>' +
             '<code style="display:block;margin-top:4px;font-size:11px;word-break:break-word;white-space:pre-wrap;line-height:1.4;">' + errText + '</code>' +
           '</div>' +
-          '<ol style="padding-left:22px;margin:12px 0 0;"><li>Copy the error above.</li><li>Hard refresh — <kbd style="background:#f4f0e7;padding:1px 6px;border-radius:4px;border:1px solid #e4e0d6;font-family:ui-monospace,monospace;font-size:12px;">Ctrl</kbd>+<kbd style="background:#f4f0e7;padding:1px 6px;border-radius:4px;border:1px solid #e4e0d6;font-family:ui-monospace,monospace;font-size:12px;">Shift</kbd>+<kbd style="background:#f4f0e7;padding:1px 6px;border-radius:4px;border:1px solid #e4e0d6;font-family:ui-monospace,monospace;font-size:12px;">R</kbd></li></ol>' +
+          '<ol style="padding-left:22px;margin:12px 0 0;"><li>Copy the error above.</li><li>Hard refresh — <kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">Ctrl</kbd>+<kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">Shift</kbd>+<kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">R</kbd></li></ol>' +
         '</div>' +
       '</div>';
     // Also log so we can see it in DevTools
@@ -2195,11 +2207,12 @@ function render() {
 function _render() {
   const main = document.getElementById('app');
   if (!main) return;
-  // Init dark mode + season on first render
+  // Init dark mode + season on first render — dark is the default
   if (!document.documentElement.dataset.themeInit) {
     document.documentElement.dataset.themeInit = '1';
     try {
-      if (localStorage.getItem('cents-theme') === 'dark') document.documentElement.dataset.theme = 'dark';
+      const saved = localStorage.getItem('cents-theme');
+      document.documentElement.dataset.theme = saved === 'light' ? '' : 'dark';
     } catch(e) {}
     setSeason();
   }

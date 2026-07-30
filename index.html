@@ -1,13 +1,20 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <script>
+    // Prevent flash of light theme — dark is the default
+    (function(){
+      var t = localStorage.getItem('cents-theme');
+      if (t !== 'light') document.documentElement.dataset.theme = 'dark';
+    })();
+  </script>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
-  <meta name="color-scheme" content="light" />
+  <meta name="color-scheme" content="dark" />
   <meta name="description" content="A minimal personal expense tracker." />
-  <meta name="theme-color" content="#FAF8F3" />
+  <meta name="theme-color" content="#1a1a1c" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="cents." />
   <meta name="mobile-web-app-capable" content="yes" />
   <title>cents. — personal expense tracker</title>
@@ -141,6 +148,14 @@
     #boot-fail .bf-err { margin: 12px 0 16px; padding: 10px 12px; background: #fff5f0; border: 1px solid #f4d7c8; border-radius: 8px; font-size: 12px; }
     #boot-fail .bf-err span { font-style: italic; color: #6d6457; font-family: "Instrument Serif", Georgia, serif; }
     #boot-fail .bf-err code { display: block; margin-top: 4px; font-size: 11px; word-break: break-word; white-space: pre-wrap; line-height: 1.4; background: transparent; padding: 0; }
+    /* Dark mode overrides for boot-fail pane — must use hardcoded colors since CSS vars may not be loaded */
+    [data-theme="dark"] #boot-fail { background: #1a1a1c; color: #e8e4dd; }
+    [data-theme="dark"] #boot-fail .bf-card { background: #2c2c2e; border-color: #3a3a3c; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+    [data-theme="dark"] #boot-fail .bf-mark { color: #e8e4dd; }
+    [data-theme="dark"] #boot-fail kbd { background: #2c2c2e; border-color: #3a3a3c; }
+    [data-theme="dark"] #boot-fail code { background: #2c2c2e; color: #8e8e93; }
+    [data-theme="dark"] #boot-fail .bf-err { background: #2d2019; border-color: #4a3020; }
+    [data-theme="dark"] #boot-fail .bf-err span { color: #8e8e93; }
   </style>
 </head>
 <body>
