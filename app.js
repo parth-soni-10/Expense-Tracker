@@ -31,6 +31,7 @@ let sessionSyncFailed = false;
 async function doAutoPush() {
   pushTimer = null;
   const s = getSyncSettings();
+  setSyncPulsing(true);
   let r = await syncPush(state, { sha: s.lastSha, message: 'cents: auto push' });
   // One retry on transient network: handles flaky mobile without nagging the user.
   // Refresh sha before retry so a concurrent push from another device will surface as 409 instead of being clobbered.
@@ -58,6 +59,7 @@ async function doAutoPush() {
     }
   }
   notifySyncChange();
+  setSyncPulsing(false);
 }
 
 async function initSync() {
@@ -103,6 +105,14 @@ async function initSync() {
   notifySyncChange();
 }
 
+/** Set sync dot to pulsing while a push/pull is in flight. */
+let _syncActive = false;
+function setSyncPulsing(active) {
+  _syncActive = active;
+  const dot = document.querySelector('.sync-dot');
+  if (dot) { dot.classList.toggle('pulsing', active); }
+}
+
 function renderSyncIndicator() {
   const node = document.getElementById('sync-indicator');
   if (!node) return;
@@ -111,7 +121,7 @@ function renderSyncIndicator() {
   node.style.display = '';
   const status = syncStatus();
   node.innerHTML = '';
-  node.append($('span', { 'aria-hidden': 'true', style: `width:7px;height:7px;border-radius:50%;background:${status.state === 'ok' ? 'var(--positive)' : status.state === 'error' ? 'var(--negative)' : 'var(--muted)'};display:inline-block;flex-shrink:0;` }));
+  node.append($('span', { class: 'sync-dot' + (_syncActive ? ' pulsing' : ''), 'aria-hidden': 'true', style: `width:7px;height:7px;border-radius:50%;background:${status.state === 'ok' ? 'var(--positive)' : status.state === 'error' ? 'var(--negative)' : 'var(--muted)'};display:inline-block;flex-shrink:0;` }));
   const label = status.state === 'ok' ? status.label.replace(/^Synced /, 'synced ') : status.label;
   node.append($('span', null, label));
 }
@@ -823,10 +833,10 @@ function screenDashboard() {
     screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:${isNarrow() ? '22px' : '32px'};` },
       $('div', { class: 'row between' },
         $('span', { class: 'eyebrow' }, 'Spent of budget'),
-        $('span', { class: 'serif', style: 'font-size:22px;' }, `${pct.toFixed(1)}%`),
+        $('span', { class: 'serif budget-pct-anim', style: 'font-size:22px;' }, `${pct.toFixed(1)}%`),
       ),
       $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 20px;' },
-        $('div', { style: `height:100%;width:${pct}%;background:${pct > 90 ? 'var(--negative)' : 'var(--accent)'};transition:width .4s ease;` }),
+        $('div', { class: 'budget-bar-fill', style: `height:100%;width:${pct}%;background-image:${pct > 90 ? 'linear-gradient(90deg, var(--negative), #dc2626, var(--negative))' : 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))'};transition:width .5s cubic-bezier(0.2,0.8,0.2,1);border-radius:99px;box-shadow:0 0 12px ${pct > 90 ? 'rgba(185,28,28,0.2)' : 'var(--accent-glow)'};` }),
       ),
         // Confetti on last day of month if under budget (once per session)
         ...((() => { if (pct <= 100 && now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() && !window.__confettiFired) { setTimeout(triggerConfetti, 600); window.__confettiFired = true; } return []; })()),
@@ -861,7 +871,7 @@ function screenDashboard() {
       : $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
         ...recurring.map(r => {
           const isOverdue = r.nextDate <= today();
-          return $('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;' },
+          return $('div', { 'data-rec-id': r.id, class: 'rec-row', style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;transition:all .3s;' },
             $('div', { style: 'display:flex;align-items:center;gap:10px;flex:1;min-width:0;' },
               $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0;flex-shrink:0;', onClick: () => {
                 state.settings.recurring = state.settings.recurring.filter(x => x.id !== r.id);
@@ -874,7 +884,11 @@ function screenDashboard() {
             ),
             $('div', { style: 'display:flex;align-items:center;gap:10px;flex-shrink:0;' },
               $('span', { class: 'display-num', style: `font-size:13px;color:${r.type === 'credit' ? 'var(--positive)' : 'var(--ink)'};` }, (r.type === 'credit' ? '+' : '') + fmt(r.amount)),
-              $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:4px 12px;font-size:11px;', onClick: () => paidRecurring(r) }, 'Paid'),
+              $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:4px 12px;font-size:11px;', onClick: (ev) => {
+        const rowEl = ev.target.closest('[data-rec-id]');
+        if (rowEl) { rowEl.classList.add('paid-anim'); setTimeout(() => paidRecurring(r), 500); }
+        else paidRecurring(r);
+      } }, 'Paid'),
             ),
           );
         }),
@@ -895,7 +909,7 @@ function screenDashboard() {
       $('span', { class: 'muted', style: 'font-size:11px;' }, 'this month'),
     ),
     cats.length === 0
-      ? $('div', { class: 'empty' }, 'Nothing logged yet.')
+      ? $('div', { class: 'empty' }, emptyIcon('receipt'), ' Nothing logged yet.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:14px;' },
           ...cats.map(([cat, val]) => $('div', null,
             $('div', { class: 'row between', style: 'font-size:13px;margin-bottom:6px;' },
@@ -903,7 +917,7 @@ function screenDashboard() {
               $('span', { class: 'tnum' }, fmt(val)),
             ),
             $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
-              $('div', { style: `height:100%;width:${(val / cats[0][1]) * 100}%;background:var(--ink);` }),
+              $('div', { style: `height:100%;width:${(val / cats[0][1]) * 100}%;background:${catBarGradient(cat)};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
             ),
           )),
         ),
@@ -915,7 +929,7 @@ function screenDashboard() {
       $('a', { href: '#history', class: 'btn-link' }, 'See all →'),
     ),
     recent.length === 0
-      ? $('div', { class: 'empty' }, 'No entries yet.')
+      ? $('div', { class: 'empty' }, emptyIcon('chart'), ' No entries yet.')
       : $('div', { style: `display:grid;grid-template-columns:${isNarrow() ? '75px 1fr 80px' : '90px 1fr 110px 90px'};gap:${isNarrow() ? '8px 12px' : '12px 24px'};font-size:${isNarrow() ? '12px' : '14px'};${isNarrow() ? '' : 'min-width:520px;'}` },
           ...recent.flatMap(e => [
             $('span', { class: 'muted', style: 'font-size:12px;' }, friendlyDate(e.date)),
@@ -978,22 +992,26 @@ function screenDashboard() {
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
       ...giftCardBalances.map(gc => {
         const label = gc.label.includes(' · ') ? gc.label.split(' · ')[1] : gc.label;
-        return $('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;' },
-          $('div', { style: 'display:flex;align-items:center;gap:12px;flex:1;min-width:0;' },
-            $('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${gc.balance > 0 ? 'var(--positive)' : gc.balance < 0 ? 'var(--negative)' : 'var(--muted)'};flex-shrink:0;` }),
-            $('span', { style: 'font-weight:500;flex-shrink:0;' }, label),
-            gc.loaded > 0 || gc.spent > 0
-              ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' },
-                  (gc.loaded > 0 ? `+${fmt(gc.loaded)} loaded` : ''),
-                  (gc.loaded > 0 && gc.spent > 0 ? ' · ' : ''),
-                  (gc.spent > 0 ? `−${fmt(gc.spent)} spent` : ''),
-                )
-              : null,
+        const totalVol = gc.loaded + gc.spent || 1;
+        const spentPct = Math.min(100, (gc.spent / totalVol) * 100);
+        return $('div', { style: 'display:flex;flex-direction:column;padding:12px 14px;border-bottom:1px solid var(--line);gap:6px;' },
+          $('div', { style: 'display:flex;align-items:center;justify-content:space-between;font-size:13px;' },
+            $('div', { style: 'display:flex;align-items:center;gap:10px;flex:1;min-width:0;' },
+              $('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${gc.balance > 0 ? 'var(--positive)' : gc.balance < 0 ? 'var(--negative)' : 'var(--muted)'};flex-shrink:0;` }),
+              $('span', { style: 'font-weight:500;flex-shrink:0;' }, label),
+            ),
+            $('div', { style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;' },
+              $('span', { class: 'display-num', style: `font-size:14px;color:${gc.balance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(gc.balance)),
+              $('button', { type: 'button', style: 'font-size:10px;color:var(--accent);cursor:pointer;background:none;border:none;padding:2px 6px;', onClick: () => openGiftCardBalanceEditor(gc) }, '✎'),
+            ),
           ),
-          $('div', { style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;' },
-            $('span', { class: 'display-num', style: `font-size:14px;color:${gc.balance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(gc.balance)),
-            $('button', { type: 'button', style: 'font-size:10px;color:var(--accent);cursor:pointer;background:none;border:none;padding:2px 6px;', onClick: () => openGiftCardBalanceEditor(gc) }, '✎'),
-          ),
+          // Mini progress bar: loaded vs spent
+          gc.loaded > 0 || gc.spent > 0 ? $('div', { style: 'display:flex;align-items:center;gap:8px;' },
+            $('div', { class: 'gc-progress-track' },
+              $('div', { class: 'gc-progress-fill', style: `width:${spentPct}%;background-image:linear-gradient(90deg,${spentPct > 75 ? '#ff453a,#dc2626' : 'var(--accent),#ea580c'});` }),
+            ),
+            $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;flex-shrink:0;' }, `${fmt(gc.spent)} / ${fmt(gc.loaded + gc.spent)}`),
+          ) : null,
         );
       }),
     ),
@@ -1049,6 +1067,34 @@ function screenDashboard() {
   screen.appendChild(payCard);
 
   return screen;
+}
+
+function catBarGradient(catId) {
+  const map = {
+    gro: 'linear-gradient(90deg, #15803D, #22c55e)',
+    travel: 'linear-gradient(90deg, #1E40AF, #3B82F6)',
+    rent: 'linear-gradient(90deg, #7C3AED, #A78BFA)',
+    GC: 'linear-gradient(90deg, #C2410C, #F97316)',
+    misc: 'linear-gradient(90deg, #6B6B6B, #9CA3AF)',
+  };
+  return map[catId] || 'linear-gradient(90deg, var(--ink), var(--muted))';
+}
+
+/** Inline SVG icons for empty states. Returns an HTML string suitable for innerHTML. */
+function emptySVG(kind) {
+  const icons = {
+    receipt: '<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="4" width="24" height="32" rx="2" stroke="currentColor" stroke-width="1.5"/><line x1="14" y1="12" x2="26" y2="12" stroke="currentColor" stroke-width="1.2"/><line x1="14" y1="18" x2="22" y2="18" stroke="currentColor" stroke-width="1.2"/><line x1="14" y1="24" x2="24" y2="24" stroke="currentColor" stroke-width="1.2"/></svg>',
+    chart: '<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="6" y="22" width="7" height="14" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="16" y="12" width="7" height="24" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="26" y="6" width="7" height="30" rx="1" stroke="currentColor" stroke-width="1.5"/></svg>',
+    coin: '<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="14" stroke="currentColor" stroke-width="1.5"/><circle cx="20" cy="20" r="10" stroke="currentColor" stroke-width="1.2"/><text x="20" y="24" text-anchor="middle" font-family="Instrument Serif,serif" font-style="italic" font-size="12" fill="currentColor">€</text></svg>',
+  };
+  return icons[kind] || '';
+}
+
+/** Create an empty-state icon span with the SVG rendered via innerHTML. */
+function emptyIcon(kind) {
+  const span = $('span', { class: 'empty-icon', style: 'display:block;margin:0 auto 12px;opacity:0.3;' });
+  span.innerHTML = emptySVG(kind);
+  return span;
 }
 
 function stat(label, value) {
@@ -1389,7 +1435,7 @@ function screenAdd() {
       for (const line of lines) {
         const parsed = parseReceiptLine(line);
         if (parsed) {
-          qPreview.appendChild($('div', { style: 'display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid var(--line);' },
+          qPreview.appendChild($('div', { class: 'receipt-line', style: 'display:flex;justify-content:space-between;padding:4px 0;font-size:12px;' },
             $('span', null, parsed.details, $('span', { class: 'pill pill-cat', style: 'margin-left:6px;font-size:10px;padding:1px 6px;' }, CATEGORIES.find(c=>c.id===parsed.category)?.label||parsed.category)),
             $('span', { class: 'tnum' }, parsed.amount > 0 ? fmt(parsed.amount) : '—'),
           ));
@@ -1398,7 +1444,7 @@ function screenAdd() {
       qPreview.style.display = qPreview.children.length ? '' : 'none';
     }
   } });
-  const qPreview = $('div', { style: 'max-width:540px;margin:0 auto 20px;display:none;padding:12px;background:var(--accent-soft);border-radius:8px;' });
+  const qPreview = $('div', { class: 'receipt-preview', style: 'display:none;' });
   const qActions = $('div', { style: 'max-width:540px;margin:0 auto 16px;display:none;gap:8px;justify-content:flex-end;' },
     $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => { qTextarea.value = ''; qPreview.innerHTML = ''; qPreview.style.display = 'none'; qActions.style.display = 'none'; } }, 'Clear'),
     $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: () => {
@@ -1555,7 +1601,7 @@ function screenHistory() {
 
   const tableWrap = $('div', { class: 'card', style: 'overflow-x:auto;' });
   if (visible.length === 0) {
-    tableWrap.appendChild($('div', { class: 'empty' }, searchQuery ? 'No results for this search.' : 'Nothing here for this filter.'));
+    tableWrap.appendChild($('div', { class: 'empty' }, emptyIcon('receipt'), searchQuery ? ' No results for this search.' : ' Nothing here for this filter.'));
   } else {
     tableWrap.appendChild($('div', { role: 'row', style: 'display:grid;grid-template-columns:90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);min-width:740px;' },
       $('span', { role: 'columnheader' }, 'Date'),
@@ -1570,7 +1616,8 @@ function screenHistory() {
       const isTransfer = !!e.transferId;
       const settledLabel = isTransfer ? (e.settled ? '✓ settled' : '● unsettled') : '';
       const settleColor = e.settled ? 'var(--positive)' : 'var(--muted)';
-      const row = $('div', { role: 'row', tabindex: '0', 'data-id': e.id, 'aria-label': `Edit entry ${e.details} on ${friendlyDate(e.date)}`, style: 'display:grid;grid-template-columns:90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;align-items:center;border-bottom:1px solid var(--line);cursor:pointer;min-width:740px;transition:background .15s;outline:none;', onClick: () => openEdit(e.id), onKeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEdit(e.id); } } },
+      const rowType = e.type === 'credit' ? 'income-row' : 'expense-row';
+      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': e.id, 'aria-label': `Edit entry ${e.details} on ${friendlyDate(e.date)}`, style: 'display:grid;grid-template-columns:90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;align-items:center;border-bottom:1px solid var(--line);cursor:pointer;min-width:740px;outline:none;', onClick: () => openEdit(e.id), onKeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEdit(e.id); } } },
         $('span', { class: 'muted', style: 'font-size:13px;' }, friendlyDate(e.date)),
         $('div', null,
           $('div', { style: 'font-size:14px;display:flex;align-items:center;gap:6px;' }, e.details || '—',
@@ -1590,10 +1637,7 @@ function screenHistory() {
         $('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method)),
         $('span', { style: 'color:var(--muted);font-size:14px;text-align:right;' }, '›'),
       );
-      row.addEventListener('mouseenter', () => { row.style.background = 'var(--bg-deep)'; });
-      row.addEventListener('mouseleave', () => { row.style.background = ''; });
-      row.addEventListener('focus', () => { row.style.background = 'var(--bg-deep)'; });
-      row.addEventListener('blur', () => { row.style.background = ''; });
+
       tableWrap.appendChild(row);
     }
   }
@@ -1683,9 +1727,12 @@ function screenInsights() {
       intensity < 0.25 ? 'color-mix(in srgb, var(--accent) 30%, var(--bg))' :
       intensity < 0.5 ? 'color-mix(in srgb, var(--accent) 55%, var(--bg))' :
       intensity < 0.75 ? 'color-mix(in srgb, var(--accent) 75%, var(--bg))' : 'var(--accent)';
-    const tip = val > 0 ? fmt(val) : '';
-    heatCells.push($('div', { class: 'heat-cell', title: tip, style: `border-radius:3px;aspect-ratio:1;background:${color};cursor:default;font-size:9px;display:flex;align-items:center;justify-content:center;${val === 0 ? 'opacity:0.5;' : ''}${ds === today() ? 'box-shadow:0 0 0 1.5px var(--ink);' : ''}` },
-      val > 0 ? $('span', { style: 'color:var(--ink);font-weight:600;font-size:8px;' }, String(d)) : null,
+    const tip = val > 0 ? `${fmt(val)}` : '';
+    heatCells.push($('div', { class: 'heat-cell-wrap', style: 'position:relative;' },
+      tip ? $('div', { class: 'heat-tip' }, tip) : null,
+      $('div', { class: 'heat-cell', title: tip, style: `border-radius:3px;aspect-ratio:1;background:${color};cursor:default;font-size:9px;display:flex;align-items:center;justify-content:center;${val === 0 ? 'opacity:0.5;' : ''}${ds === today() ? 'box-shadow:0 0 0 1.5px var(--ink);' : ''}` },
+        val > 0 ? $('span', { style: 'color:var(--ink);font-weight:600;font-size:8px;' }, String(d)) : null,
+      ),
     ));
   }
 
@@ -1710,7 +1757,7 @@ function screenInsights() {
   c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'By category'),
     catRows.length === 0
-      ? $('div', { class: 'empty' }, 'No expenses in this range.')
+      ? $('div', { class: 'empty' }, emptyIcon('coin'), ' No expenses in this range.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
           ...catRows.map(([cat, val]) => bar(CATEGORIES.find(c=>c.id===cat)?.label || cat, val, maxCat, val === maxCat)),
         ),
@@ -1722,7 +1769,7 @@ function screenInsights() {
   c.appendChild($('div', { class: 'card', style: 'padding:24px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Payment mix'),
     methodRows.length === 0
-      ? $('div', { class: 'empty' }, 'No expenses in this range.')
+      ? $('div', { class: 'empty' }, emptyIcon('coin'), ' No expenses in this range.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
           ...methodRows.map(([m, val]) => bar(METHODS.find(x=>x.id===m)?.label || m, val, maxMethod, val === maxMethod)),
         ),
@@ -1763,7 +1810,7 @@ function bar(label, value, max, isMax) {
       $('span', { class: 'display-num', style: 'font-size:14px;' }, fmt(value)),
     ),
     $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
-      $('div', { style: `height:100%;width:${(value/max)*100}%;background:${isMax ? 'var(--accent)' : 'var(--ink)'};` }),
+      $('div', { style: `height:100%;width:${(value/max)*100}%;background:${isMax ? 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))' : 'linear-gradient(90deg, var(--ink), var(--muted))'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
     ),
   );
 }
@@ -2231,6 +2278,21 @@ function _render() {
   }
   main.appendChild(screen);
 
+  // Bottom tab bar on mobile
+  const route2 = currentRoute();
+  const tabItems = [
+    { id: 'dashboard', icon: '◎', label: 'Home' },
+    { id: 'add', icon: '＋', label: 'Add' },
+    { id: 'history', icon: '☰', label: 'History' },
+    { id: 'insights', icon: '◉', label: 'Insights' },
+  ];
+  main.appendChild($('nav', { class: 'bottom-tab-bar', 'aria-label': 'Mobile navigation' },
+    ...tabItems.map(t => $('a', { href: `#${t.id}`, class: 'bottom-tab', 'aria-current': t.id === route2 ? 'page' : 'false' },
+      $('span', { class: 'bottom-tab-icon', 'aria-hidden': 'true' }, t.icon),
+      $('span', null, t.label),
+    )),
+  ));
+
   main.appendChild($('footer', { style: 'max-width:980px;margin:0 auto;padding:32px 28px 64px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line);' },
     $('span', null, String(state.entries.length), ' entries \u00b7 stored locally'),
     $('span', { style: 'display:flex;justify-content:flex-end;flex-wrap:wrap;gap:0 8px;align-items:center;' },
@@ -2244,9 +2306,29 @@ function _render() {
   ));
 
   window.scrollTo(0, scrollY);
+
+  // Sticky header setup — add sticky class + scroll listener on first render
+  if (!window.__stickyInit) {
+    window.__stickyInit = true;
+    const hdr = document.querySelector('.app-header');
+  // Sticky header — re-query on every scroll event since header is rebuilt on render
+  window.__stickyInit = true;
+  let lastScroll = 0;
+  window.addEventListener('scroll', () => {
+    if (window.innerWidth < 640) return;
+    const hdr = document.querySelector('.app-header');
+    if (!hdr) return;
+    if (!hdr.classList.contains('is-sticky')) hdr.classList.add('is-sticky');
+    const now = window.scrollY;
+    if (now > 80 && now > lastScroll) hdr.classList.add('head-hidden');
+    else hdr.classList.remove('head-hidden');
+    lastScroll = now;
+  }, { passive: true });
+  }
 }
 
-window.addEventListener('DOMContentLoaded', () => { render(); initSync(); });
+window.addEventListener('DOMContentLoaded', () => { render();  initSync().finally(() => setSyncPulsing(false));
+});
 
 // Expose tiny global for DevTools tinkering
 window.__cents = {
