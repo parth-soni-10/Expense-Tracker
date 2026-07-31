@@ -31,7 +31,7 @@ export function getSyncSettings() {
   }
 }
 
-export function setSyncSettings(next) {
+function setSyncSettings(next) {
   try { localStorage.setItem(KEY, JSON.stringify(next)); }
   catch (e) { console.warn('Failed to save sync settings:', e); }
 }

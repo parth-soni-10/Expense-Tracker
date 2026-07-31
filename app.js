@@ -2,13 +2,15 @@
    Expense Tracker — editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #insights
    ============================================================ */
-import { loadState, saveState, resetToBlank, exportJSON, validateState, uid } from './storage.js';
+import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories } from './storage.js';
 import { CATEGORIES, METHODS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync } from './sync.js';
 
 // ---------- state ----------
 let state = loadState();
+// Keep storage.js validation set in sync with seed + custom categories.
+updateAllowedCategories([...CATEGORIES, ...(state.settings.customCategories || [])].map(c => c.id));
 const today = () => new Date().toISOString().slice(0, 10);
 
 function persist() {
@@ -85,6 +87,7 @@ async function initSync() {
 
     state = validateState(r.content);
     saveState(state);
+    updateAllowedCategories(allCategories().map(c => c.id));
     patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
     // Tell the user honestly what just happened.
     if (incomingCount !== localCount) {
@@ -138,6 +141,12 @@ function methodShort(id) {
   const m = METHODS.find(x => x.id === id);
   if (!m) return id;
   return m.label.includes(' · ') ? m.label.split(' · ')[1] : m.label;
+}
+
+/** Merge built-in categories with user-added custom ones. */
+function allCategories() {
+  const customs = state.settings.customCategories || [];
+  return [...CATEGORIES, ...customs];
 }
 
 const fmt = (n) => {
@@ -516,6 +525,7 @@ function $(tag, attrs = {}, ...children) {
     if (k === 'class') el.className = v;
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'data' && typeof v === 'object') Object.assign(el.dataset, v);
+    else if (k === 'innerHTML') el.innerHTML = v;
     else if (v === true) el.setAttribute(k, '');
     else if (v === false || v == null) {}
     else el.setAttribute(k, v);
@@ -531,7 +541,7 @@ function renderHeader() {
   const route = currentRoute();
   return $('header', { class: 'app-header', 'aria-label': 'App header' },
     $('div', { class: 'logo' },
-      $('div', { class: 'mark' }, $('span', { class: 'mark-icon', 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 7c-2.5-1.7-5.7-1.7-8 0"/><path d="M17 12c-2.5-1.7-5.7-1.7-8 0"/><path d="M17 17c-2.5-1.7-5.7-1.7-8 0"/><line x1="6" y1="5" x2="6" y2="19"/></svg>' })),
+      $('div', { class: 'mark' }, $('span', { class: 'mark-icon', 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5a7 7 0 0 0 0 14"/><line x1="2" y1="8" x2="13" y2="8"/><line x1="2" y1="16" x2="13" y2="16"/></svg>' })),
       $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary' },
@@ -637,16 +647,51 @@ function formView({ initial = null, onSubmit }) {
     $('div', null, $('label', { class: 'eyebrow', for: 'f-transfer-to' }, 'To'), Object.assign(transferToSel, { id: 'f-transfer-to' })),
   );
 
-  const catChips = $('div', { role: 'radiogroup', 'aria-label': 'Category', style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;' },
-    ...CATEGORIES.map(c => {
+  // Category chips -- rebuilt from allCategories() so custom cats appear immediately.
+  const catChips = $('div', { role: 'radiogroup', 'aria-label': 'Category', style: 'display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;' });
+  let _catAdding = false;
+  function rebuildCatChips() {
+    catChips.innerHTML = '';
+    const all = allCategories();
+    for (const c of all) {
       const btn = $('button', { type: 'button', class: 'pill pill-cat', role: 'radio', 'data-id': c.id, 'aria-checked': data.category === c.id ? 'true' : 'false', 'data-active': data.category === c.id ? 'true' : 'false', onClick: () => {
         data.category = c.id;
         catChips.querySelectorAll('[role=radio]').forEach(b => { b.setAttribute('aria-checked','false'); b.dataset.active = 'false'; });
         btn.setAttribute('aria-checked','true'); btn.dataset.active = 'true';
+        _catAdding = false; rebuildCatChips();
       } }, c.label);
-      return btn;
-    }),
-  );
+      catChips.appendChild(btn);
+    }
+    // + Add button (or inline input)
+    if (!_catAdding) {
+      catChips.appendChild($('button', { type: 'button', class: 'pill pill-cat', style: 'border-style:dashed;opacity:0.55;', title: 'Add custom category', onClick: () => { _catAdding = true; rebuildCatChips(); } }, '+ Add'));
+    } else {
+      const input = $('input', { type: 'text', placeholder: 'Category name', 'aria-label': 'New category name', autocomplete: 'off', style: 'border:1px solid var(--accent);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:4px 10px;font-size:12px;width:130px;outline:none;', onKeydown: (ev) => {
+        if (ev.key === 'Escape') { _catAdding = false; rebuildCatChips(); return; }
+        if (ev.key === 'Enter') confirmAdd(ev.target);
+      }, onBlur: (ev) => { setTimeout(() => { if (_catAdding) { _catAdding = false; rebuildCatChips(); } }, 150); } });
+      function confirmAdd(el) {
+        const raw = (el.value || '').trim();
+        if (!raw) { toast('Enter a category name.'); el.focus(); return; }
+        // Generate a short slug id
+        let id = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'custom';
+        if (allCategories().some(c => c.id === id)) id = id + '-' + Date.now().toString(36).slice(-3);
+        // Check duplicate label
+        if (allCategories().some(c => c.label.toLowerCase() === raw.toLowerCase())) { toast('That category already exists.'); el.focus(); return; }
+        if (!state.settings.customCategories) state.settings.customCategories = [];
+        state.settings.customCategories.push({ id, label: raw });
+        updateAllowedCategories(allCategories().map(c => c.id));
+        persist();
+        data.category = id;
+        _catAdding = false;
+        rebuildCatChips();
+        toast('Added category: ' + raw);
+      }
+      catChips.appendChild(input);
+      queueMicrotask(() => input.focus());
+    }
+  }
+  rebuildCatChips();
   const catSection = $('div', { style: 'margin-bottom:24px;' },
     $('label', { class: 'eyebrow' }, 'Category'), catChips,
   );
@@ -731,6 +776,7 @@ async function doResync() {
   if (r.ok && r.content) {
     state = validateState(r.content);
     saveState(state);
+    updateAllowedCategories(allCategories().map(c => c.id));
     patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
     const diff = state.entries.length - prevCount;
     toast(diff > 0 ? `Pulled ${diff} new entr${diff === 1 ? 'y' : 'ies'}.` : diff < 0 ? `Cloud has ${state.entries.length} entries.` : 'Already up to date.');
@@ -931,7 +977,7 @@ function screenDashboard() {
       : $('div', { style: 'display:flex;flex-direction:column;gap:14px;' },
           ...cats.map(([cat, val]) => $('div', null,
             $('div', { class: 'row between', style: 'font-size:13px;margin-bottom:6px;' },
-              $('span', { style: 'font-weight:500;' }, CATEGORIES.find(c => c.id === cat)?.label || cat),
+              $('span', { style: 'font-weight:500;' }, allCategories().find(c => c.id === cat)?.label || cat),
               $('span', { class: 'tnum' }, fmt(val)),
             ),
             $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
@@ -953,7 +999,7 @@ function screenDashboard() {
             $('span', { class: 'muted', style: 'font-size:12px;' }, friendlyDate(e.date)),
             $('div', null,
               $('div', { style: 'font-weight:500;' }, e.details || '—'),
-              $('div', { style: `font-size:11px;color:var(--muted);${isNarrow() ? 'display:none;' : ''}` }, `${CATEGORIES.find(c => c.id === e.category)?.label || e.category} · ${METHODS.find(m => m.id === e.method)?.label || e.method}`),
+              $('div', { style: `font-size:11px;color:var(--muted);${isNarrow() ? 'display:none;' : ''}` }, `${allCategories().find(c => c.id === e.category)?.label || e.category} · ${METHODS.find(m => m.id === e.method)?.label || e.method}`),
             ),
             $('span', { class: 'display-num', style: `text-align:right;font-size:${isNarrow() ? '13px' : '15px'};color:${e.type === 'credit' ? 'var(--positive)' : 'var(--ink)'}` }, (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
             ...(isNarrow() ? [] : [$('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method))]),
@@ -1132,7 +1178,7 @@ function cashWidget() {
   const hasAny = tipLines.length > 0;
 
   let tipTimeout;
-  const wrapper = $('span', { style: 'position:relative;display:inline-flex;align-items:center;cursor:pointer;' },
+  const wrapper = $('span', { style: 'position:relative;display:inline-flex;align-items:center;gap:6px;cursor:pointer;' },
     $('span', { style: 'font-family:"Instrument Serif",serif;font-style:italic;' }, 'Cash '),
     $('span', { class: 'display-num', style: `font-size:16px;color:${total > 0 ? 'var(--accent)' : 'var(--muted)'};` }, fmt(total)),
   );
@@ -1185,7 +1231,7 @@ function openNewRecurring() {
     ...METHODS.map(m => $('option', { value: m.id }, m.label)),
   );
   const catSel = $('select', { 'aria-label': 'Category', onChange: (e) => data.category = e.target.value },
-    ...CATEGORIES.map(c => $('option', { value: c.id }, c.label)),
+    ...allCategories().map(c => $('option', { value: c.id }, c.label)),
   );
   const catRow = $('div', { style: 'margin-bottom:14px;' },
     $('label', { class: 'eyebrow', style: 'display:block;margin-bottom:4px;' }, 'Category'),
@@ -1454,7 +1500,7 @@ function screenAdd() {
         const parsed = parseReceiptLine(line);
         if (parsed) {
           qPreview.appendChild($('div', { class: 'receipt-line', style: 'display:flex;justify-content:space-between;padding:4px 0;font-size:12px;' },
-            $('span', null, parsed.details, $('span', { class: 'pill pill-cat', style: 'margin-left:6px;font-size:10px;padding:1px 6px;' }, CATEGORIES.find(c=>c.id===parsed.category)?.label||parsed.category)),
+            $('span', null, parsed.details, $('span', { class: 'pill pill-cat', style: 'margin-left:6px;font-size:10px;padding:1px 6px;' }, allCategories().find(c=>c.id===parsed.category)?.label||parsed.category)),
             $('span', { class: 'tnum' }, parsed.amount > 0 ? fmt(parsed.amount) : '—'),
           ));
         }
@@ -1610,7 +1656,7 @@ function screenHistory() {
 
   const filterRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 16px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
   filterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': 'all', 'data-active': activeCat === 'all' ? 'true' : 'false', 'aria-pressed': activeCat === 'all' ? 'true' : 'false', onClick: () => update({ cat: 'all' }) }, `All · ${catCounts.all || 0}`));
-  for (const c2 of CATEGORIES) {
+  for (const c2 of allCategories()) {
     const count = catCounts[c2.id] || 0;
     if (count === 0 && activeCat !== c2.id) continue;
     filterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': c2.id, 'data-active': activeCat === c2.id ? 'true' : 'false', 'aria-pressed': activeCat === c2.id ? 'true' : 'false', onClick: () => update({ cat: c2.id }) }, `${c2.label} · ${count}`));
@@ -1648,7 +1694,7 @@ function screenHistory() {
               persist(); toast(newVal ? 'Transfer settled.' : 'Transfer unsettled.'); render();
             }, title: 'Click to toggle settled' }, settledLabel) : null,
           ),
-          $('div', { style: 'font-size:11px;color:var(--muted);' }, CATEGORIES.find(c2 => c2.id === e.category)?.label || e.category),
+          $('div', { style: 'font-size:11px;color:var(--muted);' }, allCategories().find(c2 => c2.id === e.category)?.label || e.category),
         ),
         $('span', { class: 'display-num', style: 'text-align:right;font-size:15px;color:' + (e.type === 'credit' ? 'var(--positive)' : 'var(--ink)') }, (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
         $('span', { class: 'tnum', style: 'text-align:right;font-size:13px;color:' + ((balanceById[e.id] || 0) >= 0 ? 'var(--positive)' : 'var(--negative)') }, fmt(balanceById[e.id] || 0)),
@@ -1777,7 +1823,7 @@ function screenInsights() {
     catRows.length === 0
       ? $('div', { class: 'empty' }, emptyIcon('coin'), ' No expenses in this range.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
-          ...catRows.map(([cat, val]) => bar(CATEGORIES.find(c=>c.id===cat)?.label || cat, val, maxCat, val === maxCat)),
+          ...catRows.map(([cat, val]) => bar(allCategories().find(c=>c.id===cat)?.label || cat, val, maxCat, val === maxCat)),
         ),
   ));
 
@@ -1867,7 +1913,7 @@ function openYearInReview() {
     ['Total spent', fmt(totalSpent), 'var(--ink)'],
     ['Net', fmt(totalEarned - totalSpent), (totalEarned - totalSpent) >= 0 ? 'var(--positive)' : 'var(--negative)'],
     ['Entries logged', String(yearEntries.length), ''],
-    ['Top category', topCat ? `${CATEGORIES.find(c=>c.id===topCat[0])?.label||topCat[0]} · ${fmt(topCat[1])}` : '—', ''],
+    ['Top category', topCat ? `${allCategories().find(c=>c.id===topCat[0])?.label||topCat[0]} · ${fmt(topCat[1])}` : '—', ''],
     ['Best month', bestMonth ? `${monthLabel(bestMonth[0])} · ${fmt(bestMonth[1])}` : '—', ''],
     ['Toughest month', worstMonth ? `${monthLabel(worstMonth[0])} · ${fmt(worstMonth[1])}` : '—', ''],
     ['Busiest day', busiestDay ? `${friendlyDate(busiestDay[0])} — ${busiestDay[1].count} entries, ${fmt(busiestDay[1].total)}` : '—', ''],
@@ -2216,6 +2262,8 @@ let toastTimer;
 function toast(text, undoFn, undoLabel) {
   let host = document.querySelector('.toast-host');
   if (!host) { host = $('div', { class: 'toast-host' }); document.body.appendChild(host); }
+  // Clear any stuck toasts left over from a previous rapid-fire call.
+  host.innerHTML = '';
   const children = [text];
   // If explicit undoFn passed, use it; otherwise auto-detect _lastAction
   const effectiveUndo = undoFn || (_lastAction ? (() => undoLastAction()) : null);

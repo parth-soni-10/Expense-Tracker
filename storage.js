@@ -14,7 +14,13 @@ export const uid = () =>
 
 const CATEGORIES_OK = new Set(['gro','travel','misc','rent','GC']);
 const METHODS_OK    = new Set(['AIB','Revolut','RS','TG','LG','AG']);
-const TYPES_OK      = new Set(['expense','credit']);
+const TYPES_OK      = new Set(['expense','credit', 'transfer']);
+
+/** Let validateEntry accept custom-category ids that the user added at runtime. */
+export function updateAllowedCategories(ids) {
+  CATEGORIES_OK.clear();
+  for (const id of ids) CATEGORIES_OK.add(id);
+}
 
 function validateEntry(e) {
   if (!e || typeof e !== 'object') return null;
@@ -59,6 +65,7 @@ export function validateState(s) {
     ...SEED_SETTINGS,
     ...(s.settings && typeof s.settings === 'object' ? s.settings : {}),
     monthlyBudget: Number.isFinite(+s.settings?.monthlyBudget) ? +s.settings.monthlyBudget : SEED_SETTINGS.monthlyBudget,
+    customCategories: Array.isArray(s.settings?.customCategories) ? s.settings.customCategories : [],
   };
   out.schemaVersion = 1;
   return out;
