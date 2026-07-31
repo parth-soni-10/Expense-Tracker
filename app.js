@@ -109,8 +109,12 @@ async function initSync() {
 let _syncActive = false;
 function setSyncPulsing(active) {
   _syncActive = active;
-  const dot = document.querySelector('.sync-dot');
-  if (dot) { dot.classList.toggle('pulsing', active); }
+  const icon = document.querySelector('.sync-icon');
+  if (icon) {
+    icon.classList.toggle('spinning', active);
+    if (!active) icon.classList.add('success');
+    setTimeout(() => { if (icon && !_syncActive) icon.classList.remove('success'); }, 2000);
+  }
 }
 
 function renderSyncIndicator() {
@@ -121,7 +125,8 @@ function renderSyncIndicator() {
   node.style.display = '';
   const status = syncStatus();
   node.innerHTML = '';
-  node.append($('span', { class: 'sync-dot' + (_syncActive ? ' pulsing' : ''), 'aria-hidden': 'true', style: `width:7px;height:7px;border-radius:50%;background:${status.state === 'ok' ? 'var(--positive)' : status.state === 'error' ? 'var(--negative)' : 'var(--muted)'};display:inline-block;flex-shrink:0;` }));
+  const cls = 'sync-icon' + (_syncActive ? ' spinning' : '') + (status.state === 'ok' ? ' success' : '');
+  node.append($('span', { class: cls, 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="icon-sync-cloud" d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><polyline class="icon-sync-arrows" points="17 6 19 4 21 6"/><line class="icon-sync-arrows" x1="19" y1="4" x2="19" y2="10"/><polyline class="icon-sync-check" points="20 6 9 17 4 12"/></svg>' }));
   const label = status.state === 'ok' ? status.label.replace(/^Synced /, 'synced ') : status.label;
   node.append($('span', null, label));
 }
@@ -526,7 +531,7 @@ function renderHeader() {
   const route = currentRoute();
   return $('header', { class: 'app-header', 'aria-label': 'App header' },
     $('div', { class: 'logo' },
-      $('div', { class: 'mark' }, '€'),
+      $('div', { class: 'mark' }, $('span', { class: 'mark-icon', 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 7c-2.5-1.7-5.7-1.7-8 0"/><path d="M17 12c-2.5-1.7-5.7-1.7-8 0"/><path d="M17 17c-2.5-1.7-5.7-1.7-8 0"/><line x1="6" y1="5" x2="6" y2="19"/></svg>' })),
       $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary' },
@@ -539,7 +544,10 @@ function renderHeader() {
         const isDark = html.dataset.theme === 'dark';
         html.dataset.theme = isDark ? '' : 'dark';
         try { localStorage.setItem('cents-theme', isDark ? 'light' : 'dark'); } catch(e) {}
-      } }, '🌙'),
+      } },
+        $('span', { class: 'icon-sun', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>' }),
+        $('span', { class: 'icon-moon', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>' }),
+      ),
       $('button', { class: 'nav-action', onClick: openSyncSettings }, 'Sync'),
       $('button', { class: 'nav-action', onClick: () => { exportJSON(state); toast('Exported.'); } }, 'Export'),
     ),
@@ -697,7 +705,14 @@ function formView({ initial = null, onSubmit }) {
     ),
     $('div', { style: 'display:flex;gap:12px;justify-content:flex-end;padding-top:24px;border-top:1px solid var(--line);' },
       $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => location.hash = '#dashboard' }, 'Cancel'),
-      $('button', { type: 'button', class: 'btn btn-primary', onClick: submit }, isEdit ? 'Save changes' : 'Save entry'),
+      $('button', { type: 'button', class: 'btn btn-primary', onClick: (ev) => {
+        const icon = ev.currentTarget.querySelector('.btn-save-icon');
+        if (icon) { icon.classList.add('saved'); setTimeout(() => { if (icon) icon.classList.remove('saved'); }, 800); }
+        submit();
+      } },
+        $('span', { class: 'btn-save-icon', style: 'margin-right:6px;', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="icon-save-line" d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" stroke-dasharray="60" stroke-dashoffset="0"/><polyline class="icon-save-line" points="17 21 17 13 7 13 7 21" stroke-dasharray="20" stroke-dashoffset="0"/><polyline class="icon-save-line" points="7 3 7 8 15 8" stroke-dasharray="15" stroke-dashoffset="0"/><polyline class="icon-check" points="20 6 9 17 4 12"/></svg>' }),
+        isEdit ? 'Save changes' : 'Save entry',
+      ),
     ),
   );
 
@@ -823,7 +838,10 @@ function screenDashboard() {
           toast(v > 0 ? 'Budget updated.' : 'Budget cleared.');
         }
       }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
-      $('a', { href: '#add', class: 'btn btn-primary' }, '+ New entry'),
+      $('a', { href: '#add', class: 'btn btn-primary' },
+        $('span', { class: 'btn-new-icon', style: 'margin-right:6px;', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line class="icon-plus-h" x1="5" y1="12" x2="19" y2="12"/><line class="icon-plus-v" x1="12" y1="5" x2="12" y2="19"/></svg>' }),
+        'New entry',
+      ),
       resyncBtn,
     ),
   ));
@@ -888,7 +906,7 @@ function screenDashboard() {
         const rowEl = ev.target.closest('[data-rec-id]');
         if (rowEl) { rowEl.classList.add('paid-anim'); setTimeout(() => paidRecurring(r), 500); }
         else paidRecurring(r);
-      } }, 'Paid'),
+      } }, $('span', { class: 'btn-paid-icon', style: 'margin-right:5px;', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><polyline class="icon-paid-check" points="9 12 11 14 15 10"/></svg>' }), 'Paid'),
             ),
           );
         }),
@@ -2280,15 +2298,28 @@ function _render() {
 
   // Bottom tab bar on mobile
   const route2 = currentRoute();
+  const tabIconSVG = (id) => {
+    const icons = {
+      dashboard: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>' },
+      add: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"/></svg>' },
+      history: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>' },
+      insights: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="4" height="9"/><rect x="10" y="6" width="4" height="15"/><rect x="17" y="3" width="4" height="18"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"/></svg>' },
+    };
+    const set = icons[id] || icons.dashboard;
+    return $('span', { class: 'bottom-tab-icon', 'aria-hidden': 'true' },
+      $('span', { class: 'tab-icon-outline', innerHTML: set.outline }),
+      $('span', { class: 'tab-icon-filled', innerHTML: set.filled }),
+    );
+  };
   const tabItems = [
-    { id: 'dashboard', icon: '◎', label: 'Home' },
-    { id: 'add', icon: '＋', label: 'Add' },
-    { id: 'history', icon: '☰', label: 'History' },
-    { id: 'insights', icon: '◉', label: 'Insights' },
+    { id: 'dashboard', label: 'Home' },
+    { id: 'add', label: 'Add' },
+    { id: 'history', label: 'History' },
+    { id: 'insights', label: 'Insights' },
   ];
   main.appendChild($('nav', { class: 'bottom-tab-bar', 'aria-label': 'Mobile navigation' },
     ...tabItems.map(t => $('a', { href: `#${t.id}`, class: 'bottom-tab', 'aria-current': t.id === route2 ? 'page' : 'false' },
-      $('span', { class: 'bottom-tab-icon', 'aria-hidden': 'true' }, t.icon),
+      tabIconSVG(t.id),
       $('span', null, t.label),
     )),
   ));

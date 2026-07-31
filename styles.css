@@ -141,12 +141,13 @@ button { font-family: inherit; cursor: pointer; }
 }
 /* Numbers — clean tabular */
 .display-num {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace;
   font-feature-settings: 'tnum';
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
+  font-weight: 500;
 }
-.tnum { font-variant-numeric: tabular-nums; }
+.tnum { font-variant-numeric: tabular-nums; font-family: 'JetBrains Mono', 'SF Mono', monospace; font-weight: 500; }
 
 /* ── Number counting animation ── */
 @keyframes countIn {
@@ -641,11 +642,6 @@ select:focus {
 [data-theme="dark"] .history-row:nth-child(even) { background: rgba(255,255,255,0.02); }
 .history-row:hover { background: var(--bg-deep) !important; box-shadow: var(--shadow-xs); }
 
-/* ── Sync dot pulse ── */
-.sync-dot.pulsing {
-  animation: pulseDot 1s ease-in-out infinite;
-}
-
 /* ── Gift card mini progress bars ── */
 .gc-progress-track {
   height: 4px; background: var(--line); border-radius: 99px; overflow: hidden;
@@ -671,7 +667,7 @@ select:focus {
   transition: opacity 0.15s;
   z-index: 10;
   box-shadow: var(--shadow-md);
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'JetBrains Mono', 'SF Mono', monospace;
   font-feature-settings: 'tnum';
 }
 .heat-cell-wrap:hover .heat-tip { opacity: 1; }
@@ -768,10 +764,141 @@ select:focus {
   padding: 4px 0; font-size: 13px;
   border-bottom: 1px dotted var(--line);
 }
-/* ── Pulse dot keyframe (reused by sync indicator) ── */
-@keyframes pulseDot {
-  0%, 100% { transform: scale(1); opacity: 1; }
-  50%      { transform: scale(1.4); opacity: 0.6; }
+/* ═══════════════════════════════════════════════════════════════
+   Icon morphing system
+   ═══════════════════════════════════════════════════════════════ */
+.morph-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; position: relative; flex-shrink: 0;
+  vertical-align: middle;
+}
+.morph-icon svg {
+  width: 100%; height: 100%;
+  transition: transform 0.4s cubic-bezier(0.2,0.8,0.2,1.2), opacity 0.35s cubic-bezier(0.2,0.8,0.2,1);
+  position: absolute; inset: 0;
+}
+
+/* ── Dark toggle: sun ↔ moon morph ── */
+.dark-toggle .icon-sun,
+.dark-toggle .icon-moon {
+  transition: transform 0.45s cubic-bezier(0.2,0.8,0.2,1.2), opacity 0.35s cubic-bezier(0.2,0.8,0.2,1);
+  position: absolute; inset: 0; margin: auto;
+}
+.dark-toggle .icon-sun { opacity: 0; transform: rotate(-90deg) scale(0.5); }
+.dark-toggle .icon-moon { opacity: 1; transform: rotate(0deg) scale(1); }
+[data-theme="dark"] .dark-toggle .icon-sun { opacity: 1; transform: rotate(0deg) scale(1); }
+[data-theme="dark"] .dark-toggle .icon-moon { opacity: 0; transform: rotate(90deg) scale(0.5); }
+.dark-toggle {
+  position: relative;
+}
+
+/* ── Bottom tab bar: icon active-state morph ── */
+.bottom-tab-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  transition: transform 0.3s cubic-bezier(0.2,0.8,0.2,1.2);
+}
+.bottom-tab-icon svg {
+  width: 100%; height: 100%;
+  transition: transform 0.3s cubic-bezier(0.2,0.8,0.2,1.2), opacity 0.25s;
+}
+.bottom-tab[aria-current="page"] .bottom-tab-icon {
+  transform: translateY(-2px);
+}
+.bottom-tab[aria-current="page"] .bottom-tab-icon svg {
+  transform: scale(1.15);
+}
+.bottom-tab:active .bottom-tab-icon {
+  transform: scale(0.85);
+}
+/* Filled/outline morph for tab icons */
+.tab-icon-outline { opacity: 1; }
+.tab-icon-filled { opacity: 0; transform: scale(0.6); }
+.bottom-tab[aria-current="page"] .tab-icon-outline { opacity: 0; transform: scale(1.5); }
+.bottom-tab[aria-current="page"] .tab-icon-filled { opacity: 1; transform: scale(1); }
+
+/* ── Save button: disk → checkmark morph ── */
+@keyframes savePop {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.25); }
+  60%  { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
+.btn-save-icon {
+  display: inline-flex; width: 16px; height: 16px;
+  transition: transform 0.35s cubic-bezier(0.2,0.8,0.2,1.2);
+  vertical-align: middle; flex-shrink: 0;
+}
+.btn-save-icon svg {
+  width: 100%; height: 100%;
+}
+.btn-save-icon .icon-save-line { transition: stroke-dashoffset 0.4s cubic-bezier(0.2,0.8,0.2,1), opacity 0.3s; }
+.btn-save-icon .icon-check { opacity: 0; transform: scale(0.5); transition: opacity 0.3s, transform 0.35s cubic-bezier(0.2,0.8,0.2,1.2); }
+.btn-save-icon.saved { animation: savePop 0.5s cubic-bezier(0.2,0.8,0.2,1.2); }
+.btn-save-icon.saved .icon-save-line { opacity: 0; }
+.btn-save-icon.saved .icon-check { opacity: 1; transform: scale(1); }
+
+/* ── New entry button: plus → arrow morph on hover ── */
+.btn-new-icon {
+  display: inline-flex; width: 14px; height: 14px;
+  transition: transform 0.35s cubic-bezier(0.2,0.8,0.2,1.2);
+  vertical-align: middle; flex-shrink: 0;
+}
+.btn-new-icon svg { width: 100%; height: 100%; }
+.btn-new-icon .icon-plus-h, .btn-new-icon .icon-plus-v {
+  transition: transform 0.35s cubic-bezier(0.2,0.8,0.2,1.2), opacity 0.25s;
+  transform-origin: center;
+}
+.btn-primary:hover .btn-new-icon .icon-plus-v { transform: rotate(90deg); opacity: 0; }
+.btn-primary:hover .btn-new-icon .icon-plus-h { transform: translateX(2px); }
+
+/* ── Paid button: checkmark pop morph ── */
+@keyframes checkPop {
+  0%   { transform: scale(0); opacity: 0; }
+  50%  { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.btn-paid-icon {
+  display: inline-flex; width: 13px; height: 13px;
+  vertical-align: middle; flex-shrink: 0;
+}
+.rec-row.paid-anim .btn-paid-icon .icon-paid-check {
+  animation: checkPop 0.4s cubic-bezier(0.2,0.8,0.2,1.2) forwards;
+}
+.icon-paid-check { opacity: 0; transform: scale(0); }
+
+/* ── Sync icon: cloud → refresh → checkmark morph chain ── */
+@keyframes syncSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.sync-icon {
+  display: inline-flex; width: 14px; height: 14px; flex-shrink: 0;
+  transition: transform 0.3s;
+}
+.sync-icon svg { width: 100%; height: 100%; }
+.sync-icon.spinning { animation: syncSpin 1.2s linear infinite; }
+.sync-icon .icon-sync-cloud { transition: opacity 0.3s; }
+.sync-icon .icon-sync-arrows { opacity: 0; transition: opacity 0.3s; }
+.sync-icon.spinning .icon-sync-cloud { opacity: 0.5; }
+.sync-icon.spinning .icon-sync-arrows { opacity: 1; }
+.sync-icon .icon-sync-check { opacity: 0; transform: scale(0); transition: opacity 0.3s, transform 0.35s cubic-bezier(0.2,0.8,0.2,1.2); }
+.sync-icon.success .icon-sync-check { opacity: 1; transform: scale(1); }
+.sync-icon.success .icon-sync-cloud,
+.sync-icon.success .icon-sync-arrows { opacity: 0; }
+
+/* ── Logo mark: enhanced morph on hover ── */
+.mark-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 100%; height: 100%;
+  transition: transform 0.35s cubic-bezier(0.2,0.8,0.2,1.2);
+}
+.mark-icon svg {
+  width: 70%; height: 70%;
+  transition: transform 0.35s cubic-bezier(0.2,0.8,0.2,1.2);
+}
+.app-header .logo:hover .mark-icon svg {
+  transform: scale(1.1) rotate(-5deg);
 }
 
 /* ═══════════════════════════════════════════════════════════════
