@@ -29,6 +29,138 @@ const ok = (body, status = 200) => new Response(
 const err = (msg, status = 400) => ok({ error: msg, code: status }, status);
 
 const GH_API = 'https://api.github.com';
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
+const MAX_ENTRIES = 10000;
+const MAX_AMOUNT = 1_000_000;
+const VALID_TYPES = new Set(['expense', 'credit', 'transfer', 'note']);
+const VALID_METHODS = new Set(['AIB', 'Revolut', 'RS', 'TG', 'LG', 'AG']);
+const BASE_CATEGORIES = new Set(['gro', 'travel', 'misc', 'rent', 'GC']);
+const BALANCE_METHODS = ['AIB', 'Revolut', 'RS', 'TG', 'LG', 'AG'];
+const VALID_COIN_KEYS = new Set(['50', '20', '10', '5', '2', '1', '0.5', '0.2', '0.1', '0.05']);
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function validDate(date) {
+  if (typeof date !== 'string' || !DATE_RE.test(date)) return false;
+  const [year, month, day] = date.split('-').map(Number);
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime())
+    && parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() + 1 === month
+    && parsed.getUTCDate() === day;
+}
+
+function validCheckpoint(point) {
+  const balance = Number(point?.balance);
+  return !!point && typeof point === 'object' && !Array.isArray(point)
+    && validDate(point.date)
+    && Number.isFinite(balance)
+    && Math.abs(balance) <= MAX_AMOUNT
+    && Math.round(balance * 100) / 100 === balance
+    && (point.at == null || (typeof point.at === 'string' && Number.isFinite(Date.parse(point.at))));
+}
+
+function validIncomingSettings(settings) {
+  if (settings == null) return true;
+  if (typeof settings !== 'object' || Array.isArray(settings)) return false;
+  const allowedKeys = new Set(['monthlyBudget', 'currency', 'balanceCheckpoints', 'customCategories', 'recurring', 'coins']);
+  if (Object.keys(settings).some(key => !allowedKeys.has(key))) return false;
+  if (Object.prototype.hasOwnProperty.call(settings, 'pinHash')) return false;
+  if (settings.monthlyBudget != null
+    && (!Number.isFinite(Number(settings.monthlyBudget)) || Number(settings.monthlyBudget) < 0 || Number(settings.monthlyBudget) > MAX_AMOUNT
+      || Math.round(Number(settings.monthlyBudget) * 100) / 100 !== Number(settings.monthlyBudget))) return false;
+  if (settings.currency != null && (typeof settings.currency !== 'string' || settings.currency.length < 1 || settings.currency.length > 8)) return false;
+  if (settings.balanceCheckpoints != null) {
+    if (typeof settings.balanceCheckpoints !== 'object' || Array.isArray(settings.balanceCheckpoints)) return false;
+    for (const [methodId, points] of Object.entries(settings.balanceCheckpoints)) {
+      if (!BALANCE_METHODS.includes(methodId) || !Array.isArray(points) || points.length > 1000 || !points.every(validCheckpoint)) return false;
+      const dates = new Set(points.map(point => point.date));
+      if (dates.size !== points.length) return false;
+    }
+  }
+  const allowedCategoryIds = new Set(BASE_CATEGORIES);
+  if (settings.customCategories != null) {
+    if (!Array.isArray(settings.customCategories) || settings.customCategories.length > 100) return false;
+    const ids = new Set();
+    for (const category of settings.customCategories) {
+      if (!category || typeof category !== 'object' || typeof category.id !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(category.id)
+        || category.id.length > 80 || ids.has(category.id) || BASE_CATEGORIES.has(category.id)
+        || typeof category.label !== 'string' || category.label.trim().length < 1 || category.label.length > 80) return false;
+      ids.add(category.id);
+      allowedCategoryIds.add(category.id);
+    }
+  }
+  if (settings.recurring != null) {
+    if (!Array.isArray(settings.recurring) || settings.recurring.length > 500) return false;
+    const ids = new Set();
+    for (const recurring of settings.recurring) {
+      const amount = Number(recurring?.amount);
+      if (!recurring || typeof recurring !== 'object' || typeof recurring.id !== 'string' || recurring.id.length === 0 || recurring.id.length > 200 || ids.has(recurring.id)
+        || !['expense', 'credit'].includes(recurring.type) || !VALID_METHODS.has(recurring.method)
+        || !allowedCategoryIds.has(recurring.category)
+        || !validDate(recurring.nextDate) || !['weekly', 'monthly'].includes(recurring.frequency)
+        || !Number.isFinite(amount) || amount <= 0 || amount > MAX_AMOUNT || Math.round(amount * 100) / 100 !== amount
+        || !Number.isInteger(Number(recurring.dayOfMonth)) || Number(recurring.dayOfMonth) < 1 || Number(recurring.dayOfMonth) > 31
+        || typeof recurring.details !== 'string' || recurring.details.length > 5000
+        || (recurring.note != null && (typeof recurring.note !== 'string' || recurring.note.length > 10000))) return false;
+      ids.add(recurring.id);
+    }
+  }
+  if (settings.coins != null) {
+    if (typeof settings.coins !== 'object' || Array.isArray(settings.coins)) return false;
+    for (const [key, value] of Object.entries(settings.coins)) {
+      if (!VALID_COIN_KEYS.has(key) || !Number.isInteger(Number(value)) || Number(value) < 0 || Number(value) > MAX_AMOUNT) return false;
+    }
+  }
+  return true;
+}
+
+function validIncomingState(content) {
+  if (!content || typeof content !== 'object' || Array.isArray(content) || !Array.isArray(content.entries)
+    || !validIncomingSettings(content.settings)) return false;
+  if (content.entries.length > MAX_ENTRIES) return false;
+  const allowedCategoryIds = new Set([
+    ...BASE_CATEGORIES,
+    ...(Array.isArray(content.settings?.customCategories) ? content.settings.customCategories.map(category => category.id) : []),
+  ]);
+  const ids = new Set();
+  const transferGroups = new Map();
+  for (const entry of content.entries) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+    const amount = Number(entry.amount);
+    const details = entry.details == null ? '' : entry.details;
+    const note = entry.note == null ? '' : entry.note;
+    if (typeof entry.id !== 'string' || entry.id.length === 0 || entry.id.length > 200 || ids.has(entry.id)) return false;
+    ids.add(entry.id);
+    if (entry.type === 'transfer' && !entry.transferId) return false;
+    if (entry.type === 'note' && amount !== 0) return false;
+    if (entry.transferId) {
+      if (typeof entry.transferId !== 'string' || entry.transferId.length > 200) return false;
+      if (!transferGroups.has(entry.transferId)) transferGroups.set(entry.transferId, []);
+      transferGroups.get(entry.transferId).push(entry);
+    }
+    if (!validDate(entry.date)
+      || !VALID_TYPES.has(entry.type)
+      || !VALID_METHODS.has(entry.method)
+      || !allowedCategoryIds.has(entry.category)
+      || Number.isFinite(amount) === false || amount < 0 || amount > MAX_AMOUNT
+      || Math.round(amount * 100) / 100 !== amount
+      || typeof details !== 'string' || details.length > 5000
+      || typeof note !== 'string' || note.length > 10000
+      || (entry.createdAt != null && (typeof entry.createdAt !== 'string' || !Number.isFinite(Date.parse(entry.createdAt))))
+      || (entry.audioData != null && (entry.type !== 'note' || typeof entry.audioData !== 'string'
+        || !/^data:audio\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(entry.audioData)
+        || entry.audioData.length > 2_000_000))
+      || (entry.audioType != null && (entry.type !== 'note' || typeof entry.audioType !== 'string' || !/^audio\/[a-z0-9.+-]+$/i.test(entry.audioType)))
+      || (entry.settled != null && typeof entry.settled !== 'boolean')) return false;
+  }
+  for (const group of transferGroups.values()) {
+    const debit = group.find(entry => entry.type === 'expense');
+    const credit = group.find(entry => entry.type === 'credit');
+    if (group.length !== 2 || !debit || !credit || debit.amount !== credit.amount
+      || debit.date !== credit.date || debit.method === credit.method) return false;
+  }
+  return true;
+}
 
 async function ghFetch(path, opts = {}) {
   const token = process.env.GITHUB_TOKEN;
@@ -91,13 +223,23 @@ export default async (request, _context) => {
       const j = await r.json();
       const text = decodeBase64(j.content || '');
       let parsed = null;
-      try { parsed = text ? JSON.parse(text) : null; } catch { parsed = null; }
+      let malformed = false;
+      try {
+        parsed = text.trim() ? JSON.parse(text) : null;
+        malformed = !!text.trim() && !validIncomingState(parsed);
+      } catch {
+        malformed = true;
+      }
       return ok({
         content: parsed,
+        malformed,
         sha: j.sha,
         branch,
         size: j.size,
-        lastModifiedAt: j.updated_at || j.commit?.author?.date || null,
+        // Contents API responses usually omit commit timestamps. The client
+        // stores its edit timestamp in the validated document, so use that as
+        // a safe fallback for local-vs-cloud freshness checks.
+        lastModifiedAt: j.updated_at || j.commit?.author?.date || parsed?.lastLocalChangeAt || null,
         commitSha: j.commit?.sha || null,
         path: j.path || file,
       });
@@ -106,20 +248,32 @@ export default async (request, _context) => {
     // ---------- WRITE ----------
     if (request.method === 'PUT') {
       const rawBody = await request.text();
+      if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY_BYTES) {
+        return err('Request body is too large', 413);
+      }
       let body;
       try { body = JSON.parse(rawBody || '{}'); }
       catch { return err('Body is not valid JSON', 400); }
 
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return err('Request body must be an object', 400);
+      }
       const incoming = body.content;
-      if (!incoming || !Array.isArray(incoming.entries)) {
-        return err('Body.content must be an object with an entries[] array', 400);
+      if (!validIncomingState(incoming)) {
+        return err('Body.content contains invalid or excessive expense data', 400);
       }
 
-      const sha    = body.sha || null;
+      const sha = body.sha == null || body.sha === '' ? null : body.sha;
+      if (sha !== null && (typeof sha !== 'string' || sha.length > 200 || /[\r\n]/.test(sha))) {
+        return err('Body.sha is invalid', 400);
+      }
       const msg    = typeof body.message === 'string' && body.message.trim()
                        ? body.message.trim().slice(0, 200)
                        : 'cents: update expenses';
-      const branchParam = body.branch || branch;
+      const branchParam = body.branch == null || body.branch === '' ? branch : body.branch;
+      if (typeof branchParam !== 'string' || branchParam.length > 200 || !/^[A-Za-z0-9._/-]+$/.test(branchParam)) {
+        return err('Body.branch is invalid', 400);
+      }
       const encoded = encodeBase64(JSON.stringify(incoming, null, 2));
 
       const putBody = { message: msg, content: encoded, branch: branchParam };
@@ -130,7 +284,7 @@ export default async (request, _context) => {
         { method: 'PUT', body: JSON.stringify(putBody) }
       );
 
-      if (r.status === 409 || r.status === 422) {
+      if (r.status === 409) {
         return ok({ conflict: true, status: r.status }, 200);
       }
       if (!r.ok) {

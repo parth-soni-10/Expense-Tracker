@@ -4,6 +4,7 @@
    UUID fallback for older browsers / file:// previews.
    ============================================================ */
 import { SEED_SETTINGS } from './seed.js';
+import { getPrivacyPin, setPrivacyPin } from './settings.js';
 
 const KEY = 'expense-tracker:v1';
 
@@ -12,62 +13,294 @@ export const uid = () =>
     ? crypto.randomUUID()
     : Date.now().toString(36) + '-' + Math.random().toString(16).slice(2);
 
-const CATEGORIES_OK = new Set(['gro','travel','misc','rent','GC']);
+const BASE_CATEGORIES = ['gro', 'travel', 'misc', 'rent', 'GC'];
+const CATEGORIES_OK = new Set(BASE_CATEGORIES);
 const METHODS_OK    = new Set(['AIB','Revolut','RS','TG','LG','AG']);
-const TYPES_OK      = new Set(['expense','credit', 'transfer']);
+const TYPES_OK      = new Set(['expense', 'credit', 'transfer', 'note']);
+// Recurring transfers need two linked legs and are not represented by the
+// recurring editor. Keeping only single-leg recurring financial entries avoids
+// creating orphaned transfer records.
+const FINANCIAL_TYPES = new Set(['expense', 'credit']);
 
 /** Let validateEntry accept custom-category ids that the user added at runtime. */
 export function updateAllowedCategories(ids) {
   CATEGORIES_OK.clear();
-  for (const id of ids) CATEGORIES_OK.add(id);
+  for (const id of BASE_CATEGORIES) CATEGORIES_OK.add(id);
+  for (const id of Array.isArray(ids) ? ids : []) {
+    if (typeof id === 'string' && id) CATEGORIES_OK.add(id);
+  }
 }
 
 function validateEntry(e) {
   if (!e || typeof e !== 'object') return null;
   const amt = Number(e.amount);
   if (!Number.isFinite(amt) || amt < 0 || amt > 1_000_000) return null;
-  if (typeof e.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(e.date)) return null;
+  if (typeof e.date !== 'string' || !isValidCheckpointDate(e.date)) return null;
   if (!TYPES_OK.has(e.type)) return null;
   if (!CATEGORIES_OK.has(e.category)) return null;
+  if (e.type === 'note' && amt !== 0) return null;
+  // Never silently round imported money: locally stored financial amounts are
+  // normalized to cents, so values with extra precision are malformed input.
+  if (Math.round(amt * 100) / 100 !== amt) return null;
   // method: must match the configured list (forward-compat kept by editing seed.js)
   if (!METHODS_OK.has(e.method)) return null;
   // Base fields + pass through any extra keys (e.g. transferId, settled) so
   // cloud sync and import don't silently strip metadata added by newer clients.
+  const id = typeof e.id === 'string' && e.id ? e.id : uid();
+  const details = typeof e.details === 'string' ? e.details : '';
+  const note = typeof e.note === 'string' ? e.note : '';
+  if (id.length > 200 || details.length > 5000 || note.length > 10000) return null;
   const base = {
-    id: typeof e.id === 'string' && e.id ? e.id : uid(),
+    id,
     date: e.date,
     type: e.type,
     category: e.category,
-    details: typeof e.details === 'string' ? e.details : '',
+    details,
     amount: +amt.toFixed(2),
     method: e.method,
-    note: typeof e.note === 'string' ? e.note : '',
+    note,
   };
+  if (typeof e.createdAt === 'string' && Number.isFinite(Date.parse(e.createdAt))) {
+    base.createdAt = new Date(e.createdAt).toISOString();
+  } else {
+    // Legacy entries had no timestamp. Use the start of their date as a stable
+    // ordering marker, so checkpoint logic treats them consistently as entries
+    // that existed before any same-day reconciliation rather than silently
+    // treating each load differently.
+    base.createdAt = `${e.date}T00:00:00.000Z`;
+  }
+  if (e.type === 'note' && typeof e.audioData === 'string'
+    && /^data:audio\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(e.audioData)
+    && e.audioData.length <= 2_000_000) {
+    base.audioData = e.audioData;
+    if (typeof e.audioType === 'string' && /^audio\/[a-z0-9.+-]+$/i.test(e.audioType)) base.audioType = e.audioType;
+  }
   // Preserve transfer metadata if present
-  if (typeof e.transferId === 'string') base.transferId = e.transferId;
+  if (typeof e.transferId === 'string' && e.transferId.length <= 200) base.transferId = e.transferId;
   if (typeof e.settled === 'boolean') base.settled = e.settled;
   return base;
+}
+
+export const BALANCE_METHOD_IDS = ['AIB', 'Revolut', 'RS', 'TG', 'LG', 'AG'];
+const MAX_BALANCE = 1_000_000;
+const CHECKPOINT_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function normalizeTimestamp(value) {
+  if (typeof value !== 'string' || value.length > 100) return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+export function isValidCheckpointDate(date) {
+  if (!CHECKPOINT_DATE_RE.test(date)) return false;
+  const [year, month, day] = date.split('-').map(Number);
+  const parsed = new Date(`${date}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime())
+    && parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() + 1 === month
+    && parsed.getUTCDate() === day;
+}
+
+function normalizeBalanceCheckpoints(rawSettings) {
+  const raw = rawSettings.balanceCheckpoints && typeof rawSettings.balanceCheckpoints === 'object'
+    ? rawSettings.balanceCheckpoints
+    : {};
+  const legacyAccounts = rawSettings.accountOpenings && typeof rawSettings.accountOpenings === 'object'
+    ? rawSettings.accountOpenings
+    : {};
+  const legacyGiftCards = rawSettings.giftCardOpenings && typeof rawSettings.giftCardOpenings === 'object'
+    ? rawSettings.giftCardOpenings
+    : {};
+  const legacyOpening = Number.isFinite(+rawSettings.openingBalance) ? +rawSettings.openingBalance : null;
+  const out = {};
+  for (const id of BALANCE_METHOD_IDS) {
+    const checkpoints = Array.isArray(raw[id])
+      ? raw[id].filter(point => point && isValidCheckpointDate(point.date)
+          && Number.isFinite(+point.balance) && Math.abs(+point.balance) <= MAX_BALANCE)
+          .map(point => ({
+            date: point.date,
+            balance: Math.round(+point.balance * 100) / 100,
+            ...(typeof point.at === 'string' && Number.isFinite(Date.parse(point.at))
+              ? { at: new Date(point.at).toISOString() }
+              : {}),
+          }))
+      : [];
+    // Keep one deterministic checkpoint per date so imported/synced state
+    // cannot produce ambiguous historical balances.
+    const byDate = new Map();
+    for (const point of checkpoints) byDate.set(point.date, point);
+    const normalized = [...byDate.values()];
+    const accountLegacy = Object.prototype.hasOwnProperty.call(legacyAccounts, id) ? +legacyAccounts[id] : NaN;
+    const giftCardLegacy = Object.prototype.hasOwnProperty.call(legacyGiftCards, id) ? +legacyGiftCards[id] : NaN;
+    const legacy = Number.isFinite(accountLegacy)
+      ? accountLegacy
+      : Number.isFinite(giftCardLegacy)
+        ? giftCardLegacy
+        : id === 'AIB' ? legacyOpening : NaN;
+    // Existing opening balances represented a baseline before all tracked
+    // entries. Preserve that meaning even when newer dated checkpoints exist.
+    if (Number.isFinite(legacy) && Math.abs(legacy) <= MAX_BALANCE && !normalized.some(point => point.date === '1970-01-01')) {
+      normalized.push({ date: '1970-01-01', balance: Math.round(legacy * 100) / 100 });
+    }
+    out[id] = normalized.sort((a, b) => a.date.localeCompare(b.date));
+  }
+  return out;
+}
+
+function normalizeCustomCategories(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set(BASE_CATEGORIES);
+  return raw.reduce((out, category) => {
+    if (!category || typeof category !== 'object') return out;
+    const id = typeof category.id === 'string' ? category.id.trim() : '';
+    const label = typeof category.label === 'string' ? category.label.trim() : '';
+    if (!id || !label || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(id) || seen.has(id)) return out;
+    seen.add(id);
+    out.push({ id, label: label.slice(0, 80) });
+    return out;
+  }, []);
+}
+
+function normalizeTransferGroups(entries) {
+  const groups = new Map();
+  for (const entry of entries) {
+    if (!entry.transferId) continue;
+    if (!groups.has(entry.transferId)) groups.set(entry.transferId, []);
+    groups.get(entry.transferId).push(entry);
+  }
+  const validTransferIds = new Set();
+  for (const [transferId, group] of groups) {
+    const debit = group.find(entry => entry.type === 'expense');
+    const credit = group.find(entry => entry.type === 'credit');
+    if (group.length === 2 && debit && credit
+      && debit.amount === credit.amount
+      && debit.date === credit.date
+      && debit.method !== credit.method) {
+      validTransferIds.add(transferId);
+    }
+  }
+  return entries.map(entry => {
+    if (entry.transferId && validTransferIds.has(entry.transferId)) return entry;
+    // Preserve malformed imported legs as ordinary visible transactions rather
+    // than letting an orphaned/standalone transfer silently evade spending
+    // totals or distort balance semantics.
+    const { transferId, settled, ...ordinary } = entry;
+    return entry.type === 'transfer' ? { ...ordinary, type: 'expense' } : ordinary;
+  });
+}
+
+function normalizeRecurring(raw, customCategoryIds) {
+  if (!Array.isArray(raw)) return [];
+  const allowedCategories = new Set([...BASE_CATEGORIES, ...customCategoryIds]);
+  return raw.reduce((out, item) => {
+    if (!item || typeof item !== 'object') return out;
+    const amount = Number(item.amount);
+    const day = Number(item.dayOfMonth);
+    if (typeof item.id !== 'string' || !item.id || !FINANCIAL_TYPES.has(item.type)
+      || !METHODS_OK.has(item.method) || !allowedCategories.has(item.category)
+      || !isValidCheckpointDate(item.nextDate) || !Number.isFinite(amount) || amount <= 0 || amount > 1_000_000
+      || !['weekly', 'monthly'].includes(item.frequency)) return out;
+    out.push({
+      id: item.id,
+      type: item.type,
+      details: typeof item.details === 'string' ? item.details.trim().slice(0, 240) : '',
+      amount: +amount.toFixed(2),
+      method: item.method,
+      category: item.category,
+      frequency: item.frequency,
+      dayOfMonth: Number.isInteger(day) ? Math.min(31, Math.max(1, day)) : 1,
+      nextDate: item.nextDate,
+      note: typeof item.note === 'string' ? item.note.slice(0, 500) : '',
+    });
+    return out;
+  }, []);
+}
+
+function normalizeCoins(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const allowed = new Set(['50', '20', '10', '5', '2', '1', '0.5', '0.2', '0.1', '0.05']);
+  return Object.fromEntries(Object.entries(raw)
+    .filter(([key, value]) => allowed.has(key) && Number.isInteger(Number(value)) && Number(value) >= 0 && Number(value) <= 1_000_000)
+    .map(([key, value]) => [key, Number(value)]));
 }
 
 function defaultState() {
   return {
     entries: [],
-    settings: { ...SEED_SETTINGS },
-    schemaVersion: 1,
+    settings: {
+      ...SEED_SETTINGS,
+      balanceCheckpoints: Object.fromEntries(BALANCE_METHOD_IDS.map(id => [id, []])),
+    },
+    schemaVersion: 2,
   };
 }
 
 export function validateState(s) {
   if (!s || !Array.isArray(s.entries)) return defaultState();
   const out = { ...s };
-  out.entries = s.entries.map(validateEntry).filter(Boolean);
+  const lastLocalChangeAt = normalizeTimestamp(s.lastLocalChangeAt);
+  const localResetAt = normalizeTimestamp(s.localResetAt);
+  if (lastLocalChangeAt) out.lastLocalChangeAt = lastLocalChangeAt;
+  else delete out.lastLocalChangeAt;
+  if (localResetAt) out.localResetAt = localResetAt;
+  else delete out.localResetAt;
+  const rawSettings = s.settings && typeof s.settings === 'object' && !Array.isArray(s.settings) ? s.settings : {};
+  const customCategories = normalizeCustomCategories(rawSettings.customCategories);
+  updateAllowedCategories(customCategories.map(category => category.id));
+  const usedIds = new Set();
+  out.entries = normalizeTransferGroups(s.entries.map(entry => {
+    const clean = validateEntry(entry);
+    if (!clean || usedIds.has(clean.id)) return null;
+    usedIds.add(clean.id);
+    return clean;
+  }).filter(Boolean));
+  // Migrate legacy in-state PINs for local, imported, and cloud-loaded copies
+  // before removing them from the synced/exported state. If device storage is
+  // unavailable (e.g. private browsing), keep the legacy hash so the PIN is
+  // not silently lost.
+  let pinFailed = false;
+  if (typeof rawSettings.pinHash === 'string' && /^[a-f0-9]{64}$/i.test(rawSettings.pinHash) && !getPrivacyPin().hash) {
+    if (!setPrivacyPin(rawSettings.pinHash.toLowerCase(), null)) {
+      pinFailed = true;
+      console.warn('PIN migration failed: device-only storage was unavailable or the migrated credential could not be verified; the legacy PIN hash was retained locally.');
+    }
+  }
+  // Never carry legacy PIN material into the validated/synced/exported state
+  // once it has been successfully migrated to device-only storage.
+  const {
+    pinHash: _legacyPinHash,
+    accountOpenings: legacyAccountOpenings,
+    giftCardOpenings: legacyGiftCardOpenings,
+    openingBalance: legacyOpeningValue,
+    ...safeSettings
+  } = rawSettings;
+  const legacySettings = {
+    ...safeSettings,
+    accountOpenings: legacyAccountOpenings,
+    giftCardOpenings: legacyGiftCardOpenings,
+    openingBalance: legacyOpeningValue,
+  };
+  // If PIN migration to device storage failed (private browsing, storage full),
+  // preserve the legacy hash in state so the lock is not silently removed.
+  if (pinFailed) {
+    safeSettings.pinHash = _legacyPinHash;
+  }
   out.settings = {
     ...SEED_SETTINGS,
-    ...(s.settings && typeof s.settings === 'object' ? s.settings : {}),
-    monthlyBudget: Number.isFinite(+s.settings?.monthlyBudget) ? +s.settings.monthlyBudget : SEED_SETTINGS.monthlyBudget,
-    customCategories: Array.isArray(s.settings?.customCategories) ? s.settings.customCategories : [],
+    ...safeSettings,
+    // All legacy opening fields are represented by dated checkpoints now.
+    balanceCheckpoints: normalizeBalanceCheckpoints(legacySettings),
+    monthlyBudget: Number.isFinite(+safeSettings.monthlyBudget) && +safeSettings.monthlyBudget >= 0
+      ? Math.min(+safeSettings.monthlyBudget, 1_000_000)
+      : SEED_SETTINGS.monthlyBudget,
+    currency: typeof safeSettings.currency === 'string' && safeSettings.currency.trim().length >= 1
+      ? safeSettings.currency.trim().slice(0, 8)
+      : SEED_SETTINGS.currency,
+    customCategories,
+    recurring: normalizeRecurring(safeSettings.recurring, customCategories.map(category => category.id)),
+    coins: normalizeCoins(safeSettings.coins),
   };
-  out.schemaVersion = 1;
+  out.schemaVersion = 2;
   return out;
 }
 
@@ -88,17 +321,32 @@ export function saveState(state) {
 }
 
 export function resetToBlank() {
-  const fresh = defaultState();
+  // Create the deletion tombstone before the first write. This prevents a
+  // reload/crash between clearing the data and recording the reset from
+  // resurrecting an older cloud copy.
+  const resetAt = new Date().toISOString();
+  const fresh = {
+    ...defaultState(),
+    lastLocalChangeAt: resetAt,
+    localResetAt: resetAt,
+  };
   saveState(fresh);
   return fresh;
 }
 
 export function exportJSON(state) {
-  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  // PIN fallback material is intentionally local-only. Never place it in a
+  // downloadable export, even if device storage was unavailable during legacy
+  // PIN migration.
+  const safeState = JSON.parse(JSON.stringify(state || {}));
+  if (safeState.settings && typeof safeState.settings === 'object') delete safeState.settings.pinHash;
+  const blob = new Blob([JSON.stringify(safeState, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `expenses-${new Date().toISOString().slice(0, 10)}.json`;
+  const now = new Date();
+  const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  a.download = `expenses-${localDate}.json`;
   document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
 }

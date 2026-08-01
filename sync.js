@@ -29,7 +29,7 @@ function withTimeout(p, ms) {
   });
 }
 
-async function authedFetch(url, init = {}) {
+async function authedFetch(init = {}) {
   const s = getSyncSettings();
   if (!s.endpoint || !s.password) {
     return { ok: false, reason: 'not_configured' };
@@ -55,12 +55,13 @@ async function authedFetch(url, init = {}) {
 
 /** GET the cloud file. Returns content + sha + lastModifiedAt, or { content: null } if no file yet. */
 export async function syncPull() {
-  const r = await authedFetch(undefined, { method: 'GET' });
+  const r = await authedFetch({ method: 'GET' });
   if (!r.ok) return r;
   let body;
   try { body = await r.resp.json(); }
   catch { return { ok: false, reason: 'http', message: 'invalid JSON from proxy' }; }
   if (body?.error) return { ok: false, reason: 'http', message: body.error };
+  if (body?.malformed) return { ok: false, reason: 'http', message: 'malformed cloud data' };
   return {
     ok: true,
     content: body.content,
@@ -73,7 +74,7 @@ export async function syncPull() {
 
 /** PUT the cloud file. Provide the latest known sha if you have it; omit for first push. */
 export async function syncPush(content, { sha = null, message = 'cents: update expenses' } = {}) {
-  const r = await authedFetch(undefined, {
+  const r = await authedFetch({
     method: 'PUT',
     body: JSON.stringify({ content, sha, message }),
   });
@@ -90,10 +91,15 @@ export async function syncPush(content, { sha = null, message = 'cents: update e
 
 /** Used by the Settings modal "Test connection" button \u2014 hits GET on a non-existent to validate auth. */
 export async function syncTestConnection(endpoint, password) {
-  if (!endpoint || !password) return { ok: false, reason: 'not_configured' };
+  const candidateEndpoint = typeof endpoint === 'string' ? endpoint.trim() : '';
+  const safeEndpoint = candidateEndpoint === ''
+    || (/^\/(?!\/)/.test(candidateEndpoint))
+    || /^https:\/\//i.test(candidateEndpoint)
+    || /^http:\/\/localhost(?::\d+)?(?:\/|$)/i.test(candidateEndpoint);
+  if (!candidateEndpoint || !safeEndpoint || !password) return { ok: false, reason: 'invalid_endpoint' };
   let resp;
   try {
-    resp = await withTimeout(fetch(endpoint, {
+    resp = await withTimeout(fetch(candidateEndpoint, {
       method: 'GET',
       headers: { 'X-Cents-Password': password },
       cache: 'no-store',

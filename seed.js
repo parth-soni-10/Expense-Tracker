@@ -23,4 +23,7 @@ export const METHODS = [
 export const SEED_SETTINGS = {
   monthlyBudget: 1100,
   currency: '€',
+  // Historical balance checkpoints. Each account is keyed to an array of
+  // { date, balance } records, where balance is the end-of-day actual balance.
+  balanceCheckpoints: {},
 };

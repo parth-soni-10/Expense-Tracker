@@ -2,28 +2,222 @@
    Expense Tracker — editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #insights
    ============================================================ */
-import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories } from './storage.js';
+import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS } from './storage.js';
 import { CATEGORIES, METHODS } from './seed.js';
-import { getSyncSettings, patchSyncSettings, clearSyncSettings } from './settings.js';
+import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync } from './sync.js';
 
 // ---------- state ----------
 let state = loadState();
 // Keep storage.js validation set in sync with seed + custom categories.
 updateAllowedCategories([...CATEGORIES, ...(state.settings.customCategories || [])].map(c => c.id));
-const today = () => new Date().toISOString().slice(0, 10);
+function localDateKey(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+const today = () => localDateKey();
+const nowIso = () => new Date().toISOString();
+let pinUnlocked = false;
+let pinOverlay = null;
+
+async function hashPin(pin, salt = '') {
+  if (!globalThis.crypto?.subtle) throw new Error('Web Crypto is unavailable');
+  const bytes = new TextEncoder().encode(`${salt === null ? '' : salt}:${String(pin)}`);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function hashPinPlain(pin) {
+  if (!globalThis.crypto?.subtle) throw new Error('Web Crypto is unavailable');
+  const bytes = new TextEncoder().encode(String(pin));
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function getPinCredential() {
+  const devicePin = getPrivacyPin();
+  if (devicePin.hash) return devicePin;
+  const legacyHash = state?.settings?.pinHash;
+  return typeof legacyHash === 'string' && /^[a-f0-9]{64}$/i.test(legacyHash)
+    ? { salt: null, hash: legacyHash.toLowerCase() }
+    : { salt: null, hash: null };
+}
+
+function hasPinLock() {
+  return !!getPinCredential().hash;
+}
+
+function closePinOverlay() {
+  if (pinOverlay) { pinOverlay.remove(); pinOverlay = null; }
+}
+
+function showPinLock() {
+  if (pinUnlocked || !hasPinLock() || pinOverlay) return;
+  const input = $('input', { type: 'password', inputmode: 'numeric', maxlength: '6', autocomplete: 'off', placeholder: '••••', 'aria-label': 'PIN', style: 'width:100%;text-align:center;letter-spacing:.35em;font-size:24px;' });
+  const message = $('p', { class: 'muted', style: 'font-size:13px;text-align:center;min-height:20px;margin:12px 0;' });
+  const submit = async () => {
+    const value = String(input.value || '').trim();
+    if (!/^\d{4,6}$/.test(value)) { message.textContent = 'Enter your 4–6 digit PIN.'; input.focus(); return; }
+    try {
+      const saved = getPinCredential();
+      const saltedMatch = saved.salt !== null && (await hashPin(value, saved.salt)) === saved.hash;
+      // Older builds used plain SHA-256(pin). This also keeps the lock active
+      // if a browser cannot persist the migrated device-only credential.
+      const legacyMatch = saved.salt === null && (await hashPinPlain(value)) === saved.hash;
+      if (!saltedMatch && !legacyMatch) {
+        message.textContent = 'That PIN is not correct.';
+        input.value = '';
+        input.focus();
+        return;
+      }
+      pinUnlocked = true;
+      closePinOverlay();
+      render();
+    } catch (err) {
+      message.textContent = 'PIN verification is unavailable in this browser.';
+    }
+  };
+  const overlay = $('div', { class: 'modal-bg', style: 'z-index:10000;background:rgba(0,0,0,.78);backdrop-filter:blur(16px);' },
+    $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Unlock cents', style: 'max-width:360px;text-align:center;' },
+      $('div', { class: 'serif', style: 'font-size:32px;font-style:italic;margin-bottom:4px;' }, 'cents.'),
+      $('p', { class: 'eyebrow', style: 'margin:0;' }, 'Privacy lock'),
+      $('p', { class: 'serif', style: 'font-style:italic;font-size:18px;margin:20px 0 4px;' }, 'Welcome back.'),
+      message,
+      input,
+      $('button', { type: 'button', class: 'btn btn-primary', style: 'width:100%;margin-top:12px;', onClick: submit }, 'Unlock'),
+    ),
+  );
+  pinOverlay = overlay;
+  document.body.appendChild(overlay);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  queueMicrotask(() => input.focus());
+}
+
+function lockApp() {
+  if (!hasPinLock()) { toast('Set a PIN first.'); return; }
+  pinUnlocked = false;
+  render();
+  showPinLock();
+}
+
+function openPinSettings() {
+  const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Privacy lock settings', tabindex: '-1', style: 'max-width:420px;' });
+  const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); };
+  const onKey = ev => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  bg.appendChild(modal); document.body.appendChild(bg);
+  const current = hasPinLock();
+  const pin = $('input', { type: 'password', inputmode: 'numeric', maxlength: '6', autocomplete: 'new-password', placeholder: current ? 'New PIN (leave blank to keep)' : '4–6 digits', 'aria-label': 'New PIN' });
+  const confirm = $('input', { type: 'password', inputmode: 'numeric', maxlength: '6', autocomplete: 'new-password', placeholder: 'Repeat PIN', 'aria-label': 'Repeat PIN' });
+  const status = $('p', { class: 'muted', style: 'font-size:12px;min-height:18px;' }, current ? 'A PIN protects this device when the app opens.' : 'Your PIN is stored as a one-way hash on this device. This protects casual access, not localStorage or DevTools.');
+  const save = async () => {
+    const value = pin.value.trim();
+    if (!value && current) { close(); return; }
+    if (!/^\d{4,6}$/.test(value)) { status.textContent = 'Use 4–6 digits.'; pin.focus(); return; }
+    if (value !== confirm.value.trim()) { status.textContent = 'The PINs do not match.'; confirm.focus(); return; }
+    try {
+      if (!globalThis.crypto?.getRandomValues) throw new Error('Secure randomness is unavailable');
+      const salt = globalThis.crypto.randomUUID?.() || Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
+      const saved = setPrivacyPin(await hashPin(value, salt), salt);
+      if (!saved) { status.textContent = 'Could not save the PIN on this device.'; return; }
+      // Remove any legacy in-state fallback once the device-only credential is
+      // definitely stored, so exports/sync cannot retain stale PIN material.
+      if (state.settings?.pinHash) delete state.settings.pinHash;
+      persist(); pinUnlocked = true; close(); toast('Privacy lock enabled.'); render();
+    } catch (err) {
+      status.textContent = 'PIN security is unavailable in this browser.';
+    }
+  };
+  modal.append(
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;' }, $('h2', { class: 'serif', style: 'font-size:28px;font-style:italic;font-weight:400;' }, 'Privacy lock'), $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
+    $('p', { class: 'serif', style: 'font-style:italic;font-size:16px;' }, current ? 'Change or remove your PIN.' : 'Keep financial data private on shared devices.'),
+    $('div', { style: 'display:flex;flex-direction:column;gap:12px;margin:20px 0;' }, pin, confirm),
+    status,
+    $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:18px;' },
+      current ? $('button', { type: 'button', class: 'btn btn-danger', onClick: () => {
+        if (!clearPrivacyPin()) { toast('Could not remove the PIN from this device.'); return; }
+        if (state.settings?.pinHash) delete state.settings.pinHash;
+        persist();
+        pinUnlocked = true;
+        close();
+        toast('Privacy lock removed.');
+        render();
+      } }, 'Remove PIN') : null,
+      $('button', { type: 'button', class: 'btn btn-primary', onClick: save }, current ? 'Save PIN' : 'Enable PIN'),
+    ),
+  );
+  queueMicrotask(() => pin.focus());
+}
 
 function persist() {
-  saveState(state);
-  // Track the last local edit so initSync can warn if the cloud is fresher.
+  // Track the last local edit before writing so conflict detection survives reloads.
   state.lastLocalChangeAt = new Date().toISOString();
+  clearBalanceCaches();
+  syncRevision++;
+  saveState(state);
   scheduleSyncPush();
+}
+
+function isUsableCloudContent(content) {
+  return !!content && typeof content === 'object' && !Array.isArray(content) && Array.isArray(content.entries);
+}
+
+// Device-only PIN fallback material must never leave this browser, even when
+// localStorage is unavailable and the legacy hash is temporarily retained.
+function cloudPayload() {
+  const payload = JSON.parse(JSON.stringify(state));
+  if (payload.settings && typeof payload.settings === 'object') delete payload.settings.pinHash;
+  return payload;
+}
+
+function hasLocalDataToProtect() {
+  const settings = state.settings || {};
+  const checkpoints = settings.balanceCheckpoints || {};
+  return state.entries.length > 0
+    || !!state.localResetAt
+    || Object.values(checkpoints).some(points => Array.isArray(points) && points.length > 0)
+    || (Array.isArray(settings.recurring) && settings.recurring.length > 0)
+    || (Array.isArray(settings.customCategories) && settings.customCategories.length > 0)
+    || Object.values(settings.coins || {}).some(count => Number(count) > 0);
+}
+
+function confirmCloudReplacement() {
+  return !hasLocalDataToProtect()
+    || window.confirm('Pulling from the cloud will replace this device’s local data. Continue?');
+}
+
+function localIsFresherThanCloud(pullResult) {
+  // A reset is a deletion tombstone. GitHub's Contents response does not
+  // reliably include a commit timestamp, so never resurrect an older cloud
+  // copy merely because that timestamp is unavailable.
+  const localResetTime = state.localResetAt ? Date.parse(state.localResetAt) : NaN;
+  if (Number.isFinite(localResetTime)) {
+    const cloudResetTime = pullResult?.content?.localResetAt
+      ? Date.parse(pullResult.content.localResetAt)
+      : NaN;
+    if (!Number.isFinite(cloudResetTime)) return true;
+    if (localResetTime !== cloudResetTime) return localResetTime > cloudResetTime;
+  }
+  const localTime = state.lastLocalChangeAt ? Date.parse(state.lastLocalChangeAt) : NaN;
+  const cloudTime = pullResult?.lastModifiedAt ? Date.parse(pullResult.lastModifiedAt) : NaN;
+  return Number.isFinite(localTime) && Number.isFinite(cloudTime) && localTime > cloudTime;
 }
 
 // ---------- sync scheduler ----------
 let pushTimer = null;
+let syncInFlight = false;
+// Manual pull/push operations are exclusive with automatic pushes. Revision
+// checks alone cannot prevent an already-started push from writing after a pull.
+let syncExclusive = false;
+let syncRevision = 0;
+function cancelScheduledSyncPush() {
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+}
 function scheduleSyncPush() {
-  if (pushTimer) clearTimeout(pushTimer);
+  cancelScheduledSyncPush();
   const s = getSyncSettings();
   if (!s.enabled || !s.endpoint || !s.password) return;
   pushTimer = setTimeout(doAutoPush, 1500);
@@ -32,59 +226,101 @@ function scheduleSyncPush() {
 let sessionSyncFailed = false;
 async function doAutoPush() {
   pushTimer = null;
-  const s = getSyncSettings();
-  setSyncPulsing(true);
-  let r = await syncPush(state, { sha: s.lastSha, message: 'cents: auto push' });
-  // One retry on transient network: handles flaky mobile without nagging the user.
-  // Refresh sha before retry so a concurrent push from another device will surface as 409 instead of being clobbered.
-  if (!r.ok && r.reason === 'network') {
-    await new Promise(res => setTimeout(res, 1000));
-    const pulled = await syncPull();
-    if (pulled.ok) {
-      patchSyncSettings({ lastSha: pulled.sha });
-      r = await syncPush(state, { sha: pulled.sha, message: 'cents: auto push (retry)' });
+  if (syncInFlight || syncExclusive) { scheduleSyncPush(); return; }
+  syncInFlight = true;
+  const revision = syncRevision;
+  try {
+    // Keep every operation that can throw inside the guarded region so a
+    // serialization/UI failure cannot leave automatic sync permanently locked.
+    const payload = cloudPayload();
+    const s = getSyncSettings();
+    setSyncPulsing(true);
+    let r = await syncPush(payload, { sha: s.lastSha, message: 'cents: auto push' });
+    // Do not pull a fresh SHA and retry the old payload: that would silently
+    // overwrite changes made on another device. A later local edit will queue
+    // another attempt, while a manual Push can surface a real conflict.
+    if (revision !== syncRevision) {
+      // A newer local mutation happened while this request was in flight. The
+      // old payload may be on the server, so retain its SHA as the parent for
+      // the queued push, but never mark the newer state as synced.
+      if (r.ok) patchSyncSettings({ lastSha: r.sha });
+      scheduleSyncPush();
+      return;
     }
-  }
-  if (r.ok) {
-    patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
-    // Success: if a previous sync in this session failed and we're now back, toast once and reset.
-    if (sessionSyncFailed) {
-      toast('✨ Cloud sync recovered.');
-      sessionSyncFailed = false;
+    if (r.ok) {
+      patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
+      if (sessionSyncFailed) {
+        toast('✨ Cloud sync recovered.');
+        sessionSyncFailed = false;
+      }
+    } else {
+      patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
+      if (!sessionSyncFailed && r.reason !== 'conflict') {
+        toast('☠ Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.');
+        sessionSyncFailed = true;
+      }
     }
-  } else {
-    patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
-    // First failure in this session: toast once. Stay quiet on subsequent failures until a sync succeeds again.
-    if (!sessionSyncFailed && r.reason !== 'conflict') {
-      toast('☠ Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.');
+    notifySyncChange();
+  } catch (error) {
+    const message = error?.message || 'sync failed';
+    patchSyncSettings({ lastError: message, lastErrorAt: new Date().toISOString() });
+    if (!sessionSyncFailed) {
+      toast('☠ Cloud sync failed: ' + message + '. Changes saved locally.');
       sessionSyncFailed = true;
     }
+    notifySyncChange();
+  } finally {
+    setSyncPulsing(false);
+    syncInFlight = false;
   }
-  notifySyncChange();
-  setSyncPulsing(false);
 }
 
 async function initSync() {
   const s = getSyncSettings();
   if (!s.enabled || !s.endpoint || !s.password) return;
-  const r = await syncPull();
-  if (r.ok && r.content) {
-    const incomingCount = (r.content && Array.isArray(r.content.entries)) ? r.content.entries.length : 0;
+  if (syncInFlight || syncExclusive) {
+    scheduleSyncPush();
+    return;
+  }
+  syncExclusive = true;
+  const pullRevision = syncRevision;
+  let r;
+  try {
+    r = await syncPull();
+  if (r.ok && isUsableCloudContent(r.content)) {
+    const incomingCount = r.content.entries.length;
     const localCount = state.entries.length;
     const localEditedAt = state.lastLocalChangeAt ? Date.parse(state.lastLocalChangeAt) : null;
-    const cloudEditedAt = r.lastModifiedAt ? (new Date(r.lastModifiedAt)).getTime() : null;
+    const cloudEditedAt = r.lastModifiedAt ? Date.parse(r.lastModifiedAt) : null;
     // lastLocalChangeAt lives at the top of `state` (load-bearing — see persist()).
-    const localIsFresher = localEditedAt && cloudEditedAt && localEditedAt > cloudEditedAt;
+    const localIsFresher = localIsFresherThanCloud(r);
 
-    if (localIsFresher && localCount > 0) {
+    if (localIsFresher) {
       // Cloud is stale — keep the user's local edits and push them up instead of clobbering.
-      patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
+      // The cloud SHA is the correct parent for the queued push, but the
+      // local copy is not synced until that push succeeds.
+      patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
       toast('Cloud is older than your local copy — pushing your changes.');
       scheduleSyncPush();
       notifySyncChange();
       return;
     }
+    // A known SHA means this device already has this exact cloud revision.
+    // Otherwise, never replace local entries/settings silently during boot.
+    const cloudRevisionKnown = typeof r.sha === 'string' && r.sha.length > 0;
+    if ((!cloudRevisionKnown || getSyncSettings().lastSha !== r.sha) && hasLocalDataToProtect() && !confirmCloudReplacement()) {
+      // Do not record the rejected cloud SHA: doing so would make a later boot
+      // treat the still-unmerged local copy as already reconciled.
+      notifySyncChange();
+      return;
+    }
 
+    if (pullRevision !== syncRevision) {
+      toast('A newer local change was kept; cloud pull skipped.');
+      notifySyncChange();
+      return;
+    }
+    syncRevision++;
     state = validateState(r.content);
     saveState(state);
     updateAllowedCategories(allCategories().map(c => c.id));
@@ -102,10 +338,27 @@ async function initSync() {
       toast('In sync with cloud.');
     }
     render();
-  } else if (!r.ok) {
+  } else if (r.ok && !r.content) {
+    // An absent cloud file is not an authoritative empty dataset. Keep local
+    // data untouched and let the normal push create the first cloud revision.
+    patchSyncSettings({ lastError: null, lastErrorAt: null });
+    if (hasLocalDataToProtect()) {
+      toast('Cloud file is empty — local data was kept and will be pushed.');
+      scheduleSyncPush();
+    } else {
+      toast('Cloud file is empty — nothing to pull.');
+    }
+    notifySyncChange();
+  } else if (r.ok) {
+    patchSyncSettings({ lastError: 'malformed cloud data', lastErrorAt: new Date().toISOString() });
+    toast('Cloud data is malformed — local data was kept.');
+  } else {
     patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
   }
   notifySyncChange();
+  } finally {
+    syncExclusive = false;
+  }
 }
 
 /** Set sync dot to pulsing while a push/pull is in flight. */
@@ -137,16 +390,226 @@ function renderSyncIndicator() {
 subscribeSync(renderSyncIndicator);
 
 // ---------- utilities ----------
+const METHOD_BY_ID = new Map(METHODS.map(method => [method.id, method]));
+let categoryCacheState = null;
+let categoryCacheCustoms = null;
+let categoryCacheLength = -1;
+let categoryCache = [];
+
 function methodShort(id) {
-  const m = METHODS.find(x => x.id === id);
-  if (!m) return id;
-  return m.label.includes(' · ') ? m.label.split(' · ')[1] : m.label;
+  const method = METHOD_BY_ID.get(id);
+  if (!method) return id;
+  return method.label.includes(' · ') ? method.label.split(' · ')[1] : method.label;
+}
+function methodLabel(id) {
+  return METHOD_BY_ID.get(id)?.label || id;
 }
 
 /** Merge built-in categories with user-added custom ones. */
 function allCategories() {
   const customs = state.settings.customCategories || [];
-  return [...CATEGORIES, ...customs];
+  if (categoryCacheState === state && categoryCacheCustoms === customs && categoryCacheLength === customs.length) return categoryCache;
+  categoryCacheState = state;
+  categoryCacheCustoms = customs;
+  categoryCacheLength = customs.length;
+  categoryCache = [...CATEGORIES, ...customs];
+  return categoryCache;
+}
+function categoryLabel(id) {
+  return allCategories().find(category => category.id === id)?.label || id;
+}
+
+const ACCOUNT_METHOD_IDS = ['AIB', 'Revolut', 'RS'];
+const GIFT_CARD_IDS = ['TG', 'LG', 'AG'];
+const MAX_BALANCE = 1_000_000;
+let balanceCheckpointCacheState = null;
+let balanceCheckpointCache = null;
+let balanceAtCacheState = null;
+const balanceAtCache = new Map();
+
+function clearBalanceCaches() {
+  balanceCheckpointCacheState = null;
+  balanceCheckpointCache = null;
+  balanceAtCacheState = null;
+  balanceAtCache.clear();
+  categoryCacheState = null;
+  categoryCacheCustoms = null;
+  categoryCacheLength = -1;
+  categoryCache = [];
+}
+
+function getBalanceCheckpoints() {
+  if (balanceCheckpointCacheState === state && balanceCheckpointCache) return balanceCheckpointCache;
+  const configured = state.settings.balanceCheckpoints || {};
+  balanceCheckpointCache = Object.fromEntries(BALANCE_METHOD_IDS.map(id => [id, Array.isArray(configured[id]) ? configured[id] : []]));
+  balanceCheckpointCacheState = state;
+  return balanceCheckpointCache;
+}
+const EMPTY_BALANCE_CHECKPOINTS = Object.fromEntries(BALANCE_METHOD_IDS.map(id => [id, []]));
+function checkpointsForEntries(entries, checkpointsByMethod) {
+  return checkpointsByMethod || (entries === state.entries ? getBalanceCheckpoints() : EMPTY_BALANCE_CHECKPOINTS);
+}
+function checkpointFor(methodId, targetDate = today(), checkpointsByMethod = null) {
+  const checkpoints = (checkpointsByMethod || EMPTY_BALANCE_CHECKPOINTS)[methodId];
+  if (!Array.isArray(checkpoints)) return null;
+  for (let index = checkpoints.length - 1; index >= 0; index--) {
+    if (checkpoints[index].date <= targetDate) return checkpoints[index];
+  }
+  return null;
+}
+function balanceDelta(entry, methodId) {
+  if (!entry || entry.type === 'note' || entry.method !== methodId) return 0;
+  if (GIFT_CARD_IDS.includes(methodId)) {
+    if (entry.type === 'credit' || entry.category === 'GC') return entry.amount;
+    return -entry.amount;
+  }
+  return entry.type === 'credit' ? entry.amount : -entry.amount;
+}
+function balanceAtForEntries(entries, methodId, targetDate = today(), checkpointsByMethod = null) {
+  const checkpoints = checkpointsForEntries(entries, checkpointsByMethod);
+  const cacheable = entries === state.entries && checkpoints === getBalanceCheckpoints();
+  const cacheKey = `${methodId}|${targetDate}`;
+  if (cacheable) {
+    if (balanceAtCacheState !== state) {
+      balanceAtCache.clear();
+      balanceAtCacheState = state;
+    } else if (balanceAtCache.has(cacheKey)) {
+      return balanceAtCache.get(cacheKey);
+    }
+  }
+  const checkpoint = checkpointFor(methodId, targetDate, checkpoints);
+  const startDate = checkpoint?.date || '0000-00-00';
+  const startBalance = checkpoint?.balance || 0;
+  // Checkpoints imported from older builds have no `at`; treat those as
+  // end-of-day checkpoints rather than silently dropping same-day history.
+  const checkpointTime = checkpoint
+    ? (checkpoint.at ? Date.parse(checkpoint.at) : Date.parse(`${checkpoint.date}T23:59:59.999Z`))
+    : NaN;
+  // A dated checkpoint is authoritative for the balance at the moment it was
+  // saved. Transactions on that same date that were created/edited afterwards
+  // still apply, so reconciling today never hides a later same-day expense.
+  const balance = entries
+    .filter(entry => {
+      if (entry.date > startDate && entry.date <= targetDate) return true;
+      if (entry.date !== startDate || !Number.isFinite(checkpointTime)) return false;
+      const entryTime = entry.createdAt ? Date.parse(entry.createdAt) : NaN;
+      return Number.isFinite(entryTime) && entryTime > checkpointTime && entry.date <= targetDate;
+    })
+    .reduce((total, entry) => total + balanceDelta(entry, methodId), startBalance);
+  if (cacheable) balanceAtCache.set(cacheKey, balance);
+  return balance;
+}
+/** Balance at the end of a date, using the latest end-of-day checkpoint. */
+function balanceAt(methodId, targetDate = today()) {
+  return balanceAtForEntries(state.entries, methodId, targetDate);
+}
+/** Book balance from the original baseline, intentionally ignoring later
+ * reconciliations. This is used to explain the reconciliation variance and to
+ * prefill a new checkpoint without making checkpoints depend on one another. */
+function bookBalanceAt(methodId, targetDate = today(), entries = state.entries, checkpointsByMethod = null) {
+  const checkpoints = checkpointsForEntries(entries, checkpointsByMethod);
+  const baseline = checkpoints[methodId]
+    ?.find(point => point.date === '1970-01-01')?.balance || 0;
+  return entries
+    .filter(entry => entry.date <= targetDate)
+    .reduce((balance, entry) => balance + balanceDelta(entry, methodId), baseline);
+}
+function userCheckpointFor(methodId, targetDate = today()) {
+  const checkpoints = getBalanceCheckpoints()[methodId];
+  for (let index = checkpoints.length - 1; index >= 0; index--) {
+    const point = checkpoints[index];
+    if (point.date === '1970-01-01') break;
+    if (point.date <= targetDate) return point;
+  }
+  return null;
+}
+function saveBalanceCheckpoint(methodId, date, balance) {
+  if (!BALANCE_METHOD_IDS.includes(methodId) || !isValidCheckpointDate(date) || date > today() || !Number.isFinite(+balance) || Math.abs(+balance) > MAX_BALANCE) return false;
+  if (!state.settings.balanceCheckpoints) state.settings.balanceCheckpoints = {};
+  const existing = Array.isArray(state.settings.balanceCheckpoints[methodId])
+    ? state.settings.balanceCheckpoints[methodId]
+    : [];
+  state.settings.balanceCheckpoints[methodId] = [      ...existing.filter(point => point.date !== date),
+    { date, at: nowIso(), balance: Math.round(balance * 100) / 100 },
+  ].sort((a, b) => a.date.localeCompare(b.date));
+  // New edits are stored as dated reconciliation checkpoints.
+  persist();
+  return true;
+}
+function totalAccountBalanceAt(date = today(), checkpointsByMethod = null) {
+  const entries = state.entries;
+  const checkpoints = checkpointsForEntries(entries, checkpointsByMethod);
+  return ACCOUNT_METHOD_IDS.reduce((sum, id) => sum + balanceAtForEntries(entries, id, date, checkpoints), 0);
+}
+
+function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '' } = {}) {
+  const row = $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;' });
+  let editing = false;
+  const actualBalance = () => balanceAt(methodId, today());
+  const reconciliationSummary = () => {
+    const point = userCheckpointFor(methodId, today());
+    if (!point) return null;
+    const book = bookBalanceAt(methodId, point.date);
+    return { point, difference: point.balance - book };
+  };
+  const draw = () => {
+    row.innerHTML = '';
+    if (editing) {
+      const amount = $('input', { type: 'text', inputmode: 'decimal', value: actualBalance().toFixed(2), 'aria-label': `${label} actual balance`, autocomplete: 'off', style: `width:${isNarrow() ? '86px' : '104px'};padding:6px 8px;border:1px solid var(--accent);border-radius:var(--radius);text-align:right;font-size:12px;` });
+      const date = $('input', { type: 'date', value: today(), max: today(), 'aria-label': `${label} reconciliation date`, style: `width:${isNarrow() ? '124px' : '138px'};padding:6px 8px;border:1px solid var(--line);border-radius:var(--radius);font-size:12px;` });
+      const refreshAmountForDate = () => {
+        const existing = userCheckpointFor(methodId, date.value);
+        amount.value = (existing?.date === date.value ? existing.balance : bookBalanceAt(methodId, date.value)).toFixed(2);
+      };
+      date.addEventListener('change', refreshAmountForDate);
+      const save = () => {
+        const rawAmount = String(amount.value || '').trim();
+        const next = rawAmount.startsWith('-') ? -parseAmount(rawAmount.slice(1)) : parseAmount(rawAmount);
+        if (!Number.isFinite(next) || next < -1000000 || next > 1000000) { toast('Enter a valid actual balance.'); amount.focus(); return; }
+        if (!isValidCheckpointDate(date.value) || date.value > today()) { toast('Choose today or an earlier reconciliation date.'); date.focus(); return; }
+        if (!saveBalanceCheckpoint(methodId, date.value, next)) { toast('Could not save that reconciliation.'); return; }
+        editing = false;
+        toast(`${label} reconciled at ${fmt(next)}.`);
+        render();
+      };
+      amount.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } if (ev.key === 'Escape') { editing = false; draw(); } });
+      date.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } if (ev.key === 'Escape') { editing = false; draw(); } });
+      row.append(
+        $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;flex:1;' },
+          $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
+          secondary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, secondary) : null,
+        ),
+        $('div', { style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;' },
+          $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, 'amount is authoritative when saved; later same-day edits and entries are applied'),
+          amount, date,
+          $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: save }, 'Save'),
+          $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
+        ),
+      );
+      queueMicrotask(() => amount.focus());
+      return;
+    }
+    const balance = actualBalance();
+    const summary = reconciliationSummary();
+    const difference = summary?.difference || 0;
+    row.append(
+      $('div', { style: 'display:flex;align-items:center;gap:10px;min-width:0;flex:1;' },
+        $('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${balance >= 0 ? 'var(--positive)' : 'var(--negative)'};flex-shrink:0;` }),
+        $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
+        secondary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, secondary) : null,
+        summary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, `reconciled ${friendlyDate(summary.point.date)}`) : null,
+      ),
+      $('div', { style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;' },
+        $('div', { style: 'text-align:right;' },
+          $('div', { class: 'display-num', style: `font-size:14px;color:${balance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(balance)),
+          summary && Math.abs(difference) >= 0.01 ? $('div', { class: 'muted', style: 'font-size:10px;' }, `${difference >= 0 ? '+' : ''}${fmt(difference)} vs book`) : null,
+        ),
+        $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎'),
+      ),
+    );
+  };
+  draw();
+  return row;
 }
 
 const fmt = (n) => {
@@ -155,90 +618,147 @@ const fmt = (n) => {
   return `${sign}€${Math.abs(n).toFixed(2)}`;
 };
 const monthKey = (date) => date.slice(0, 7);
+const MONTH_FORMATTER = new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+const FRIENDLY_DATE_FORMATTER = new Intl.DateTimeFormat('en-GB', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 const monthLabel = (key) => {
   const [y, m] = key.split('-').map(Number);
-  return new Date(y, m - 1, 1).toLocaleString('en-GB', { month: 'long', year: 'numeric' });
+  return MONTH_FORMATTER.format(new Date(Date.UTC(y, m - 1, 1)));
 };
 const friendlyDate = (iso) => {
   if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '—';
-  return new Date(iso + 'T00:00:00').toLocaleString('en-GB', { month: 'short', day: 'numeric' });
+  return FRIENDLY_DATE_FORMATTER.format(new Date(iso + 'T00:00:00Z'));
 };
 
 function entriesForMonth(key) {
   return state.entries.filter(e => monthKey(e.date) === key);
 }
+function isSpendingEntry(entry) {
+  return entry.type === 'expense' && !entry.transferId;
+}
+function isIncomeEntry(entry) {
+  return entry.type === 'credit' && !entry.transferId;
+}
 function totalForMonth(key) {
-  return entriesForMonth(key).reduce((s, e) => s + (e.type === 'expense' ? e.amount : -e.amount), 0);
+  return entriesForMonth(key).reduce((s, e) => s + (isSpendingEntry(e) ? e.amount : isIncomeEntry(e) ? -e.amount : 0), 0);
 }
 function parseAmount(raw) {
   if (raw == null) return NaN;
-  const v = parseFloat(String(raw).replace(',', '.'));
-  if (!Number.isFinite(v)) return NaN;
-  return Math.round(v * 100) / 100;
+  let text = String(raw).trim().replace(/[€$£\s]/g, '');
+  if (!text || !/^\d[\d.,]*$/.test(text)) return NaN;
+  const comma = text.lastIndexOf(','), dot = text.lastIndexOf('.');
+  if (comma >= 0 && dot >= 0) {
+    const decimalIndex = Math.max(comma, dot);
+    const integer = text.slice(0, decimalIndex).replace(/[.,]/g, '');
+    const decimal = text.slice(decimalIndex + 1);
+    text = `${integer}.${decimal}`;
+  } else if (comma >= 0) {
+    const parts = text.split(',');
+    if (parts.length === 2 && parts[1].length === 3 && parts[0].length <= 3) text = parts.join('');
+    else text = `${parts.slice(0, -1).join('')}.${parts.at(-1)}`;
+  } else if ((text.match(/\./g) || []).length > 1) {
+    const parts = text.split('.');
+    text = `${parts.slice(0, -1).join('')}.${parts.at(-1)}`;
+  }
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return NaN;
+  const v = Number(text);
+  return Number.isFinite(v) ? Math.round(v * 100) / 100 : NaN;
 }
 
 function thursdaysInMonth(year, month) {
   const dates = [];
-  const d = new Date(year, month, 1);
-  // Find first Thursday (getDay() 4 = Thursday)
-  while (d.getDay() !== 4) d.setDate(d.getDate() + 1);
-  while (d.getMonth() === month) {
-    dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
-    d.setDate(d.getDate() + 7);
+  const d = new Date(Date.UTC(year, month, 1));
+  // Find first Thursday (getUTCDay() 4 = Thursday) using date-only UTC math.
+  while (d.getUTCDay() !== 4) d.setUTCDate(d.getUTCDate() + 1);
+  while (d.getUTCMonth() === month) {
+    dates.push(utcDateKey(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    d.setUTCDate(d.getUTCDate() + 7);
   }
   return dates;
 }
 
-/** Returns the all-time running balance (income adds, expenses subtract) starting from openingBalance. */
-function computeBalance(entries, openingBalance = 0) {
-  const sorted = [...entries].sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : 1));
-  let balance = openingBalance;
-  const byId = {};
+/** Historical-safe bank balance calculations use reconciliation checkpoints.
+ *  All return values (balance and points) use the same end-of-day
+ *  checkpoint-aware actuals so the dashboard sparkline, headline balance,
+ *  and History transaction rows are always consistent. */
+function computeBalance(asOfDate = today(), checkpointsByMethod = null) {
+  const entries = state.entries;
+  const sorted = [...entries]
+    .filter(e => e.date <= asOfDate && ACCOUNT_METHOD_IDS.includes(e.method))
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : 1));
   const points = [];
+  const dateCache = {};
   for (const e of sorted) {
-    balance += e.type === 'credit' ? e.amount : -e.amount;
-    byId[e.id] = balance;
-    points.push({ date: e.date, balance });
+    if (points.at(-1)?.date === e.date) continue;
+    const reconciled = dateCache[e.date] ?? (dateCache[e.date] = totalAccountBalanceAt(e.date, checkpointsByMethod));
+    points.push({ date: e.date, balance: reconciled });
   }
-  return { balance, byId, points };
+  return { balance: totalAccountBalanceAt(asOfDate, checkpointsByMethod), points };
 }
 
-/** Returns per-method running balances (income adds, expenses subtract). */
-function computeMethodBalances(entries, methods, openings) {
-  const result = {};
-  for (const m of methods) {
-    const methodEntries = entries.filter(e => e.method === m.id);
-    const sorted = [...methodEntries].sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : 1));
-    let balance = (openings && openings[m.id]) || 0;
-    for (const e of sorted) {
-      balance += e.type === 'credit' ? e.amount : -e.amount;
+/** Running balance immediately after an entry, respecting dated checkpoints.
+ * A row before a checkpoint on the same day is intentionally shown at the
+ * reconciled checkpoint amount because the checkpoint is the authoritative
+ * record for that date. Entries created after the checkpoint are applied in
+ * timestamp/id order. */
+function balanceForEntry(entry, entries = state.entries, checkpointsByMethod = null) {
+  if (!entry || !BALANCE_METHOD_IDS.includes(entry.method)) return 0;
+  const checkpoints = checkpointsForEntries(entries, checkpointsByMethod);
+  const checkpoint = checkpointFor(entry.method, entry.date, checkpoints);
+  const baseline = checkpoints[entry.method]?.find(point => point.date === '1970-01-01');
+  const checkpointIsAfterEntry = checkpoint && checkpoint.date > entry.date;
+  const checkpointTime = checkpoint
+    ? (checkpoint.at ? Date.parse(checkpoint.at) : Date.parse(`${checkpoint.date}T23:59:59.999Z`))
+    : NaN;
+  const checkpointIsSameDayAfterEntry = checkpoint && checkpoint.date === entry.date
+    && Number.isFinite(checkpointTime) && entry.createdAt
+    && Date.parse(entry.createdAt) <= checkpointTime;
+  const useBookBalance = !checkpoint || checkpointIsAfterEntry || checkpointIsSameDayAfterEntry;
+  const startDate = useBookBalance ? '1970-01-01' : checkpoint.date;
+  const startBalance = useBookBalance ? (baseline?.balance || 0) : checkpoint.balance;
+  const entryCheckpointTime = useBookBalance ? NaN : checkpointTime;
+  const ordered = entries
+    .filter(candidate => candidate.date <= entry.date)
+    .sort((a, b) => a.date.localeCompare(b.date)
+      || ((a.createdAt || '')).localeCompare(b.createdAt || '')
+      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  let balance = startBalance;
+  for (const candidate of ordered) {
+    if (candidate.date < startDate) continue;
+    if (!useBookBalance && candidate.date === startDate
+      && (!Number.isFinite(entryCheckpointTime) || !candidate.createdAt || Date.parse(candidate.createdAt) <= entryCheckpointTime)) continue;
+    if (candidate.date === entry.date && candidate.id === entry.id) {
+      balance += balanceDelta(candidate, entry.method);
+      break;
     }
-    result[m.id] = { label: m.label, balance };
+    balance += balanceDelta(candidate, entry.method);
   }
-  return result;
+  return balance;
 }
 
-/** Gift card balance: loading (expense + category=GC) adds, spending (expense + category≠GC) subtracts, credits add. */
-const GIFT_CARD_IDS = ['TG', 'LG', 'AG'];
-function computeGiftCardBalance(entries, methodId, opening = 0) {
-  const methodEntries = entries.filter(e => e.method === methodId);
-  const sorted = [...methodEntries].sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : 1));
-  let balance = opening;
-  let loaded = 0;
-  let spent = 0;
-  for (const e of sorted) {
-    if (e.type === 'credit') {
-      balance += e.amount;
-    } else if (e.category === 'GC') {
-      // Buying/loading the gift card — adds to balance
-      balance += e.amount;
-      loaded += e.amount;
-    } else {
-      // Spending the gift card — subtracts from balance
-      balance -= e.amount;
-      spent += e.amount;
-    }
-  }
+/** Gift card balance: loading adds, spending subtracts, with reconciliation checkpoints. */
+function computeGiftCardBalance(entries, methodId, asOfDate = today()) {
+  const checkpoints = checkpointsForEntries(entries);
+  const balance = balanceAtForEntries(entries, methodId, asOfDate, checkpoints);
+  const checkpoint = checkpointFor(methodId, asOfDate, checkpoints);
+  // Checkpoints imported from older builds have no `at`; treat those as
+  // end-of-day checkpoints rather than silently dropping same-day history.
+  const checkpointTime = checkpoint
+    ? (checkpoint.at ? Date.parse(checkpoint.at) : Date.parse(`${checkpoint.date}T23:59:59.999Z`))
+    : NaN;
+  const relevant = entries.filter(e => {
+    if (e.method !== methodId || e.date > asOfDate || e.type === 'note') return false;
+    if (!checkpoint || checkpoint.date === '1970-01-01') return true;
+    if (e.date > checkpoint.date) return true;
+    return e.date === checkpoint.date && Number.isFinite(checkpointTime) && e.createdAt && Date.parse(e.createdAt) > checkpointTime;
+  });
+  // A valid transfer into a gift-card account is a real load. Excluding every
+  // transfer made the lifetime figures disagree with the actual balance.
+  const loaded = relevant
+    .filter(e => e.type === 'credit' || e.category === 'GC')
+    .reduce((sum, e) => sum + e.amount, 0);
+  const spent = relevant
+    .filter(e => e.type === 'expense' && e.category !== 'GC')
+    .reduce((sum, e) => sum + e.amount, 0);
   return { balance, loaded, spent };
 }
 
@@ -264,35 +784,50 @@ function computeCashTotal(coins) {
 }
 
 // ---------- recurring transactions ----------
+function utcDateKey(year, monthIndex, day) {
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+function daysInMonthParts(year, monthIndex) {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+}
 function advanceRecurringDate(current, freq, dayOfMonth) {
-  const d = new Date(current + 'T00:00:00');
-  if (freq === 'weekly') d.setDate(d.getDate() + 7);
-  else if (freq === 'monthly') {
-    d.setMonth(d.getMonth() + 1);
-    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-    d.setDate(Math.min(dayOfMonth, lastDay));
+  const [year, month, day] = current.split('-').map(Number);
+  if (freq === 'weekly') {
+    const d = new Date(Date.UTC(year, month - 1, day + 7));
+    return utcDateKey(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
   }
-  return d.toISOString().slice(0, 10);
+  if (freq === 'monthly') {
+    const nextMonth = month; // zero-based month after incrementing the 1-based value
+    const nextYear = year + Math.floor(nextMonth / 12);
+    const normalizedMonth = nextMonth % 12;
+    return utcDateKey(nextYear, normalizedMonth, Math.min(Number(dayOfMonth) || day, daysInMonthParts(nextYear, normalizedMonth)));
+  }
+  return current;
 }
 
 function computeInitialNextDate(freq, dayOfMonth) {
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const d = new Date(today.getFullYear(), today.getMonth(), dayOfMonth || 1);
+  const now = new Date();
+  const requestedDay = Math.min(31, Math.max(1, Number(dayOfMonth) || 1));
   if (freq === 'monthly') {
-    if (d <= today) d.setMonth(d.getMonth() + 1);
-    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-    d.setDate(Math.min(dayOfMonth, lastDay));
+    let year = now.getFullYear(), month = now.getMonth();
+    let day = Math.min(requestedDay, daysInMonthParts(year, month));
+    if (new Date(year, month, day) <= now) {
+      month += 1;
+      year += Math.floor(month / 12);
+      month %= 12;
+      day = Math.min(requestedDay, daysInMonthParts(year, month));
+    }
+    return utcDateKey(year, month, day);
   }
-  // For weekly: advance by 7 days until the date is in the future
-  if (freq === 'weekly') {
-    while (d <= today) d.setDate(d.getDate() + 7);
-  }
-  return d.toISOString().slice(0, 10);
+  let candidate = new Date(now.getFullYear(), now.getMonth(), Math.min(requestedDay, daysInMonthParts(now.getFullYear(), now.getMonth())));
+  candidate.setHours(0, 0, 0, 0);
+  while (candidate <= now) candidate.setDate(candidate.getDate() + 7);
+  return localDateKey(candidate);
 }
 
 function paidRecurring(rec) {
   const entry = {
-    id: uid(), date: rec.nextDate, type: rec.type,
+    id: uid(), createdAt: nowIso(), date: rec.nextDate, type: rec.type,
     category: rec.category || 'misc', details: rec.details,
     amount: rec.amount, method: rec.method, note: rec.note || '',
   };
@@ -317,7 +852,7 @@ function fillThursday(dateStr) {
   const defaultAmt = lastTesco ? lastTesco.amount : 0;
   if (defaultAmt > 0) {
     const eid = uid();
-    state.entries.push({ id: eid, date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
+    state.entries.push({ id: eid, createdAt: nowIso(), date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
     trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); persist(); }, `Tesco ${friendlyDate(dateStr)}`);
@@ -333,7 +868,7 @@ function autoFillAll(unpaidThursdays) {
   const defaultAmt = lastTesco ? lastTesco.amount : 0;
   if (defaultAmt > 0 && unpaidThursdays.length > 0) {
     for (const d of unpaidThursdays) {
-      state.entries.push({ id: uid(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
+      state.entries.push({ id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
     }
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
@@ -372,13 +907,13 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
       const amt = parseAmount(data.amount);
       if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); return; }
       if (data.date) {
-        state.entries.push({ id: uid(), date: data.date, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
+        state.entries.push({ id: uid(), createdAt: nowIso(), date: data.date, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
         state.entries.sort((a, b) => a.date.localeCompare(b.date));
         persist();
         toast(`Filled Tesco pay for ${friendlyDate(data.date)} — ${fmt(amt)}`);
       } else {
         for (const d of unpaidThursdays) {
-          state.entries.push({ id: uid(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
+          state.entries.push({ id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
         }
         state.entries.sort((a, b) => a.date.localeCompare(b.date));
         persist();
@@ -394,7 +929,7 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
 // ---------- undo system ----------
 let _lastAction = null;
 function trackAction(undoFn, label) {
-  _lastAction = { undo: undoFn, label, ts: Date.now() };
+  _lastAction = { undo: undoFn, label };
 }
 function undoLastAction() {
   if (!_lastAction) return;
@@ -464,33 +999,197 @@ function parseReceiptLine(line) {
   return { details: desc || s, amount: amt || 0, category: cat };
 }
 
+function previousMonthKey(key) {
+  const [year, month] = key.split('-').map(Number);
+  const d = new Date(Date.UTC(year, month - 2, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function daysInMonth(key) {
+  const [year, month] = key.split('-').map(Number);
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function payeeHistory() {
+  return [...new Set(state.entries.map(e => (e.details || '').trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function parseNaturalLanguage(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  const amountMatch = raw.match(/(?:€|eur|euro)?\s*(\d+(?:[.,]\d{1,2})?)/i);
+  const amount = amountMatch ? parseAmount(amountMatch[1]) : NaN;
+  if (!Number.isFinite(amount) || amount <= 0) return { error: 'Include an amount, for example €18.50.' };
+
+  const lower = raw.toLowerCase();
+  let date = today();
+  if (/\byesterday\b/.test(lower)) {
+    const d = new Date(); d.setDate(d.getDate() - 1); date = localDateKey(d);
+  }
+  let method = 'AIB';
+  if (/\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+(?:account|pot|fund)\b/.test(lower)) method = 'RS';
+  else if (/\brevolut\b/.test(lower)) method = 'Revolut';
+  else if (/\btesco\b/.test(lower)) method = 'TG';
+  else if (/\blidl\b/.test(lower)) method = 'LG';
+  else if (/\baldi\b/.test(lower)) method = 'AG';
+  const isCredit = /\b(income|received|salary|pay|paid into|got)\b/.test(lower);
+  const cleaned = raw
+    .replace(/(?:€|eur|euro)?\s*\d+(?:[.,]\d{1,2})?/i, '')
+    .replace(/\b(from|on|using|via)\s+(aib|revolut(?: savings)?|rs|tesco|lidl|aldi)\b/ig, '')
+    .replace(/\b(yesterday|today)\b/ig, '')
+    .replace(/\b(income|received|salary|paid into|got|spent|expense)\b/ig, '')
+    .replace(/\s+/g, ' ').trim();
+  const details = cleaned
+    .replace(/\b(at|from|on|using|via)\s*$/i, '')
+    .replace(/^\s*(at|from|on|using|via)\s+/i, '')
+    .replace(/^[,.: -]+|[,.: -]+$/g, '').trim() || 'Entry';
+  const guessed = parseReceiptLine(details);
+  return { date, type: isCredit ? 'credit' : 'expense', amount, details, category: isCredit ? 'misc' : guessed.category, method };
+}
+
+function duplicateGroups(entries = state.entries) {
+  const groups = new Map();
+  const transferGroups = new Map();
+  const consumed = new Set();
+  for (const entry of entries) {
+    if (!entry.transferId) continue;
+    if (!transferGroups.has(entry.transferId)) transferGroups.set(entry.transferId, []);
+    transferGroups.get(entry.transferId).push(entry);
+  }
+  // Treat a complete transfer pair as one logical transaction. Keep one
+  // representative per pair so deleting a reported duplicate removes the pair,
+  // not just one leg.
+  for (const pair of transferGroups.values()) {
+    if (pair.length !== 2) continue;
+    const debit = pair.find(entry => entry.type === 'expense');
+    const credit = pair.find(entry => entry.type === 'credit');
+    if (!debit || !credit || debit.amount !== credit.amount || debit.date !== credit.date) continue;
+    const methods = [debit.method, credit.method].sort().join('>');
+    const key = `transfer|${debit.date}|${debit.amount}|${(debit.details || '').trim().toLowerCase()}|${methods}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(debit);
+    pair.forEach(entry => consumed.add(entry.id));
+  }
+  for (const e of entries) {
+    if (consumed.has(e.id) || e.type === 'note') continue;
+    const key = `${e.date}|${e.amount}|${(e.details || '').trim().toLowerCase()}|${e.type}|${e.method}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  return [...groups.values()].filter(group => group.length > 1)
+    .sort((a, b) => b[0].date.localeCompare(a[0].date));
+}
+
+function accountBalanceHistory() {
+  const methods = METHODS.filter(m => ACCOUNT_METHOD_IDS.includes(m.id));
+  const monthKeys = [...new Set([
+    ...state.entries.map(e => monthKey(e.date)),
+    ...methods.flatMap(m => getBalanceCheckpoints()[m.id]
+      .filter(point => point.date !== '1970-01-01')
+      .map(point => monthKey(point.date))),
+  ])];
+  const current = monthKey(today());
+  if (!monthKeys.includes(current)) monthKeys.push(current);
+  monthKeys.sort((a, b) => a.localeCompare(b));
+  if (!monthKeys.length) return { methods, points: [] };
+  const points = monthKeys.map(key => {
+    const monthEnd = `${key}-${String(daysInMonth(key)).padStart(2, '0')}`;
+    return {
+      key,
+      balances: Object.fromEntries(methods.map(method => [method.id, balanceAt(method.id, monthEnd)])),
+    };
+  });
+  return { methods, points };
+}
+
+function spendingForecast(key = monthKey(today())) {
+  const now = new Date();
+  const current = entriesForMonth(key);
+  const expenses = current.filter(isSpendingEntry);
+  const spent = expenses.reduce((sum, e) => sum + e.amount, 0);
+  const elapsed = key === monthKey(today()) ? now.getDate() : daysInMonth(key);
+  const totalDays = daysInMonth(key);
+  const dailyAverage = elapsed > 0 ? spent / elapsed : 0;
+  const projected = spent + dailyAverage * Math.max(0, totalDays - elapsed);
+  const budget = +state.settings.monthlyBudget || 0;
+  const previous = entriesForMonth(previousMonthKey(key)).filter(isSpendingEntry);
+  const previousDaily = previous.length ? previous.reduce((sum, e) => sum + e.amount, 0) / daysInMonth(previousMonthKey(key)) : null;
+  return { spent, projected, budget, remaining: budget - projected, dailyAverage, previousDaily, elapsed, totalDays };
+}
+
+function deleteEntryOrTransfer(id) {
+  const target = state.entries.find(e => e.id === id);
+  if (!target) return false;
+  const transferId = target.transferId;
+  state.entries = transferId
+    ? state.entries.filter(entry => entry.transferId !== transferId)
+    : state.entries.filter(entry => entry.id !== id);
+  // Keep this helper safe for every caller, including transfer modals and
+  // future deletion flows. Deletions must survive reload and sync.
+  persist();
+  return true;
+}
+
+function removeDuplicateEntry(id) {
+  const target = state.entries.find(e => e.id === id);
+  if (!target) return;
+  if (!window.confirm(`Delete duplicate “${target.details}” for ${fmt(target.amount)}?`)) return;
+  const removed = target.transferId
+    ? state.entries.filter(e => e.transferId === target.transferId)
+    : [target];
+  const removedIds = new Set(removed.map(e => e.id));
+  state.entries = state.entries.filter(e => !removedIds.has(e.id));
+  persist();
+  trackAction(() => { state.entries.push(...removed); state.entries.sort((a, b) => a.date.localeCompare(b.date)); persist(); }, `Restored ${target.details}`);
+  toast(target.transferId ? 'Duplicate transfer pair deleted.' : 'Duplicate deleted.');
+  render();
+}
+
+function reviewForMonth(key) {
+  const current = entriesForMonth(key);
+  const previous = entriesForMonth(previousMonthKey(key));
+  const expenses = current.filter(isSpendingEntry);
+  const previousExpenses = previous.filter(isSpendingEntry);
+  const total = expenses.reduce((s, e) => s + e.amount, 0);
+  const previousTotal = previousExpenses.reduce((s, e) => s + e.amount, 0);
+  const byCategory = list => list.reduce((out, e) => { out[e.category] = (out[e.category] || 0) + e.amount; return out; }, {});
+  const currentCats = byCategory(expenses), previousCats = byCategory(previousExpenses);
+  const top = Object.entries(currentCats).sort((a, b) => b[1] - a[1])[0];
+  const changes = Object.keys({ ...currentCats, ...previousCats }).map(id => ({ id, diff: (currentCats[id] || 0) - (previousCats[id] || 0) }))
+    .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+  const largestChange = changes.find(x => Math.abs(x.diff) >= 0.01);
+  const percent = previousTotal ? Math.round(((total - previousTotal) / previousTotal) * 100) : null;
+  const lines = [];
+  if (top) lines.push(`Your biggest category was ${categoryLabel(top[0])} at ${fmt(top[1])}.`);
+  if (percent !== null) lines.push(percent === 0 ? 'You spent the same as last month.' : `You spent ${Math.abs(percent)}% ${percent < 0 ? 'less' : 'more'} than last month.`);
+  if (largestChange && largestChange.id !== top?.[0]) lines.push(`${categoryLabel(largestChange.id)} spending ${largestChange.diff >= 0 ? 'increased' : 'decreased'} by ${fmt(Math.abs(largestChange.diff))}.`);
+  if (!lines.length) lines.push('Keep logging transactions and your monthly review will appear here.');
+  return { lines, total, previousTotal };
+}
+
 // ---------- data health ----------
 function computeDataHealth(entries) {
   if (entries.length === 0) return { score: 0, issues: ['No entries yet. Start tracking!'] };
   const issues = [];
   let score = 100;
   // Check for entries with no category / default
-  const uncategorized = entries.filter(e => e.type === 'expense' && e.category === 'misc').length;
-  if (uncategorized > entries.length * 0.3) { score -= 15; issues.push(`${uncategorized} entries are "Misc" — try categorising them.`); }
+  const financialEntries = entries.filter(e => e.type !== 'note');
+  const uncategorized = financialEntries.filter(e => isSpendingEntry(e) && e.category === 'misc').length;
+  if (uncategorized > financialEntries.length * 0.3) { score -= 15; issues.push(`${uncategorized} entries are "Misc" — try categorising them.`); }
   // Large amounts
-  const avg = entries.reduce((s,e) => s + e.amount, 0) / entries.length;
-  const outliers = entries.filter(e => e.amount > avg * 5).length;
+  const avg = financialEntries.length ? financialEntries.reduce((s,e) => s + e.amount, 0) / financialEntries.length : 0;
+  const outliers = financialEntries.filter(e => e.amount > avg * 5).length;
   if (outliers > 0) { score -= 10; issues.push(`${outliers} entr${outliers===1?'y':'ies'} look unusually large.`); }
   // Duplicates
-  const seen = new Set();
-  let dups = 0;
-  for (const e of entries) {
-    const key = `${e.date}|${e.amount}|${e.details}`;
-    if (seen.has(key)) dups++;
-    else seen.add(key);
-  }
-  if (dups > 0) { score -= 10; issues.push(`${dups} possible duplicate${dups===1?'':'s'} found.`); }
+  const duplicateCount = duplicateGroups(entries).reduce((sum, group) => sum + group.length - 1, 0);
+  if (duplicateCount > 0) { score -= 10; issues.push(`${duplicateCount} possible duplicate${duplicateCount===1?'':'s'} found.`); }
   // Gaps
-  const dates = [...new Set(entries.map(e => e.date))].sort();
+  const dates = [...new Set(financialEntries.map(e => e.date))].sort((a, b) => a.localeCompare(b));
   if (dates.length >= 2) {
     let gaps = 0;
     for (let i = 1; i < dates.length; i++) {
-      const d1 = new Date(dates[i-1]+'T00:00:00'), d2 = new Date(dates[i]+'T00:00:00');
+      const d1 = new Date(dates[i-1]+'T00:00:00Z'), d2 = new Date(dates[i]+'T00:00:00Z');
       if ((d2 - d1) / 86400000 > 7) gaps++;
     }
     if (gaps > 0) { score -= 10; issues.push(`${gaps} tracking gap${gaps===1?'':'s'} > 7 days.`); }
@@ -539,15 +1238,16 @@ function $(tag, attrs = {}, ...children) {
 
 function renderHeader() {
   const route = currentRoute();
+  const locked = hasPinLock() && !pinUnlocked;
   return $('header', { class: 'app-header', 'aria-label': 'App header' },
     $('div', { class: 'logo' },
       $('div', { class: 'mark' }, $('span', { class: 'mark-icon', 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 6.5A7 7 0 1 0 17 17.5"/><line x1="2.5" y1="8" x2="12" y2="8"/><line x1="2.5" y1="16" x2="12" y2="16"/></svg>' })),
       $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
-    $('nav', { class: 'nav', 'aria-label': 'Primary' },
+    $('nav', { class: 'nav', 'aria-label': 'Primary', style: locked ? 'display:none;' : '' },
       ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : 'false' }, titleFor(r))),
     ),
-    $('div', { class: 'header-actions' },
+    $('div', { class: 'header-actions', style: locked ? 'display:none;' : '' },
       $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Instrument Serif",serif;font-style:italic;font-size:14px;color:var(--muted);' }),
       $('button', { class: 'dark-toggle', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', onClick: () => {
         const html = document.documentElement;
@@ -558,6 +1258,8 @@ function renderHeader() {
         $('span', { class: 'icon-sun', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>' }),
         $('span', { class: 'icon-moon', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>' }),
       ),
+      hasPinLock() ? $('button', { class: 'nav-action', onClick: lockApp, title: 'Lock app' }, 'Lock') : null,
+      $('button', { class: 'nav-action', onClick: openPinSettings }, 'PIN'),
       $('button', { class: 'nav-action', onClick: openSyncSettings }, 'Sync'),
       $('button', { class: 'nav-action', onClick: () => { exportJSON(state); toast('Exported.'); } }, 'Export'),
     ),
@@ -572,21 +1274,26 @@ function titleFor(r) {
 // ---------- shared form ----------
 function formView({ initial = null, onSubmit }) {
   const isEdit = !!initial;
-  const data = initial ?? {
+  const data = initial ? { ...initial } : {
     type: 'expense', date: today(), details: '', amount: '',
     method: 'AIB', category: 'gro', note: '',
   };
   if (typeof data.amount === 'number') data.amount = String(data.amount);
 
   // Type tabs — use role-based selectors, not firstChild/lastChild
-  const tabs = $('div', { class: 'row', role: 'tablist', 'aria-label': 'Transaction type', style: `gap:${isNarrow() ? '16px' : '32px'};padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:32px;` });
+  const tabs = $('div', { class: 'row', role: 'tablist', 'aria-label': 'Transaction type', style: `gap:${isNarrow() ? '10px' : '24px'};padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:32px;flex-wrap:wrap;` });
   const expenseTab = pillTab('Expense', 'expense', data.type === 'expense');
   const creditTab  = pillTab('Income', 'credit', data.type === 'credit');
   const transferTab = pillTab('Transfer', 'transfer', data.type === 'transfer');
-  tabs.append(expenseTab, creditTab, transferTab);
+  const noteTab = pillTab('Note', 'note', data.type === 'note');
+  tabs.append(expenseTab, creditTab, transferTab, noteTab);
   function pillTab(label, type, active) {
     const btn = $('button', { type: 'button', class: 'pill', role: 'tab', 'data-id': label.toLowerCase(), 'aria-selected': active ? 'true' : 'false',          style: `padding:${isNarrow() ? '6px 14px' : '8px 18px'};font-size:12px;cursor:pointer;background:${active ? 'var(--accent-soft)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};border-color:${active ? 'transparent' : 'var(--line)'};`, onClick: () => {
       data.type = type;
+      if (isTransfer()) {
+        data.transferFrom = data.transferFrom || 'AIB';
+        data.transferTo = data.transferTo || 'Revolut';
+      }
       tabs.querySelectorAll('[role=tab]').forEach(t => {
         const isActive = t.dataset.id === label.toLowerCase();
         t.setAttribute('aria-selected', isActive ? 'true' : 'false');
@@ -595,16 +1302,23 @@ function formView({ initial = null, onSubmit }) {
         t.style.borderColor = isActive ? 'transparent' : 'var(--line)';
       });
       rebuildMethodOpts();
-      catSection.style.display = (isCredit() || isTransfer()) ? 'none' : '';
-      methodSection.style.display = isTransfer() ? 'none' : '';
+      const noteMode = data.type === 'note';
+      if (noteMode) data.note = '';
+      amountSection.style.display = noteMode ? 'none' : '';
+      dateMethodSection.style.display = '';
+      catSection.style.display = (isCredit() || isTransfer() || noteMode) ? 'none' : '';
+      methodSection.style.display = (isTransfer() || noteMode) ? 'none' : '';
       transferSection.style.display = isTransfer() ? '' : 'none';
+      noteFieldSection.style.display = noteMode ? 'none' : '';
+      detailsLabel.textContent = noteMode ? 'Note' : 'Description';
+      detailsInput.setAttribute('aria-label', noteMode ? 'Note text' : 'Transaction details');
     } }, label);
     return btn;
   }
 
   const amountInput = $('input', { type: 'text', inputmode: 'decimal', value: data.amount, 'aria-label': 'Amount in euros', placeholder: '0.00', autocomplete: 'off', required: true, onInput: (e) => { data.amount = e.target.value; } });
 
-  const detailsInput = $('input', { type: 'text', value: data.details || '', 'aria-label': 'Transaction details', placeholder: 'e.g. Tesco, Leap Card', required: true, onInput: (e) => data.details = e.target.value });
+  const detailsInput = $('input', { type: 'text', value: data.details || '', 'aria-label': 'Transaction details', placeholder: 'e.g. Tesco, Leap Card', list: 'payee-list', required: true, onInput: (e) => data.details = e.target.value });
 
   const dateInput = $('input', { type: 'date', value: data.date, 'aria-label': 'Date', required: true, onInput: (e) => data.date = e.target.value });
 
@@ -696,19 +1410,52 @@ function formView({ initial = null, onSubmit }) {
     $('label', { class: 'eyebrow' }, 'Category'), catChips,
   );
   catSection.style.display = isCredit() ? 'none' : '';
-
   const noteInput = $('input', { type: 'text', value: data.note || '', 'aria-label': 'Optional note', placeholder: 'optional', onInput: (e) => data.note = e.target.value });
+  const isNote = data.type === 'note';
+  const amountSection = $('div', { style: isNote ? 'display:none;' : 'margin-bottom:24px;' },
+    $('label', { class: 'eyebrow', for: 'f-amount' }, 'Amount'),
+    $('div', { style: 'display:flex;align-items:baseline;gap:6px;margin-top:4px;' },
+      $('span', { class: 'serif', style: `font-size:${isNarrow() ? '36px' : '60px'};color:var(--accent);`, 'aria-hidden': 'true' }, '€'),
+      Object.assign(amountInput, { id: 'f-amount' }),
+    ),
+  );
+  const dateMethodSection = $('div', { style: `display:grid;grid-template-columns:${isNarrow() ? '1fr' : '1fr 1fr'};gap:${isNarrow() ? '16px' : '24px'};margin-bottom:24px;` },
+    $('div', null, $('label', { class: 'eyebrow', for: 'f-date' }, 'Date'), Object.assign(dateInput, { id: 'f-date' })),
+    $('div', null, methodSection),
+  );
+  if (isNote) {
+    catSection.style.display = 'none';
+    data.note = '';
+    noteInput.value = '';
+  }
 
   const submit = () => {
+    if (data.type === 'note') {
+      if (!isValidCheckpointDate(data.date)) { toast('Pick a valid date.'); dateInput.focus(); return; }
+      const noteText = String(data.details || data.note || '').trim();
+      if (!noteText) { toast('Add a note.'); detailsInput.focus(); return; }
+      onSubmit([{
+        ...data,
+        id: initial?.id || uid(),
+        createdAt: nowIso(),
+        type: 'note',
+        category: 'misc',
+        details: noteText,
+        amount: 0,
+        method: data.method || 'AIB',
+        note: data.note?.trim() || '',
+      }]);
+      return;
+    }
     const amt = parseAmount(data.amount);
     if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); amountInput.focus(); return; }
     if (amt > 100000) { toast('Amount looks too large — double check.'); amountInput.focus(); return; }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(data.date)) { toast('Pick a valid date.'); dateInput.focus(); return; }
+    if (!isValidCheckpointDate(data.date)) { toast('Pick a valid date.'); dateInput.focus(); return; }
     if (!data.details.trim()) { toast('Add a description.'); detailsInput.focus(); return; }
     if (isTransfer()) {
       if (data.transferFrom === data.transferTo) { toast('From and To cannot be the same account.'); return; }
       const pairId = uid();
-      const base = { date: data.date, amount: amt, details: data.details.trim(), note: data.note?.trim() || '', category: 'misc', transferId: pairId, settled: false };
+      const base = { createdAt: nowIso(), date: data.date, amount: amt, details: data.details.trim(), note: data.note?.trim() || '', category: 'misc', transferId: pairId, settled: false };
       const fromEntry = { ...base, id: uid(), type: 'expense', method: data.transferFrom };
       const toEntry   = { ...base, id: uid(), type: 'credit',  method: data.transferTo };
       onSubmit([fromEntry, toEntry]);
@@ -716,6 +1463,9 @@ function formView({ initial = null, onSubmit }) {
     }
     const entry = {
       id: initial?.id || uid(),
+      // Saving an edit is a new mutation; this matters when the entry shares a
+      // date with a reconciliation checkpoint.
+      createdAt: nowIso(),
       date: data.date,
       type: data.type,
       category: data.type === 'credit' ? 'misc' : data.category,
@@ -727,25 +1477,20 @@ function formView({ initial = null, onSubmit }) {
     onSubmit([entry]);
   };
 
+  const payeeList = $('datalist', { id: 'payee-list' }, ...payeeHistory().map(payee => $('option', { value: payee })));
+  let detailsLabel;
+  let noteFieldSection;
   const formEl = $('div', { class: 'card', style: `padding:${isNarrow() ? '20px' : '32px'};max-width:540px;margin:0 auto;` },
+    payeeList,
     tabs,
-    $('div', { style: 'margin-bottom:24px;' },
-      $('label', { class: 'eyebrow', for: 'f-amount' }, 'Amount'),
-      $('div', { style: 'display:flex;align-items:baseline;gap:6px;margin-top:4px;' },
-        $('span', { class: 'serif', style: `font-size:${isNarrow() ? '36px' : '60px'};color:var(--accent);`, 'aria-hidden': 'true' }, '€'),
-        Object.assign(amountInput, { id: 'f-amount' }),
-      ),
-    ),
-    $('div', { style: `display:grid;grid-template-columns:${isNarrow() ? '1fr' : '1fr 1fr'};gap:${isNarrow() ? '16px' : '24px'};margin-bottom:24px;` },
-      $('div', null, $('label', { class: 'eyebrow', for: 'f-date' }, 'Date'), Object.assign(dateInput, { id: 'f-date' })),
-      $('div', null, methodSection),
-    ),
+    amountSection,
+    dateMethodSection,
     transferSection,
     catSection,
     $('div', { style: 'margin-bottom:24px;' },
-      $('label', { class: 'eyebrow', for: 'f-details' }, 'Description'), Object.assign(detailsInput, { id: 'f-details' }),
+      detailsLabel = $('label', { class: 'eyebrow' }, isNote ? 'Note' : 'Description'), Object.assign(detailsInput, { id: 'f-details', value: data.details || '' }),
     ),
-    $('div', { style: 'margin-bottom:32px;' },
+    noteFieldSection = $('div', { style: isNote ? 'display:none;' : 'margin-bottom:32px;' },
       $('label', { class: 'eyebrow', for: 'f-note' }, 'Note'), Object.assign(noteInput, { id: 'f-note' }),
     ),
     $('div', { style: 'display:flex;gap:12px;justify-content:flex-end;padding-top:24px;border-top:1px solid var(--line);' },
@@ -762,7 +1507,7 @@ function formView({ initial = null, onSubmit }) {
   );
 
   // First focusable input id for focus management
-  formEl.dataset.firstFocus = 'f-amount';
+  formEl.dataset.firstFocus = data.type === 'note' ? 'f-details' : 'f-amount';
   return formEl;
 }
 
@@ -771,35 +1516,70 @@ function formView({ initial = null, onSubmit }) {
 async function doResync() {
   const s = getSyncSettings();
   if (!s.enabled || !s.endpoint || !s.password) { toast('Sync is not configured.'); return; }
-  const prevCount = state.entries.length;
-  const r = await syncPull();
-  if (r.ok && r.content) {
-    state = validateState(r.content);
-    saveState(state);
-    updateAllowedCategories(allCategories().map(c => c.id));
-    patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
-    const diff = state.entries.length - prevCount;
-    toast(diff > 0 ? `Pulled ${diff} new entr${diff === 1 ? 'y' : 'ies'}.` : diff < 0 ? `Cloud has ${state.entries.length} entries.` : 'Already up to date.');
-    notifySyncChange();
-    render();
-  } else if (r.ok && !r.content) {
-    toast('Cloud file is empty — nothing to pull.');
-  } else {
-    toast('Pull failed: ' + (r.message || r.reason));
+  if (syncInFlight || syncExclusive) { toast('A sync is already in progress.'); return; }
+  syncExclusive = true;
+  try {
+    const prevCount = state.entries.length;
+    const pullRevision = syncRevision;
+    const r = await syncPull();
+    if (r.ok && isUsableCloudContent(r.content)) {
+      if (localIsFresherThanCloud(r)) {
+        patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
+        toast('Cloud is older than your local copy — local data was kept and will be pushed.');
+        scheduleSyncPush();
+        notifySyncChange();
+        return;
+      }
+      if (!confirmCloudReplacement()) return;
+      if (pullRevision !== syncRevision) {
+        toast('A newer local change was kept; cloud pull skipped.');
+        return;
+      }
+      syncRevision++;
+      state = validateState(r.content);
+      saveState(state);
+      updateAllowedCategories(allCategories().map(c => c.id));
+      patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
+      const diff = state.entries.length - prevCount;
+      toast(diff > 0 ? `Pulled ${diff} new entr${diff === 1 ? 'y' : 'ies'}.` : diff < 0 ? `Cloud has ${state.entries.length} entries.` : 'Already up to date.');
+      notifySyncChange();
+      render();
+    } else if (r.ok && !r.content) {
+      toast(hasLocalDataToProtect() ? 'Cloud file is empty — local data was kept. Use Push to create it.' : 'Cloud file is empty — nothing to pull.');
+    } else if (r.ok) {
+      toast('Pull failed: cloud data is malformed.');
+    } else {
+      toast('Pull failed: ' + (r.message || r.reason));
+    }
+  } finally {
+    syncExclusive = false;
   }
 }
 
 function screenDashboard() {
   const now = new Date();
-  const key = monthKey(now.toISOString().slice(0, 10));
+  const key = monthKey(localDateKey(now));
   const monthEntries = entriesForMonth(key);
   const net = totalForMonth(key);
   const budget = +state.settings.monthlyBudget || 0;
-  const openingBalance = +state.settings.openingBalance || 0;
-  const { balance: runningBalance } = computeBalance(state.entries, openingBalance);
+  const { balance: runningBalance, points } = computeBalance();
+  let budgetSaveTimer = null;
+  const commitBudget = raw => {
+    const value = parseAmount(raw);
+    if (!Number.isFinite(value) || value < 0) return false;
+    clearTimeout(budgetSaveTimer);
+    budgetSaveTimer = setTimeout(() => {
+      if (value === (+state.settings.monthlyBudget || 0)) return;
+      state.settings.monthlyBudget = value;
+      persist();
+      toast(value > 0 ? 'Budget updated.' : 'Budget cleared.');
+      render();
+    }, 250);
+    return true;
+  };
 
-  const expensesOnly = monthEntries.filter(e => e.type === 'expense');
-  const incomeOnly = monthEntries.filter(e => e.type === 'credit');
+  const expensesOnly = monthEntries.filter(isSpendingEntry);
+  const incomeOnly = monthEntries.filter(isIncomeEntry);
   const catTotals = {};
   for (const e of expensesOnly) {
     catTotals[e.category] = (catTotals[e.category] || 0) + e.amount;
@@ -811,13 +1591,13 @@ function screenDashboard() {
 
   // Recent 5 — stable order: date desc, then id desc as tiebreaker
   const recent = [...state.entries]
+    .filter(entry => entry.type !== 'note')
     .sort((a, b) => b.date.localeCompare(a.date) || (a.id < b.id ? 1 : -1))
     .slice(0, 5);
 
   const screen = $('section', { 'aria-label': 'Dashboard' });
 
-  // Net worth sparkline card (if enough data)
-  const { points } = computeBalance(state.entries, openingBalance);
+  // Net worth sparkline card (if enough data) — points already computed above
   if (points.length >= 2) {
     const last30 = points.slice(-30);
     const vals = last30.map(p => p.balance);
@@ -864,25 +1644,10 @@ function screenDashboard() {
       ),
     ),
     $('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;' },
-      $('label', { class: 'eyebrow', for: 'balance-input' }, 'Opening'),
-      $('input', { id: 'balance-input', type: 'text', inputmode: 'decimal', value: String(openingBalance || ''), placeholder: '—', 'aria-label': 'Opening bank balance in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
-        e.target.style.borderColor = 'var(--line)';
-        const v = parseAmount(e.target.value);
-        if (!Number.isFinite(v)) { e.target.value = String(openingBalance || ''); toast('Enter a valid number.'); return; }
-        if (v !== openingBalance) {
-          state.settings.openingBalance = v; persist(); render();
-          toast('Opening balance updated.');
-        }
-      }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
       $('label', { class: 'eyebrow', for: 'budget-input' }, 'Budget'),
       $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '—', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
         e.target.style.borderColor = 'var(--line)';
-        const v = parseAmount(e.target.value);
-        if (!Number.isFinite(v) || v < 0) { e.target.value = String(budget || ''); toast('Enter a non-negative number.'); return; }
-        if (v !== budget) {
-          state.settings.monthlyBudget = v; persist(); render();
-          toast(v > 0 ? 'Budget updated.' : 'Budget cleared.');
-        }
+        if (!commitBudget(e.target.value)) { e.target.value = String(budget || ''); toast('Enter a non-negative number.'); }
       }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
       $('a', { href: '#add', class: 'btn btn-primary' },
         $('span', { class: 'btn-new-icon', style: 'margin-right:6px;', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line class="icon-plus-h" x1="5" y1="12" x2="19" y2="12"/><line class="icon-plus-v" x1="12" y1="5" x2="12" y2="19"/></svg>' }),
@@ -903,7 +1668,16 @@ function screenDashboard() {
         $('div', { class: 'budget-bar-fill', style: `height:100%;width:${pct}%;background-image:${pct > 90 ? 'linear-gradient(90deg, var(--negative), #dc2626, var(--negative))' : 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))'};transition:width .5s cubic-bezier(0.2,0.8,0.2,1);border-radius:99px;box-shadow:0 0 12px ${pct > 90 ? 'rgba(185,28,28,0.2)' : 'var(--accent-glow)'};` }),
       ),
         // Confetti on last day of month if under budget (once per session)
-        ...((() => { if (pct <= 100 && now.getDate() === new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() && !window.__confettiFired) { setTimeout(triggerConfetti, 600); window.__confettiFired = true; } return []; })()),
+        ...((() => {
+          const confettiMonth = monthKey(localDateKey(now));
+          const lastMonth = window.__confettiMonth;
+          const lastDay = new Date(Date.UTC(now.getFullYear(), now.getMonth() + 1, 0)).getUTCDate();
+          if (pct <= 100 && now.getDate() === lastDay && lastMonth !== confettiMonth) {
+            setTimeout(triggerConfetti, 600);
+            window.__confettiMonth = confettiMonth;
+          }
+          return [];
+        })()),
       $('div', { style: `display:grid;grid-template-columns:repeat(auto-fill,minmax(${isNarrow() ? '90px' : '130px'},1fr));gap:${isNarrow() ? '12px' : '24px'};padding-top:20px;border-top:1px solid var(--line);` },
         stat('Net', fmt(net)),
         stat('Spent', fmt(expenseSum)),
@@ -921,6 +1695,27 @@ function screenDashboard() {
       ),
     ));
   }
+
+  // Spending forecast
+  const forecast = spendingForecast(key);
+  const forecastTone = forecast.budget && forecast.projected > forecast.budget ? 'var(--negative)' : 'var(--positive)';
+  screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+    $('div', { class: 'row between', style: 'margin-bottom:14px;' },
+      $('div', null,
+        $('div', { class: 'eyebrow' }, 'Spending forecast'),
+        $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, `Based on ${forecast.elapsed} days of activity`),
+      ),
+      $('span', { class: 'pill', style: `border-color:transparent;color:${forecastTone};` }, forecast.budget ? (forecast.projected > forecast.budget ? 'Over budget' : 'On track') : 'Estimate'),
+    ),
+    $('div', { style: `display:grid;grid-template-columns:repeat(auto-fit,minmax(${isNarrow() ? '120px' : '150px'},1fr));gap:16px;` },
+      stat('Current spending', fmt(forecast.spent)),
+      stat('Projected total', fmt(forecast.projected)),
+      forecast.budget ? stat('Projected remaining', fmt(forecast.remaining)) : stat('Daily average', fmt(forecast.dailyAverage)),
+    ),
+    forecast.previousDaily !== null && forecast.dailyAverage > 0 ? $('div', { class: 'serif', style: 'font-size:15px;font-style:italic;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);' },
+      `You are spending ${fmt(Math.abs(forecast.previousDaily - forecast.dailyAverage))} ${forecast.dailyAverage <= forecast.previousDaily ? 'less' : 'more'} per day than last month.`,
+    ) : null,
+  ));
 
   // Recurring transactions — always show card so "+ New" is accessible
   const allRecurring = state.settings.recurring || [];
@@ -977,7 +1772,7 @@ function screenDashboard() {
       : $('div', { style: 'display:flex;flex-direction:column;gap:14px;' },
           ...cats.map(([cat, val]) => $('div', null,
             $('div', { class: 'row between', style: 'font-size:13px;margin-bottom:6px;' },
-              $('span', { style: 'font-weight:500;' }, allCategories().find(c => c.id === cat)?.label || cat),
+              $('span', { style: 'font-weight:500;' }, categoryLabel(cat)),
               $('span', { class: 'tnum' }, fmt(val)),
             ),
             $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
@@ -999,7 +1794,7 @@ function screenDashboard() {
             $('span', { class: 'muted', style: 'font-size:12px;' }, friendlyDate(e.date)),
             $('div', null,
               $('div', { style: 'font-weight:500;' }, e.details || '—'),
-              $('div', { style: `font-size:11px;color:var(--muted);${isNarrow() ? 'display:none;' : ''}` }, `${allCategories().find(c => c.id === e.category)?.label || e.category} · ${METHODS.find(m => m.id === e.method)?.label || e.method}`),
+              $('div', { style: `font-size:11px;color:var(--muted);${isNarrow() ? 'display:none;' : ''}` }, `${categoryLabel(e.category)} · ${methodLabel(e.method)}`),
             ),
             $('span', { class: 'display-num', style: `text-align:right;font-size:${isNarrow() ? '13px' : '15px'};color:${e.type === 'credit' ? 'var(--positive)' : 'var(--ink)'}` }, (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
             ...(isNarrow() ? [] : [$('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method))]),
@@ -1010,73 +1805,39 @@ function screenDashboard() {
   grid.append(catCard, recentCard);
   screen.appendChild(grid);
 
-  // Per-account running balances — bank / Revolut (exclude AIB and gift cards)
-  const trackedMethods = METHODS.filter(m => m.id !== 'AIB' && !GIFT_CARD_IDS.includes(m.id));
-  const accountOpenings = state.settings.accountOpenings || {};
-  const methodBalances = computeMethodBalances(state.entries, trackedMethods, accountOpenings);
-  // Compute unsettled pending per method
+  // All tracked balances share one inline reconciliation flow. A checkpoint
+  // records the actual balance on a date without rewriting any transactions.
+  const trackedMethods = METHODS.filter(m => ACCOUNT_METHOD_IDS.includes(m.id));
   const pendingPerMethod = {};
   for (const e of state.entries) {
     if (!e.transferId || e.settled) continue;
     pendingPerMethod[e.method] = (pendingPerMethod[e.method] || 0) + (e.type === 'credit' ? e.amount : -e.amount);
   }
-  const activeMethods = Object.entries(methodBalances).filter(([, v]) => v.balance !== 0);
-  if (activeMethods.length > 0) {
-    const accountsCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
-      $('div', { class: 'eyebrow', style: 'margin-bottom:16px;' }, 'Per-account balances'),
-      $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
-        ...activeMethods.map(([id, v]) => {
-          const pending = pendingPerMethod[id] || 0;
-          return $('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;' },
-            $('div', { style: 'display:flex;align-items:center;gap:10px;' },
-              $('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${v.balance >= 0 ? 'var(--positive)' : 'var(--negative)'};flex-shrink:0;` }),
-              $('span', { style: 'font-weight:500;' }, methodShort(id)),
-              pending !== 0 ? $('span', { style: `font-size:10px;color:var(--muted);` }, `(${pending > 0 ? '+' : ''}${fmt(pending)} pending)`) : null,
-            ),
-            $('span', { class: 'display-num', style: `font-size:14px;color:${v.balance >= 0 ? 'var(--positive)' : 'var(--negative)'};cursor:pointer;border-bottom:1px dashed transparent;transition:border-color .15s;`, onClick: () => openAccountBalanceEditor(id, v.label, v.balance, accountOpenings[id] || 0) },
-              $('span', { style: 'font-size:10px;margin-left:3px;opacity:0.5;', 'aria-hidden': 'true' }, '✎'),
-              fmt(v.balance),
-            ),
-          );
-        }),
-      ),
-    );
-    screen.appendChild(accountsCard);
-  }
+  const accountsCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
+    $('div', { style: 'margin-bottom:16px;' },
+      $('div', { class: 'eyebrow' }, 'Bank account balances'),
+      $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Reconcile an end-of-day actual balance with a date; transaction history stays unchanged.'),
+    ),
+    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
+      ...trackedMethods.map(method => renderBalanceEditorRow(method.id, {
+        label: methodShort(method.id),
+        secondary: pendingPerMethod[method.id] ? `${pendingPerMethod[method.id] > 0 ? '+' : ''}${fmt(pendingPerMethod[method.id])} pending` : '',
+      })),
+    ),
+  );
+  screen.appendChild(accountsCard);
 
-  // Gift card balances — always show
-  const gcOpenings = state.settings.giftCardOpenings || {};
-  const giftCardBalances = GIFT_CARD_IDS.map(id => {
-    const m = METHODS.find(x => x.id === id);
-    const { balance, loaded, spent } = computeGiftCardBalance(state.entries, id, gcOpenings[id] || 0);
-    return { id, label: m ? m.label : id, balance, loaded, spent, opening: gcOpenings[id] || 0 };
-  });
   const gcCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
     $('div', { class: 'eyebrow', style: 'margin-bottom:16px;' }, 'Gift card balances'),
+    $('div', { class: 'muted', style: 'font-size:11px;margin:-8px 0 8px;' }, 'Reconcile the balance shown by each provider without adding a fake transaction. Supporting totals cover recorded loads and spending.'),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
-      ...giftCardBalances.map(gc => {
-        const label = gc.label.includes(' · ') ? gc.label.split(' · ')[1] : gc.label;
-        const totalVol = gc.loaded + gc.spent || 1;
-        const spentPct = Math.min(100, (gc.spent / totalVol) * 100);
-        return $('div', { style: 'display:flex;flex-direction:column;padding:12px 14px;border-bottom:1px solid var(--line);gap:6px;' },
-          $('div', { style: 'display:flex;align-items:center;justify-content:space-between;font-size:13px;' },
-            $('div', { style: 'display:flex;align-items:center;gap:10px;flex:1;min-width:0;' },
-              $('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${gc.balance > 0 ? 'var(--positive)' : gc.balance < 0 ? 'var(--negative)' : 'var(--muted)'};flex-shrink:0;` }),
-              $('span', { style: 'font-weight:500;flex-shrink:0;' }, label),
-            ),
-            $('div', { style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;' },
-              $('span', { class: 'display-num', style: `font-size:14px;color:${gc.balance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(gc.balance)),
-              $('button', { type: 'button', style: 'font-size:10px;color:var(--accent);cursor:pointer;background:none;border:none;padding:2px 6px;', onClick: () => openGiftCardBalanceEditor(gc) }, '✎'),
-            ),
-          ),
-          // Mini progress bar: loaded vs spent
-          gc.loaded > 0 || gc.spent > 0 ? $('div', { style: 'display:flex;align-items:center;gap:8px;' },
-            $('div', { class: 'gc-progress-track' },
-              $('div', { class: 'gc-progress-fill', style: `width:${spentPct}%;background-image:linear-gradient(90deg,${spentPct > 75 ? '#ff453a,#dc2626' : 'var(--accent),#ea580c'});` }),
-            ),
-            $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;flex-shrink:0;' }, `${fmt(gc.spent)} / ${fmt(gc.loaded + gc.spent)}`),
-          ) : null,
-        );
+      ...GIFT_CARD_IDS.map(id => {
+        const m = METHODS.find(x => x.id === id);
+        const totals = computeGiftCardBalance(state.entries, id);
+        return renderBalanceEditorRow(id, {
+          label: m?.label?.includes(' · ') ? m.label.split(' · ')[1] : (m?.label || id),
+          secondary: totals.loaded || totals.spent ? `recorded loads ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}` : '',
+        });
       }),
     ),
   );
@@ -1107,8 +1868,9 @@ function screenDashboard() {
             const isPast = d < todayStr;
             const isToday = d === todayStr;
             const isFuture = d > todayStr;
-            const dt = new Date(d + 'T00:00:00');
-            const dayName = dt.toLocaleString('en-GB', { weekday: 'short' });
+            const [dy, dm, dd] = d.split('-').map(Number);
+            const dt = new Date(Date.UTC(dy, dm - 1, dd));
+            const dayName = new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: 'UTC' }).format(dt);
             const dayNum = dt.getDate();
             const statusColor = paid ? 'var(--positive)' : isFuture ? 'var(--muted)' : 'var(--negative)';
             const canFill = !paid && (isPast || isToday);
@@ -1299,138 +2061,6 @@ function openNewRecurring() {
   queueMicrotask(() => amtInput.focus());
 }
 
-// ---------- modal: gift card balance editor ----------
-function openGiftCardBalanceEditor(gc) {
-  const label = gc.label.includes(' · ') ? gc.label.split(' · ')[1] : gc.label;
-  let val = gc.opening;
-
-  const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
-  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Edit ${label} balance`, tabindex: '-1', style: 'max-width:400px;' });
-  bg.appendChild(modal);
-  document.body.appendChild(bg);
-
-  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
-  document.addEventListener('keydown', onEsc, true);
-
-  const input = $('input', { type: 'text', inputmode: 'decimal', value: String(val || ''), placeholder: '0.00', 'aria-label': 'Opening balance', autocomplete: 'off', style: 'width:100%;' });
-
-  const computed = gc.balance - gc.opening;
-  const displayTotal = $('span', { class: 'display-num', style: 'font-size:18px;' }, fmt(val + computed));
-
-  modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' },
-    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:26px;' }, label),
-    $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
-  ));
-
-  modal.appendChild($('div', { style: 'margin-bottom:16px;' },
-    $('label', { class: 'eyebrow', style: 'display:block;margin-bottom:4px;' }, 'Starting balance'),
-    input,
-    $('div', { class: 'muted', style: 'font-size:11px;margin-top:4px;' }, 'Set the balance that was already on the card before you started tracking.'),
-  ));
-
-  const openingPreview = $('span', { class: 'tnum' }, fmt(val));
-  modal.appendChild($('div', { style: 'display:flex;flex-direction:column;gap:6px;padding:12px;background:var(--accent-soft);border-radius:8px;margin-bottom:16px;' },
-    $('div', { style: 'display:flex;justify-content:space-between;font-size:12px;' },
-      $('span', { class: 'muted' }, `Loaded (${fmt(gc.loaded)}) – spent (${fmt(gc.spent)})`),
-      $('span', { class: 'tnum' }, fmt(computed)),
-    ),
-    $('div', { style: 'display:flex;justify-content:space-between;font-size:12px;' },
-      $('span', { class: 'muted' }, 'Starting balance'),
-      openingPreview,
-    ),
-    $('div', { style: 'display:flex;justify-content:space-between;font-size:14px;font-weight:600;padding-top:6px;border-top:1px solid var(--line);' },
-      $('span', null, 'Current balance'),
-      displayTotal,
-    ),
-  ));
-
-  input.addEventListener('input', () => {
-    val = parseAmount(input.value) || 0;
-    openingPreview.textContent = fmt(val);
-    displayTotal.textContent = fmt(val + computed);
-  });
-
-  modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' },
-    $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
-    $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
-      if (!state.settings.giftCardOpenings) state.settings.giftCardOpenings = {};
-      state.settings.giftCardOpenings[gc.id] = val;
-      persist();
-      toast(`${label} starting balance updated.`);
-      close();
-    } }, 'Save'),
-  ));
-
-  queueMicrotask(() => input.focus());
-}
-
-// ---------- modal: account balance editor ----------
-function openAccountBalanceEditor(methodId, label, currentBalance, opening) {
-  const name = label.includes(' · ') ? label.split(' · ')[1] : label;
-  let val = opening;
-
-  const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
-  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Edit ${name} balance`, tabindex: '-1', style: 'max-width:400px;' });
-  bg.appendChild(modal);
-  document.body.appendChild(bg);
-
-  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
-  document.addEventListener('keydown', onEsc, true);
-
-  const input = $('input', { type: 'text', inputmode: 'decimal', value: String(val || ''), placeholder: '0.00', 'aria-label': 'Opening balance', autocomplete: 'off', style: 'width:100%;' });
-
-  const computed = currentBalance - opening;
-  const displayTotal = $('span', { class: 'display-num', style: 'font-size:18px;' }, fmt(val + computed));
-
-  modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' },
-    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:26px;' }, name),
-    $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
-  ));
-
-  modal.appendChild($('div', { style: 'margin-bottom:16px;' },
-    $('label', { class: 'eyebrow', style: 'display:block;margin-bottom:4px;' }, 'Opening balance'),
-    input,
-    $('div', { class: 'muted', style: 'font-size:11px;margin-top:4px;' }, 'Set what this account held before you started tracking.'),
-  ));
-
-  const openingPreview = $('span', { class: 'tnum' }, fmt(val));
-  modal.appendChild($('div', { style: 'display:flex;flex-direction:column;gap:6px;padding:12px;background:var(--accent-soft);border-radius:8px;margin-bottom:16px;' },
-    $('div', { style: 'display:flex;justify-content:space-between;font-size:12px;' },
-      $('span', { class: 'muted' }, 'Transaction total'),
-      $('span', { class: 'tnum' }, fmt(computed)),
-    ),
-    $('div', { style: 'display:flex;justify-content:space-between;font-size:12px;' },
-      $('span', { class: 'muted' }, 'Opening balance'),
-      openingPreview,
-    ),
-    $('div', { style: 'display:flex;justify-content:space-between;font-size:14px;font-weight:600;padding-top:6px;border-top:1px solid var(--line);' },
-      $('span', null, 'Current balance'),
-      displayTotal,
-    ),
-  ));
-
-  input.addEventListener('input', () => {
-    val = parseAmount(input.value) || 0;
-    openingPreview.textContent = fmt(val);
-    displayTotal.textContent = fmt(val + computed);
-  });
-
-  modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' },
-    $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
-    $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
-      if (!state.settings.accountOpenings) state.settings.accountOpenings = {};
-      state.settings.accountOpenings[methodId] = val;
-      persist();
-      toast(`${name} opening balance updated.`);
-      close();
-    } }, 'Save'),
-  ));
-
-  queueMicrotask(() => input.focus());
-}
-
 // ---------- modal: cash editor ----------
 function openCashEditor() {
   const coins = { ...COINS_DEFAULT, ...(state.settings.coins || {}) };
@@ -1490,6 +2120,38 @@ function screenAdd() {
     $('h1', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:34px;' }, 'New entry'),
   ));
 
+  // Natural-language and structured voice entry
+  const magicInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => {
+    const parsed = parseNaturalLanguage(e.target.value);
+    magicPreview.textContent = parsed?.error || (parsed ? `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}` : '');
+  } });
+  const magicPreview = $('div', { class: 'muted', style: 'font-size:12px;min-height:18px;margin-bottom:10px;' });
+  const addMagic = () => {
+    const parsed = parseNaturalLanguage(magicInput.value);
+    if (!parsed || parsed.error) { toast(parsed?.error || 'Describe an entry first.'); magicInput.focus(); return; }
+    state.entries.push({ id: uid(), createdAt: nowIso(), date: parsed.date, type: parsed.type, category: parsed.category, details: parsed.details, amount: parsed.amount, method: parsed.method, note: 'Created with natural-language input' });
+    state.entries.sort((a, b) => a.date.localeCompare(b.date));
+    persist(); toast('Entry created from your description.'); location.hash = '#dashboard';
+  };
+  const voiceInputBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) { toast('Voice input is not supported in this browser.'); return; }
+    const recognition = new Recognition();
+    recognition.lang = 'en-IE'; recognition.interimResults = false; recognition.maxAlternatives = 1;
+    voiceInputBtn.textContent = 'Listening…'; voiceInputBtn.disabled = true;
+    recognition.onresult = ev => { magicInput.value = ev.results[0][0].transcript; magicInput.dispatchEvent(new Event('input')); };
+    recognition.onerror = () => toast('Could not hear that. Try again.');
+    recognition.onend = () => { voiceInputBtn.textContent = '🎙 Voice'; voiceInputBtn.disabled = false; };
+    recognition.start();
+  } }, '🎙 Voice');
+  c.appendChild($('div', { class: 'card', style: `max-width:540px;margin:0 auto 20px;padding:${isNarrow() ? '18px' : '22px'};` },
+    $('div', { class: 'eyebrow', style: 'margin-bottom:6px;' }, 'Magic entry'),
+    $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:10px;' }, 'Describe it naturally, check the preview, then add it.'),
+    magicInput,
+    magicPreview,
+    $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' }, voiceInputBtn, $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: addMagic }, 'Add entry')),
+  ));
+
   // Quick-add receipt parser section
   const qTextarea = $('textarea', { placeholder: 'Quick-add: paste receipt lines…\ne.g. €12.50 Tesco groceries\n5.00 bus fare', 'aria-label': 'Quick-add receipt', rows: '2', style: 'width:100%;max-width:540px;margin:0 auto 16px;display:block;font-size:13px;', onInput: (e) => {
     const text = e.target.value;
@@ -1500,7 +2162,7 @@ function screenAdd() {
         const parsed = parseReceiptLine(line);
         if (parsed) {
           qPreview.appendChild($('div', { class: 'receipt-line', style: 'display:flex;justify-content:space-between;padding:4px 0;font-size:12px;' },
-            $('span', null, parsed.details, $('span', { class: 'pill pill-cat', style: 'margin-left:6px;font-size:10px;padding:1px 6px;' }, allCategories().find(c=>c.id===parsed.category)?.label||parsed.category)),
+            $('span', null, parsed.details, $('span', { class: 'pill pill-cat', style: 'margin-left:6px;font-size:10px;padding:1px 6px;' }, categoryLabel(parsed.category))),
             $('span', { class: 'tnum' }, parsed.amount > 0 ? fmt(parsed.amount) : '—'),
           ));
         }
@@ -1517,7 +2179,7 @@ function screenAdd() {
       for (const line of lines) {
         const parsed = parseReceiptLine(line);
         if (parsed && parsed.amount > 0) {
-          state.entries.push({ id: uid(), date: today(), type: 'expense', category: parsed.category, details: parsed.details, amount: parsed.amount, method: 'AIB', note: '' });
+          state.entries.push({ id: uid(), createdAt: nowIso(), date: today(), type: 'expense', category: parsed.category, details: parsed.details, amount: parsed.amount, method: 'AIB', note: '' });
           added++;
         }
       }
@@ -1546,7 +2208,9 @@ function screenAdd() {
     $('div', { class: 'quick-add-wrap' }, $('div', { class: 'quick-add-body' }, qTextarea, qPreview, qActions)),
   ));
 
-  // Audio note button
+  // Audio notes are explicit non-financial entries. Store a bounded data URL
+  // rather than a blob URL, because blob URLs disappear after a reload and
+  // cannot be synced to another device.
   let mediaRecorder, audioChunks;
   const audioBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;display:flex;align-items:center;gap:4px;', onClick: async () => {
     if (mediaRecorder && mediaRecorder.state === 'recording') {
@@ -1555,31 +2219,38 @@ function screenAdd() {
       return;
     }
     try {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('audio unsupported');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaRecorder = new MediaRecorder(stream);
       audioChunks = [];
-      mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+      mediaRecorder.ondataavailable = (e) => { if (e.data?.size) audioChunks.push(e.data); };
       mediaRecorder.onstop = () => {
         stream.getTracks().forEach(t => t.stop());
-        const blob = new Blob(audioChunks, { type: 'audio/webm' });
-        const url = URL.createObjectURL(blob);
-        const note = prompt('Label for this audio note:', 'Voice note ' + friendlyDate(today()));
-        if (note) {
-          state.entries.push({ id: uid(), date: today(), type: 'expense', category: 'misc', details: note, amount: 0, method: 'AIB', note: `🎙 Audio note: ${url}` });
+        const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+        if (blob.size > 1_500_000) { toast('That recording is too large to store locally. Keep it under about 30 seconds.'); return; }
+        const note = String(prompt('Label for this audio note:', 'Voice note ' + friendlyDate(today())) || '').trim();
+        if (!note) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const audioData = typeof reader.result === 'string' ? reader.result : '';
+          if (!audioData || audioData.length > 2_000_000) { toast('That recording could not be saved.'); return; }
+          state.entries.push({ id: uid(), createdAt: nowIso(), date: today(), type: 'note', category: 'misc', details: note, amount: 0, method: 'AIB', note: '🎙 Audio note', audioData, audioType: blob.type || 'audio/webm' });
           persist();
           toast('Audio note saved.');
           render();
-        }
+        };
+        reader.onerror = () => toast('That recording could not be saved.');
+        reader.readAsDataURL(blob);
       };
       mediaRecorder.start();
       audioBtn.innerHTML = '⏹ Stop recording';
     } catch(err) {
-      toast('Microphone access denied.');
+      toast('Microphone access is unavailable in this browser.');
     }
   } }, '🎤 Record note…');
   c.appendChild($('div', { style: 'max-width:540px;margin:0 auto 24px;text-align:right;' }, audioBtn));
 
-  c.appendChild(formView({
+  const form = formView({
     onSubmit: (entryOrEntries) => {
       const entries = Array.isArray(entryOrEntries) ? entryOrEntries : [entryOrEntries];
       for (const e of entries) state.entries.push(e);
@@ -1588,9 +2259,11 @@ function screenAdd() {
       toast(entries.length > 1 ? `Saved ${entries.length} entries.` : 'Saved.');
       location.hash = '#dashboard';
     },
-  }));
-  // Autofocus the amount field on screen mount
-  queueMicrotask(() => document.getElementById('f-amount')?.focus());
+  });
+  c.appendChild(form);
+  // Focus the first field appropriate to the selected entry type. This keeps
+  // note forms usable if the screen is ever opened with a note preselected.
+  queueMicrotask(() => document.getElementById(form.dataset.firstFocus || 'f-amount')?.focus());
   return c;
 }
 
@@ -1599,18 +2272,17 @@ function screenHistory() {
   const params = new URLSearchParams((location.hash.split('?')[1]) || '');
   let activeMonth = params.get('month') || monthKey(today());
   let activeCat = params.get('cat') || 'all';
+  let activeMethod = params.get('method') || 'all';
   let searchQuery = params.get('q') || '';
 
-  const months = Array.from(new Set(state.entries.map(e => monthKey(e.date)))).sort().reverse();
+  const months = Array.from(new Set(state.entries.map(e => monthKey(e.date))))
+    .sort((a, b) => b.localeCompare(a));
   if (!months.includes(activeMonth) && months.length) activeMonth = months[0];
 
   const monthEntries = entriesForMonth(activeMonth);
-  const filtered = searchEntries(monthEntries, searchQuery, { type: 'all', category: activeCat, method: 'all' });
+  const filtered = searchEntries(monthEntries, searchQuery, { type: 'all', category: activeCat, method: activeMethod });
   const visible = filtered.sort((a, b) => b.date.localeCompare(a.date));
-  const expenseSum = monthEntries.filter(e => e.type === 'expense').reduce((s, e) => s + e.amount, 0);
-  const openingBalance = +state.settings.openingBalance || 0;
-  const { byId: balanceById } = computeBalance(state.entries, openingBalance);
-
+  const expenseSum = monthEntries.filter(isSpendingEntry).reduce((s, e) => s + e.amount, 0);
   const update = (next = {}) => {
     if (next.month !== undefined) params.set('month', next.month);
     if (next.cat !== undefined) {
@@ -1621,6 +2293,10 @@ function screenHistory() {
       if (next.q) params.set('q', next.q);
       else params.delete('q');
     }
+    if (next.method !== undefined) {
+      if (next.method === 'all') params.delete('method');
+      else params.set('method', next.method);
+    }
     const qs = params.toString();
     location.hash = qs ? `history?${qs}` : 'history';
   };
@@ -1629,10 +2305,38 @@ function screenHistory() {
 
   c.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:24px;flex-wrap:wrap;gap:12px;' },
     $('h1', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:34px;' }, monthLabel(activeMonth)),
-    $('div', { class: 'row', style: 'gap:8px;' },
+    $('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;justify-content:flex-end;' },
       monthNav('←', () => { const i = months.indexOf(activeMonth); if (i < months.length - 1) update({ month: months[i + 1] }); }, months.indexOf(activeMonth) >= months.length - 1),
       monthNav(monthKey(today()) === activeMonth ? 'Today' : 'Jump', () => update({ month: monthKey(today()) }), false),
       monthNav('→', () => { const i = months.indexOf(activeMonth); if (i > 0) update({ month: months[i - 1] }); }, months.indexOf(activeMonth) <= 0),
+    ),
+  ));
+
+  const historyAccountMethods = METHODS.filter(m => ACCOUNT_METHOD_IDS.includes(m.id));
+  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px;' },
+      $('div', null,
+        $('div', { class: 'eyebrow' }, 'Account balances'),
+        $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Reconcile end-of-day actual balances by date; no transaction records are changed.'),
+      ),
+      $('span', { class: 'muted', style: 'font-size:11px;' }, 'AIB · Revolut · Revolut Savings'),
+    ),
+    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
+      ...historyAccountMethods.map(method => renderBalanceEditorRow(method.id, { label: methodShort(method.id) })),
+    ),
+  ));
+  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+    $('div', { class: 'eyebrow', style: 'margin-bottom:4px;' }, 'Gift card balances'),
+    $('div', { class: 'muted', style: 'font-size:11px;margin-bottom:8px;' }, 'The same reconciliation editor is used for every balance.'),
+    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
+      ...GIFT_CARD_IDS.map(id => {
+        const method = METHODS.find(m => m.id === id);
+        const totals = computeGiftCardBalance(state.entries, id);
+        return renderBalanceEditorRow(id, {
+          label: method?.label?.includes(' · ') ? method.label.split(' · ')[1] : (method?.label || id),
+          secondary: totals.loaded || totals.spent ? `recorded loads ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}` : '',
+        });
+      }),
     ),
   ));
 
@@ -1654,14 +2358,26 @@ function screenHistory() {
   for (const e of monthEntries) catCounts[e.category] = (catCounts[e.category] || 0) + 1;
   catCounts.all = monthEntries.length;
 
-  const filterRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 16px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
+  const filterRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 12px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
+  filterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;font-size:10px;' }, 'Category'));
   filterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': 'all', 'data-active': activeCat === 'all' ? 'true' : 'false', 'aria-pressed': activeCat === 'all' ? 'true' : 'false', onClick: () => update({ cat: 'all' }) }, `All · ${catCounts.all || 0}`));
   for (const c2 of allCategories()) {
     const count = catCounts[c2.id] || 0;
     if (count === 0 && activeCat !== c2.id) continue;
     filterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': c2.id, 'data-active': activeCat === c2.id ? 'true' : 'false', 'aria-pressed': activeCat === c2.id ? 'true' : 'false', onClick: () => update({ cat: c2.id }) }, `${c2.label} · ${count}`));
   }
+  const methodCounts = {};
+  for (const e of monthEntries) methodCounts[e.method] = (methodCounts[e.method] || 0) + 1;
+  const methodFilterRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 16px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
+  methodFilterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;font-size:10px;' }, 'Account'));
+  methodFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': 'all', 'data-active': activeMethod === 'all' ? 'true' : 'false', 'aria-pressed': activeMethod === 'all' ? 'true' : 'false', onClick: () => update({ method: 'all' }) }, `All · ${monthEntries.length}`));
+  for (const method of METHODS) {
+    const count = methodCounts[method.id] || 0;
+    if (count === 0 && activeMethod !== method.id) continue;
+    methodFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': method.id, 'data-active': activeMethod === method.id ? 'true' : 'false', 'aria-pressed': activeMethod === method.id ? 'true' : 'false', onClick: () => update({ method: method.id }) }, `${methodShort(method.id)} · ${count}`));
+  }
   c.appendChild(filterRow);
+  c.appendChild(methodFilterRow);
 
   const tableWrap = $('div', { class: 'card', style: 'overflow-x:auto;' });
   if (visible.length === 0) {
@@ -1671,7 +2387,7 @@ function screenHistory() {
       $('span', { role: 'columnheader' }, 'Date'),
       $('span', { role: 'columnheader' }, 'Description'),
       $('span', { role: 'columnheader', style: 'text-align:right;' }, 'Amount'),
-      $('span', { role: 'columnheader', style: 'text-align:right;' }, 'Balance'),
+      $('span', { role: 'columnheader', style: 'text-align:right;', title: 'Balance immediately after this entry' }, 'After entry'),
       $('span', { role: 'columnheader' }, 'Method'),
       $('span'),
     ));
@@ -1680,11 +2396,11 @@ function screenHistory() {
       const isTransfer = !!e.transferId;
       const settledLabel = isTransfer ? (e.settled ? '✓ settled' : '● unsettled') : '';
       const settleColor = e.settled ? 'var(--positive)' : 'var(--muted)';
-      const rowType = e.type === 'credit' ? 'income-row' : 'expense-row';
+      const rowType = e.type === 'note' ? 'note-row' : e.type === 'credit' ? 'income-row' : 'expense-row';
       const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': e.id, 'aria-label': `Edit entry ${e.details} on ${friendlyDate(e.date)}`, style: 'display:grid;grid-template-columns:90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;align-items:center;border-bottom:1px solid var(--line);cursor:pointer;min-width:740px;outline:none;', onClick: () => openEdit(e.id), onKeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEdit(e.id); } } },
-        $('span', { class: 'muted', style: 'font-size:13px;' }, friendlyDate(e.date)),
-        $('div', null,
-          $('div', { style: 'font-size:14px;display:flex;align-items:center;gap:6px;' }, e.details || '—',
+        $('span', { class: 'muted', style: 'font-size:13px;' }, friendlyDate(e.date)),          $('div', null,
+            $('div', { style: 'font-size:14px;display:flex;align-items:center;gap:6px;' }, e.details || '—',
+              e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, style: 'width:130px;height:28px;' }) : null,
             isTransfer ? $('span', { style: `font-size:10px;color:${settleColor};cursor:pointer;user-select:none;`, onClick: (ev) => {
               ev.stopPropagation();
               const newVal = !e.settled;
@@ -1694,10 +2410,10 @@ function screenHistory() {
               persist(); toast(newVal ? 'Transfer settled.' : 'Transfer unsettled.'); render();
             }, title: 'Click to toggle settled' }, settledLabel) : null,
           ),
-          $('div', { style: 'font-size:11px;color:var(--muted);' }, allCategories().find(c2 => c2.id === e.category)?.label || e.category),
+          $('div', { style: 'font-size:11px;color:var(--muted);' }, categoryLabel(e.category)),
         ),
-        $('span', { class: 'display-num', style: 'text-align:right;font-size:15px;color:' + (e.type === 'credit' ? 'var(--positive)' : 'var(--ink)') }, (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
-        $('span', { class: 'tnum', style: 'text-align:right;font-size:13px;color:' + ((balanceById[e.id] || 0) >= 0 ? 'var(--positive)' : 'var(--negative)') }, fmt(balanceById[e.id] || 0)),
+        $('span', { class: 'display-num', style: 'text-align:right;font-size:15px;color:' + (e.type === 'credit' ? 'var(--positive)' : 'var(--ink)') }, e.type === 'note' ? 'Note' : (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
+        $('span', { class: 'tnum', style: 'text-align:right;font-size:13px;color:' + (balanceForEntry(e) >= 0 ? 'var(--positive)' : 'var(--negative)'), }, e.type === 'note' ? '—' : fmt(balanceForEntry(e))),
         $('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method)),
         $('span', { style: 'color:var(--muted);font-size:14px;text-align:right;' }, '›'),
       );
@@ -1724,7 +2440,7 @@ function screenInsights() {
   const params = new URLSearchParams((location.hash.split('?')[1]) || '');
   const fromParam = params.get('from') || '';
   const toParam = params.get('to') || '';
-  const fromDate = fromParam || (() => { const d = new Date(); d.setDate(d.getDate() - 90); return d.toISOString().slice(0,10); })();
+  const fromDate = fromParam || (() => { const d = new Date(); d.setDate(d.getDate() - 90); return localDateKey(d); })();
   const toDate = toParam || today();
 
   const rangeEntries = state.entries.filter(e => e.date >= fromDate && e.date <= toDate);
@@ -1751,7 +2467,7 @@ function screenInsights() {
   ));
 
   const months = {};
-  for (const e of recent.filter(e => e.type === 'expense')) {
+  for (const e of recent.filter(isSpendingEntry)) {
     const k = monthKey(e.date);
     months[k] = (months[k] || 0) + e.amount;
   }
@@ -1759,20 +2475,20 @@ function screenInsights() {
   const avg = monthList.length ? monthList.reduce((s, [,v]) => s+v, 0) / monthList.length : 0;
 
   const methodTotals = {};
-  for (const e of recent.filter(e => e.type === 'expense')) methodTotals[e.method] = (methodTotals[e.method] || 0) + e.amount;
+  for (const e of recent.filter(isSpendingEntry)) methodTotals[e.method] = (methodTotals[e.method] || 0) + e.amount;
   const topMethodEntry = Object.entries(methodTotals).sort((a,b) => b[1]-a[1])[0];
 
   c.appendChild($('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px;margin-bottom:32px;' },
     statCard('Average / month', fmt(avg)),
     statCard('Top method', topMethodEntry ? `${(methodShort(topMethodEntry[0]))} · ${fmt(topMethodEntry[1])}` : '—'),
-    statCard('Entries', String(recent.filter(e => e.type === 'expense').length)),
-    statCard('Categories active', String(new Set(recent.filter(e => e.type === 'expense').map(e => e.category)).size)),
+    statCard('Entries', String(recent.filter(isSpendingEntry).length)),
+    statCard('Categories active', String(new Set(recent.filter(isSpendingEntry).map(e => e.category)).size)),
   ));
 
   // Calendar heatmap — current month
   const now = new Date();
-  const heatKey = monthKey(now.toISOString().slice(0, 10));
-  const heatEntries = entriesForMonth(heatKey).filter(e => e.type === 'expense');
+  const heatKey = monthKey(localDateKey(now));
+  const heatEntries = entriesForMonth(heatKey).filter(isSpendingEntry);
   const heatByDay = {};
   for (const e of heatEntries) heatByDay[e.date] = (heatByDay[e.date] || 0) + e.amount;
   const maxDay = Math.max(1, ...Object.values(heatByDay));
@@ -1814,7 +2530,7 @@ function screenInsights() {
   ));
 
   const catTotals = {};
-  for (const e of recent.filter(e => e.type === 'expense')) catTotals[e.category] = (catTotals[e.category]||0) + e.amount;
+  for (const e of recent.filter(isSpendingEntry)) catTotals[e.category] = (catTotals[e.category]||0) + e.amount;
   const catRows = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]);
   const maxCat = catRows[0]?.[1] || 1;
 
@@ -1823,7 +2539,7 @@ function screenInsights() {
     catRows.length === 0
       ? $('div', { class: 'empty' }, emptyIcon('coin'), ' No expenses in this range.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
-          ...catRows.map(([cat, val]) => bar(allCategories().find(c=>c.id===cat)?.label || cat, val, maxCat, val === maxCat)),
+          ...catRows.map(([cat, val]) => bar(categoryLabel(cat), val, maxCat, val === maxCat)),
         ),
   ));
 
@@ -1835,9 +2551,55 @@ function screenInsights() {
     methodRows.length === 0
       ? $('div', { class: 'empty' }, emptyIcon('coin'), ' No expenses in this range.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
-          ...methodRows.map(([m, val]) => bar(METHODS.find(x=>x.id===m)?.label || m, val, maxMethod, val === maxMethod)),
+          ...methodRows.map(([m, val]) => bar(methodLabel(m), val, maxMethod, val === maxMethod)),
         ),
   ));
+
+  // Account balance history
+  const balanceHistory = accountBalanceHistory();
+  if (balanceHistory.points.length > 0) {
+    const chartW = 640, chartH = 170, padX = 42, padY = 18;
+    const values = balanceHistory.points.flatMap(p => balanceHistory.methods.map(m => p.balances[m.id]));
+    const minValue = Math.min(0, ...values), maxValue = Math.max(1, ...values), range = maxValue - minValue || 1;
+    const xAt = i => padX + (balanceHistory.points.length === 1 ? 0 : i * ((chartW - padX * 1.5) / (balanceHistory.points.length - 1)));
+    const yAt = value => chartH - padY - ((value - minValue) / range) * (chartH - padY * 2);
+    const palette = ['var(--accent)', 'var(--positive)', '#8b5cf6'];
+    const lines = balanceHistory.methods.map((method, index) => {
+      const d = balanceHistory.points.map((point, i) => `${i ? 'L' : 'M'} ${xAt(i)} ${yAt(point.balances[method.id])}`).join(' ');
+      return $('path', { d, style: `fill:none;stroke:${palette[index]};stroke-width:2;stroke-linecap:round;stroke-linejoin:round;` });
+    });
+    c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;overflow:hidden;' },
+      $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:14px;' },
+        $('div', null,        $('div', { class: 'eyebrow' }, 'Account balance history'), $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Month-end balances anchored to dated reconciliation checkpoints.')),
+        $('div', { style: 'display:flex;gap:10px;flex-wrap:wrap;' }, ...balanceHistory.methods.map((m, i) => $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: `width:7px;height:7px;border-radius:50%;background:${palette[i]};` }), methodShort(m.id)))),
+      ),
+      $('svg', { viewBox: `0 0 ${chartW} ${chartH}`, role: 'img', 'aria-label': 'Account balance history chart', style: 'width:100%;height:auto;min-height:150px;overflow:visible;' },
+        $('line', { x1: padX, y1: yAt(0), x2: chartW - padX / 2, y2: yAt(0), style: 'stroke:var(--line);stroke-width:1;' }),
+        ...lines,
+        ...balanceHistory.points.map((point, i) => $('text', { x: xAt(i), y: chartH - 2, 'text-anchor': i === 0 ? 'start' : i === balanceHistory.points.length - 1 ? 'end' : 'middle', style: 'fill:var(--muted);font-size:9px;' }, monthLabel(point.key).split(' ')[0].slice(0, 3))),
+      ),
+    ));
+  }
+
+  // Monthly review assistant
+  const reviewKey = monthKey(today());
+  const review = reviewForMonth(reviewKey);
+  c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+    $('div', { class: 'eyebrow', style: 'margin-bottom:12px;' }, `Monthly review · ${monthLabel(reviewKey)} · month to date`),
+    $('div', { style: 'display:flex;flex-direction:column;gap:8px;' }, ...review.lines.map(line => $('div', { class: 'serif', style: 'font-size:16px;font-style:italic;' }, line))),
+  ));
+
+  // Duplicate cleanup
+  const duplicateSets = duplicateGroups();
+  if (duplicateSets.length) {
+    c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+      $('div', { class: 'row between', style: 'margin-bottom:12px;' }, $('div', { class: 'eyebrow' }, `Possible duplicates · ${duplicateSets.reduce((sum, group) => sum + group.length - 1, 0)}`), $('span', { class: 'muted', style: 'font-size:11px;' }, 'Keep the first, remove extras')),
+      $('div', { style: 'display:flex;flex-direction:column;gap:10px;' }, ...duplicateSets.flatMap(group => group.slice(1).map(entry => $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;' },
+        $('div', { style: 'min-width:0;' }, $('div', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, entry.details), $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, `${friendlyDate(entry.date)} · ${methodShort(entry.method)} · ${fmt(entry.amount)}`)),
+        $('button', { type: 'button', class: 'btn btn-danger', style: 'padding:5px 10px;font-size:11px;flex-shrink:0;', onClick: () => removeDuplicateEntry(entry.id) }, 'Delete duplicate'),
+      )))),
+    ));
+  }
 
   // Data health card
   const health = computeDataHealth(state.entries);
@@ -1884,8 +2646,8 @@ function openYearInReview() {
   const now = new Date();
   const year = now.getFullYear();
   const yearEntries = state.entries.filter(e => e.date >= `${year}-01-01` && e.date <= `${year}-12-31`);
-  const expOnly = yearEntries.filter(e => e.type === 'expense');
-  const incOnly = yearEntries.filter(e => e.type === 'credit');
+  const expOnly = yearEntries.filter(isSpendingEntry);
+  const incOnly = yearEntries.filter(isIncomeEntry);
   const totalSpent = expOnly.reduce((s,e) => s + e.amount, 0);
   const totalEarned = incOnly.reduce((s,e) => s + e.amount, 0);
   const topCat = Object.entries(expOnly.reduce((a,e) => { a[e.category] = (a[e.category]||0) + e.amount; return a; }, {})).sort((a,b) => b[1]-a[1])[0];
@@ -1913,7 +2675,7 @@ function openYearInReview() {
     ['Total spent', fmt(totalSpent), 'var(--ink)'],
     ['Net', fmt(totalEarned - totalSpent), (totalEarned - totalSpent) >= 0 ? 'var(--positive)' : 'var(--negative)'],
     ['Entries logged', String(yearEntries.length), ''],
-    ['Top category', topCat ? `${allCategories().find(c=>c.id===topCat[0])?.label||topCat[0]} · ${fmt(topCat[1])}` : '—', ''],
+    ['Top category', topCat ? `${categoryLabel(topCat[0])} · ${fmt(topCat[1])}` : '—', ''],
     ['Best month', bestMonth ? `${monthLabel(bestMonth[0])} · ${fmt(bestMonth[1])}` : '—', ''],
     ['Toughest month', worstMonth ? `${monthLabel(worstMonth[0])} · ${fmt(worstMonth[1])}` : '—', ''],
     ['Busiest day', busiestDay ? `${friendlyDate(busiestDay[0])} — ${busiestDay[1].count} entries, ${fmt(busiestDay[1].total)}` : '—', ''],
@@ -1938,8 +2700,6 @@ function openYearInReview() {
 /** Delete-only modal for transfer pairs — editing is not allowed. */
 function openTransferDelete(e) {
   const pair = state.entries.filter(x => x.transferId === e.transferId);
-  const other = pair.find(x => x.id !== e.id);
-
   const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
   const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Transfer pair', tabindex: '-1', style: 'max-width:480px;' });
   bg.appendChild(modal);
@@ -1966,9 +2726,7 @@ function openTransferDelete(e) {
   modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;' },
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
     $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: () => {
-      state.entries = state.entries.filter(x => x.transferId !== e.transferId);
-      persist();
-      toast('Transfer pair deleted.');
+      if (deleteEntryOrTransfer(e.id)) toast('Transfer pair deleted.');
       close();
     } }, 'Delete pair'),
   ));
@@ -2003,7 +2761,7 @@ function openEdit(id) {
     render();
     if (openerHadFocus) {
       queueMicrotask(() => {
-        const fresh = document.querySelector(`[data-id="${CSS.escape(openerId)}"]`);
+        const fresh = [...document.querySelectorAll('[data-id]')].find(node => node.dataset.id === openerId);
         fresh?.focus();
       });
     }
@@ -2034,11 +2792,14 @@ function openEdit(id) {
     initial: e,
     onSubmit: (entryOrEntries) => {
       const entries = Array.isArray(entryOrEntries) ? entryOrEntries : [entryOrEntries];
-      const updated = entries[0];
-      const idx = state.entries.findIndex(x => x.id === id);
-      state.entries[idx] = updated;
+      // Editing an ordinary entry may turn it into a transfer. Replace the
+      // original atomically with the generated pair rather than silently
+      // discarding the second leg.
+      state.entries = state.entries.filter(x => x.id !== id);
+      state.entries.push(...entries);
+      state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : 1));
       persist();
-      toast('Updated.');
+      toast(entries.length > 1 ? 'Transfer updated.' : 'Updated.');
       close();
     },
   });
@@ -2058,14 +2819,9 @@ function openEdit(id) {
     deleteStage1.focus();
   } }, 'Cancel');
   const confirmDeleteBtn = $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: () => {
-    // If this entry is part of a transfer pair, delete its sibling too.
-    if (e.transferId) {
-      state.entries = state.entries.filter(x => x.transferId !== e.transferId);
-    } else {
-      state.entries = state.entries.filter(x => x.id !== id);
+    if (deleteEntryOrTransfer(id)) {
+      toast(e.transferId ? 'Transfer pair deleted.' : 'Deleted.');
     }
-    persist();
-    toast('Deleted.');
     close();
   } }, 'Confirm delete');
   const deletePanel = $('div', { style: 'display:none;margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:var(--accent-soft);' },
@@ -2078,7 +2834,8 @@ function openEdit(id) {
 
   // Initial focus into the first form field
   queueMicrotask(() => {
-    const first = modal.querySelector('input, select, button');
+    const first = modal.querySelector(`#${formNode.dataset.firstFocus || 'f-amount'}`)
+      || modal.querySelector('input, select, button');
     if (first) first.focus();
   });
 }
@@ -2183,35 +2940,75 @@ function openSyncSettings() {
       const pullLabel = $('span', null, 'Pull');
       const pushLabel = $('span', null, 'Push');
       const pullBtn = $('button', { type: 'button', class: 'btn btn-ghost', onClick: async () => {
+        if (syncInFlight || syncExclusive) { toast('A sync is already in progress.'); return; }
+        syncExclusive = true;
+        try {
         pullBtn.disabled = true; pushBtn.disabled = true;
         pullLabel.textContent = 'Pulling…';
+        const pullRevision = syncRevision;
         const r = await syncPull();
         pullBtn.disabled = false; pushBtn.disabled = false;
         pullLabel.textContent = 'Pull';
         if (r.ok && r.content) {
+          if (!isUsableCloudContent(r.content)) {
+            pullBtn.disabled = false; pushBtn.disabled = false;
+            toast('Pull failed: cloud data is malformed.');
+            return;
+          }
+          if (localIsFresherThanCloud(r)) {
+            patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
+            toast('Cloud is older than your local copy — local data was kept and will be pushed.');
+            scheduleSyncPush();
+            return;
+          }
+          if (!confirmCloudReplacement()) {
+            pullBtn.disabled = false; pushBtn.disabled = false;
+            return;
+          }
+          if (pullRevision !== syncRevision) {
+            toast('A newer local change was kept; cloud pull skipped.');
+            return;
+          }
+          syncRevision++;
           state = validateState(r.content);
           saveState(state);
+          updateAllowedCategories(allCategories().map(c => c.id));
           patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
           toast(`Pulled ${state.entries.length} entries.`);
           notifySyncChange();
           renderBody();
           render();
         } else if (r.ok && !r.content) {
-          toast('Cloud file is empty.');
+          toast(hasLocalDataToProtect() ? 'Cloud file is empty — local data was kept. Use Push to create it.' : 'Cloud file is empty.');
         } else {
           patchSyncSettings({ lastError: r.message || r.reason, lastErrorAt: new Date().toISOString() });
           toast('Pull failed: ' + (r.message || r.reason));
           notifySyncChange();
           renderBody();
         }
+        } finally {
+          syncExclusive = false;
+        }
       } }, pullLabel);
 
       const pushBtn = $('button', { type: 'button', class: 'btn btn-primary', onClick: async () => {
+        if (syncInFlight || syncExclusive) { toast('A sync is already in progress.'); return; }
+        syncExclusive = true;
+        try {
         pullBtn.disabled = true; pushBtn.disabled = true;
         pushLabel.textContent = 'Pushing…';
-        const r = await syncPush(state, { sha: s.lastSha, message: 'cents: manual push' });
+        const pushRevision = syncRevision;
+        const payload = cloudPayload();
+        const currentSync = getSyncSettings();
+        const r = await syncPush(payload, { sha: currentSync.lastSha, message: 'cents: manual push' });
         pullBtn.disabled = false; pushBtn.disabled = false;
         pushLabel.textContent = 'Push';
+        if (pushRevision !== syncRevision) {
+          if (r.ok) patchSyncSettings({ lastSha: r.sha });
+          toast('A newer local change was kept; queued for sync.');
+          scheduleSyncPush();
+          return;
+        }
         if (r.ok) {
           patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
           toast('Pushed to cloud.');
@@ -2227,6 +3024,9 @@ function openSyncSettings() {
           toast('Push failed: ' + (r.message || r.reason));
           notifySyncChange();
           renderBody();
+        }
+        } finally {
+          syncExclusive = false;
         }
       } }, pushLabel);
 
@@ -2244,6 +3044,11 @@ function openSyncSettings() {
       modal.appendChild($('div', { style: 'margin-top:24px;padding-top:18px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;' },
         $('span', { class: 'muted', style: 'font-size:12px;font-family:"Instrument Serif",serif;font-style:italic;' }, 'Disconnect to wipe sync settings from this device.'),
         $('button', { type: 'button', class: 'btn btn-danger', onClick: () => {
+          // Stop queued automatic pushes before removing credentials. A pending
+          // timer must not revive a disconnected sync if the user reconnects
+          // quickly; an in-flight request is protected by revision checks.
+          cancelScheduledSyncPush();
+          syncRevision++;
           clearSyncSettings();
           toast('Sync disabled.');
           notifySyncChange();
@@ -2333,6 +3138,7 @@ function _render() {
   const scrollY = window.scrollY;
   main.innerHTML = '';
   main.appendChild(renderHeader());
+  if (hasPinLock() && !pinUnlocked) return;
 
   const screen = $('main', { class: 'shell screen', id: 'screen' });
   const route = currentRoute();
@@ -2377,7 +3183,12 @@ function _render() {
     $('span', { style: 'display:flex;justify-content:flex-end;flex-wrap:wrap;gap:0 8px;align-items:center;' },
       $('button', { type: 'button', class: 'footer-action danger', onClick: function() {
         if (this.textContent === 'Reset') { this.textContent = 'Confirm reset'; return; }
-        resetToBlank(); render(); toast('All entries cleared.');
+        syncRevision++;
+        state = resetToBlank();
+        clearBalanceCaches();
+        scheduleSyncPush();
+        render();
+        toast('All entries cleared.');
         this.textContent = 'Reset';
       } }, 'Reset'),
       $('button', { type: 'button', class: 'footer-action', onClick: () => window.scrollTo({ top: 0, behavior: 'smooth' }) }, '↑ Top'),
@@ -2406,7 +3217,10 @@ function _render() {
   }
 }
 
-window.addEventListener('DOMContentLoaded', () => { render();  initSync().finally(() => setSyncPulsing(false));
+window.addEventListener('DOMContentLoaded', () => {
+  render();
+  if (hasPinLock()) showPinLock();
+  initSync().finally(() => setSyncPulsing(false));
 });
 
 // Expose tiny global for DevTools tinkering
