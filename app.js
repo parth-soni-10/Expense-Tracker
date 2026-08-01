@@ -18,6 +18,13 @@ const today = () => localDateKey();
 const nowIso = () => new Date().toISOString();
 let pinUnlocked = false;
 let pinOverlay = null;
+let syncBootStarted = false;
+
+function startInitSync() {
+  if (syncBootStarted) return;
+  syncBootStarted = true;
+  initSync().finally(() => setSyncPulsing(false));
+}
 
 async function hashPin(pin, salt = '') {
   if (!globalThis.crypto?.subtle) throw new Error('Web Crypto is unavailable');
@@ -72,6 +79,7 @@ function showPinLock() {
       pinUnlocked = true;
       closePinOverlay();
       render();
+      startInitSync();
     } catch (err) {
       message.textContent = 'PIN verification is unavailable in this browser.';
     }
@@ -2155,104 +2163,6 @@ function screenAdd() {
     $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' }, voiceInputBtn, $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: addMagic }, 'Add entry')),
   ));
 
-  // Quick-add receipt parser section
-  const qTextarea = $('textarea', { placeholder: 'Quick-add: paste receipt lines…\ne.g. €12.50 Tesco groceries\n5.00 bus fare', 'aria-label': 'Quick-add receipt', rows: '2', style: 'width:100%;max-width:540px;margin:0 auto 16px;display:block;font-size:13px;', onInput: (e) => {
-    const text = e.target.value;
-    if (text.includes('\n')) {
-      qPreview.innerHTML = '';
-      const lines = text.split('\n').filter(l => l.trim());
-      for (const line of lines) {
-        const parsed = parseReceiptLine(line);
-        if (parsed) {
-          qPreview.appendChild($('div', { class: 'receipt-line', style: 'display:flex;justify-content:space-between;padding:4px 0;font-size:12px;' },
-            $('span', null, parsed.details, $('span', { class: 'pill pill-cat', style: 'margin-left:6px;font-size:10px;padding:1px 6px;' }, categoryLabel(parsed.category))),
-            $('span', { class: 'tnum' }, parsed.amount > 0 ? fmt(parsed.amount) : '—'),
-          ));
-        }
-      }
-      qPreview.style.display = qPreview.children.length ? '' : 'none';
-    }
-  } });
-  const qPreview = $('div', { class: 'receipt-preview', style: 'display:none;' });
-  const qActions = $('div', { style: 'max-width:540px;margin:0 auto 16px;display:none;gap:8px;justify-content:flex-end;' },
-    $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => { qTextarea.value = ''; qPreview.innerHTML = ''; qPreview.style.display = 'none'; qActions.style.display = 'none'; } }, 'Clear'),
-    $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: () => {
-      const lines = qTextarea.value.split('\n').filter(l => l.trim());
-      let added = 0;
-      for (const line of lines) {
-        const parsed = parseReceiptLine(line);
-        if (parsed && parsed.amount > 0) {
-          state.entries.push({ id: uid(), createdAt: nowIso(), date: today(), type: 'expense', category: parsed.category, details: parsed.details, amount: parsed.amount, method: 'AIB', note: '' });
-          added++;
-        }
-      }
-      if (added > 0) {
-        state.entries.sort((a,b) => a.date.localeCompare(b.date));
-        persist();
-        toast(`Added ${added} entries.`);
-        location.hash = '#dashboard';
-      } else {
-        toast('No valid entries found. Try "€amount description" format.');
-      }
-    } }, `Add entries`),
-  );
-  // Show actions when preview has content
-  const qObserver = new MutationObserver(() => {
-    if (qPreview.children.length > 0) qActions.style.display = 'flex';
-    else qActions.style.display = 'none';
-  });
-  qObserver.observe(qPreview, { childList: true });
-
-  c.appendChild($('div', { style: 'max-width:540px;margin:0 auto;' },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:6px;cursor:pointer;display:flex;align-items:center;gap:4px;', onClick: (e) => {
-      const wrap = e.target.closest('.quick-add-wrap');
-      if (wrap) { const body = wrap.querySelector('.quick-add-body'); body.style.display = body.style.display === 'none' ? '' : 'none'; }
-    } }, '⚡ Quick-add (paste receipt)'),
-    $('div', { class: 'quick-add-wrap' }, $('div', { class: 'quick-add-body' }, qTextarea, qPreview, qActions)),
-  ));
-
-  // Audio notes are explicit non-financial entries. Store a bounded data URL
-  // rather than a blob URL, because blob URLs disappear after a reload and
-  // cannot be synced to another device.
-  let mediaRecorder, audioChunks;
-  const audioBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;display:flex;align-items:center;gap:4px;', onClick: async () => {
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.stop();
-      audioBtn.innerHTML = '🎤 Record note…';
-      return;
-    }
-    try {
-      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw new Error('audio unsupported');
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaRecorder = new MediaRecorder(stream);
-      audioChunks = [];
-      mediaRecorder.ondataavailable = (e) => { if (e.data?.size) audioChunks.push(e.data); };
-      mediaRecorder.onstop = () => {
-        stream.getTracks().forEach(t => t.stop());
-        const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-        if (blob.size > 1_500_000) { toast('That recording is too large to store locally. Keep it under about 30 seconds.'); return; }
-        const note = String(prompt('Label for this audio note:', 'Voice note ' + friendlyDate(today())) || '').trim();
-        if (!note) return;
-        const reader = new FileReader();
-        reader.onload = () => {
-          const audioData = typeof reader.result === 'string' ? reader.result : '';
-          if (!audioData || audioData.length > 2_000_000) { toast('That recording could not be saved.'); return; }
-          state.entries.push({ id: uid(), createdAt: nowIso(), date: today(), type: 'note', category: 'misc', details: note, amount: 0, method: 'AIB', note: '🎙 Audio note', audioData, audioType: blob.type || 'audio/webm' });
-          persist();
-          toast('Audio note saved.');
-          render();
-        };
-        reader.onerror = () => toast('That recording could not be saved.');
-        reader.readAsDataURL(blob);
-      };
-      mediaRecorder.start();
-      audioBtn.innerHTML = '⏹ Stop recording';
-    } catch(err) {
-      toast('Microphone access is unavailable in this browser.');
-    }
-  } }, '🎤 Record note…');
-  c.appendChild($('div', { style: 'max-width:540px;margin:0 auto 24px;text-align:right;' }, audioBtn));
-
   const form = formView({
     onSubmit: (entryOrEntries) => {
       const entries = Array.isArray(entryOrEntries) ? entryOrEntries : [entryOrEntries];
@@ -3137,11 +3047,16 @@ function _render() {
     } catch(e) {}
     setSeason();
   }
-  // Save scroll to restore after re-render
+  // Keep the app mount completely empty while locked. The PIN overlay is
+  // deliberately mounted before the first render, so a refresh never paints
+  // financial UI behind it or briefly exposes the header/navigation.
+  const locked = hasPinLock() && !pinUnlocked;
   const scrollY = window.scrollY;
   main.innerHTML = '';
+  main.toggleAttribute('aria-hidden', locked);
+  if (locked) return;
+  main.removeAttribute('aria-hidden');
   main.appendChild(renderHeader());
-  if (hasPinLock() && !pinUnlocked) return;
 
   const screen = $('main', { class: 'shell screen', id: 'screen' });
   const route = currentRoute();
@@ -3221,9 +3136,12 @@ function _render() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  // Create the gate before rendering the app mount. A configured PIN must be
+  // the first interactive surface on every full page load.
+  const locked = hasPinLock();
+  if (locked) showPinLock();
   render();
-  if (hasPinLock()) showPinLock();
-  initSync().finally(() => setSyncPulsing(false));
+  if (!locked) startInitSync();
 });
 
 // Expose tiny global for DevTools tinkering

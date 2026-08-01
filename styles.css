@@ -70,13 +70,6 @@
 [data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator {
   filter: invert(0.85);
 }
-[data-theme="dark"] .quick-add-body textarea {
-  background: var(--bg-deep);
-}
-[data-theme="dark"] .quick-add-body textarea::placeholder {
-  color: var(--muted);
-}
-
 /* ── Seasonal palette shifts ── */
 [data-season="spring"] { --accent: #C2410C; --accent-glow: rgba(194,65,12,0.12); }
 [data-season="summer"] { --accent: #D97706; --accent-glow: rgba(217,119,6,0.12); }
@@ -584,25 +577,6 @@ select:focus {
   background: var(--bg-deep);
 }
 
-/* ── Quick-add receipt ── */
-.quick-add-wrap { max-width: 540px; margin: 0 auto; }
-.quick-add-body { margin-bottom: 16px; }
-.quick-add-body textarea {
-  width: 100%; padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--card);
-  font-size: 13px;
-  line-height: 1.7;
-  resize: vertical;
-  transition: border-color 0.2s, box-shadow 0.2s;
-}
-.quick-add-body textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-glow);
-  outline: none;
-}
-
 /* ── Heatmap cell ── */
 .heat-cell {
   aspect-ratio: 1;
@@ -743,31 +717,6 @@ select:focus {
   .shell { padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)) !important; }
 }
 
-/* ── Receipt-style entry preview ── */
-.receipt-preview {
-  background: linear-gradient(135deg, #fefefe 0%, #f9f7f1 100%);
-  border: 1px solid var(--line);
-  border-radius: 8px 8px 4px 4px;
-  padding: 20px 16px 16px;
-  position: relative;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.02);
-  max-width: 420px; margin: 0 auto 20px;
-}
-[data-theme="dark"] .receipt-preview {
-  background: linear-gradient(135deg, #353537 0%, #2c2c2e 100%);
-}
-.receipt-preview::before {
-  content: ''; position: absolute; top: 0; left: 50%;
-  transform: translateX(-50%);
-  width: 60%; height: 4px;
-  background: repeating-linear-gradient(90deg, transparent, transparent 4px, var(--line) 4px, var(--line) 6px);
-  border-radius: 0 0 3px 3px;
-}
-.receipt-preview .receipt-line {
-  display: flex; justify-content: space-between;
-  padding: 4px 0; font-size: 13px;
-  border-bottom: 1px dotted var(--line);
-}
 /* ═══════════════════════════════════════════════════════════════
    Icon morphing system
    ═══════════════════════════════════════════════════════════════ */

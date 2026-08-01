@@ -39,6 +39,18 @@ const BALANCE_METHODS = ['AIB', 'Revolut', 'RS', 'TG', 'LG', 'AG'];
 const VALID_COIN_KEYS = new Set(['50', '20', '10', '5', '2', '1', '0.5', '0.2', '0.1', '0.05']);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+function validLegacyBalanceMap(value) {
+  if (value == null) return true;
+  if (typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.entries(value).every(([methodId, rawBalance]) => {
+    const balance = Number(rawBalance);
+    return BALANCE_METHODS.includes(methodId)
+      && Number.isFinite(balance)
+      && Math.abs(balance) <= MAX_AMOUNT
+      && Math.round(balance * 100) / 100 === balance;
+  });
+}
+
 function validDate(date) {
   if (typeof date !== 'string' || !DATE_RE.test(date)) return false;
   const [year, month, day] = date.split('-').map(Number);
@@ -62,13 +74,26 @@ function validCheckpoint(point) {
 function validIncomingSettings(settings) {
   if (settings == null) return true;
   if (typeof settings !== 'object' || Array.isArray(settings)) return false;
-  const allowedKeys = new Set(['monthlyBudget', 'currency', 'balanceCheckpoints', 'customCategories', 'recurring', 'coins']);
+  // The client migrates these legacy opening-balance fields into dated
+  // checkpoints during validateState(). Accept them on read so older cloud
+  // files can still be pulled and safely migrated instead of reported as
+  // malformed. New writes no longer produce these fields.
+  const allowedKeys = new Set([
+    'monthlyBudget', 'currency', 'balanceCheckpoints', 'customCategories', 'recurring', 'coins',
+    'accountOpenings', 'giftCardOpenings', 'openingBalance',
+  ]);
   if (Object.keys(settings).some(key => !allowedKeys.has(key))) return false;
   if (Object.prototype.hasOwnProperty.call(settings, 'pinHash')) return false;
   if (settings.monthlyBudget != null
     && (!Number.isFinite(Number(settings.monthlyBudget)) || Number(settings.monthlyBudget) < 0 || Number(settings.monthlyBudget) > MAX_AMOUNT
       || Math.round(Number(settings.monthlyBudget) * 100) / 100 !== Number(settings.monthlyBudget))) return false;
   if (settings.currency != null && (typeof settings.currency !== 'string' || settings.currency.length < 1 || settings.currency.length > 8)) return false;
+  if (!validLegacyBalanceMap(settings.accountOpenings) || !validLegacyBalanceMap(settings.giftCardOpenings)) return false;
+  if (settings.openingBalance != null) {
+    const openingBalance = Number(settings.openingBalance);
+    if (!Number.isFinite(openingBalance) || Math.abs(openingBalance) > MAX_AMOUNT
+      || Math.round(openingBalance * 100) / 100 !== openingBalance) return false;
+  }
   if (settings.balanceCheckpoints != null) {
     if (typeof settings.balanceCheckpoints !== 'object' || Array.isArray(settings.balanceCheckpoints)) return false;
     for (const [methodId, points] of Object.entries(settings.balanceCheckpoints)) {
