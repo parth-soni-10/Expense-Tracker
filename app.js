@@ -14,11 +14,28 @@ updateAllowedCategories([...CATEGORIES, ...(state.settings.customCategories || [
 function localDateKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
+function offsetDateKey(iso, days) {
+  const date = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return iso;
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
 const today = () => localDateKey();
 const nowIso = () => new Date().toISOString();
+const MAX_MUTATION_HISTORY = 1000;
+function mutationTimestamp(entry) {
+  const now = Date.now();
+  const created = Date.parse(entry?.createdAt || '');
+  const history = Array.isArray(entry?.mutationHistory) ? entry.mutationHistory : [];
+  const latest = Date.parse(history.at(-1)?.at || '');
+  const next = Math.max(now, Number.isFinite(created) ? created + 1 : 0, Number.isFinite(latest) ? latest + 1 : 0);
+  return new Date(next).toISOString();
+}
 let pinUnlocked = false;
 let pinOverlay = null;
 let syncBootStarted = false;
+let lastRenderedRoute = null;
+let renderFrame = null;
 
 function startInitSync() {
   if (syncBootStarted) return;
@@ -84,7 +101,7 @@ function showPinLock() {
       message.textContent = 'PIN verification is unavailable in this browser.';
     }
   };
-  const overlay = $('div', { class: 'modal-bg', style: 'z-index:10000;background:rgba(0,0,0,.78);backdrop-filter:blur(16px);' },
+  const overlay = $('div', { class: 'modal-bg', style: 'z-index:10000;background:rgba(0,0,0,.82);' },
     $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Unlock cents', style: 'max-width:360px;text-align:center;' },
       $('div', { class: 'serif', style: 'font-size:32px;font-style:italic;margin-bottom:4px;' }, 'cents.'),
       $('p', { class: 'eyebrow', style: 'margin:0;' }, 'Privacy lock'),
@@ -465,6 +482,48 @@ function checkpointFor(methodId, targetDate = today(), checkpointsByMethod = nul
   }
   return null;
 }
+function entryMutationTime(entry) {
+  if (!entry) return NaN;
+  const updated = entry.updatedAt ? Date.parse(entry.updatedAt) : NaN;
+  if (Number.isFinite(updated)) return updated;
+  return entry.createdAt ? Date.parse(entry.createdAt) : NaN;
+}
+function entryVersionAt(entry, timestamp) {
+  if (!entry || !Number.isFinite(timestamp)) return entry;
+  // validateState() preserves only strictly chronological mutation history, so
+  // avoid allocating and sorting this array during every balance calculation.
+  const history = Array.isArray(entry.mutationHistory) ? entry.mutationHistory : [];
+  const nextMutation = history.find(point => Date.parse(point.at) > timestamp);
+  return nextMutation ? { ...nextMutation, createdAt: nextMutation.createdAt || entry.createdAt } : entry;
+}
+function versionIncludedAtCheckpoint(version, checkpointDate, checkpointTime) {
+  if (!version || version.date > checkpointDate) return false;
+  if (version.date < checkpointDate) return true;
+  const createdTime = version.createdAt ? Date.parse(version.createdAt) : NaN;
+  return !Number.isFinite(checkpointTime) || !Number.isFinite(createdTime) || createdTime <= checkpointTime;}
+
+function entryDeltaAfterCheckpoint(entry, methodId, targetDate, checkpoint) {
+  if (!entry || !checkpoint) return entry && entry.date <= targetDate ? balanceDelta(entry, methodId) : 0;
+  const checkpointTime = checkpoint.at
+    ? Date.parse(checkpoint.at)
+    : Date.parse(`${checkpoint.date}T23:59:59.999Z`);
+  const historical = entryVersionAt(entry, checkpointTime);
+  const mutationTime = entryMutationTime(entry);
+  const historicalCreated = historical?.createdAt ? Date.parse(historical.createdAt) : NaN;
+  // Entries dated after the checkpoint are new activity. Entries already in
+  // the checkpoint are neutral unless they were mutated afterwards; in that
+  // case apply only the net current-vs-historical effect. This also handles
+  // edits that move a transaction to another date, account, or type.
+  const changedAfterCheckpoint = Number.isFinite(mutationTime) && mutationTime > checkpointTime;
+  const oldEffect = changedAfterCheckpoint
+    && Number.isFinite(historicalCreated) && historicalCreated <= checkpointTime
+    && versionIncludedAtCheckpoint(historical, checkpoint.date, checkpointTime)
+    ? balanceDelta(historical, methodId) : 0;
+  const currentEffect = entry.date <= targetDate
+    && (entry.date > checkpoint.date || changedAfterCheckpoint)
+    ? balanceDelta(entry, methodId) : 0;
+  return currentEffect - oldEffect;
+}
 function balanceDelta(entry, methodId) {
   if (!entry || entry.type === 'note' || entry.method !== methodId) return 0;
   if (GIFT_CARD_IDS.includes(methodId)) {
@@ -472,6 +531,31 @@ function balanceDelta(entry, methodId) {
     return -entry.amount;
   }
   return entry.type === 'credit' ? entry.amount : -entry.amount;
+}
+function supportingTotalsDelta(entry, methodId, targetDate, checkpoint) {
+  if (!entry || entry.type === 'note' || !checkpoint) return { loaded: 0, spent: 0 };
+  const checkpointTime = checkpoint.at
+    ? Date.parse(checkpoint.at)
+    : Date.parse(`${checkpoint.date}T23:59:59.999Z`);
+  const historical = entryVersionAt(entry, checkpointTime);
+  const mutationTime = entryMutationTime(entry);
+  const historicalCreated = historical?.createdAt ? Date.parse(historical.createdAt) : NaN;
+  const changedAfterCheckpoint = Number.isFinite(mutationTime) && mutationTime > checkpointTime;
+  const oldIncluded = changedAfterCheckpoint
+    && Number.isFinite(historicalCreated) && historicalCreated <= checkpointTime
+    && versionIncludedAtCheckpoint(historical, checkpoint.date, checkpointTime);
+  const currentIncluded = entry.date <= targetDate
+    && (entry.date > checkpoint.date || changedAfterCheckpoint);
+  const totals = { loaded: 0, spent: 0 };
+  const add = (version, sign) => {
+    if (!version || version.method !== methodId) return;
+    const amount = Number(version.amount) || 0;
+    if (version.type === 'credit' || version.category === 'GC') totals.loaded += sign * amount;
+    else if (version.type === 'expense') totals.spent += sign * amount;
+  };
+  if (oldIncluded) add(historical, -1);
+  if (currentIncluded) add(entry, 1);
+  return totals;
 }
 function balanceAtForEntries(entries, methodId, targetDate = today(), checkpointsByMethod = null) {
   const checkpoints = checkpointsForEntries(entries, checkpointsByMethod);
@@ -486,24 +570,14 @@ function balanceAtForEntries(entries, methodId, targetDate = today(), checkpoint
     }
   }
   const checkpoint = checkpointFor(methodId, targetDate, checkpoints);
-  const startDate = checkpoint?.date || '0000-00-00';
   const startBalance = checkpoint?.balance || 0;
-  // Checkpoints imported from older builds have no `at`; treat those as
-  // end-of-day checkpoints rather than silently dropping same-day history.
-  const checkpointTime = checkpoint
-    ? (checkpoint.at ? Date.parse(checkpoint.at) : Date.parse(`${checkpoint.date}T23:59:59.999Z`))
-    : NaN;
   // A dated checkpoint is authoritative for the balance at the moment it was
   // saved. Transactions on that same date that were created/edited afterwards
   // still apply, so reconciling today never hides a later same-day expense.
-  const balance = entries
-    .filter(entry => {
-      if (entry.date > startDate && entry.date <= targetDate) return true;
-      if (entry.date !== startDate || !Number.isFinite(checkpointTime)) return false;
-      const entryTime = entry.createdAt ? Date.parse(entry.createdAt) : NaN;
-      return Number.isFinite(entryTime) && entryTime > checkpointTime && entry.date <= targetDate;
-    })
-    .reduce((total, entry) => total + balanceDelta(entry, methodId), startBalance);
+  const balance = entries.reduce((total, entry) => {
+    if (!checkpoint) return total + (entry.date <= targetDate ? balanceDelta(entry, methodId) : 0);
+    return total + entryDeltaAfterCheckpoint(entry, methodId, targetDate, checkpoint);
+  }, startBalance);
   if (cacheable) balanceAtCache.set(cacheKey, balance);
   return balance;
 }
@@ -537,10 +611,19 @@ function saveBalanceCheckpoint(methodId, date, balance) {
   const existing = Array.isArray(state.settings.balanceCheckpoints[methodId])
     ? state.settings.balanceCheckpoints[methodId]
     : [];
-  state.settings.balanceCheckpoints[methodId] = [      ...existing.filter(point => point.date !== date),
+  state.settings.balanceCheckpoints[methodId] = [
+    ...existing.filter(point => point.date !== date),
     { date, at: nowIso(), balance: Math.round(balance * 100) / 100 },
   ].sort((a, b) => a.date.localeCompare(b.date));
   // New edits are stored as dated reconciliation checkpoints.
+  persist();
+  return true;
+}
+function removeBalanceCheckpoint(methodId, date) {
+  if (!BALANCE_METHOD_IDS.includes(methodId) || date === '1970-01-01') return false;
+  const existing = state.settings.balanceCheckpoints?.[methodId];
+  if (!Array.isArray(existing) || !existing.some(point => point.date === date)) return false;
+  state.settings.balanceCheckpoints[methodId] = existing.filter(point => point.date !== date);
   persist();
   return true;
 }
@@ -551,7 +634,7 @@ function totalAccountBalanceAt(date = today(), checkpointsByMethod = null) {
 }
 
 function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', editable = false } = {}) {
-  const row = $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;' });
+  const row = $('div', { class: 'balance-editor-row', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;' });
   let editing = false;
   const actualBalance = () => balanceAt(methodId, today());
   const reconciliationSummary = () => {
@@ -587,8 +670,8 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
           $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
           secondary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, secondary) : null,
         ),
-        $('div', { style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;' },
-          $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, 'amount is authoritative when saved; later same-day edits and entries are applied'),
+        $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
+          $('span', { class: 'muted balance-editor-help', style: 'font-size:10px;' }, 'amount is authoritative when saved; later same-day edits and entries are applied'),
           amount, date,
           $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: save }, 'Save'),
           $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
@@ -607,12 +690,19 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
         secondary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, secondary) : null,
         summary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, `reconciled ${friendlyDate(summary.point.date)}`) : null,
       ),
-      $('div', { style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;' },
+      $('div', { class: 'balance-editor-controls', style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;min-width:0;' },
         $('div', { style: 'text-align:right;' },
           $('div', { class: 'display-num', style: `font-size:14px;color:${balance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(balance)),
           summary && Math.abs(difference) >= 0.01 ? $('div', { class: 'muted', style: 'font-size:10px;' }, `${difference >= 0 ? '+' : ''}${fmt(difference)} vs book`) : null,
         ),
         editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎') : null,
+        editable && summary ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:10px;padding:3px 5px;color:var(--negative);', onClick: () => {
+          if (!window.confirm(`Remove the ${label} reconciliation from ${friendlyDate(summary.point.date)}?`)) return;
+          if (removeBalanceCheckpoint(methodId, summary.point.date)) {
+            toast(`${label} reconciliation removed.`);
+            render();
+          }
+        }, 'aria-label': `Remove ${label} reconciliation` }, 'Clear') : null,
       ),
     );
   };
@@ -713,32 +803,40 @@ function balanceForEntry(entry, entries = state.entries, checkpointsByMethod = n
   const checkpoints = checkpointsForEntries(entries, checkpointsByMethod);
   const checkpoint = checkpointFor(entry.method, entry.date, checkpoints);
   const baseline = checkpoints[entry.method]?.find(point => point.date === '1970-01-01');
-  const checkpointIsAfterEntry = checkpoint && checkpoint.date > entry.date;
   const checkpointTime = checkpoint
     ? (checkpoint.at ? Date.parse(checkpoint.at) : Date.parse(`${checkpoint.date}T23:59:59.999Z`))
     : NaN;
-  const checkpointIsSameDayAfterEntry = checkpoint && checkpoint.date === entry.date
-    && Number.isFinite(checkpointTime) && entry.createdAt
-    && Date.parse(entry.createdAt) <= checkpointTime;
-  const useBookBalance = !checkpoint || checkpointIsAfterEntry || checkpointIsSameDayAfterEntry;
-  const startDate = useBookBalance ? '1970-01-01' : checkpoint.date;
-  const startBalance = useBookBalance ? (baseline?.balance || 0) : checkpoint.balance;
-  const entryCheckpointTime = useBookBalance ? NaN : checkpointTime;
-  const ordered = entries
-    .filter(candidate => candidate.date <= entry.date)
-    .sort((a, b) => a.date.localeCompare(b.date)
-      || ((a.createdAt || '')).localeCompare(b.createdAt || '')
-      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  let balance = startBalance;
-  for (const candidate of ordered) {
-    if (candidate.date < startDate) continue;
-    if (!useBookBalance && candidate.date === startDate
-      && (!Number.isFinite(entryCheckpointTime) || !candidate.createdAt || Date.parse(candidate.createdAt) <= entryCheckpointTime)) continue;
-    if (candidate.date === entry.date && candidate.id === entry.id) {
-      balance += balanceDelta(candidate, entry.method);
-      break;
+  // Once a checkpoint exists on the entry's date, use that authoritative
+  // end-of-day balance for every row on that date. Pre-checkpoint rows are
+  // intentionally anchored to the checkpoint; only later same-day activity is
+  // added as the row order advances.
+  const useBookBalance = !checkpoint || checkpoint.date > entry.date;
+  const ordered = [...entries].sort((a, b) => a.date.localeCompare(b.date)
+    || ((a.createdAt || '')).localeCompare(b.createdAt || '')
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const targetIndex = ordered.findIndex(candidate => candidate.id === entry.id);
+  if (targetIndex < 0) return 0;
+  let balance = useBookBalance ? (baseline?.balance || 0) : checkpoint.balance;
+  for (let index = 0; index < ordered.length; index++) {
+    const candidate = ordered[index];
+    if (useBookBalance) {
+      if (index <= targetIndex) balance += balanceDelta(candidate, entry.method);
+      continue;
     }
-    balance += balanceDelta(candidate, entry.method);
+    const mutationTime = entryMutationTime(candidate);
+    const changedAfterCheckpoint = Number.isFinite(mutationTime) && mutationTime > checkpointTime;
+    const historical = entryVersionAt(candidate, checkpointTime);
+    const historicalCreated = historical?.createdAt ? Date.parse(historical.createdAt) : NaN;
+    const oldIncluded = changedAfterCheckpoint
+      && Number.isFinite(historicalCreated) && historicalCreated <= checkpointTime
+      && versionIncludedAtCheckpoint(historical, checkpoint.date, checkpointTime);
+    // A historical effect must be removed even when the current row moved to a
+    // later date, so inspect every entry. Current activity is capped at this row.
+    const currentIncluded = index <= targetIndex
+      && candidate.date <= entry.date
+      && (candidate.date > checkpoint.date || changedAfterCheckpoint);
+    if (currentIncluded) balance += balanceDelta(candidate, entry.method);
+    if (oldIncluded) balance -= balanceDelta(historical, entry.method);
   }
   return balance;
 }
@@ -750,23 +848,21 @@ function computeGiftCardBalance(entries, methodId, asOfDate = today()) {
   const checkpoint = checkpointFor(methodId, asOfDate, checkpoints);
   // Checkpoints imported from older builds have no `at`; treat those as
   // end-of-day checkpoints rather than silently dropping same-day history.
-  const checkpointTime = checkpoint
-    ? (checkpoint.at ? Date.parse(checkpoint.at) : Date.parse(`${checkpoint.date}T23:59:59.999Z`))
-    : NaN;
-  const relevant = entries.filter(e => {
-    if (e.method !== methodId || e.date > asOfDate || e.type === 'note') return false;
-    if (!checkpoint || checkpoint.date === '1970-01-01') return true;
-    if (e.date > checkpoint.date) return true;
-    return e.date === checkpoint.date && Number.isFinite(checkpointTime) && e.createdAt && Date.parse(e.createdAt) > checkpointTime;
-  });
-  // A valid transfer into a gift-card account is a real load. Excluding every
-  // transfer made the lifetime figures disagree with the actual balance.
-  const loaded = relevant
-    .filter(e => e.type === 'credit' || e.category === 'GC')
-    .reduce((sum, e) => sum + e.amount, 0);
-  const spent = relevant
-    .filter(e => e.type === 'expense' && e.category !== 'GC')
-    .reduce((sum, e) => sum + e.amount, 0);
+  let loaded = 0;
+  let spent = 0;
+  if (!checkpoint) {
+    for (const entry of entries) {
+      if (entry.method !== methodId || entry.date > asOfDate || entry.type === 'note') continue;
+      if (entry.type === 'credit' || entry.category === 'GC') loaded += entry.amount;
+      else if (entry.type === 'expense') spent += entry.amount;
+    }
+  } else {
+    for (const entry of entries) {
+      const delta = supportingTotalsDelta(entry, methodId, asOfDate, checkpoint);
+      loaded += delta.loaded;
+      spent += delta.spent;
+    }
+  }
   return { balance, loaded, spent };
 }
 
@@ -1126,9 +1222,81 @@ function spendingForecast(key = monthKey(today())) {
   return { spent, projected, budget, remaining: budget - projected, dailyAverage, previousDaily, elapsed, totalDays };
 }
 
+function relativeDayLabel(iso) {
+  if (iso === today()) return 'Today';
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  if (iso === localDateKey(d)) return 'Yesterday';
+  return friendlyDate(iso);
+}
+
+function accountStatus(methodId) {
+  const checkpoint = userCheckpointFor(methodId, today());
+  if (!checkpoint) return { label: 'Not reconciled' };
+  const ageDays = Math.max(0, Math.round((Date.parse(`${today()}T00:00:00Z`) - Date.parse(`${checkpoint.date}T00:00:00Z`)) / 86400000));
+  if (ageDays === 0) return { label: 'Reconciled today' };
+  if (ageDays <= 7) return { label: `Reconciled ${ageDays}d ago` };
+  return { label: 'Reconcile soon' };
+}
+
+function monthComparison(key = monthKey(today())) {
+  const current = entriesForMonth(key).filter(isSpendingEntry).reduce((sum, entry) => sum + entry.amount, 0);
+  const previousKey = previousMonthKey(key);
+  const previous = entriesForMonth(previousKey).filter(isSpendingEntry).reduce((sum, entry) => sum + entry.amount, 0);
+  const difference = current - previous;
+  const percent = previous > 0 ? Math.round((difference / previous) * 100) : null;
+  return { current, previous, previousKey, difference, percent };
+}
+
+function checkpointCoversVersion(version, checkpoint) {
+  if (!version || !checkpoint || checkpoint.date === '1970-01-01') return false;
+  const versionTime = version.createdAt ? Date.parse(version.createdAt) : NaN;
+  const checkpointTime = checkpoint.at
+    ? Date.parse(checkpoint.at)
+    : Date.parse(`${checkpoint.date}T23:59:59.999Z`);
+  // A transaction backdated after reconciliation was not part of that
+  // checkpoint, even if its transaction date is earlier than the checkpoint.
+  if (Number.isFinite(versionTime) && Number.isFinite(checkpointTime) && versionTime > checkpointTime) return false;
+  if (version.date < checkpoint.date) return true;
+  if (version.date > checkpoint.date) return false;
+  return !Number.isFinite(versionTime) || !Number.isFinite(checkpointTime) || versionTime <= checkpointTime;
+}
+function reconciliationProtectionFor(entry) {
+  if (!entry) return null;
+  const checkpoints = getBalanceCheckpoints();
+  // Evaluate the version that was active when each checkpoint was saved. A
+  // later edit may move the current row to another date/account; checking the
+  // current row directly would over-block a deletion that is otherwise safe.
+  for (const methodId of BALANCE_METHOD_IDS) {
+    for (const point of checkpoints[methodId] || []) {
+      if (point.date === '1970-01-01') continue;
+      const checkpointTime = point.at
+        ? Date.parse(point.at)
+        : Date.parse(`${point.date}T23:59:59.999Z`);
+      const historical = entryVersionAt(entry, checkpointTime);
+      if (historical?.method === methodId && checkpointCoversVersion(historical, point)) {
+        return { methodId, point };
+      }
+    }
+  }
+  return null;
+}
+function deletionEntriesFor(id) {
+  const target = state.entries.find(e => e.id === id);
+  if (!target) return [];
+  return target.transferId
+    ? state.entries.filter(entry => entry.transferId === target.transferId)
+    : [target];
+}
 function deleteEntryOrTransfer(id) {
   const target = state.entries.find(e => e.id === id);
   if (!target) return false;
+  const removed = deletionEntriesFor(id);
+  const protection = removed.map(reconciliationProtectionFor).find(Boolean);
+  if (protection) {
+    toast(`Deletion blocked: ${methodShort(protection.methodId)} is reconciled through ${friendlyDate(protection.point.date)}. Remove or revise that checkpoint first.`);
+    return false;
+  }
   const transferId = target.transferId;
   state.entries = transferId
     ? state.entries.filter(entry => entry.transferId !== transferId)
@@ -1146,6 +1314,11 @@ function removeDuplicateEntry(id) {
   const removed = target.transferId
     ? state.entries.filter(e => e.transferId === target.transferId)
     : [target];
+  const protection = removed.map(reconciliationProtectionFor).find(Boolean);
+  if (protection) {
+    toast(`Duplicate deletion blocked: ${methodShort(protection.methodId)} is reconciled through ${friendlyDate(protection.point.date)}.`);
+    return;
+  }
   const removedIds = new Set(removed.map(e => e.id));
   state.entries = state.entries.filter(e => !removedIds.has(e.id));
   persist();
@@ -1441,14 +1614,37 @@ function formView({ initial = null, onSubmit }) {
   }
 
   const submit = () => {
-    if (data.type === 'note') {
-      if (!isValidCheckpointDate(data.date)) { toast('Pick a valid date.'); dateInput.focus(); return; }
+    if (data.type === 'note') {      if (!isValidCheckpointDate(data.date)) {
+        toast('Pick a valid date.');
+        dateInput.focus();
+        return;
+      }
       const noteText = String(data.details || data.note || '').trim();
-      if (!noteText) { toast('Add a note.'); detailsInput.focus(); return; }
+      if (!noteText) {
+        toast('Add a note.');
+        detailsInput.focus();
+        return;
+      }
+      if (initial && Array.isArray(initial.mutationHistory) && initial.mutationHistory.length >= MAX_MUTATION_HISTORY) {
+        toast('This entry has reached the maximum edit history. Duplicate it as a new entry instead.');
+        return;
+      }
+      const mutationAt = initial ? mutationTimestamp(initial) : null;
+      const previousVersion = initial ? {
+        at: mutationAt,
+        createdAt: initial.createdAt,
+        date: initial.date,
+        type: initial.type,
+        category: initial.category,
+        amount: Number(initial.amount),
+        method: initial.method,
+      } : null;
       onSubmit([{
         ...data,
         id: initial?.id || uid(),
-        createdAt: nowIso(),
+        createdAt: initial?.createdAt || nowIso(),
+        ...(mutationAt ? { updatedAt: mutationAt } : {}),
+        ...(initial ? { mutationHistory: [...(Array.isArray(initial.mutationHistory) ? initial.mutationHistory : []), previousVersion] } : {}),
         type: 'note',
         category: 'misc',
         details: noteText,
@@ -1464,6 +1660,7 @@ function formView({ initial = null, onSubmit }) {
     if (!isValidCheckpointDate(data.date)) { toast('Pick a valid date.'); dateInput.focus(); return; }
     if (!data.details.trim()) { toast('Add a description.'); detailsInput.focus(); return; }
     if (isTransfer()) {
+      if (isEdit) { toast('Transfers cannot be edited here. Delete and recreate the pair.'); return; }
       if (data.transferFrom === data.transferTo) { toast('From and To cannot be the same account.'); return; }
       const pairId = uid();
       const base = { createdAt: nowIso(), date: data.date, amount: amt, details: data.details.trim(), note: data.note?.trim() || '', category: 'misc', transferId: pairId, settled: false };
@@ -1472,11 +1669,30 @@ function formView({ initial = null, onSubmit }) {
       onSubmit([fromEntry, toEntry]);
       return;
     }
+    if (initial && Array.isArray(initial.mutationHistory) && initial.mutationHistory.length >= MAX_MUTATION_HISTORY) {
+      toast('This entry has reached the maximum edit history. Duplicate it as a new entry instead.');
+      return;
+    }
+    const mutationAt = initial ? mutationTimestamp(initial) : null;
+    const previousVersion = initial ? {
+      at: mutationAt,
+      createdAt: initial.createdAt,
+      date: initial.date,
+      type: initial.type,
+      category: initial.category,
+      amount: Number(initial.amount),
+      method: initial.method,
+    } : null;
+    const mutationHistory = initial
+      ? [...(Array.isArray(initial.mutationHistory) ? initial.mutationHistory : []), previousVersion]
+      : null;
     const entry = {
       id: initial?.id || uid(),
-      // Saving an edit is a new mutation; this matters when the entry shares a
-      // date with a reconciliation checkpoint.
-      createdAt: nowIso(),
+      // Preserve the original creation moment when editing. Reconciliation
+      // checkpoints use mutation history to calculate the net change.
+      createdAt: initial?.createdAt || nowIso(),
+      ...(mutationAt ? { updatedAt: mutationAt } : {}),
+      ...(mutationHistory ? { mutationHistory } : {}),
       date: data.date,
       type: data.type,
       category: data.type === 'credit' ? 'misc' : data.category,
@@ -1571,7 +1787,6 @@ function screenDashboard() {
   const now = new Date();
   const key = monthKey(localDateKey(now));
   const monthEntries = entriesForMonth(key);
-  const net = totalForMonth(key);
   const budget = +state.settings.monthlyBudget || 0;
   const { balance: runningBalance, points } = computeBalance();
   let budgetSaveTimer = null;
@@ -1606,7 +1821,8 @@ function screenDashboard() {
     .sort((a, b) => b.date.localeCompare(a.date) || (a.id < b.id ? 1 : -1))
     .slice(0, 5);
 
-  const screen = $('section', { 'aria-label': 'Dashboard' });
+  const screen = $('section', { class: 'page-section dashboard-section', 'aria-label': 'Dashboard' });
+  screen.classList.add('dashboard-command-center');
 
   // Net worth sparkline card (if enough data) — points already computed above
   if (points.length >= 2) {
@@ -1642,19 +1858,19 @@ function screenDashboard() {
     : null;
 
   // Hero
-  screen.appendChild($('div', { style: `display:flex;justify-content:space-between;align-items:${isNarrow() ? 'flex-start' : 'flex-end'};margin-bottom:${isNarrow() ? '24px' : '36px'};flex-wrap:wrap;gap:${isNarrow() ? '10px' : '16px'};` },
+  screen.appendChild($('div', { class: 'page-title-row dashboard-hero' },
     $('div', null,
       $('div', { class: 'eyebrow' }, monthLabel(key)),
-      $('p', { style: `font-size:${isTiny() ? '32px' : isNarrow() ? '42px' : '54px'};line-height:1;margin:8px 0 0;` },
+      $('p', { class: 'dashboard-total', style: `font-size:${isTiny() ? '32px' : isNarrow() ? '42px' : '54px'};` },
         $('span', { class: 'serif' }, fmt(expenseSum)),
-        $('span', { style: `font-family:DM Sans,system-ui,sans-serif;font-style:normal;font-size:${isNarrow() ? '14px' : '18px'};color:var(--muted);margin-left:8px;` }, budget ? `/ ${fmt(budget)}` : ''),
+        $('span', { class: 'dashboard-budget', style: `font-size:${isNarrow() ? '14px' : '18px'};` }, budget ? `/ ${fmt(budget)}` : ''),
       ),
-      $('p', { style: `font-size:${isNarrow() ? '13px' : '15px'};color:var(--muted);margin:6px 0 0;display:flex;align-items:center;gap:${isNarrow() ? '10px' : '18px'};flex-wrap:wrap;` },
+      $('p', { class: 'dashboard-context', style: `font-size:${isNarrow() ? '13px' : '15px'};gap:${isNarrow() ? '10px' : '18px'};` },
         $('span', null, 'Balance ', $('span', { class: 'display-num', style: `font-size:16px;color:${runningBalance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(runningBalance))),
         cashWidget(),
       ),
     ),
-    $('div', { style: 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;' },
+    $('div', { class: 'dashboard-actions' },
       $('label', { class: 'eyebrow', for: 'budget-input' }, 'Budget'),
       $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '—', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
         e.target.style.borderColor = 'var(--line)';
@@ -1666,6 +1882,33 @@ function screenDashboard() {
       ),
       resyncBtn,
     ),
+  ));
+
+  // A compact financial pulse makes the dashboard answer the three questions
+  // users ask most often: how much is spent, what is projected, and whether the
+  // current pace is safe. It is display-only; all values come from existing
+  // financial helpers.
+  const pulse = spendingForecast(key);
+  const pulseComparison = monthComparison(key);
+  const pulseTone = pulse.budget && pulse.projected > pulse.budget ? 'var(--negative)' : 'var(--positive)';
+  screen.appendChild($('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+    $('div', { class: 'pulse-heading' },
+      $('div', null,
+        $('div', { class: 'eyebrow' }, 'Financial pulse'),
+        $('div', { class: 'serif pulse-message' }, pulse.budget
+          ? (pulse.projected > pulse.budget ? 'Your current pace is above budget.' : 'You are comfortably within budget.')
+          : 'Your month at a glance.'),
+      ),
+      $('span', { class: 'pulse-status', style: `color:${pulseTone};border-color:${pulseTone};` }, pulse.budget ? (pulse.projected > pulse.budget ? 'Needs attention' : 'On track') : 'Tracking'),
+    ),
+    $('div', { class: 'pulse-grid' },
+      stat('Spent', fmt(pulse.spent)),
+      stat('Projected', fmt(pulse.projected)),
+      pulse.budget ? stat('Remaining', fmt(pulse.remaining)) : stat('Daily pace', fmt(pulse.dailyAverage)),
+    ),
+    pulseComparison.previous > 0 ? $('div', { class: 'pulse-footnote muted' },
+      `${pulseComparison.difference <= 0 ? 'Down' : 'Up'} ${fmt(Math.abs(pulseComparison.difference))} from ${monthLabel(pulseComparison.previousKey)}.`,
+    ) : null,
   ));
 
   // Budget bar card
@@ -1690,7 +1933,7 @@ function screenDashboard() {
           return [];
         })()),
       $('div', { style: `display:grid;grid-template-columns:repeat(auto-fill,minmax(${isNarrow() ? '90px' : '130px'},1fr));gap:${isNarrow() ? '12px' : '24px'};padding-top:20px;border-top:1px solid var(--line);` },
-        stat('Net', fmt(net)),
+        stat('Net', fmt(totalForMonth(key))),
         stat('Spent', fmt(expenseSum)),
         stat('Income', fmt(incomeSum)),
         stat('Balance', fmt(runningBalance)),
@@ -1830,23 +2073,28 @@ function screenDashboard() {
       $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current end-of-day balances; transaction history stays unchanged.'),
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
-      ...trackedMethods.map(method => renderBalanceEditorRow(method.id, {
-        label: methodShort(method.id),
-        secondary: pendingPerMethod[method.id] ? `${pendingPerMethod[method.id] > 0 ? '+' : ''}${fmt(pendingPerMethod[method.id])} pending` : '',
-        editable: false,
-      })),
+      ...trackedMethods.map(method => {
+        const status = accountStatus(method.id);
+        const pending = pendingPerMethod[method.id] ? `${pendingPerMethod[method.id] > 0 ? '+' : ''}${fmt(pendingPerMethod[method.id])} pending` : '';
+        return renderBalanceEditorRow(method.id, {
+          label: methodShort(method.id),
+          secondary: [status.label, pending].filter(Boolean).join(' · '),
+          editable: false,
+        });
+      }),
     ),
   );
   screen.appendChild(accountsCard);
 
   const gcCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:16px;' }, 'Gift card balances'),     $('div', { class: 'muted', style: 'font-size:11px;margin:-8px 0 8px;' }, 'Current provider balances without adding a fake transaction. Supporting totals cover recorded loads and spending.'),
+    $('div', { class: 'eyebrow', style: 'margin-bottom:16px;' }, 'Gift card balances'),     $('div', { class: 'muted', style: 'font-size:11px;margin:-8px 0 8px;' }, 'Current provider balances without adding a fake transaction. Totals show recorded activity, or post-reconciliation adjustments when a checkpoint exists.'),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },     ...GIFT_CARD_IDS.map(id => {
          const m = METHODS.find(x => x.id === id);
          const totals = computeGiftCardBalance(state.entries, id);
          return renderBalanceEditorRow(id, {
-           label: m?.label?.includes(' · ') ? m.label.split(' · ')[1] : (m?.label || id),
-           secondary: totals.loaded || totals.spent ? `recorded loads ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}` : '',
+           label: m?.label?.includes(' · ') ? m.label.split(' · ')[1] : (m?.label || id),            secondary: totals.loaded || totals.spent
+              ? `${userCheckpointFor(id, today()) ? 'net adjustments · loads' : 'recorded loads'} ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}`
+              : '',
            editable: false,
          });
        }),
@@ -2126,9 +2374,14 @@ function openCashEditor() {
 
 // ---------- screens: add ----------
 function screenAdd() {
-  const c = $('section', { 'aria-label': 'New entry' });
-  c.appendChild($('div', { style: 'margin-bottom:24px;' },
-    $('h1', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:34px;' }, 'New entry'),
+  const c = $('section', { class: 'page-section add-flow', 'aria-label': 'New entry' });
+  c.appendChild($('div', { class: 'page-title-row add-flow-heading' },
+    $('div', null,
+      $('div', { class: 'eyebrow' }, 'Quick capture'),
+      $('h1', { class: 'page-title' }, 'New entry'),
+      $('p', { class: 'muted page-lede' }, 'Start with the amount. The rest takes seconds.'),
+    ),
+    $('span', { class: 'pill add-flow-hint' }, '⌘ / Ctrl + N'),
   ));
 
   // Natural-language and structured voice entry
@@ -2176,7 +2429,8 @@ function screenAdd() {
   c.appendChild(form);
   // Focus the first field appropriate to the selected entry type. This keeps
   // note forms usable if the screen is ever opened with a note preselected.
-  queueMicrotask(() => document.getElementById(form.dataset.firstFocus || 'f-amount')?.focus());
+  // The top-level renderer focuses this after the frame mounts the section.
+  form.dataset.routeInitialFocus = 'true';
   return c;
 }
 
@@ -2194,7 +2448,10 @@ function screenHistory() {
 
   const monthEntries = entriesForMonth(activeMonth);
   const filtered = searchEntries(monthEntries, searchQuery, { type: 'all', category: activeCat, method: activeMethod });
-  const visible = filtered.sort((a, b) => b.date.localeCompare(a.date));
+  // Sort a copy so filtering/history presentation never mutates persisted order.
+  const visible = [...filtered].sort((a, b) => b.date.localeCompare(a.date)
+    || ((b.createdAt || '')).localeCompare(a.createdAt || '')
+    || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
   const expenseSum = monthEntries.filter(isSpendingEntry).reduce((s, e) => s + e.amount, 0);
   const update = (next = {}) => {
     if (next.month !== undefined) params.set('month', next.month);
@@ -2214,10 +2471,10 @@ function screenHistory() {
     location.hash = qs ? `history?${qs}` : 'history';
   };
 
-  const c = $('section', { 'aria-label': 'History' });
+  const c = $('section', { class: 'page-section', 'aria-label': 'History' });
 
-  c.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:24px;flex-wrap:wrap;gap:12px;' },
-    $('h1', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:34px;' }, monthLabel(activeMonth)),
+  c.appendChild($('div', { class: 'page-title-row' },
+    $('h1', { class: 'page-title' }, monthLabel(activeMonth)),
     $('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;justify-content:flex-end;' },
       monthNav('←', () => { const i = months.indexOf(activeMonth); if (i < months.length - 1) update({ month: months[i + 1] }); }, months.indexOf(activeMonth) >= months.length - 1),
       monthNav(monthKey(today()) === activeMonth ? 'Today' : 'Jump', () => update({ month: monthKey(today()) }), false),
@@ -2246,7 +2503,10 @@ function screenHistory() {
         const method = METHODS.find(m => m.id === id);
         const totals = computeGiftCardBalance(state.entries, id);
         return renderBalanceEditorRow(id, {
-          label: method?.label?.includes(' · ') ? method.label.split(' · ')[1] : (method?.label || id),           secondary: totals.loaded || totals.spent ? `recorded loads ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}` : '',
+          label: method?.label?.includes(' · ') ? method.label.split(' · ')[1] : (method?.label || id),
+          secondary: totals.loaded || totals.spent
+            ? `${userCheckpointFor(id, today()) ? 'net adjustments · loads' : 'recorded loads'} ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}`
+            : '',
            editable: true,
          });
        }),
@@ -2305,7 +2565,14 @@ function screenHistory() {
       $('span'),
     ));
 
+    let previousVisibleDate = null;
     for (const e of visible) {
+      if (e.date !== previousVisibleDate) {
+        previousVisibleDate = e.date;
+        tableWrap.appendChild($('div', { class: 'history-day-header', role: 'row', style: 'display:grid;grid-template-columns:1fr;gap:8px;padding:13px 24px 8px;min-width:740px;background:var(--bg-deep);border-bottom:1px solid var(--line);' },
+          $('span', { role: 'rowheader', class: 'eyebrow' }, relativeDayLabel(e.date)),
+        ));
+      }
       const isTransfer = !!e.transferId;
       const settledLabel = isTransfer ? (e.settled ? '✓ settled' : '● unsettled') : '';
       const settleColor = e.settled ? 'var(--positive)' : 'var(--muted)';
@@ -2328,7 +2595,9 @@ function screenHistory() {
         $('span', { class: 'display-num', style: 'text-align:right;font-size:15px;color:' + (e.type === 'credit' ? 'var(--positive)' : 'var(--ink)') }, e.type === 'note' ? 'Note' : (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
         $('span', { class: 'tnum', style: 'text-align:right;font-size:13px;color:' + (balanceForEntry(e) >= 0 ? 'var(--positive)' : 'var(--negative)'), }, e.type === 'note' ? '—' : fmt(balanceForEntry(e))),
         $('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method)),
-        $('span', { style: 'color:var(--muted);font-size:14px;text-align:right;' }, '›'),
+        $('span', { class: 'history-actions', style: 'display:flex;justify-content:flex-end;align-items:center;gap:5px;' },
+          $('button', { type: 'button', class: 'history-action-btn', title: 'Edit or delete entry', 'aria-label': `Edit or delete ${e.details || 'entry'}`, onClick: ev => { ev.stopPropagation(); openEdit(e.id); } }, 'Manage'),
+        ),
       );
 
       tableWrap.appendChild(row);
@@ -2353,13 +2622,16 @@ function screenInsights() {
   const params = new URLSearchParams((location.hash.split('?')[1]) || '');
   const fromParam = params.get('from') || '';
   const toParam = params.get('to') || '';
-  const fromDate = fromParam || (() => { const d = new Date(); d.setDate(d.getDate() - 90); return localDateKey(d); })();
-  const toDate = toParam || today();
+  const defaultFrom = (() => { const d = new Date(); d.setDate(d.getDate() - 90); return localDateKey(d); })();
+  let fromDate = isValidCheckpointDate(fromParam) ? fromParam : defaultFrom;
+  let toDate = isValidCheckpointDate(toParam) ? toParam : today();
+  // Keep malformed or reversed URL ranges from producing misleading totals.
+  if (fromDate > toDate) [fromDate, toDate] = [toDate, fromDate];
 
   const rangeEntries = state.entries.filter(e => e.date >= fromDate && e.date <= toDate);
   const recent = rangeEntries;
 
-  const c = $('section', { 'aria-label': 'Insights' });
+  const c = $('section', { class: 'page-section insights-section', 'aria-label': 'Insights' });
 
   // Date range picker
   const fromInput = $('input', { type: 'date', value: fromDate, 'aria-label': 'From date', style: 'width:auto;font-size:13px;', onChange: (e) => {
@@ -2369,8 +2641,8 @@ function screenInsights() {
     params.set('to', e.target.value); location.hash = 'insights?' + params.toString();
   } });
 
-  c.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:24px;flex-wrap:wrap;gap:12px;' },
-    $('h1', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:34px;' }, 'Where it goes.'),
+  c.appendChild($('div', { class: 'page-title-row' },
+    $('h1', { class: 'page-title' }, 'Where it goes.'),
     $('div', { style: 'display:flex;align-items:center;gap:8px;' },
       fromInput,
       $('span', { class: 'muted', style: 'font-size:13px;' }, '→'),
@@ -2390,6 +2662,30 @@ function screenInsights() {
   const methodTotals = {};
   for (const e of recent.filter(isSpendingEntry)) methodTotals[e.method] = (methodTotals[e.method] || 0) + e.amount;
   const topMethodEntry = Object.entries(methodTotals).sort((a,b) => b[1]-a[1])[0];
+  const topCategoryEntry = Object.entries(catTotalsForEntries(recent)).sort((a, b) => b[1] - a[1])[0];
+  const insightTotal = recent.filter(isSpendingEntry).reduce((sum, entry) => sum + entry.amount, 0);
+  const rangeStartTime = Date.parse(`${fromDate}T00:00:00Z`);
+  const rangeEndTime = Date.parse(`${toDate}T00:00:00Z`);
+  const rangeLength = Number.isFinite(rangeStartTime) && Number.isFinite(rangeEndTime) && rangeEndTime >= rangeStartTime
+    ? Math.floor((rangeEndTime - rangeStartTime) / 86400000) + 1
+    : 0;
+  const previousFrom = rangeLength ? offsetDateKey(fromDate, -rangeLength) : '';
+  const previousTo = rangeLength ? offsetDateKey(fromDate, -1) : '';
+  const insightPrevious = rangeLength
+    ? state.entries.filter(entry => entry.date >= previousFrom && entry.date <= previousTo && isSpendingEntry(entry))
+      .reduce((sum, entry) => sum + entry.amount, 0)
+    : 0;
+  const insightDelta = insightTotal - insightPrevious;
+
+  c.appendChild($('div', { class: 'insight-narrative card', style: 'padding:24px;margin-bottom:24px;' },
+    $('div', { class: 'eyebrow' }, 'The short version'),
+    $('p', { class: 'serif insight-narrative-text' }, recent.some(isSpendingEntry)
+      ? `You spent ${fmt(insightTotal)} in this range${topCategoryEntry ? `, led by ${categoryLabel(topCategoryEntry[0])} at ${fmt(topCategoryEntry[1])}` : ''}.`
+      : 'Log a few expenses and your spending story will appear here.'),
+    insightPrevious > 0 ? $('div', { class: 'insight-narrative-note muted' },
+      `${fmt(Math.abs(insightDelta))} ${insightDelta <= 0 ? 'less' : 'more'} than the preceding period.`,
+    ) : null,
+  ));
 
   c.appendChild($('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px;margin-bottom:32px;' },
     statCard('Average / month', fmt(avg)),
@@ -2442,8 +2738,7 @@ function screenInsights() {
     ),
   ));
 
-  const catTotals = {};
-  for (const e of recent.filter(isSpendingEntry)) catTotals[e.category] = (catTotals[e.category]||0) + e.amount;
+  const catTotals = catTotalsForEntries(recent);
   const catRows = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]);
   const maxCat = catRows[0]?.[1] || 1;
 
@@ -2613,12 +2908,35 @@ function openYearInReview() {
 /** Delete-only modal for transfer pairs — editing is not allowed. */
 function openTransferDelete(e) {
   const pair = state.entries.filter(x => x.transferId === e.transferId);
+  const opener = document.activeElement;
+  const openerId = opener?.closest?.('[data-id]')?.dataset.id || null;
   const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
   const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Transfer pair', tabindex: '-1', style: 'max-width:480px;' });
   bg.appendChild(modal);
   document.body.appendChild(bg);
 
-  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
+  const close = () => {
+    document.removeEventListener('keydown', onEsc, true);
+    bg.remove();
+    render();
+    const restore = () => {
+      const canRestoreOpener = opener?.isConnected
+        && opener !== document.body
+        && typeof opener.matches === 'function'
+        && opener.matches('button, a, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      if (canRestoreOpener) {
+        opener.focus({ preventScroll: true });
+        return;
+      }
+      if (openerId) {
+        [...document.querySelectorAll('[data-id]')]
+          .find(node => node.dataset.id === openerId)
+          ?.focus({ preventScroll: true });
+      }
+    };
+    if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(restore);
+    else setTimeout(restore, 0);
+  };
   const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
@@ -2635,11 +2953,19 @@ function openTransferDelete(e) {
     ));
   }
 
-  modal.appendChild($('p', { class: 'serif', style: 'font-style:italic;font-size:15px;color:var(--negative);margin:16px 0 8px;' }, 'Delete this transfer pair? This cannot be undone.'));
+  modal.appendChild($('p', { class: 'serif', style: 'font-style:italic;font-size:15px;color:var(--negative);margin:16px 0 8px;' }, 'Delete this transfer pair? You can undo it from the toast.'));
   modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;' },
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
     $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: () => {
-      if (deleteEntryOrTransfer(e.id)) toast('Transfer pair deleted.');
+      const removed = pair.map(entry => ({ ...entry }));
+      if (deleteEntryOrTransfer(e.id)) {
+        trackAction(() => {
+          state.entries.push(...removed);
+          state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+          persist();
+        }, 'Restored transfer pair');
+        toast('Transfer pair deleted.');
+      }
       close();
     } }, 'Delete pair'),
   ));
@@ -2660,7 +2986,8 @@ function openEdit(id) {
 
   // Capture the row id we opened from so we can restore focus to the
   // freshly-rendered row after `render()` rebuilds the DOM.
-  const openerId = (document.activeElement && document.activeElement.dataset && document.activeElement.dataset.id) || null;
+  const openerRow = document.activeElement?.closest?.('[data-id]');
+  const openerId = openerRow?.dataset.id || null;
   const openerHadFocus = openerId != null;
 
   const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
@@ -2673,10 +3000,12 @@ function openEdit(id) {
     bg.remove();
     render();
     if (openerHadFocus) {
-      queueMicrotask(() => {
+      const restore = () => {
         const fresh = [...document.querySelectorAll('[data-id]')].find(node => node.dataset.id === openerId);
-        fresh?.focus();
-      });
+        fresh?.focus({ preventScroll: true });
+      };
+      if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(restore);
+      else setTimeout(restore, 0);
     }
   };
 
@@ -2732,13 +3061,21 @@ function openEdit(id) {
     deleteStage1.focus();
   } }, 'Cancel');
   const confirmDeleteBtn = $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: () => {
+    const removed = e.transferId
+      ? state.entries.filter(entry => entry.transferId === e.transferId).map(entry => ({ ...entry }))
+      : [{ ...e }];
     if (deleteEntryOrTransfer(id)) {
-      toast(e.transferId ? 'Transfer pair deleted.' : 'Deleted.');
+      trackAction(() => {
+        state.entries.push(...removed);
+        state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+        persist();
+      }, e.transferId ? 'Restored transfer pair' : `Restored ${e.details}`);
+      toast(e.transferId ? 'Transfer pair deleted.' : 'Deleted. You can undo it from the toast.');
     }
     close();
   } }, 'Confirm delete');
   const deletePanel = $('div', { style: 'display:none;margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:var(--accent-soft);' },
-    $('p', { class: 'serif', style: 'font-style:italic;font-size:17px;margin:0 0 12px;color:var(--negative);' }, 'Delete this entry? This cannot be undone.'),
+    $('p', { class: 'serif', style: 'font-style:italic;font-size:17px;margin:0 0 12px;color:var(--negative);' }, 'Delete this entry? You can undo it from the toast.'),
     $('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' }, cancelDeleteBtn, confirmDeleteBtn),
   );
   modal.appendChild($('div', { style: 'margin-top:24px;padding-top:24px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;' }, deleteStage1));
@@ -2995,11 +3332,49 @@ function toast(text, undoFn, undoLabel) {
   toastTimer = setTimeout(() => { t.remove(); }, 2200);
 }
 
+// ---------- render scheduling ----------
+function captureFocusedField() {
+  const active = document.activeElement;
+  const main = document.getElementById('app');
+  // Never restore focus from a modal or another surface outside the app mount.
+  // Those surfaces own their focus while the underlying app is rebuilt.
+  if (!active || !main || !main.contains(active) || !/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return null;
+  return {
+    id: active.id || '',
+    ariaLabel: active.getAttribute('aria-label') || '',
+    type: active.getAttribute('type') || '',
+    selectionStart: typeof active.selectionStart === 'number' ? active.selectionStart : null,
+    selectionEnd: typeof active.selectionEnd === 'number' ? active.selectionEnd : null,
+  };
+}
+
+function restoreFocusedField(snapshot) {
+  if (!snapshot) return;
+  const main = document.getElementById('app');
+  if (!main) return;
+  const fields = main.querySelectorAll('input, textarea, select');
+  const field = [...fields].find(candidate =>
+    (snapshot.id && candidate.id === snapshot.id)
+    || (snapshot.ariaLabel && candidate.getAttribute('aria-label') === snapshot.ariaLabel
+      && (!snapshot.type || candidate.getAttribute('type') === snapshot.type))
+  );
+  if (!field) return;
+  field.focus({ preventScroll: true });
+  if (snapshot.selectionStart !== null && typeof field.setSelectionRange === 'function') {
+    const end = snapshot.selectionEnd ?? snapshot.selectionStart;
+    const length = field.value?.length ?? 0;
+    field.setSelectionRange(Math.min(snapshot.selectionStart, length), Math.min(end, length));
+  }
+}
+
 // ---------- top-level render ----------
 function render() {
-  try {
-    _render();
-  } catch (e) {
+  if (renderFrame !== null) return;
+  const flush = () => {
+    renderFrame = null;
+    try {
+      _render();
+    } catch (e) {
     // Error boundary: if anything in the render pipeline throws,
     // show the error ON THE PAGE so we can see it without DevTools.
     var mount = document.getElementById('app');
@@ -3030,15 +3405,19 @@ function render() {
           '<ol style="padding-left:22px;margin:12px 0 0;"><li>Copy the error above.</li><li>Hard refresh — <kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">Ctrl</kbd>+<kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">Shift</kbd>+<kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">R</kbd></li></ol>' +
         '</div>' +
       '</div>';
-    // Also log so we can see it in DevTools
-    console.error('Render crashed:', e);
-  }
+      // Also log so we can see it in DevTools
+      console.error('Render crashed:', e);
+    }
+  };
+  if (typeof window.requestAnimationFrame === 'function') renderFrame = window.requestAnimationFrame(flush);
+  else renderFrame = window.setTimeout(flush, 0);
 }
 
 function _render() {
   const main = document.getElementById('app');
   if (!main) return;
-  // Init dark mode + season on first render — dark is the default
+  const focusedField = captureFocusedField();
+    // Init dark mode + season on first render — dark is the default
   if (!document.documentElement.dataset.themeInit) {
     document.documentElement.dataset.themeInit = '1';
     try {
@@ -3058,8 +3437,10 @@ function _render() {
   main.removeAttribute('aria-hidden');
   main.appendChild(renderHeader());
 
-  const screen = $('main', { class: 'shell screen', id: 'screen' });
   const route = currentRoute();
+  const shouldAnimateScreen = route !== lastRenderedRoute;
+  lastRenderedRoute = route;
+  const screen = $('main', { class: `shell screen${shouldAnimateScreen ? '' : ' screen-static'}`, id: 'screen' });
   switch (route) {
     case 'add':      screen.appendChild(screenAdd()); break;
     case 'history':  screen.appendChild(screenHistory()); break;
@@ -3096,6 +3477,14 @@ function _render() {
     )),
   ));
 
+  // Focus the Add form only when navigation created it. Same-route renders
+  // restore the user's existing field/caret instead, so typing never jumps.
+  if (shouldAnimateScreen && route === 'add') {
+    const form = main.querySelector('[data-route-initial-focus="true"]');
+    const target = form?.querySelector(`#${form.dataset.firstFocus || 'f-amount'}`);
+    target?.focus({ preventScroll: true });
+  }
+
   main.appendChild($('footer', { style: 'max-width:980px;margin:0 auto;padding:32px 28px 64px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line);' },
     $('span', null, String(state.entries.length), ' entries \u00b7 stored locally'),
     $('span', { style: 'display:flex;justify-content:flex-end;flex-wrap:wrap;gap:0 8px;align-items:center;' },
@@ -3114,6 +3503,9 @@ function _render() {
   ));
 
   window.scrollTo(0, scrollY);
+  // Rebuilding a same-route screen should not make typing/searching lose focus
+  // or move the caret. Newly opened forms still manage their own initial focus.
+  if (!shouldAnimateScreen) restoreFocusedField(focusedField);
 
   // Sticky header setup — add sticky class + scroll listener on first render
   if (!window.__stickyInit) {

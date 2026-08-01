@@ -68,7 +68,39 @@ function validCheckpoint(point) {
     && Number.isFinite(balance)
     && Math.abs(balance) <= MAX_AMOUNT
     && Math.round(balance * 100) / 100 === balance
-    && (point.at == null || (typeof point.at === 'string' && Number.isFinite(Date.parse(point.at))));
+    && (point.at == null || (typeof point.at === 'string' && point.at.length <= 100 && Number.isFinite(Date.parse(point.at))));
+}
+function validMutationHistory(history, entry, allowedCategoryIds) {
+  if (history == null) return true;
+  if (!Array.isArray(history) || history.length > 1000) return false;
+  let previousAt = 0;
+  for (const point of history) {
+    const at = Date.parse(point?.at);
+    const createdAt = Date.parse(point?.createdAt);
+    const amount = Number(point?.amount);
+    if (!point || typeof point !== 'object' || Array.isArray(point)
+      || typeof point.at !== 'string' || point.at.length > 100
+      || typeof point.createdAt !== 'string' || point.createdAt.length > 100
+      || !Number.isFinite(at) || !Number.isFinite(createdAt) || at > Date.now() || createdAt > at
+      || (previousAt > 0 && at <= previousAt)
+      || (entry?.createdAt != null && Date.parse(entry.createdAt) !== createdAt)
+      || !validDate(point.date) || !VALID_TYPES.has(point.type)
+      || !VALID_METHODS.has(point.method) || !allowedCategoryIds.has(point.category)
+      || !Number.isFinite(amount) || amount < 0
+      || amount > MAX_AMOUNT || Math.round(amount * 100) / 100 !== amount
+      || (point.type === 'note' && amount !== 0)) return false;
+    previousAt = at;
+  }
+  // Mutation history without an updatedAt marker is detached from the current
+  // entry and cannot be applied safely by the client.
+  if (history.length > 0 && (entry?.updatedAt == null || entry?.createdAt == null)) return false;
+  // Every edited entry must carry the complete previous-version chain and the
+  // current updatedAt must identify its latest mutation. Otherwise the client
+  // cannot safely subtract the version that was present at reconciliation.
+  if (entry?.updatedAt != null) {
+    if (history.length === 0 || Date.parse(entry.updatedAt) !== previousAt) return false;
+  }
+  return true;
 }
 
 function validIncomingSettings(settings) {
@@ -171,8 +203,13 @@ function validIncomingState(content) {
       || Math.round(amount * 100) / 100 !== amount
       || typeof details !== 'string' || details.length > 5000
       || typeof note !== 'string' || note.length > 10000
-      || (entry.createdAt != null && (typeof entry.createdAt !== 'string' || !Number.isFinite(Date.parse(entry.createdAt))))
-      || (entry.audioData != null && (entry.type !== 'note' || typeof entry.audioData !== 'string'
+      || (entry.createdAt != null && (typeof entry.createdAt !== 'string' || entry.createdAt.length > 100
+        || !Number.isFinite(Date.parse(entry.createdAt)) || Date.parse(entry.createdAt) > Date.now()))
+      || (entry.updatedAt != null && (typeof entry.updatedAt !== 'string' || entry.updatedAt.length > 100
+        || !Number.isFinite(Date.parse(entry.updatedAt)) || Date.parse(entry.updatedAt) > Date.now()
+        || (entry.createdAt != null && Date.parse(entry.updatedAt) < Date.parse(entry.createdAt))))
+      || !validMutationHistory(entry.mutationHistory, entry, allowedCategoryIds)
+       || (entry.audioData != null && (entry.type !== 'note' || typeof entry.audioData !== 'string'
         || !/^data:audio\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(entry.audioData)
         || entry.audioData.length > 2_000_000))
       || (entry.audioType != null && (entry.type !== 'note' || typeof entry.audioType !== 'string' || !/^audio\/[a-z0-9.+-]+$/i.test(entry.audioType)))

@@ -21,6 +21,9 @@ const TYPES_OK      = new Set(['expense', 'credit', 'transfer', 'note']);
 // recurring editor. Keeping only single-leg recurring financial entries avoids
 // creating orphaned transfer records.
 const FINANCIAL_TYPES = new Set(['expense', 'credit']);
+// Keep enough immutable versions to cover long-lived reconciliation history
+// without allowing an accidental edit loop to grow local state forever.
+const MAX_MUTATION_HISTORY = 1000;
 
 /** Let validateEntry accept custom-category ids that the user added at runtime. */
 export function updateAllowedCategories(ids) {
@@ -60,7 +63,8 @@ function validateEntry(e) {
     method: e.method,
     note,
   };
-  if (typeof e.createdAt === 'string' && Number.isFinite(Date.parse(e.createdAt))) {
+  if (typeof e.createdAt === 'string' && e.createdAt.length <= 100
+    && Number.isFinite(Date.parse(e.createdAt)) && Date.parse(e.createdAt) <= Date.now()) {
     base.createdAt = new Date(e.createdAt).toISOString();
   } else {
     // Legacy entries had no timestamp. Use the start of their date as a stable
@@ -69,11 +73,64 @@ function validateEntry(e) {
     // treating each load differently.
     base.createdAt = `${e.date}T00:00:00.000Z`;
   }
+  const updatedAt = normalizeTimestamp(e.updatedAt);
+  const createdTime = Date.parse(base.createdAt);
+  const updatedTime = updatedAt ? Date.parse(updatedAt) : NaN;
+  // Mutation timestamps are only meaningful when they are bounded, no earlier
+  // than creation, and not from the future. Ignore malformed imported values
+  // rather than allowing them to move reconciled balances unexpectedly.
+  if (updatedAt && Number.isFinite(createdTime) && Number.isFinite(updatedTime)
+    && updatedTime >= createdTime && updatedTime <= Date.now()) {
+    base.updatedAt = updatedAt;
+  }
   if (e.type === 'note' && typeof e.audioData === 'string'
     && /^data:audio\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(e.audioData)
     && e.audioData.length <= 2_000_000) {
     base.audioData = e.audioData;
     if (typeof e.audioType === 'string' && /^audio\/[a-z0-9.+-]+$/i.test(e.audioType)) base.audioType = e.audioType;
+  }
+  const history = Array.isArray(e.mutationHistory) ? e.mutationHistory : [];
+  let historyValid = history.length <= MAX_MUTATION_HISTORY;
+  let previousMutationTime = 0;
+  const normalizedHistory = historyValid ? history.map(point => {
+    const at = normalizeTimestamp(point?.at);
+    const createdAt = normalizeTimestamp(point?.createdAt);
+    const amount = Number(point?.amount);
+    const date = typeof point?.date === 'string' && isValidCheckpointDate(point.date) ? point.date : null;
+    const type = TYPES_OK.has(point?.type) ? point.type : null;
+    const category = CATEGORIES_OK.has(point?.category) ? point.category : null;
+    const method = METHODS_OK.has(point?.method) ? point.method : null;
+    const mutationTime = at ? Date.parse(at) : NaN;
+    const pointCreatedTime = createdAt ? Date.parse(createdAt) : NaN;
+    const valid = !!point && typeof point === 'object' && !Array.isArray(point)
+      && !!at && !!createdAt && !!date && !!type && !!category && !!method
+      && Number.isFinite(amount) && Number.isFinite(pointCreatedTime) && Number.isFinite(mutationTime)
+      && pointCreatedTime === createdTime
+      && pointCreatedTime <= mutationTime
+      && mutationTime <= Date.now()
+      && mutationTime > previousMutationTime
+      && !(type === 'note' && amount !== 0)
+      && amount >= 0 && amount <= 1_000_000
+      && Math.round(amount * 100) / 100 === amount;
+    if (!valid) historyValid = false;
+    previousMutationTime = mutationTime;
+    return valid ? { at, createdAt, date, type, category, amount, method } : null;
+  }) : [];
+  const latestHistoryTime = normalizedHistory.length
+    ? Date.parse(normalizedHistory[normalizedHistory.length - 1].at)
+    : NaN;
+  const currentUpdatedTime = base.updatedAt ? Date.parse(base.updatedAt) : NaN;
+  const historyMatchesCurrent = historyValid && normalizedHistory.length > 0
+    && Number.isFinite(currentUpdatedTime) && currentUpdatedTime === latestHistoryTime
+    && currentUpdatedTime >= createdTime;
+  if (historyMatchesCurrent) {
+    base.mutationHistory = normalizedHistory;
+  } else {
+    // A missing, partial, unordered, or detached history is unsafe: keeping
+    // updatedAt without its corresponding previous versions could apply a
+    // balance delta with no historical value to subtract. Keep the current
+    // entry, but discard all unusable mutation metadata.
+    delete base.updatedAt;
   }
   // Preserve transfer metadata if present
   if (typeof e.transferId === 'string' && e.transferId.length <= 200) base.transferId = e.transferId;
@@ -89,6 +146,11 @@ function normalizeTimestamp(value) {
   if (typeof value !== 'string' || value.length > 100) return null;
   const time = Date.parse(value);
   return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+function normalizePastTimestamp(value) {
+  const normalized = normalizeTimestamp(value);
+  return normalized && Date.parse(normalized) <= Date.now() ? normalized : null;
 }
 
 export function isValidCheckpointDate(date) {
@@ -120,9 +182,10 @@ function normalizeBalanceCheckpoints(rawSettings) {
           .map(point => ({
             date: point.date,
             balance: Math.round(+point.balance * 100) / 100,
-            ...(typeof point.at === 'string' && Number.isFinite(Date.parse(point.at))
-              ? { at: new Date(point.at).toISOString() }
-              : {}),
+            ...(() => {
+              const at = normalizePastTimestamp(point.at);
+              return at ? { at } : {};
+            })(),
           }))
       : [];
     // Keep one deterministic checkpoint per date so imported/synced state
@@ -238,8 +301,8 @@ function defaultState() {
 export function validateState(s) {
   if (!s || !Array.isArray(s.entries)) return defaultState();
   const out = { ...s };
-  const lastLocalChangeAt = normalizeTimestamp(s.lastLocalChangeAt);
-  const localResetAt = normalizeTimestamp(s.localResetAt);
+  const lastLocalChangeAt = normalizePastTimestamp(s.lastLocalChangeAt);
+  const localResetAt = normalizePastTimestamp(s.localResetAt);
   if (lastLocalChangeAt) out.lastLocalChangeAt = lastLocalChangeAt;
   else delete out.lastLocalChangeAt;
   if (localResetAt) out.localResetAt = localResetAt;
