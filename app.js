@@ -542,7 +542,7 @@ function totalAccountBalanceAt(date = today(), checkpointsByMethod = null) {
   return ACCOUNT_METHOD_IDS.reduce((sum, id) => sum + balanceAtForEntries(entries, id, date, checkpoints), 0);
 }
 
-function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '' } = {}) {
+function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', editable = false } = {}) {
   const row = $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;' });
   let editing = false;
   const actualBalance = () => balanceAt(methodId, today());
@@ -604,7 +604,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
           $('div', { class: 'display-num', style: `font-size:14px;color:${balance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(balance)),
           summary && Math.abs(difference) >= 0.01 ? $('div', { class: 'muted', style: 'font-size:10px;' }, `${difference >= 0 ? '+' : ''}${fmt(difference)} vs book`) : null,
         ),
-        $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎'),
+        editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎') : null,
       ),
     );
   };
@@ -1248,13 +1248,16 @@ function renderHeader() {
       ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : 'false' }, titleFor(r))),
     ),
     $('div', { class: 'header-actions', style: locked ? 'display:none;' : '' },
-      $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Instrument Serif",serif;font-style:italic;font-size:14px;color:var(--muted);' }),
-      $('button', { class: 'dark-toggle', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', onClick: () => {
-        const html = document.documentElement;
-        const isDark = html.dataset.theme === 'dark';
-        html.dataset.theme = isDark ? '' : 'dark';
-        try { localStorage.setItem('cents-theme', isDark ? 'light' : 'dark'); } catch(e) {}
-      } },
+      $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Instrument Serif",serif;font-style:italic;font-size:14px;color:var(--muted);' }),      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
+         const html = document.documentElement;
+         const isDark = html.dataset.theme === 'dark';
+         const nextTheme = isDark ? 'light' : 'dark';
+         html.dataset.theme = isDark ? '' : 'dark';
+         event.currentTarget.setAttribute('aria-pressed', String(!isDark));
+         event.currentTarget.setAttribute('aria-label', `Switch to ${isDark ? 'dark' : 'light'} mode`);
+         event.currentTarget.setAttribute('title', `Switch to ${isDark ? 'dark' : 'light'} mode`);
+         try { localStorage.setItem('cents-theme', nextTheme); } catch(e) {}
+       } },
         $('span', { class: 'icon-sun', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>' }),
         $('span', { class: 'icon-moon', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>' }),
       ),
@@ -1816,29 +1819,29 @@ function screenDashboard() {
   const accountsCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
     $('div', { style: 'margin-bottom:16px;' },
       $('div', { class: 'eyebrow' }, 'Bank account balances'),
-      $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Reconcile an end-of-day actual balance with a date; transaction history stays unchanged.'),
+      $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current end-of-day balances; transaction history stays unchanged.'),
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
       ...trackedMethods.map(method => renderBalanceEditorRow(method.id, {
         label: methodShort(method.id),
         secondary: pendingPerMethod[method.id] ? `${pendingPerMethod[method.id] > 0 ? '+' : ''}${fmt(pendingPerMethod[method.id])} pending` : '',
+        editable: false,
       })),
     ),
   );
   screen.appendChild(accountsCard);
 
   const gcCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:16px;' }, 'Gift card balances'),
-    $('div', { class: 'muted', style: 'font-size:11px;margin:-8px 0 8px;' }, 'Reconcile the balance shown by each provider without adding a fake transaction. Supporting totals cover recorded loads and spending.'),
-    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
-      ...GIFT_CARD_IDS.map(id => {
-        const m = METHODS.find(x => x.id === id);
-        const totals = computeGiftCardBalance(state.entries, id);
-        return renderBalanceEditorRow(id, {
-          label: m?.label?.includes(' · ') ? m.label.split(' · ')[1] : (m?.label || id),
-          secondary: totals.loaded || totals.spent ? `recorded loads ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}` : '',
-        });
-      }),
+    $('div', { class: 'eyebrow', style: 'margin-bottom:16px;' }, 'Gift card balances'),     $('div', { class: 'muted', style: 'font-size:11px;margin:-8px 0 8px;' }, 'Current provider balances without adding a fake transaction. Supporting totals cover recorded loads and spending.'),
+    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },     ...GIFT_CARD_IDS.map(id => {
+         const m = METHODS.find(x => x.id === id);
+         const totals = computeGiftCardBalance(state.entries, id);
+         return renderBalanceEditorRow(id, {
+           label: m?.label?.includes(' · ') ? m.label.split(' · ')[1] : (m?.label || id),
+           secondary: totals.loaded || totals.spent ? `recorded loads ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}` : '',
+           editable: false,
+         });
+       }),
     ),
   );
   screen.appendChild(gcCard);
@@ -2322,7 +2325,7 @@ function screenHistory() {
       $('span', { class: 'muted', style: 'font-size:11px;' }, 'AIB · Revolut · Revolut Savings'),
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
-      ...historyAccountMethods.map(method => renderBalanceEditorRow(method.id, { label: methodShort(method.id) })),
+      ...historyAccountMethods.map(method => renderBalanceEditorRow(method.id, { label: methodShort(method.id), editable: true })),
     ),
   ));
   c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
@@ -2333,14 +2336,14 @@ function screenHistory() {
         const method = METHODS.find(m => m.id === id);
         const totals = computeGiftCardBalance(state.entries, id);
         return renderBalanceEditorRow(id, {
-          label: method?.label?.includes(' · ') ? method.label.split(' · ')[1] : (method?.label || id),
-          secondary: totals.loaded || totals.spent ? `recorded loads ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}` : '',
-        });
-      }),
-    ),
-  ));
+          label: method?.label?.includes(' · ') ? method.label.split(' · ')[1] : (method?.label || id),           secondary: totals.loaded || totals.spent ? `recorded loads ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}` : '',
+           editable: true,
+         });
+       }),
+     ),
+   ));
 
-  // Search bar
+   // Search bar
   const searchInput = $('input', { type: 'text', value: searchQuery, placeholder: 'Search descriptions, notes…', 'aria-label': 'Search entries', autocomplete: 'off', style: 'width:100%;max-width:320px;', onInput: (e) => {
     // Debounced update
     clearTimeout(searchInput._timer);

@@ -92,7 +92,7 @@
 /* ── Base ── */
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; }
-html { transition: background 0.5s ease, color 0.5s ease; }
+html, body { transition: background-color 0.45s ease, color 0.35s ease; }
 body {
   font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
   font-size: 15px;
@@ -390,11 +390,16 @@ select:focus {
   border: 1px solid var(--line);
   border-radius: 50%;
   background: transparent;
+  color: #3d3027;
   cursor: pointer;
   font-size: 17px;
-  transition: transform 0.18s cubic-bezier(0.2,0.8,0.2,1.2), background 0.2s, border-color 0.2s, box-shadow 0.2s;
+  transition: transform 0.18s cubic-bezier(0.2,0.8,0.2,1.2), background 0.2s, border-color 0.2s, box-shadow 0.2s, color 0.25s;
   flex-shrink: 0;
 }
+[data-theme="dark"] .dark-toggle { color: #f4c7a9; }
+.dark-toggle svg { display: block; width: 16px; height: 16px; }
+.dark-toggle .icon-moon svg { fill: currentColor; }
+.dark-toggle .icon-sun svg { stroke: currentColor; }
 .dark-toggle:hover {
   background: var(--bg-deep);
   box-shadow: var(--shadow-sm);
@@ -426,6 +431,20 @@ select:focus {
 @keyframes screenIn {
   from { opacity: 0; transform: translateY(8px); filter: blur(2px); }
   to   { opacity: 1; transform: none; filter: blur(0); }
+}
+@keyframes contentRise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .screen > section > .card {
+    animation: contentRise 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
+  .screen > section > .card:nth-child(2) { animation-delay: 45ms; }
+  .screen > section > .card:nth-child(3) { animation-delay: 90ms; }
+  .screen > section > .card:nth-child(4) { animation-delay: 135ms; }
+  .screen > section > .card:nth-child(5) { animation-delay: 180ms; }
+  .screen > section > .card:nth-child(6) { animation-delay: 225ms; }
 }
 
 /* ── Modal ── */
@@ -977,6 +996,16 @@ select:focus {
 @media (max-width: 639px) {
   .swipe-row .swipe-behind { padding-right: 10px; }
   .swipe-action--delete, .swipe-action--edit { padding: 7px 12px; font-size: 10px; }
+}
+
+/* ── Motion accessibility ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 @media print {
