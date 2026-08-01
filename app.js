@@ -541,7 +541,7 @@ function renderHeader() {
   const route = currentRoute();
   return $('header', { class: 'app-header', 'aria-label': 'App header' },
     $('div', { class: 'logo' },
-      $('div', { class: 'mark' }, $('span', { class: 'mark-icon', 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5a7 7 0 0 0 0 14"/><line x1="2" y1="8" x2="13" y2="8"/><line x1="2" y1="16" x2="13" y2="16"/></svg>' })),
+      $('div', { class: 'mark' }, $('span', { class: 'mark-icon', 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 6.5A7 7 0 1 0 17 17.5"/><line x1="2.5" y1="8" x2="12" y2="8"/><line x1="2.5" y1="16" x2="12" y2="16"/></svg>' })),
       $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary' },
