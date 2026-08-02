@@ -457,11 +457,42 @@ let balanceCheckpointCache = null;
 let balanceAtCacheState = null;
 const balanceAtCache = new Map();
 
+// Memoized full-dataset sort + id→index so the History screen's per-row
+// balance walk doesn't re-sort everything once per row.
+let liveSortedEntriesState = null;
+let liveSortedEntriesCache = null;
+let liveSortedIndexState = null;
+let liveSortedIndexCache = null;
+function liveSortedEntries() {
+  if (liveSortedEntriesState === state.entries && liveSortedEntriesCache) return liveSortedEntriesCache;
+  liveSortedEntriesState = state.entries;
+  liveSortedEntriesCache = [...state.entries].sort((a, b) => a.date.localeCompare(b.date)
+    || ((a.createdAt || '')).localeCompare(b.createdAt || '')
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return liveSortedEntriesCache;
+}
+function liveSortedIndex() {
+  if (liveSortedIndexState === state.entries && liveSortedIndexCache) return liveSortedIndexCache;
+  liveSortedIndexState = state.entries;
+  liveSortedIndexCache = new Map(liveSortedEntries().map((e, i) => [e.id, i]));
+  return liveSortedIndexCache;
+}
+// Per-entry balance cache keyed to the current state object, so each History
+// row computes its running balance once instead of once per rendered field.
+let balanceForEntryCacheState = null;
+const balanceForEntryCache = new Map();
+
 function clearBalanceCaches() {
   balanceCheckpointCacheState = null;
   balanceCheckpointCache = null;
   balanceAtCacheState = null;
   balanceAtCache.clear();
+  liveSortedEntriesState = null;
+  liveSortedEntriesCache = null;
+  liveSortedIndexState = null;
+  liveSortedIndexCache = null;
+  balanceForEntryCacheState = null;
+  balanceForEntryCache.clear();
   categoryCacheState = null;
   categoryCacheCustoms = null;
   categoryCacheLength = -1;
@@ -871,10 +902,17 @@ function balanceForEntry(entry, entries = state.entries, checkpointsByMethod = n
   // intentionally anchored to the checkpoint; only later same-day activity is
   // added as the row order advances.
   const useBookBalance = !checkpoint || checkpoint.date > entry.date;
-  const ordered = [...entries].sort((a, b) => a.date.localeCompare(b.date)
-    || ((a.createdAt || '')).localeCompare(b.createdAt || '')
-    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const targetIndex = ordered.findIndex(candidate => candidate.id === entry.id);
+  // When walking live state (the History path), reuse the memoized sort and a
+  // Map lookup instead of sorting the full dataset once per row.
+  const usingLiveState = entries === state.entries && !checkpointsByMethod;
+  const ordered = usingLiveState
+    ? liveSortedEntries()
+    : [...entries].sort((a, b) => a.date.localeCompare(b.date)
+      || ((a.createdAt || '')).localeCompare(b.createdAt || '')
+      || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const targetIndex = usingLiveState
+    ? (liveSortedIndex().get(entry.id) ?? -1)
+    : ordered.findIndex(candidate => candidate.id === entry.id);
   if (targetIndex < 0) return 0;
   let balance = useBookBalance ? (baseline?.balance || 0) : checkpoint.balance;
   for (let index = 0; index < ordered.length; index++) {
@@ -899,6 +937,20 @@ function balanceForEntry(entry, entries = state.entries, checkpointsByMethod = n
     if (oldIncluded) balance -= balanceDelta(historical, entry.method);
   }
   return balance;
+}
+
+/** balanceForEntry with a per-state memo, so History rows compute each running
+ *  balance once even when multiple fields need it. */
+function cachedBalanceForEntry(entry) {
+  if (!entry || !BALANCE_METHOD_IDS.includes(entry.method)) return 0;
+  if (balanceForEntryCacheState !== state) {
+    balanceForEntryCacheState = state;
+    balanceForEntryCache.clear();
+  }
+  if (balanceForEntryCache.has(entry.id)) return balanceForEntryCache.get(entry.id);
+  const value = balanceForEntry(entry);
+  balanceForEntryCache.set(entry.id, value);
+  return value;
 }
 
 /** Gift card balance: loading adds, spending subtracts, with reconciliation checkpoints. */
@@ -939,7 +991,6 @@ function openGiftCardHistoryModal(methodId) {
     .sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : 1));
   const checkpoints = (getBalanceCheckpoints()[methodId] || [])
     .filter(cp => cp.date !== '1970-01-01');
-  const cpDates = new Set(checkpoints.map(cp => cp.date));
 
   // Build entry lookup map for fast id-based access in the balance walk
   const entryById = new Map(cardEntries.map(e => [e.id, e]));
@@ -994,7 +1045,7 @@ function openGiftCardHistoryModal(methodId) {
   ));
 
   // Summary card
-  const summaryGrid = $('div', { style: `display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:16px;background:var(--surface);border-radius:var(--radius);margin-bottom:20px;` });
+  const summaryGrid = $('div', { style: `display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:16px;background:var(--card);border-radius:var(--radius);margin-bottom:20px;` });
   const summaryStat = (label, value, color) => $('div', { style: 'text-align:center;' },
     $('div', { class: 'eyebrow', style: 'font-size:10px;' }, label),
     $('div', { class: 'display-num', style: `font-size:16px;margin-top:4px;color:${color || 'inherit'};` }, value),
@@ -1151,11 +1202,17 @@ function autoFillAll(unpaidThursdays) {
   const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG');
   const defaultAmt = lastTesco ? lastTesco.amount : 0;
   if (defaultAmt > 0 && unpaidThursdays.length > 0) {
-    for (const d of unpaidThursdays) {
-      state.entries.push({ id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
-    }
+    const created = unpaidThursdays.map(d => {
+      const id = uid();
+      state.entries.push({ id, createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
+      return id;
+    });
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
+    trackAction(() => {
+      state.entries = state.entries.filter(e => !created.includes(e.id));
+      persist();
+    }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`);
     toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays — ${fmt(defaultAmt)} each`);
     render();
   } else if (unpaidThursdays.length === 0) {
@@ -1190,17 +1247,30 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
     $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
       const amt = parseAmount(data.amount);
       if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); return; }
+      const created = [];
       if (data.date) {
-        state.entries.push({ id: uid(), createdAt: nowIso(), date: data.date, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
+        const id = uid();
+        created.push(id);
+        state.entries.push({ id, createdAt: nowIso(), date: data.date, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
         state.entries.sort((a, b) => a.date.localeCompare(b.date));
         persist();
+        trackAction(() => {
+          state.entries = state.entries.filter(e => !created.includes(e.id));
+          persist();
+        }, `Filled Tesco pay ${friendlyDate(data.date)}`);
         toast(`Filled Tesco pay for ${friendlyDate(data.date)} — ${fmt(amt)}`);
       } else {
         for (const d of unpaidThursdays) {
-          state.entries.push({ id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
+          const id = uid();
+          created.push(id);
+          state.entries.push({ id, createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
         }
         state.entries.sort((a, b) => a.date.localeCompare(b.date));
         persist();
+        trackAction(() => {
+          state.entries = state.entries.filter(e => !created.includes(e.id));
+          persist();
+        }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`);
         toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays — ${fmt(amt)} each`);
       }
       close();
@@ -1211,25 +1281,17 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
 }
 
 // ---------- undo system ----------
+// trackAction stores a single-slot undo snapshot; the toast captures it at
+// creation time so a later action can't re-wire an earlier Undo button.
 let _lastAction = null;
 function trackAction(undoFn, label) {
   _lastAction = { undo: undoFn, label };
 }
-function undoLastAction() {
-  if (!_lastAction) return;
-  _lastAction.undo();
-  const lbl = _lastAction.label;
-  _lastAction = null;
-  toast(`Undone: ${lbl}`);
-  render();
-}
 
 // ---------- confetti ----------
-let _lastConfettiMonth = null;
 function triggerConfetti() {
-  const currentMonth = monthKey(today());
-  if (_lastConfettiMonth === currentMonth) return;
-  _lastConfettiMonth = currentMonth;
+  // The only caller (screenDashboard) already guards confetti to once per
+  // month via window.__confettiMonth, so no extra guard is needed here.
   const colors = ['#C2410C','#F59E0B','#10B981','#3B82F6','#EC4899','#8B5CF6'];
   for (let i = 0; i < 60; i++) {
     const piece = document.createElement('div');
@@ -1306,7 +1368,14 @@ function payeeHistory() {
 function parseNaturalLanguage(text) {
   const raw = String(text || '').trim();
   if (!raw) return null;
-  const amountMatch = raw.match(/(?:€|eur|euro)?\s*(\d+(?:[.,]\d{1,2})?)/i);
+  // Prefer the amount tagged by a currency symbol or a spending verb, then the
+  // first decimal, then any number — so "Bought 2 things for €10" reads €10,
+  // not 2.
+  const currencyAmount = raw.match(/(?:€|eur|euro)\s*(\d+(?:[.,]\d{1,2})?)/i);
+  const verbAmount = raw.match(/\b(?:spent|paid|cost|bought|worth|for)\s+(?:€|eur|euro)?\s*(\d+(?:[.,]\d{1,2})?)/i);
+  const decimalAmount = raw.match(/\b(\d+[.,]\d{1,2})\b/);
+  const anyAmount = raw.match(/\b(\d+)\b/);
+  const amountMatch = currencyAmount || verbAmount || decimalAmount || anyAmount;
   const amount = amountMatch ? parseAmount(amountMatch[1]) : NaN;
   if (!Number.isFinite(amount) || amount <= 0) return { error: 'Include an amount, for example €18.50.' };
 
@@ -1321,12 +1390,14 @@ function parseNaturalLanguage(text) {
   else if (/\btesco\b/.test(lower)) method = 'TG';
   else if (/\blidl\b/.test(lower)) method = 'LG';
   else if (/\baldi\b/.test(lower)) method = 'AG';
-  const isCredit = /\b(income|received|salary|pay|paid into|got)\b/.test(lower);
+  // Only unambiguous income signals — bare "pay" or "got" is far too common
+  // in expense phrasing ("pay the rent", "got petrol") to imply income.
+  const isCredit = /\b(income|received|salary|paid into|got paid|paycheck|wage|refund|dividend)\b/.test(lower);
   const cleaned = raw
-    .replace(/(?:€|eur|euro)?\s*\d+(?:[.,]\d{1,2})?/i, '')
+    .replace(amountMatch ? amountMatch[0] : '', '')
     .replace(/\b(from|on|using|via)\s+(aib|revolut(?: savings)?|rs|tesco|lidl|aldi)\b/ig, '')
     .replace(/\b(yesterday|today)\b/ig, '')
-    .replace(/\b(income|received|salary|paid into|got|spent|expense)\b/ig, '')
+    .replace(/\b(income|received|salary|paid into|got paid|got|spent|expense|bought|cost)\b/ig, '')
     .replace(/\s+/g, ' ').trim();
   const details = cleaned
     .replace(/\b(at|from|on|using|via)\s*$/i, '')
@@ -1624,7 +1695,7 @@ function renderHeader() {
       $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary', style: locked ? 'display:none;' : '' },
-      ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : 'false' }, titleFor(r))),
+      ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : null }, titleFor(r))),
     ),
     $('div', { class: 'header-actions', style: locked ? 'display:none;' : '' },
       $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Instrument Serif",serif;font-style:italic;font-size:14px;color:var(--muted);' }),      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
@@ -1710,12 +1781,13 @@ function formView({ initial = null, onSubmit }) {
   // Ensure transfer defaults exist
   if (isTransfer()) { data.transferFrom = data.transferFrom || 'AIB'; data.transferTo = data.transferTo || 'Revolut'; }
 
-  const methodLabel = $('label', { class: 'eyebrow', for: 'f-method' }, 'Method');
+  // Named methodLabelEl so it doesn't shadow the global methodLabel(id) helper.
+  const methodLabelEl = $('label', { class: 'eyebrow', for: 'f-method' }, 'Method');
   const methodOpts = () => (isCredit() ? creditMethods : METHODS);
   const methodSel = $('select', { 'aria-label': 'Payment method', id: 'f-method', onChange: (e) => data.method = e.target.value });
   const methodSection = $('div');
   function rebuildMethodOpts() {
-    methodLabel.textContent = isCredit() ? 'Income sent to' : 'Method';
+    methodLabelEl.textContent = isCredit() ? 'Income sent to' : 'Method';
     methodSel.innerHTML = '';
     for (const m of methodOpts()) {
       methodSel.appendChild($('option', { value: m.id, selected: data.method === m.id ? '' : null }, m.label));
@@ -1724,7 +1796,7 @@ function formView({ initial = null, onSubmit }) {
     if (!valid) { data.method = methodOpts()[0].id; methodSel.value = data.method; }
   }
   rebuildMethodOpts();
-  methodSection.append(methodLabel, methodSel);
+  methodSection.append(methodLabelEl, methodSel);
 
   // Transfer From / To dropdowns
   const transferFromSel = $('select', { 'aria-label': 'From account', onChange: (e) => data.transferFrom = e.target.value });
@@ -2020,7 +2092,6 @@ function screenDashboard() {
     .slice(0, 5);
 
   const screen = $('section', { class: 'page-section dashboard-section', 'aria-label': 'Dashboard' });
-  screen.classList.add('dashboard-command-center');
 
   // Net worth sparkline card (if enough data) — points already computed above
   if (points.length >= 2) {
@@ -2642,7 +2713,9 @@ function screenHistory() {
 
   const months = Array.from(new Set(state.entries.map(e => monthKey(e.date))))
     .sort((a, b) => b.localeCompare(a));
-  if (!months.includes(activeMonth) && months.length) activeMonth = months[0];
+  // A stale URL month falls back to the newest month with entries, but the
+  // current month is always honoured even when it's still empty ("Jump").
+  if (!months.includes(activeMonth) && months.length && activeMonth !== monthKey(today())) activeMonth = months[0];
 
   const monthEntries = entriesForMonth(activeMonth);
   const filtered = searchEntries(monthEntries, searchQuery, { type: 'all', category: activeCat, method: activeMethod });
@@ -2774,6 +2847,7 @@ function screenHistory() {
       const isTransfer = !!e.transferId;
       const settledLabel = isTransfer ? (e.settled ? '✓ settled' : '● unsettled') : '';
       const settleColor = e.settled ? 'var(--positive)' : 'var(--muted)';
+      const rowBalance = cachedBalanceForEntry(e);
       const rowType = e.type === 'note' ? 'note-row' : e.type === 'credit' ? 'income-row' : 'expense-row';
       const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': e.id, 'aria-label': `Edit entry ${e.details} on ${friendlyDate(e.date)}`, style: 'display:grid;grid-template-columns:90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;align-items:center;border-bottom:1px solid var(--line);cursor:pointer;min-width:740px;outline:none;', onClick: () => openEdit(e.id), onKeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEdit(e.id); } } },
         $('span', { class: 'muted', style: 'font-size:13px;' }, friendlyDate(e.date)),          $('div', null,
@@ -2791,7 +2865,7 @@ function screenHistory() {
           $('div', { style: 'font-size:11px;color:var(--muted);' }, categoryLabel(e.category)),
         ),
         $('span', { class: 'display-num', style: 'text-align:right;font-size:15px;color:' + (e.type === 'credit' ? 'var(--positive)' : 'var(--ink)') }, e.type === 'note' ? 'Note' : (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
-        $('span', { class: 'tnum', style: 'text-align:right;font-size:13px;color:' + (balanceForEntry(e) >= 0 ? 'var(--positive)' : 'var(--negative)'), }, e.type === 'note' ? '—' : fmt(balanceForEntry(e))),
+        $('span', { class: 'tnum', style: 'text-align:right;font-size:13px;color:' + (rowBalance >= 0 ? 'var(--positive)' : 'var(--negative)'), }, e.type === 'note' ? '—' : fmt(rowBalance)),
         $('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method)),
         $('span', { class: 'history-actions', style: 'display:flex;justify-content:flex-end;align-items:center;gap:5px;' },
           $('button', { type: 'button', class: 'history-action-btn', title: 'Edit or delete entry', 'aria-label': `Edit or delete ${e.details || 'entry'}`, onClick: ev => { ev.stopPropagation(); openEdit(e.id); } }, 'Manage'),
@@ -2816,6 +2890,29 @@ function monthNav(label, onClick, disabled) {
 }
 
 // ---------- screens: insights ----------
+// Heatmap cells tint --accent into --bg. Browsers without color-mix() support
+// get a manual blend so the cells never render transparent.
+function heatColor(pct) {
+  if (window.CSS && CSS.supports && CSS.supports('color', 'color-mix(in srgb, red 50%, blue)')) {
+    return `color-mix(in srgb, var(--accent) ${Math.round(pct * 100)}%, var(--bg))`;
+  }
+  const cs = getComputedStyle(document.documentElement);
+  const parseHex = (raw) => {
+    const m = (raw || '').trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+    if (!m) return null;
+    let h = m[1];
+    if (h.length === 3) h = h.split('').map(ch => ch + ch).join('');
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  };
+  const accent = parseHex(cs.getPropertyValue('--accent'));
+  const bg = parseHex(cs.getPropertyValue('--bg'));
+  if (!accent || !bg) return 'var(--accent)';
+  // Blend from bg toward accent so pct=0.3 means "30% accent / 70% bg",
+  // matching the color-mix() path above.
+  const mix = bg.map((v, i) => Math.round(v + (accent[i] - v) * pct));
+  return `rgb(${mix[0]}, ${mix[1]}, ${mix[2]})`;
+}
+
 function screenInsights() {
   const params = new URLSearchParams((location.hash.split('?')[1]) || '');
   const fromParam = params.get('from') || '';
@@ -2823,8 +2920,14 @@ function screenInsights() {
   const defaultFrom = (() => { const d = new Date(); d.setDate(d.getDate() - 90); return localDateKey(d); })();
   let fromDate = isValidCheckpointDate(fromParam) ? fromParam : defaultFrom;
   let toDate = isValidCheckpointDate(toParam) ? toParam : today();
-  // Keep malformed or reversed URL ranges from producing misleading totals.
-  if (fromDate > toDate) [fromDate, toDate] = [toDate, fromDate];
+  // Keep malformed or reversed URL ranges from producing misleading totals,
+  // and persist the corrected order so the URL and the pickers always agree.
+  if (fromDate > toDate) {
+    [fromDate, toDate] = [toDate, fromDate];
+    params.set('from', fromDate);
+    params.set('to', toDate);
+    history.replaceState(null, '', '#insights?' + params.toString());
+  }
 
   const rangeEntries = state.entries.filter(e => e.date >= fromDate && e.date <= toDate);
   const recent = rangeEntries;
@@ -2910,10 +3013,9 @@ function screenInsights() {
     const ds = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const val = heatByDay[ds] || 0;
     const intensity = maxDay > 0 ? val / maxDay : 0;
-    const color = intensity === 0 ? 'var(--line)' :
-      intensity < 0.25 ? 'color-mix(in srgb, var(--accent) 30%, var(--bg))' :
-      intensity < 0.5 ? 'color-mix(in srgb, var(--accent) 55%, var(--bg))' :
-      intensity < 0.75 ? 'color-mix(in srgb, var(--accent) 75%, var(--bg))' : 'var(--accent)';
+    const color = intensity === 0 ? 'var(--line)' : heatColor(
+      intensity < 0.25 ? 0.3 : intensity < 0.5 ? 0.55 : intensity < 0.75 ? 0.75 : 1
+    );
     const tip = val > 0 ? `${fmt(val)}` : '';
     heatCells.push($('div', { class: 'heat-cell-wrap', style: 'position:relative;' },
       tip ? $('div', { class: 'heat-tip' }, tip) : null,
@@ -2931,7 +3033,7 @@ function screenInsights() {
     ),
     $('div', { style: 'margin-top:8px;font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;' },
       $('span', null, 'Less'),
-      ...[0, 0.25, 0.5, 0.75, 1].map(i => $('span', { style: `display:inline-block;width:12px;height:12px;border-radius:2px;background:${i===0?'var(--line)':`color-mix(in srgb, var(--accent) ${i*100}%, var(--bg))`};` })),
+      ...[0, 0.25, 0.5, 0.75, 1].map(i => $('span', { style: `display:inline-block;width:12px;height:12px;border-radius:2px;background:${i===0?'var(--line)':heatColor(i)};` })),
       $('span', null, 'More'),
     ),
   ));
@@ -3511,23 +3613,31 @@ function openSyncSettings() {
 }
 
 // ---------- toast ----------
-let toastTimer;
+// Toasts stack instead of replacing each other, so a later action can't wipe
+// out an earlier toast's Undo button. The undo action is snapshotted at
+// creation time (not looked up when clicked), and the stack is capped so a
+// rapid burst can't pile up forever.
+const MAX_TOASTS = 3;
 function toast(text, undoFn, undoLabel) {
   let host = document.querySelector('.toast-host');
   if (!host) { host = $('div', { class: 'toast-host' }); document.body.appendChild(host); }
-  // Clear any stuck toasts left over from a previous rapid-fire call.
-  host.innerHTML = '';
+  // Snapshot the undo at creation: an explicit undoFn wins, otherwise capture
+  // the currently-tracked action so an old toast never undoes a newer one.
+  const tracked = _lastAction;
+  const runUndo = undoFn || (tracked ? () => {
+    tracked.undo();
+    if (_lastAction === tracked) _lastAction = null;
+    toast(`Undone: ${tracked.label}`);
+    render();
+  } : null);
   const children = [text];
-  // If explicit undoFn passed, use it; otherwise auto-detect _lastAction
-  const effectiveUndo = undoFn || (_lastAction ? (() => undoLastAction()) : null);
-  const effectiveLabel = undoLabel || (_lastAction ? 'Undo' : '');
-  if (effectiveUndo) {
-    children.push($('button', { type: 'button', class: 'toast-undo', onClick: () => { effectiveUndo(); t.remove(); } }, effectiveLabel));
+  if (runUndo) {
+    children.push($('button', { type: 'button', class: 'toast-undo', onClick: () => { runUndo(); t.remove(); } }, undoLabel || (runUndo ? 'Undo' : '')));
   }
   const t = $('div', { class: 'toast', role: 'status', 'aria-live': 'polite' }, ...children);
   host.appendChild(t);
-  toastTimer && clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.remove(); }, 2200);
+  while (host.children.length > MAX_TOASTS) host.firstElementChild.remove();
+  setTimeout(() => t.remove(), 2200);
 }
 
 // ---------- render scheduling ----------
@@ -3581,14 +3691,14 @@ function render() {
     var errText = String(e.stack || e.message || e).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     var isDark = document.documentElement.dataset.theme === 'dark';
     var c = {
-      bg: isDark ? '#1a1a1c' : '#FAF8F3',
-      card: isDark ? '#2c2c2e' : '#fff',
-      line: isDark ? '#3a3a3c' : '#e4e0d6',
-      ink: isDark ? '#e8e4dd' : '#1a1a1a',
-      muted: isDark ? '#8e8e93' : '#6d6457',
-      soft: isDark ? '#2d2019' : '#fff5f0',
-      softBorder: isDark ? '#4a3020' : '#f4d7c8',
-      kbdBg: isDark ? '#2c2c2e' : '#f4f0e7',
+      bg: isDark ? '#171310' : '#FAF8F3',
+      card: isDark ? '#272219' : '#fff',
+      line: isDark ? '#373128' : '#e4e0d6',
+      ink: isDark ? '#ede6db' : '#1a1a1a',
+      muted: isDark ? '#a29a8b' : '#6d6457',
+      soft: isDark ? '#2f2219' : '#fff5f0',
+      softBorder: isDark ? '#4a3a2a' : '#f4d7c8',
+      kbdBg: isDark ? '#272219' : '#f4f0e7',
       shadow: isDark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)',
     };
     mount.innerHTML =
@@ -3669,7 +3779,7 @@ function _render() {
     { id: 'insights', label: 'Insights' },
   ];
   main.appendChild($('nav', { class: 'bottom-tab-bar', 'aria-label': 'Mobile navigation' },
-    ...tabItems.map(t => $('a', { href: `#${t.id}`, class: 'bottom-tab', 'aria-current': t.id === route2 ? 'page' : 'false' },
+    ...tabItems.map(t => $('a', { href: `#${t.id}`, class: 'bottom-tab', 'aria-current': t.id === route2 ? 'page' : null },
       tabIconSVG(t.id),
       $('span', null, t.label),
     )),
@@ -3700,28 +3810,28 @@ function _render() {
     ),
   ));
 
-  window.scrollTo(0, scrollY);
+  // Route changes should land at the top of the page; only same-route
+  // re-renders restore the user's scroll position.
+  window.scrollTo(0, shouldAnimateScreen ? 0 : scrollY);
   // Rebuilding a same-route screen should not make typing/searching lose focus
   // or move the caret. Newly opened forms still manage their own initial focus.
   if (!shouldAnimateScreen) restoreFocusedField(focusedField);
 
-  // Sticky header setup — add sticky class + scroll listener on first render
+  // Sticky header — register the scroll listener once. The header is rebuilt on
+  // every render, so the handler re-queries it on each scroll event.
   if (!window.__stickyInit) {
     window.__stickyInit = true;
-    const hdr = document.querySelector('.app-header');
-  // Sticky header — re-query on every scroll event since header is rebuilt on render
-  window.__stickyInit = true;
-  let lastScroll = 0;
-  window.addEventListener('scroll', () => {
-    if (window.innerWidth < 640) return;
-    const hdr = document.querySelector('.app-header');
-    if (!hdr) return;
-    if (!hdr.classList.contains('is-sticky')) hdr.classList.add('is-sticky');
-    const now = window.scrollY;
-    if (now > 80 && now > lastScroll) hdr.classList.add('head-hidden');
-    else hdr.classList.remove('head-hidden');
-    lastScroll = now;
-  }, { passive: true });
+    let lastScroll = 0;
+    window.addEventListener('scroll', () => {
+      if (window.innerWidth < 640) return;
+      const hdr = document.querySelector('.app-header');
+      if (!hdr) return;
+      if (!hdr.classList.contains('is-sticky')) hdr.classList.add('is-sticky');
+      const now = window.scrollY;
+      if (now > 80 && now > lastScroll) hdr.classList.add('head-hidden');
+      else hdr.classList.remove('head-hidden');
+      lastScroll = now;
+    }, { passive: true });
   }
 }
 

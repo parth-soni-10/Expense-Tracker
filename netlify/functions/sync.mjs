@@ -29,7 +29,10 @@ const ok = (body, status = 200) => new Response(
 const err = (msg, status = 400) => ok({ error: msg, code: status }, status);
 
 const GH_API = 'https://api.github.com';
-const MAX_BODY_BYTES = 5 * 1024 * 1024;
+// Netlify's hard cap for synchronous function request payloads is 6 MB, so
+// the platform rejects anything larger regardless of this guard. 5 MB was
+// too tight for a couple of 2 MB base64 audio notes; 6 MB is the real ceiling.
+const MAX_BODY_BYTES = 6 * 1024 * 1024;
 const MAX_ENTRIES = 10000;
 const MAX_AMOUNT = 1_000_000;
 const VALID_TYPES = new Set(['expense', 'credit', 'transfer', 'note']);
@@ -106,15 +109,10 @@ function validMutationHistory(history, entry, allowedCategoryIds) {
 function validIncomingSettings(settings) {
   if (settings == null) return true;
   if (typeof settings !== 'object' || Array.isArray(settings)) return false;
-  // The client migrates these legacy opening-balance fields into dated
-  // checkpoints during validateState(). Accept them on read so older cloud
-  // files can still be pulled and safely migrated instead of reported as
-  // malformed. New writes no longer produce these fields.
-  const allowedKeys = new Set([
-    'monthlyBudget', 'currency', 'balanceCheckpoints', 'customCategories', 'recurring', 'coins',
-    'accountOpenings', 'giftCardOpenings', 'openingBalance',
-  ]);
-  if (Object.keys(settings).some(key => !allowedKeys.has(key))) return false;
+  // Unknown settings keys are passed through rather than rejected (matching
+  // the client's `...safeSettings` spread), so a future client-side settings
+  // field never breaks every cloud push/pull until the server gains
+  // validation for it. Device-only secrets are still always refused.
   if (Object.prototype.hasOwnProperty.call(settings, 'pinHash')) return false;
   if (settings.monthlyBudget != null
     && (!Number.isFinite(Number(settings.monthlyBudget)) || Number(settings.monthlyBudget) < 0 || Number(settings.monthlyBudget) > MAX_AMOUNT

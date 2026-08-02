@@ -12,7 +12,22 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="A minimal personal expense tracker." />
-  <meta name="theme-color" content="#1a1a1c" />
+  <meta name="theme-color" content="#171310" />
+  <script>
+    // Keep browser chrome (scrollbars, address bar, status bar) in sync with
+    // the app theme — light mode should not leave dark chrome behind.
+    (function () {
+      var schemeMeta = document.querySelector('meta[name="color-scheme"]');
+      var themeMeta = document.querySelector('meta[name="theme-color"]');
+      function syncChrome() {
+        var dark = document.documentElement.dataset.theme === 'dark';
+        if (schemeMeta) schemeMeta.content = dark ? 'dark' : 'light';
+        if (themeMeta) themeMeta.content = dark ? '#171310' : '#FAF8F3';
+      }
+      syncChrome();
+      new MutationObserver(syncChrome).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    })();
+  </script>
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="cents." />
@@ -151,13 +166,13 @@
     #boot-fail .bf-err span { font-style: italic; color: #6d6457; font-family: "Instrument Serif", Georgia, serif; }
     #boot-fail .bf-err code { display: block; margin-top: 6px; font-size: 11px; word-break: break-word; white-space: pre-wrap; line-height: 1.4; background: transparent; padding: 0; }
     /* Dark mode overrides */
-    [data-theme="dark"] #boot-fail { background: #1a1a1c; color: #e8e4dd; }
-    [data-theme="dark"] #boot-fail .bf-card { background: #2c2c2e; border-color: #3a3a3c; box-shadow: 0 6px 16px rgba(0,0,0,0.28), 0 2px 4px rgba(0,0,0,0.15); }
-    [data-theme="dark"] #boot-fail .bf-mark { color: #e8e4dd; }
-    [data-theme="dark"] #boot-fail kbd { background: #2c2c2e; border-color: #3a3a3c; }
-    [data-theme="dark"] #boot-fail code { background: #2c2c2e; color: #8e8e93; }
-    [data-theme="dark"] #boot-fail .bf-err { background: #2d2019; border-color: #4a3020; }
-    [data-theme="dark"] #boot-fail .bf-err span { color: #8e8e93; }
+    [data-theme="dark"] #boot-fail { background: #171310; color: #ede6db; }
+    [data-theme="dark"] #boot-fail .bf-card { background: #272219; border-color: #373128; box-shadow: 0 6px 16px rgba(0,0,0,0.28), 0 2px 4px rgba(0,0,0,0.15); }
+    [data-theme="dark"] #boot-fail .bf-mark { color: #ede6db; }
+    [data-theme="dark"] #boot-fail kbd { background: #272219; border-color: #373128; }
+    [data-theme="dark"] #boot-fail code { background: #272219; color: #a29a8b; }
+    [data-theme="dark"] #boot-fail .bf-err { background: #2f2219; border-color: #4a3a2a; }
+    [data-theme="dark"] #boot-fail .bf-err span { color: #a29a8b; }
   </style>
 </head>
 <body>
