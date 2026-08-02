@@ -644,6 +644,8 @@ function totalAccountBalanceAt(date = today(), checkpointsByMethod = null) {
 function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', editable = false } = {}) {
   const row = $('div', { class: 'balance-editor-row', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;' });
   let editing = false;
+  let editMode = 'reconcile'; // 'reconcile' | 'load'
+  const isGiftCard = GIFT_CARD_IDS.includes(methodId);
   const actualBalance = () => balanceAt(methodId, today());
   const reconciliationSummary = () => {
     const point = userCheckpointFor(methodId, today());
@@ -654,6 +656,42 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
   const draw = () => {
     row.innerHTML = '';
     if (editing) {
+      // ---- Load money mode (gift cards only) ----
+      if (editMode === 'load') {
+        const loadAmount = $('input', { type: 'text', inputmode: 'decimal', value: '', placeholder: '0.00', 'aria-label': `${label} load amount`, autocomplete: 'off', style: `width:${isNarrow() ? '86px' : '104px'};padding:6px 8px;border:1px solid var(--accent);border-radius:var(--radius);text-align:right;font-size:12px;` });
+        const loadDate = $('input', { type: 'date', value: today(), max: today(), 'aria-label': `${label} load date`, style: `width:${isNarrow() ? '124px' : '138px'};padding:6px 8px;border:1px solid var(--line);border-radius:var(--radius);font-size:12px;` });
+        const loadSave = () => {
+          const amt = parseAmount(loadAmount.value);
+          if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); loadAmount.focus(); return; }
+          if (!isValidCheckpointDate(loadDate.value) || loadDate.value > today()) { toast('Choose today or an earlier date.'); loadDate.focus(); return; }
+          const eid = uid();
+          const cardName = methodShort(methodId);
+          state.entries.push({ id: eid, createdAt: nowIso(), date: loadDate.value, type: 'credit', category: 'misc', details: `${cardName} load`, amount: amt, method: methodId, note: '' });
+          state.entries.sort((a, b) => a.date.localeCompare(b.date));
+          persist();
+          trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); persist(); }, `${cardName} load ${fmt(amt)}`);
+          editing = false;
+          toast(`Loaded ${fmt(amt)} onto ${cardName}.`);
+          render();
+        };
+        loadAmount.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); loadSave(); } if (ev.key === 'Escape') { editing = false; draw(); } });
+        loadDate.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); loadSave(); } if (ev.key === 'Escape') { editing = false; draw(); } });
+        row.append(
+          $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;flex:1;' },
+            $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
+            $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);' }, 'Load'),
+          ),
+          $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
+            $('span', { class: 'muted', style: 'font-size:10px;' }, 'add a credit entry to top up this card'),
+            loadAmount, loadDate,
+            $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: loadSave }, 'Load'),
+            $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
+          ),
+        );
+        queueMicrotask(() => loadAmount.focus());
+        return;
+      }
+      // ---- Reconcile mode ----
       const amount = $('input', { type: 'text', inputmode: 'decimal', value: actualBalance().toFixed(2), 'aria-label': `${label} actual balance`, autocomplete: 'off', style: `width:${isNarrow() ? '86px' : '104px'};padding:6px 8px;border:1px solid var(--accent);border-radius:var(--radius);text-align:right;font-size:12px;` });
       const date = $('input', { type: 'date', value: today(), max: today(), 'aria-label': `${label} reconciliation date`, style: `width:${isNarrow() ? '124px' : '138px'};padding:6px 8px;border:1px solid var(--line);border-radius:var(--radius);font-size:12px;` });
       const refreshAmountForDate = () => {
@@ -677,6 +715,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
         $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;flex:1;' },
           $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
           secondary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, secondary) : null,
+          isGiftCard ? $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);' }, 'Reconcile') : null,
         ),
         $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
           $('span', { class: 'muted balance-editor-help', style: 'font-size:10px;' }, 'amount is authoritative when saved; later same-day edits and entries are applied'),
@@ -703,7 +742,11 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
           $('div', { class: 'display-num', style: `font-size:14px;color:${balance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(balance)),
           summary && Math.abs(difference) >= 0.01 ? $('div', { class: 'muted', style: 'font-size:10px;' }, `${difference >= 0 ? '+' : ''}${fmt(difference)} vs book`) : null,
         ),
-        editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎') : null,
+        editable && isGiftCard ? $('span', { style: 'display:flex;gap:4px;align-items:center;' },
+          $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'load'; editing = true; draw(); }, 'aria-label': `Load ${label}` }, '+Load'),
+          $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'reconcile'; editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎'),
+          $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => openGiftCardHistoryModal(methodId), 'aria-label': `${label} history` }, '📋'),
+        ) : editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎') : null,
         editable && summary ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:10px;padding:3px 5px;color:var(--negative);', onClick: () => {
           if (!window.confirm(`Remove the ${label} reconciliation from ${friendlyDate(summary.point.date)}?`)) return;
           if (removeBalanceCheckpoint(methodId, summary.point.date)) {
@@ -881,6 +924,125 @@ function computeGiftCardBalance(entries, methodId, asOfDate = today()) {
     }
   }
   return { balance, loaded, spent };
+}
+
+/** Gift card transaction history modal — shows every load, spend, and
+ * reconciliation checkpoint for a single card with running balances. */
+function openGiftCardHistoryModal(methodId) {
+  const cardName = methodShort(methodId);
+  const totals = computeGiftCardBalance(state.entries, methodId);
+  const isNarrowView = isNarrow();
+
+  // Gather entries + checkpoints, sorted by date then id
+  const cardEntries = state.entries
+    .filter(e => e.method === methodId && e.type !== 'note')
+    .sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : 1));
+  const checkpoints = (getBalanceCheckpoints()[methodId] || [])
+    .filter(cp => cp.date !== '1970-01-01');
+  const cpDates = new Set(checkpoints.map(cp => cp.date));
+
+  // Build entry lookup map for fast id-based access in the balance walk
+  const entryById = new Map(cardEntries.map(e => [e.id, e]));
+  const sortedCheckpoints = [...checkpoints].sort((a, b) => a.date.localeCompare(b.date));
+
+  // Build timeline: merge entries + checkpoints, sorted by date (entries before checks on same date)
+  const rawTimeline = [];
+  for (const entry of cardEntries) {
+    const isLoad = entry.type === 'credit' || entry.category === 'GC';
+    rawTimeline.push({
+      kind: 'entry',
+      date: entry.date,
+      id: entry.id,
+      details: entry.details || '',
+      isLoad,
+      amount: isLoad ? entry.amount : -entry.amount,
+      entryAmount: entry.amount,
+    });
+  }
+  for (const cp of sortedCheckpoints) {
+    rawTimeline.push({ kind: 'checkpoint', date: cp.date, balance: cp.balance });
+  }
+  rawTimeline.sort((a, b) => a.date.localeCompare(b.date) || (a.kind === 'checkpoint' ? 1 : -1));
+
+  // Walk forward, applying balanceDelta per entry and resetting at checkpoints
+  const timeline = [];
+  let running = 0;
+  for (const item of rawTimeline) {
+    if (item.kind === 'checkpoint') {
+      running = item.balance;
+      timeline.push({ ...item });
+    } else {
+      const entry = entryById.get(item.id);
+      running += balanceDelta(entry, methodId);
+      timeline.push({ ...item, runningBalance: running });
+    }
+  }
+
+  // Build modal
+  const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': `${cardName} history`, tabindex: '-1', style: `max-width:${isNarrowView ? '100%' : '540px'};max-height:85vh;overflow-y:auto;` });
+  const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); };
+  const onKey = ev => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+
+  // Header
+  modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;' },
+    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:24px;' }, `${cardName}`),
+    $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
+  ));
+
+  // Summary card
+  const summaryGrid = $('div', { style: `display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:16px;background:var(--surface);border-radius:var(--radius);margin-bottom:20px;` });
+  const summaryStat = (label, value, color) => $('div', { style: 'text-align:center;' },
+    $('div', { class: 'eyebrow', style: 'font-size:10px;' }, label),
+    $('div', { class: 'display-num', style: `font-size:16px;margin-top:4px;color:${color || 'inherit'};` }, value),
+  );
+  summaryGrid.appendChild(summaryStat('Balance', fmt(totals.balance), totals.balance >= 0 ? 'var(--positive)' : 'var(--negative)'));
+  summaryGrid.appendChild(summaryStat('Loaded', fmt(totals.loaded), 'var(--positive)'));
+  summaryGrid.appendChild(summaryStat('Spent', fmt(totals.spent), 'var(--negative)'));
+  modal.appendChild(summaryGrid);
+
+  // Timeline header
+  modal.appendChild($('div', { class: 'eyebrow', style: 'margin-bottom:12px;' }, 'Transaction history'));
+
+  if (timeline.length === 0) {
+    modal.appendChild($('p', { class: 'muted', style: 'font-size:13px;text-align:center;padding:24px;' }, 'No transactions yet.'));
+    return;
+  }
+
+  // Timeline rows — newest first
+  const list = $('div', { style: 'display:flex;flex-direction:column;gap:1px;' });
+  const sortedTimeline = [...timeline].reverse();
+
+  for (const item of sortedTimeline) {
+    if (item.kind === 'checkpoint') {
+      list.appendChild($('div', { style: `display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:var(--accent-soft);border-radius:var(--radius);font-size:12px;` },
+        $('div', { style: 'display:flex;align-items:center;gap:8px;' },
+          $('span', { style: 'font-size:11px;font-weight:500;' }, friendlyDate(item.date)),
+          $('span', { style: 'font-size:10px;background:var(--accent);color:#fff;padding:1px 6px;border-radius:10px;' }, 'Reconciled'),
+        ),
+        $('span', { class: 'display-num', style: 'font-size:13px;font-weight:500;' }, fmt(item.balance)),
+      ));
+    } else {
+      const sign = item.isLoad ? '+' : '−';
+      const color = item.isLoad ? 'var(--positive)' : 'var(--negative)';
+      list.appendChild($('div', { style: `display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);font-size:13px;` },
+        $('div', { style: 'display:flex;align-items:center;gap:10px;min-width:0;flex:1;' },
+          $('span', { style: 'font-size:11px;color:var(--muted);white-space:nowrap;' }, friendlyDate(item.date)),
+          $('div', { style: 'min-width:0;' },
+            $('div', { style: 'font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' }, item.details || '—'),
+            $('div', { class: 'display-num', style: `font-size:11px;color:${color};` }, `${sign}${fmt(item.entryAmount)}`),
+          ),
+        ),
+        $('div', { class: 'display-num', style: `font-size:12px;text-align:right;color:${item.runningBalance >= 0 ? 'inherit' : 'var(--negative)'};` }, fmt(item.runningBalance)),
+      ));
+    }
+  }
+  modal.appendChild(list);
+
+  queueMicrotask(() => modal.focus());
 }
 
 // ---------- cash / coins ----------
