@@ -347,6 +347,7 @@ async function initSync() {
     }
     syncRevision++;
     state = validateState(r.content);
+    clearBalanceCaches();
     saveState(state);
     updateAllowedCategories(allCategories().map(c => c.id));
     patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
@@ -388,13 +389,17 @@ async function initSync() {
 
 /** Set sync dot to pulsing while a push/pull is in flight. */
 let _syncActive = false;
+let _syncPulseId = 0;
 function setSyncPulsing(active) {
   _syncActive = active;
   const icon = document.querySelector('.sync-icon');
   if (icon) {
     icon.classList.toggle('spinning', active);
-    if (!active) icon.classList.add('success');
-    setTimeout(() => { if (icon && !_syncActive) icon.classList.remove('success'); }, 2000);
+    if (!active) {
+      icon.classList.add('success');
+      const pulseId = ++_syncPulseId;
+      setTimeout(() => { if (pulseId === _syncPulseId) icon.classList.remove('success'); }, 2000);
+    }
   }
 }
 
@@ -503,7 +508,10 @@ function versionIncludedAtCheckpoint(version, checkpointDate, checkpointTime) {
   return !Number.isFinite(checkpointTime) || !Number.isFinite(createdTime) || createdTime <= checkpointTime;}
 
 function entryDeltaAfterCheckpoint(entry, methodId, targetDate, checkpoint) {
-  if (!entry || !checkpoint) return entry && entry.date <= targetDate ? balanceDelta(entry, methodId) : 0;
+  // The only caller (balanceAtForEntries) always passes a checkpoint, but guard
+  // defensively so future callers get a reasonable fallback.
+  if (!entry) return 0;
+  if (!checkpoint) return entry.date <= targetDate ? balanceDelta(entry, methodId) : 0;
   const checkpointTime = checkpoint.at
     ? Date.parse(checkpoint.at)
     : Date.parse(`${checkpoint.date}T23:59:59.999Z`);
@@ -730,6 +738,15 @@ const friendlyDate = (iso) => {
 function entriesForMonth(key) {
   return state.entries.filter(e => monthKey(e.date) === key);
 }
+/** Aggregate spending-entry amounts by category. */
+function catTotalsForEntries(entries) {
+  const totals = {};
+  for (const e of entries) {
+    if (!isSpendingEntry(e)) continue;
+    totals[e.category] = (totals[e.category] || 0) + e.amount;
+  }
+  return totals;
+}
 function isSpendingEntry(entry) {
   return entry.type === 'expense' && !entry.transferId;
 }
@@ -753,7 +770,7 @@ function parseAmount(raw) {
     const parts = text.split(',');
     if (parts.length === 2 && parts[1].length === 3 && parts[0].length <= 3) text = parts.join('');
     else text = `${parts.slice(0, -1).join('')}.${parts.at(-1)}`;
-  } else if ((text.match(/\./g) || []).length > 1) {
+  } else if (text.split('.').length - 1 > 1) {
     const parts = text.split('.');
     text = `${parts.slice(0, -1).join('')}.${parts.at(-1)}`;
   }
@@ -901,9 +918,10 @@ function advanceRecurringDate(current, freq, dayOfMonth) {
     return utcDateKey(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
   }
   if (freq === 'monthly') {
-    const nextMonth = month; // zero-based month after incrementing the 1-based value
-    const nextYear = year + Math.floor(nextMonth / 12);
-    const normalizedMonth = nextMonth % 12;
+    // 1-based month (e.g. 8 for August), advance by one.
+    const rawMonth = month + 1;
+    const nextYear = year + Math.floor(rawMonth / 12);
+    const normalizedMonth = rawMonth % 12;
     return utcDateKey(nextYear, normalizedMonth, Math.min(Number(dayOfMonth) || day, daysInMonthParts(nextYear, normalizedMonth)));
   }
   return current;
@@ -1045,7 +1063,11 @@ function undoLastAction() {
 }
 
 // ---------- confetti ----------
+let _lastConfettiMonth = null;
 function triggerConfetti() {
+  const currentMonth = monthKey(today());
+  if (_lastConfettiMonth === currentMonth) return;
+  _lastConfettiMonth = currentMonth;
   const colors = ['#C2410C','#F59E0B','#10B981','#3B82F6','#EC4899','#8B5CF6'];
   for (let i = 0; i < 60; i++) {
     const piece = document.createElement('div');
@@ -1327,9 +1349,23 @@ function removeDuplicateEntry(id) {
   render();
 }
 
+function uniqueEntryKey(e) {
+  return `${e.date}|${e.amount}|${(e.details || '').trim().toLowerCase()}|${e.type}|${e.method}`;
+}
 function reviewForMonth(key) {
-  const current = entriesForMonth(key);
-  const previous = entriesForMonth(previousMonthKey(key));
+  // Deduplicate entries by (date|amount|details|type|method) so accidental
+  // exact duplicates don't inflate the review totals.
+  const uniqueByKey = (list) => {
+    const seen = new Set();
+    return list.filter(e => {
+      const k = uniqueEntryKey(e);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  };
+  const current = uniqueByKey(entriesForMonth(key));
+  const previous = uniqueByKey(entriesForMonth(previousMonthKey(key)));
   const expenses = current.filter(isSpendingEntry);
   const previousExpenses = previous.filter(isSpendingEntry);
   const total = expenses.reduce((s, e) => s + e.amount, 0);
