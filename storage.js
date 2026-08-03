@@ -414,3 +414,27 @@ export function exportJSON(state) {
   setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
 }
 
+// ---------- persistent undo journal ----------
+// A single-slot undo record that survives a reload. The in-memory `_lastAction`
+// (app.js) is a closure and cannot be serialised, so destructive actions also
+// write a small journal — the removed entries — to storage. On boot, app.js
+// offers to restore them. The journal is intentionally kept out of the synced
+// state: it is a per-device safety net, never part of the cloud payload.
+const UNDO_KEY = 'cents-undo-journal';
+export function saveUndoJournal(journal) {
+  try { localStorage.setItem(UNDO_KEY, JSON.stringify(journal)); }
+  catch (e) { console.warn('Failed to save undo journal:', e); }
+}
+export function loadUndoJournal() {
+  try {
+    const raw = localStorage.getItem(UNDO_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.entries)) return null;
+    return parsed;
+  } catch { return null; }
+}
+export function clearUndoJournal() {
+  try { localStorage.removeItem(UNDO_KEY); } catch { /* noop */ }
+}
+

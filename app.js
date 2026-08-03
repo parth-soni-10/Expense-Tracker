@@ -2,10 +2,125 @@
    Expense Tracker — editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #insights
    ============================================================ */
-import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS } from './storage.js';
+import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal } from './storage.js';
 import { CATEGORIES, METHODS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync } from './sync.js';
+
+// ---------- optional UI libraries (vendor/*) ----------
+// Every integration below degrades gracefully: if a vendor file fails to
+// load or is missing, the app falls back to its native behaviour.
+const _fpInstances = new Set();    // flatpickr instances
+const _tippyInstances = new Set(); // tippy.js instances
+const _sortables = new Set();      // sortablejs instances
+let _chipSortLast = 0;             // guards the click that ends a chip drag
+
+// Destroy every vendored-widget instance before a re-render replaces the DOM.
+function libCleanup() {
+  for (const inst of _fpInstances) { try { inst.destroy(); } catch (e) {} }
+  _fpInstances.clear();
+  for (const inst of _tippyInstances) { try { inst.destroy(); } catch (e) {} }
+  _tippyInstances.clear();
+  for (const s of _sortables) { try { s.destroy(); } catch (e) {} }
+  _sortables.clear();
+}
+
+// Themed confirm() replacement. Resolves true/false; falls back to the native
+// synchronous confirm() when SweetAlert2 is unavailable.
+function swalConfirm({ title, text, confirmButtonText = 'Yes', cancelButtonText = 'Cancel', danger = false } = {}) {
+  if (typeof Swal === 'undefined') return Promise.resolve(window.confirm(text || title));
+  return Swal.fire({
+    title,
+    text: text || undefined,
+    showCancelButton: true,
+    confirmButtonText,
+    cancelButtonText,
+    buttonsStyling: false,
+    customClass: {
+      popup: 'swal-popup',
+      title: 'swal-title',
+      htmlContainer: 'swal-html',
+      confirmButton: 'swal-confirm' + (danger ? ' swal-danger' : ''),
+      cancelButton: 'swal-cancel',
+    },
+  }).then(result => result.isConfirmed);
+}
+
+// Themed date picker. Falls back to the native <input type="date">. The
+// element's own "change" listeners still fire, so existing handlers keep
+// working with or without the library.
+function wireFlatpickr(el, { defaultDate, onChange } = {}) {
+  if (typeof flatpickr === 'undefined' || !el) return null;
+  if (el._fp) { try { el._fp.destroy(); } catch (e) {} el._fp = null; }
+  const inst = flatpickr(el, {
+    dateFormat: 'Y-m-d',
+    defaultDate: defaultDate || el.value || today(),
+    allowInput: false,
+    disableMobile: true,
+    onChange: (selectedDates, dateStr) => {
+      el.value = dateStr;
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      if (onChange) onChange(dateStr, selectedDates);
+    },
+  });
+  el._fp = inst;
+  _fpInstances.add(inst);
+  return inst;
+}
+
+// Rich heatmap tooltips via tippy.js delegation. Falls back to the existing
+// .heat-tip hover popups when tippy is unavailable.
+function wireHeatTippy(gridEl) {
+  if (typeof tippy === 'undefined' || !gridEl) return;
+  gridEl.classList.add('has-tippy'); // suppress the CSS-only .heat-tip fallback
+  const inst = tippy(gridEl, {
+    delegate: '.heat-cell[data-tip]',
+    content: ref => ref.dataset.tip,
+    allowHTML: false,
+    theme: 'cents',
+    placement: 'top',
+    arrow: false,
+    delay: [120, 40],
+    duration: [160, 90],
+    animation: 'none',
+    appendTo: document.body,
+    onShow(instance) { return !!instance.reference.dataset.tip; },
+  });
+  _tippyInstances.add(inst);
+}
+
+// Drag-to-reorder custom category chips (Add/Edit form). Built-in seed
+// categories keep their fixed order; custom categories reorder around them.
+function wireChipSortable(containerEl) {
+  if (typeof Sortable === 'undefined' || !containerEl) return;
+  if (containerEl._sortable) { try { containerEl._sortable.destroy(); } catch (e) {} containerEl._sortable = null; }
+  if (containerEl.querySelectorAll('[data-custom]').length < 2) return;
+  const sortable = Sortable.create(containerEl, {
+    animation: 160,
+    ghostClass: 'sort-ghost',
+    chosenClass: 'sort-chosen',
+    onStart() { _chipSortLast = performance.now(); },
+    onEnd() {
+      _chipSortLast = performance.now();
+      const customs = state.settings.customCategories || [];
+      if (customs.length < 2) return;
+      const customIds = new Set(customs.map(c => c.id));
+      const byId = new Map(customs.map(c => [c.id, c]));
+      const ordered = Array.from(containerEl.querySelectorAll('[data-custom]'))
+        .map(b => b.dataset.id)
+        .filter(id => customIds.has(id));
+      if (ordered.length !== customs.length) return;
+      const next = ordered.map(id => byId.get(id));
+      if (next.some((c, i) => c !== customs[i])) {
+        state.settings.customCategories = next;
+        persist();
+        toast('Category order saved.');
+      }
+    },
+  });
+  containerEl._sortable = sortable;
+  _sortables.add(sortable);
+}
 
 // ---------- state ----------
 let state = loadState();
@@ -206,9 +321,9 @@ function hasLocalDataToProtect() {
     || Object.values(settings.coins || {}).some(count => Number(count) > 0);
 }
 
-function confirmCloudReplacement() {
+async function confirmCloudReplacement() {
   return !hasLocalDataToProtect()
-    || window.confirm('Pulling from the cloud will replace this device’s local data. Continue?');
+    || swalConfirm({ title: 'Replace local data?', text: 'Pulling from the cloud will replace this device’s local data. Continue?', confirmButtonText: 'Pull' });
 }
 
 function localIsFresherThanCloud(pullResult) {
@@ -333,7 +448,7 @@ async function initSync() {
     // A known SHA means this device already has this exact cloud revision.
     // Otherwise, never replace local entries/settings silently during boot.
     const cloudRevisionKnown = typeof r.sha === 'string' && r.sha.length > 0;
-    if ((!cloudRevisionKnown || getSyncSettings().lastSha !== r.sha) && hasLocalDataToProtect() && !confirmCloudReplacement()) {
+    if ((!cloudRevisionKnown || getSyncSettings().lastSha !== r.sha) && hasLocalDataToProtect() && !(await confirmCloudReplacement())) {
       // Do not record the rejected cloud SHA: doing so would make a later boot
       // treat the still-unmerged local copy as already reconciled.
       notifySyncChange();
@@ -697,10 +812,11 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
           if (!isValidCheckpointDate(loadDate.value) || loadDate.value > today()) { toast('Choose today or an earlier date.'); loadDate.focus(); return; }
           const eid = uid();
           const cardName = methodShort(methodId);
-          state.entries.push({ id: eid, createdAt: nowIso(), date: loadDate.value, type: 'credit', category: 'misc', details: `${cardName} load`, amount: amt, method: methodId, note: '' });
+          const loadEntry = { id: eid, createdAt: nowIso(), date: loadDate.value, type: 'credit', category: 'misc', details: `${cardName} load`, amount: amt, method: methodId, note: '' };
+          state.entries.push(loadEntry);
           state.entries.sort((a, b) => a.date.localeCompare(b.date));
           persist();
-          trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); persist(); }, `${cardName} load ${fmt(amt)}`);
+          trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); persist(); }, `${cardName} load ${fmt(amt)}`, [loadEntry]);
           editing = false;
           toast(`Loaded ${fmt(amt)} onto ${cardName}.`);
           render();
@@ -778,8 +894,8 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
           $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'reconcile'; editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎'),
           $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => openGiftCardHistoryModal(methodId), 'aria-label': `${label} history` }, '📋'),
         ) : editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎') : null,
-        editable && summary ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:10px;padding:3px 5px;color:var(--negative);', onClick: () => {
-          if (!window.confirm(`Remove the ${label} reconciliation from ${friendlyDate(summary.point.date)}?`)) return;
+        editable && summary ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:10px;padding:3px 5px;color:var(--negative);', onClick: async () => {
+          if (!(await swalConfirm({ title: 'Remove reconciliation?', text: `Remove the ${label} reconciliation from ${friendlyDate(summary.point.date)}?`, confirmButtonText: 'Remove', danger: true }))) return;
           if (removeBalanceCheckpoint(methodId, summary.point.date)) {
             toast(`${label} reconciliation removed.`);
             render();
@@ -797,6 +913,32 @@ const fmt = (n) => {
   const sign = n < 0 ? '−' : '';
   return `${sign}€${Math.abs(n).toFixed(2)}`;
 };
+
+// ---------- count-up animation ----------
+// Animates a number element from its previous rendered value to a new target.
+// A keyed cache lets repeated renders glide between values instead of flashing.
+const _countCache = new Map();
+const _reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+function countUp(el, target, key, { format = fmt, duration = 600 } = {}) {
+  const prev = _countCache.has(key) ? _countCache.get(key) : null;
+  _countCache.set(key, target);
+  if (prev === null || prev === target || _reduceMotion) { el.textContent = format(target); return; }
+  const start = performance.now();
+  const tick = (now) => {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = format(prev + (target - prev) * eased);
+    if (t < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+// Whole days from today until an ISO date; negative = in the past.
+function daysUntil(iso) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return Infinity;
+  return Math.round((Date.parse(iso + 'T00:00:00Z') - Date.parse(today() + 'T00:00:00Z')) / 86400000);
+}
+
 const monthKey = (date) => date.slice(0, 7);
 const MONTH_FORMATTER = new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 const FRIENDLY_DATE_FORMATTER = new Intl.DateTimeFormat('en-GB', { month: 'short', day: 'numeric', timeZone: 'UTC' });
@@ -1176,7 +1318,7 @@ function paidRecurring(rec) {
     state.entries = state.entries.filter(e => e.id !== entry.id);
     rec.nextDate = oldDate;
     persist();
-  }, `Paid ${rec.details}`);
+  }, `Paid ${rec.details}`, [entry]);
   toast(`Paid: ${rec.details} — ${fmt(rec.amount)}`);
   render();
 }
@@ -1187,10 +1329,11 @@ function fillThursday(dateStr) {
   const defaultAmt = lastTesco ? lastTesco.amount : 0;
   if (defaultAmt > 0) {
     const eid = uid();
-    state.entries.push({ id: eid, createdAt: nowIso(), date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
+    const tescoEntry = { id: eid, createdAt: nowIso(), date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' };
+    state.entries.push(tescoEntry);
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
-    trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); persist(); }, `Tesco ${friendlyDate(dateStr)}`);
+    trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); persist(); }, `Tesco ${friendlyDate(dateStr)}`, [tescoEntry]);
     toast(`Filled Tesco pay for ${friendlyDate(dateStr)} — ${fmt(defaultAmt)}`);
     render();
   } else {
@@ -1202,17 +1345,19 @@ function autoFillAll(unpaidThursdays) {
   const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG');
   const defaultAmt = lastTesco ? lastTesco.amount : 0;
   if (defaultAmt > 0 && unpaidThursdays.length > 0) {
-    const created = unpaidThursdays.map(d => {
-      const id = uid();
-      state.entries.push({ id, createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' });
-      return id;
+    const created = [];
+    const createdEntries = unpaidThursdays.map(d => {
+      const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' };
+      created.push(entry.id);
+      state.entries.push(entry);
+      return entry;
     });
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
     trackAction(() => {
       state.entries = state.entries.filter(e => !created.includes(e.id));
       persist();
-    }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`);
+    }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`, createdEntries);
     toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays — ${fmt(defaultAmt)} each`);
     render();
   } else if (unpaidThursdays.length === 0) {
@@ -1248,29 +1393,32 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
       const amt = parseAmount(data.amount);
       if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); return; }
       const created = [];
+      const createdEntries = [];
       if (data.date) {
-        const id = uid();
-        created.push(id);
-        state.entries.push({ id, createdAt: nowIso(), date: data.date, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
+        const entry = { id: uid(), createdAt: nowIso(), date: data.date, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' };
+        created.push(entry.id);
+        createdEntries.push(entry);
+        state.entries.push(entry);
         state.entries.sort((a, b) => a.date.localeCompare(b.date));
         persist();
         trackAction(() => {
           state.entries = state.entries.filter(e => !created.includes(e.id));
           persist();
-        }, `Filled Tesco pay ${friendlyDate(data.date)}`);
+        }, `Filled Tesco pay ${friendlyDate(data.date)}`, createdEntries);
         toast(`Filled Tesco pay for ${friendlyDate(data.date)} — ${fmt(amt)}`);
       } else {
         for (const d of unpaidThursdays) {
-          const id = uid();
-          created.push(id);
-          state.entries.push({ id, createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' });
+          const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' };
+          created.push(entry.id);
+          createdEntries.push(entry);
+          state.entries.push(entry);
         }
         state.entries.sort((a, b) => a.date.localeCompare(b.date));
         persist();
         trackAction(() => {
           state.entries = state.entries.filter(e => !created.includes(e.id));
           persist();
-        }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`);
+        }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`, createdEntries);
         toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays — ${fmt(amt)} each`);
       }
       close();
@@ -1284,8 +1432,13 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
 // trackAction stores a single-slot undo snapshot; the toast captures it at
 // creation time so a later action can't re-wire an earlier Undo button.
 let _lastAction = null;
-function trackAction(undoFn, label) {
+function trackAction(undoFn, label, journalEntries) {
   _lastAction = { undo: undoFn, label };
+  // Persist a reload-safe journal for destructive actions so the undo is still
+  // offered after a reload (the closure itself cannot be serialised).
+  if (Array.isArray(journalEntries) && journalEntries.length) {
+    saveUndoJournal({ label, at: nowIso(), entries: journalEntries.map(e => ({ ...e })) });
+  }
 }
 
 // ---------- confetti ----------
@@ -1293,6 +1446,15 @@ function triggerConfetti() {
   // The only caller (screenDashboard) already guards confetti to once per
   // month via window.__confettiMonth, so no extra guard is needed here.
   const colors = ['#C2410C','#F59E0B','#10B981','#3B82F6','#EC4899','#8B5CF6'];
+  // Prefer canvas-confetti when it's loaded: layered bursts with physics.
+  if (typeof window.confetti === 'function') {
+    const base = { colors, zIndex: 9999, disableForReducedMotion: true, gravity: 0.9, decay: 0.93, scalar: 0.9 };
+    window.confetti({ ...base, particleCount: 60, spread: 360, startVelocity: 28, ticks: 90, origin: { x: 0.5, y: 0.75 } });
+    setTimeout(() => window.confetti({ ...base, particleCount: 26, angle: 60, spread: 60, startVelocity: 42, ticks: 110, origin: { x: 0, y: 0.8 } }), 200);
+    setTimeout(() => window.confetti({ ...base, particleCount: 26, angle: 120, spread: 60, startVelocity: 42, ticks: 110, origin: { x: 1, y: 0.8 } }), 350);
+    return;
+  }
+  // DOM fallback when the library is missing.
   for (let i = 0; i < 60; i++) {
     const piece = document.createElement('div');
     piece.className = 'confetti-piece';
@@ -1326,6 +1488,39 @@ function searchEntries(entries, query, filters) {
     if (filters.method && filters.method !== 'all' && e.method !== filters.method) return false;
     return true;
   });
+}
+
+// ---------- duplicate nudge ----------
+// Same day, same amount, same type and a matching description almost certainly
+// means the entry was logged twice. Returns the existing entry, or null.
+function findPotentialDuplicate(entry) {
+  if (!entry || entry.type === 'note' || entry.type === 'transfer') return null;
+  const norm = (s) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const amt = Math.round(entry.amount * 100);
+  return state.entries.find(e =>
+    e.type === entry.type &&
+    e.date === entry.date &&
+    Math.round(e.amount * 100) === amt &&
+    norm(e.details) === norm(entry.details)
+  ) || null;
+}
+
+function openDuplicateConfirm(entry, dup, onConfirm) {
+  const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Possible duplicate', tabindex: '-1', style: 'max-width:400px;' });
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onEsc, true);
+  modal.appendChild($('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:24px;margin-bottom:8px;' }, 'Possible duplicate'));
+  modal.appendChild($('p', { class: 'muted', style: 'font-size:13px;line-height:1.5;margin-bottom:20px;' },
+    `You already have “${dup.details}” — ${fmt(dup.amount)} on ${friendlyDate(dup.date)}. Add this one anyway?`));
+  modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' },
+    $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+    $('button', { type: 'button', class: 'btn btn-primary', onClick: () => { close(); onConfirm(); } }, 'Add anyway'),
+  ));
+  queueMicrotask(() => modal.querySelector('button')?.focus());
 }
 
 // ---------- receipt parser ----------
@@ -1562,10 +1757,10 @@ function deleteEntryOrTransfer(id) {
   return true;
 }
 
-function removeDuplicateEntry(id) {
+async function removeDuplicateEntry(id) {
   const target = state.entries.find(e => e.id === id);
   if (!target) return;
-  if (!window.confirm(`Delete duplicate “${target.details}” for ${fmt(target.amount)}?`)) return;
+  if (!(await swalConfirm({ title: 'Delete duplicate?', text: `Delete duplicate “${target.details}” for ${fmt(target.amount)}?`, confirmButtonText: 'Delete', danger: true }))) return;
   const removed = target.transferId
     ? state.entries.filter(e => e.transferId === target.transferId)
     : [target];
@@ -1577,7 +1772,7 @@ function removeDuplicateEntry(id) {
   const removedIds = new Set(removed.map(e => e.id));
   state.entries = state.entries.filter(e => !removedIds.has(e.id));
   persist();
-  trackAction(() => { state.entries.push(...removed); state.entries.sort((a, b) => a.date.localeCompare(b.date)); persist(); }, `Restored ${target.details}`);
+  trackAction(() => { state.entries.push(...removed); state.entries.sort((a, b) => a.date.localeCompare(b.date)); persist(); }, `Restored ${target.details}`, removed);
   toast(target.transferId ? 'Duplicate transfer pair deleted.' : 'Duplicate deleted.');
   render();
 }
@@ -1665,13 +1860,20 @@ function currentRoute() {
 window.addEventListener('hashchange', render);
 
 // ---------- DOM helpers ----------
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const SVG_TAGS = new Set(['svg', 'circle', 'path', 'line', 'rect', 'polyline', 'polygon', 'g', 'text', 'tspan', 'defs', 'use', 'marker', 'ellipse', 'linearGradient', 'stop']);
 function $(tag, attrs = {}, ...children) {
-  const el = document.createElement(tag);
+  // SVG elements MUST be created in the SVG namespace via createElementNS;
+  // document.createElement('circle') yields a plain HTML element that never
+  // renders. This one-line distinction is why every chart draws correctly.
+  const el = SVG_TAGS.has(tag)
+    ? document.createElementNS(SVG_NS, tag)
+    : document.createElement(tag);
   // Default `= {}` only applies to `undefined`. The codebase explicitly passes
   // `null` for "no attributes needed" in many places (e.g. `$('div', null, …)`);
   // without this fallback, Object.entries(null) throws and aborts the entire render.
   for (const [k, v] of Object.entries(attrs || {})) {
-    if (k === 'class') el.className = v;
+    if (k === 'class') el.setAttribute('class', v);
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'data' && typeof v === 'object') Object.assign(el.dataset, v);
     else if (k === 'innerHTML') el.innerHTML = v;
@@ -1774,6 +1976,7 @@ function formView({ initial = null, onSubmit }) {
   const detailsInput = $('input', { type: 'text', value: data.details || '', 'aria-label': 'Transaction details', placeholder: 'e.g. Tesco, Leap Card', list: 'payee-list', required: true, onInput: (e) => data.details = e.target.value });
 
   const dateInput = $('input', { type: 'date', value: data.date, 'aria-label': 'Date', required: true, onInput: (e) => data.date = e.target.value });
+  wireFlatpickr(dateInput, { defaultDate: data.date, onChange: (dateStr) => { data.date = dateStr; } });
 
   const creditMethods = METHODS.filter(m => m.id === 'AIB' || m.id === 'Revolut' || m.id === 'RS');
   const isCredit = () => data.type === 'credit';
@@ -1821,8 +2024,10 @@ function formView({ initial = null, onSubmit }) {
   function rebuildCatChips() {
     catChips.innerHTML = '';
     const all = allCategories();
+    const customIds = new Set((state.settings.customCategories || []).map(c => c.id));
     for (const c of all) {
-      const btn = $('button', { type: 'button', class: 'pill pill-cat', role: 'radio', 'data-id': c.id, 'aria-checked': data.category === c.id ? 'true' : 'false', 'data-active': data.category === c.id ? 'true' : 'false', onClick: () => {
+      const btn = $('button', { type: 'button', class: 'pill pill-cat', role: 'radio', 'data-id': c.id, 'data-custom': customIds.has(c.id) ? true : null, 'aria-checked': data.category === c.id ? 'true' : 'false', 'data-active': data.category === c.id ? 'true' : 'false', onClick: () => {
+        if (performance.now() - _chipSortLast < 400) return; // ignore the click that ends a drag
         data.category = c.id;
         catChips.querySelectorAll('[role=radio]').forEach(b => { b.setAttribute('aria-checked','false'); b.dataset.active = 'false'; });
         btn.setAttribute('aria-checked','true'); btn.dataset.active = 'true';
@@ -1858,6 +2063,7 @@ function formView({ initial = null, onSubmit }) {
       catChips.appendChild(input);
       queueMicrotask(() => input.focus());
     }
+    wireChipSortable(catChips);
   }
   rebuildCatChips();
   const catSection = $('div', { style: 'margin-bottom:24px;' },
@@ -1971,6 +2177,13 @@ function formView({ initial = null, onSubmit }) {
       method: data.method,
       note: data.note?.trim() || '',
     };
+    if (!isEdit && data.type !== 'note') {
+      const dup = findPotentialDuplicate(entry);
+      if (dup) {
+        openDuplicateConfirm(entry, dup, () => onSubmit([entry]));
+        return;
+      }
+    }
     onSubmit([entry]);
   };
 
@@ -2027,7 +2240,7 @@ async function doResync() {
         notifySyncChange();
         return;
       }
-      if (!confirmCloudReplacement()) return;
+      if (!(await confirmCloudReplacement())) return;
       if (pullRevision !== syncRevision) {
         toast('A newer local change was kept; cloud pull skipped.');
         return;
@@ -2112,7 +2325,11 @@ function screenDashboard() {
       ),
       $('div', { style: 'text-align:right;flex-shrink:0;' },
         $('div', { class: 'eyebrow', style: 'font-size:10px;' }, 'Net worth'),
-        $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(lastVal)),
+        (() => {
+          const el = $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(lastVal));
+          countUp(el, lastVal, 'dash-networth');
+          return el;
+        })(),
       ),
     ));
   }
@@ -2126,16 +2343,20 @@ function screenDashboard() {
       )
     : null;
 
-  // Hero
+  // Hero — the monthly total and balance count up from their previous values
+  const heroTotalEl = $('span', { class: 'serif' }, fmt(expenseSum));
+  countUp(heroTotalEl, expenseSum, 'dash-total');
+  const heroBalanceEl = $('span', { class: 'display-num', style: `font-size:16px;color:${runningBalance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(runningBalance));
+  countUp(heroBalanceEl, runningBalance, 'dash-balance');
   screen.appendChild($('div', { class: 'page-title-row dashboard-hero' },
     $('div', null,
       $('div', { class: 'eyebrow' }, monthLabel(key)),
       $('p', { class: 'dashboard-total', style: `font-size:${isTiny() ? '32px' : isNarrow() ? '42px' : '54px'};` },
-        $('span', { class: 'serif' }, fmt(expenseSum)),
+        heroTotalEl,
         $('span', { class: 'dashboard-budget', style: `font-size:${isNarrow() ? '14px' : '18px'};` }, budget ? `/ ${fmt(budget)}` : ''),
       ),
       $('p', { class: 'dashboard-context', style: `font-size:${isNarrow() ? '13px' : '15px'};gap:${isNarrow() ? '10px' : '18px'};` },
-        $('span', null, 'Balance ', $('span', { class: 'display-num', style: `font-size:16px;color:${runningBalance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(runningBalance))),
+        $('span', null, 'Balance ', heroBalanceEl),
         cashWidget(),
       ),
     ),
@@ -2185,7 +2406,11 @@ function screenDashboard() {
     screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:${isNarrow() ? '22px' : '32px'};` },
       $('div', { class: 'row between' },
         $('span', { class: 'eyebrow' }, 'Spent of budget'),
-        $('span', { class: 'serif budget-pct-anim', style: 'font-size:22px;' }, `${pct.toFixed(1)}%`),
+        (() => {
+          const el = $('span', { class: 'serif budget-pct-anim', style: 'font-size:22px;' }, `${pct.toFixed(1)}%`);
+          countUp(el, pct, 'dash-budget-pct', { format: v => `${v.toFixed(1)}%` });
+          return el;
+        })(),
       ),
       $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 20px;' },
         $('div', { class: 'budget-bar-fill', style: `height:100%;width:${pct}%;background-image:${pct > 90 ? 'linear-gradient(90deg, var(--negative), #dc2626, var(--negative))' : 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))'};transition:width .5s cubic-bezier(0.2,0.8,0.2,1);border-radius:99px;box-shadow:0 0 12px ${pct > 90 ? 'rgba(185,28,28,0.2)' : 'var(--accent-glow)'};` }),
@@ -2243,9 +2468,16 @@ function screenDashboard() {
   // Recurring transactions — always show card so "+ New" is accessible
   const allRecurring = state.settings.recurring || [];
   const recurring = allRecurring.filter(r => r.nextDate <= key + '-31');
+  const dueSoonCount = allRecurring.filter(r => {
+    const d = daysUntil(r.nextDate);
+    return d >= 0 && d <= 7;
+  }).length;
   const recCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
-      $('span', { class: 'eyebrow' }, `Recurring · ${allRecurring.length}`),
+      $('div', { style: 'display:flex;align-items:center;gap:10px;' },
+        $('span', { class: 'eyebrow' }, `Recurring · ${allRecurring.length}`),
+        dueSoonCount > 0 ? $('span', { class: 'pill', style: 'border-color:var(--accent);color:var(--accent);font-size:10px;' }, `⏰ ${dueSoonCount} due soon`) : null,
+      ),
       $('button', { type: 'button', style: 'font-size:11px;color:var(--accent);cursor:pointer;background:none;border:none;padding:0;', onClick: () => openNewRecurring() }, '+ New'),
     ),
     recurring.length === 0
@@ -2253,16 +2485,22 @@ function screenDashboard() {
       : $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
         ...recurring.map(r => {
           const isOverdue = r.nextDate <= today();
+          const daysAway = daysUntil(r.nextDate);
+          const isDueSoon = !isOverdue && daysAway >= 0 && daysAway <= 7;
           return $('div', { 'data-rec-id': r.id, class: 'rec-row', style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;transition:all .3s;' },
             $('div', { style: 'display:flex;align-items:center;gap:10px;flex:1;min-width:0;' },
+              $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:13px;line-height:1;padding:0;flex-shrink:0;', onClick: () => openNewRecurring(r), title: 'Edit recurring', 'aria-label': `Edit ${r.details}` }, '✎'),
               $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0;flex-shrink:0;', onClick: () => {
+                const removed = state.settings.recurring.filter(x => x.id === r.id);
                 state.settings.recurring = state.settings.recurring.filter(x => x.id !== r.id);
+                trackAction(() => { state.settings.recurring.push(...removed); persist(); }, `Restored recurring "${r.details}"`);
                 persist(); toast(`Removed recurring "${r.details}".`); render();
               }, title: 'Remove recurring' }, '×'),
-              $('span', { style: `display:inline-block;width:7px;height:7px;border-radius:50%;background:${isOverdue ? 'var(--negative)' : 'var(--muted)'};flex-shrink:0;` }),
+              $('span', { style: `display:inline-block;width:7px;height:7px;border-radius:50%;background:${isOverdue ? 'var(--negative)' : isDueSoon ? 'var(--accent)' : 'var(--muted)'};flex-shrink:0;box-shadow:${isDueSoon ? '0 0 0 3px var(--accent-glow)' : 'none'};` }),
               $('span', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, r.details),
               $('span', { class: 'pill', style: 'border-color:transparent;font-size:10px;flex-shrink:0;' }, r.method),
               $('span', { class: 'muted', style: 'font-size:11px;flex-shrink:0;' }, friendlyDate(r.nextDate)),
+              isDueSoon ? $('span', { class: 'pill', style: 'border-color:var(--accent);color:var(--accent);font-size:10px;flex-shrink:0;' }, daysAway === 0 ? 'today' : `in ${daysAway}d`) : null,
             ),
             $('div', { style: 'display:flex;align-items:center;gap:10px;flex-shrink:0;' },
               $('span', { class: 'display-num', style: `font-size:13px;color:${r.type === 'credit' ? 'var(--positive)' : 'var(--ink)'};` }, (r.type === 'credit' ? '+' : '') + fmt(r.amount)),
@@ -2487,11 +2725,13 @@ function cashWidget() {
 }
 
 // ---------- modal: new recurring ----------
-function openNewRecurring() {
-  const data = { type: 'expense', details: '', amount: '', method: 'AIB', category: 'gro', frequency: 'monthly', dayOfMonth: 1, note: '' };
+function openNewRecurring(existing = null) {
+  const data = existing
+    ? { type: existing.type, details: existing.details, amount: String(existing.amount), method: existing.method, category: existing.category, frequency: existing.frequency, dayOfMonth: existing.dayOfMonth, note: existing.note || '' }
+    : { type: 'expense', details: '', amount: '', method: 'AIB', category: 'gro', frequency: 'monthly', dayOfMonth: 1, note: '' };
 
   const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
-  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'New recurring transaction', tabindex: '-1', style: 'max-width:480px;' });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': existing ? 'Edit recurring transaction' : 'New recurring transaction', tabindex: '-1', style: 'max-width:480px;' });
   bg.appendChild(modal);
   document.body.appendChild(bg);
 
@@ -2537,8 +2777,21 @@ function openNewRecurring() {
   );
   const noteInput = $('input', { type: 'text', placeholder: 'optional', 'aria-label': 'Note', onInput: (e) => data.note = e.target.value });
 
+  // Prefill for edit mode
+  if (existing) {
+    amtInput.value = data.amount;
+    descInput.value = data.details;
+    methodSel.value = data.method;
+    catSel.value = data.category;
+    freqSel.value = data.frequency;
+    daySel.value = String(data.dayOfMonth);
+    noteInput.value = data.note || '';
+    dayLabel.textContent = data.frequency === 'monthly' ? 'Day of month' : 'Start day';
+    catRow.style.display = data.type === 'credit' ? 'none' : '';
+  }
+
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;' },
-    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:26px;' }, 'New recurring'),
+    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:26px;' }, existing ? 'Edit recurring' : 'New recurring'),
     $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
   ));
   modal.appendChild(typeTabs);
@@ -2566,7 +2819,7 @@ function openNewRecurring() {
       if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); return; }
       if (!data.details.trim()) { toast('Add a description.'); return; }
       const rec = {
-        id: 'rec_' + uid(),
+        id: existing?.id || 'rec_' + uid(),
         type: data.type,
         details: data.details.trim(),
         amount: amt,
@@ -2574,13 +2827,32 @@ function openNewRecurring() {
         category: data.category,
         frequency: data.frequency,
         dayOfMonth: data.dayOfMonth,
-        nextDate: computeInitialNextDate(data.frequency, data.dayOfMonth),
+        nextDate: (existing && existing.frequency === data.frequency && existing.dayOfMonth === data.dayOfMonth)
+          ? existing.nextDate
+          : computeInitialNextDate(data.frequency, data.dayOfMonth),
         note: data.note?.trim() || '',
       };
       if (!state.settings.recurring) state.settings.recurring = [];
-      state.settings.recurring.push(rec);
-      persist();
-      toast(`Recurring "${rec.details}" added — next: ${friendlyDate(rec.nextDate)}`);
+      if (existing) {
+        const idx = state.settings.recurring.findIndex(r => r.id === existing.id);
+        if (idx === -1) { toast('That recurring item no longer exists.'); close(); return; }
+        const prev = { ...state.settings.recurring[idx] };
+        state.settings.recurring[idx] = rec;
+        trackAction(() => {
+          state.settings.recurring = state.settings.recurring.map(r => r.id === existing.id ? prev : r);
+          persist();
+        }, `Reverted edits to "${prev.details}"`);
+        persist();
+        toast(`Recurring "${rec.details}" updated.`);
+      } else {
+        state.settings.recurring.push(rec);
+        trackAction(() => {
+          state.settings.recurring = state.settings.recurring.filter(r => r.id !== rec.id);
+          persist();
+        }, `Removed recurring "${rec.details}"`);
+        persist();
+        toast(`Recurring "${rec.details}" added — next: ${friendlyDate(rec.nextDate)}`);
+      }
       close();
       render();
     } }, 'Save'),
@@ -2662,7 +2934,17 @@ function screenAdd() {
   const addMagic = () => {
     const parsed = parseNaturalLanguage(magicInput.value);
     if (!parsed || parsed.error) { toast(parsed?.error || 'Describe an entry first.'); magicInput.focus(); return; }
-    state.entries.push({ id: uid(), createdAt: nowIso(), date: parsed.date, type: parsed.type, category: parsed.category, details: parsed.details, amount: parsed.amount, method: parsed.method, note: 'Created with natural-language input' });
+    const entry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: parsed.type, category: parsed.category, details: parsed.details, amount: parsed.amount, method: parsed.method, note: 'Created with natural-language input' };
+    const dup = findPotentialDuplicate(entry);
+    if (dup) {
+      openDuplicateConfirm(entry, dup, () => {
+        state.entries.push(entry);
+        state.entries.sort((a, b) => a.date.localeCompare(b.date));
+        persist(); toast('Entry created from your description.'); location.hash = '#dashboard';
+      });
+      return;
+    }
+    state.entries.push(entry);
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist(); toast('Entry created from your description.'); location.hash = '#dashboard';
   };
@@ -2823,11 +3105,62 @@ function screenHistory() {
   c.appendChild(filterRow);
   c.appendChild(methodFilterRow);
 
+  // Bulk selection — checkboxes in the header and each row, plus a toolbar.
+  const selected = new Set();
+  const bulkBar = $('div', { class: 'bulk-bar', style: 'display:none;margin-bottom:12px;padding:10px 16px;border:1px solid var(--accent);border-radius:var(--radius);background:var(--accent-soft);align-items:center;justify-content:space-between;gap:12px;' },
+    $('span', { class: 'bulk-count', style: 'font-size:13px;font-weight:500;' }, ''),
+    $('div', { style: 'display:flex;gap:8px;' },
+      $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: () => { selected.clear(); syncBulkBar(); tableWrap.querySelectorAll('input[data-bulk]').forEach(cb => cb.checked = false); } }, 'Clear'),
+      $('button', { type: 'button', class: 'btn btn-danger', style: 'padding:6px 12px;font-size:12px;', onClick: bulkDeleteSelected }, 'Delete selected'),
+    ),
+  );
+  c.appendChild(bulkBar);
+  function syncBulkBar() {
+    const n = selected.size;
+    bulkBar.style.display = n ? 'flex' : 'none';
+    bulkBar.querySelector('.bulk-count').textContent = n ? `${n} selected` : '';
+  }
+  function bulkDeleteSelected() {
+    const ids = [...selected];
+    if (!ids.length) return;
+    const affected = [];
+    const seen = new Set();
+    let protectedCount = 0;
+    for (const id of ids) {
+      const removed = deletionEntriesFor(id);
+      if (removed.map(reconciliationProtectionFor).find(Boolean)) { protectedCount++; continue; }
+      for (const e of removed) { if (!seen.has(e.id)) { seen.add(e.id); affected.push(e); } }
+    }
+    if (!affected.length) {
+      toast('None of those entries can be deleted — they are protected by reconciliation.');
+      selected.clear(); syncBulkBar(); render();
+      return;
+    }
+    const removedCopy = affected.map(e => ({ ...e }));
+    const removeIds = new Set(removedCopy.map(e => e.id));
+    state.entries = state.entries.filter(e => !removeIds.has(e.id));
+    persist();
+    trackAction(() => {
+      state.entries.push(...removedCopy);
+      state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      persist();
+    }, `Restored ${removedCopy.length} deleted entr${removedCopy.length === 1 ? 'y' : 'ies'}`, removedCopy);
+    toast(protectedCount ? `Deleted ${removedCopy.length} (${protectedCount} kept — protected).` : `Deleted ${removedCopy.length} entr${removedCopy.length === 1 ? 'y' : 'ies'}.`);
+    selected.clear();
+    render();
+  }
+
   const tableWrap = $('div', { class: 'card', style: 'overflow-x:auto;' });
   if (visible.length === 0) {
     tableWrap.appendChild($('div', { class: 'empty' }, emptyIcon('receipt'), searchQuery ? ' No results for this search.' : ' Nothing here for this filter.'));
   } else {
-    tableWrap.appendChild($('div', { role: 'row', style: 'display:grid;grid-template-columns:90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);min-width:740px;' },
+    tableWrap.appendChild($('div', { role: 'row', style: 'display:grid;grid-template-columns:36px 90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);min-width:780px;' },
+      $('span', { role: 'columnheader' }, $('input', { type: 'checkbox', 'data-bulk': '', 'aria-label': 'Select all visible', title: 'Select all visible', onChange: (ev) => {
+        selected.clear();
+        if (ev.target.checked) for (const e of visible) selected.add(e.id);
+        tableWrap.querySelectorAll('input[data-bulk]').forEach(cb => { if (cb !== ev.target) cb.checked = ev.target.checked; });
+        syncBulkBar();
+      } })),
       $('span', { role: 'columnheader' }, 'Date'),
       $('span', { role: 'columnheader' }, 'Description'),
       $('span', { role: 'columnheader', style: 'text-align:right;' }, 'Amount'),
@@ -2840,7 +3173,7 @@ function screenHistory() {
     for (const e of visible) {
       if (e.date !== previousVisibleDate) {
         previousVisibleDate = e.date;
-        tableWrap.appendChild($('div', { class: 'history-day-header', role: 'row', style: 'display:grid;grid-template-columns:1fr;gap:8px;padding:13px 24px 8px;min-width:740px;background:var(--bg-deep);border-bottom:1px solid var(--line);' },
+        tableWrap.appendChild($('div', { class: 'history-day-header', role: 'row', style: 'display:grid;grid-template-columns:1fr;gap:8px;padding:13px 24px 8px;min-width:780px;background:var(--bg-deep);border-bottom:1px solid var(--line);' },
           $('span', { role: 'rowheader', class: 'eyebrow' }, relativeDayLabel(e.date)),
         ));
       }
@@ -2849,7 +3182,11 @@ function screenHistory() {
       const settleColor = e.settled ? 'var(--positive)' : 'var(--muted)';
       const rowBalance = cachedBalanceForEntry(e);
       const rowType = e.type === 'note' ? 'note-row' : e.type === 'credit' ? 'income-row' : 'expense-row';
-      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': e.id, 'aria-label': `Edit entry ${e.details} on ${friendlyDate(e.date)}`, style: 'display:grid;grid-template-columns:90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;align-items:center;border-bottom:1px solid var(--line);cursor:pointer;min-width:740px;outline:none;', onClick: () => openEdit(e.id), onKeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEdit(e.id); } } },
+      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': e.id, 'aria-label': `Edit entry ${e.details} on ${friendlyDate(e.date)}`, style: 'display:grid;grid-template-columns:36px 90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;align-items:center;border-bottom:1px solid var(--line);cursor:pointer;min-width:780px;outline:none;', onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openEdit(e.id); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEdit(e.id); } } },
+        $('span', { role: 'cell', style: 'display:flex;align-items:center;' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selected.has(e.id) ? true : null, 'aria-label': `Select ${e.details || 'entry'}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
+          if (ev.target.checked) selected.add(e.id); else selected.delete(e.id);
+          syncBulkBar();
+        } })),
         $('span', { class: 'muted', style: 'font-size:13px;' }, friendlyDate(e.date)),          $('div', null,
             $('div', { style: 'font-size:14px;display:flex;align-items:center;gap:6px;' }, e.details || '—',
               e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, style: 'width:130px;height:28px;' }) : null,
@@ -2877,9 +3214,11 @@ function screenHistory() {
   }
   c.appendChild(tableWrap);
 
+  const histSumEl = $('span', { class: 'display-num', style: 'font-size:30px;' }, fmt(expenseSum));
+  countUp(histSumEl, expenseSum, 'hist-sum');
   c.appendChild($('div', { class: 'summary-row' },
     $('span', { class: 'eyebrow' }, 'Monthly sum · expenses'),
-    $('span', { class: 'display-num', style: 'font-size:30px;' }, fmt(expenseSum)),
+    histSumEl,
   ));
 
   return c;
@@ -2941,6 +3280,8 @@ function screenInsights() {
   const toInput = $('input', { type: 'date', value: toDate, 'aria-label': 'To date', style: 'width:auto;font-size:13px;', onChange: (e) => {
     params.set('to', e.target.value); location.hash = 'insights?' + params.toString();
   } });
+  wireFlatpickr(fromInput, { defaultDate: fromDate });
+  wireFlatpickr(toInput, { defaultDate: toDate });
 
   c.appendChild($('div', { class: 'page-title-row' },
     $('h1', { class: 'page-title' }, 'Where it goes.'),
@@ -2989,7 +3330,7 @@ function screenInsights() {
   ));
 
   c.appendChild($('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px;margin-bottom:32px;' },
-    statCard('Average / month', fmt(avg)),
+    statCard('Average / month', avg, 'ins-avg'),
     statCard('Top method', topMethodEntry ? `${(methodShort(topMethodEntry[0]))} · ${fmt(topMethodEntry[1])}` : '—'),
     statCard('Entries', String(recent.filter(isSpendingEntry).length)),
     statCard('Categories active', String(new Set(recent.filter(isSpendingEntry).map(e => e.category)).size)),
@@ -3017,20 +3358,23 @@ function screenInsights() {
       intensity < 0.25 ? 0.3 : intensity < 0.5 ? 0.55 : intensity < 0.75 ? 0.75 : 1
     );
     const tip = val > 0 ? `${fmt(val)}` : '';
+    const ttip = val > 0 ? `${friendlyDate(ds)} · ${fmt(val)}` : '';
     heatCells.push($('div', { class: 'heat-cell-wrap', style: 'position:relative;' },
       tip ? $('div', { class: 'heat-tip' }, tip) : null,
-      $('div', { class: 'heat-cell', title: tip, style: `border-radius:3px;aspect-ratio:1;background:${color};cursor:default;font-size:9px;display:flex;align-items:center;justify-content:center;${val === 0 ? 'opacity:0.5;' : ''}${ds === today() ? 'box-shadow:0 0 0 1.5px var(--ink);' : ''}` },
+      $('div', { class: 'heat-cell', 'data-tip': ttip || null, style: `border-radius:3px;aspect-ratio:1;background:${color};cursor:default;font-size:9px;display:flex;align-items:center;justify-content:center;${val === 0 ? 'opacity:0.5;' : ''}${ds === today() ? 'box-shadow:0 0 0 1.5px var(--ink);' : ''}` },
         val > 0 ? $('span', { style: 'color:var(--ink);font-weight:600;font-size:8px;' }, String(d)) : null,
       ),
     ));
   }
 
+  const heatGrid = $('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:3px;' },
+    ...['M','T','W','T','F','S','S'].map(l => $('div', { style: 'text-align:center;font-size:10px;color:var(--muted);padding-bottom:4px;' }, l)),
+    ...heatCells,
+  );
+  wireHeatTippy(heatGrid);
   c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:12px;' }, `Spending heatmap · ${monthLabel(heatKey)}`),
-    $('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:3px;' },
-      ...['M','T','W','T','F','S','S'].map(l => $('div', { style: 'text-align:center;font-size:10px;color:var(--muted);padding-bottom:4px;' }, l)),
-      ...heatCells,
-    ),
+    heatGrid,
     $('div', { style: 'margin-top:8px;font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;' },
       $('span', null, 'Less'),
       ...[0, 0.25, 0.5, 0.75, 1].map(i => $('span', { style: `display:inline-block;width:12px;height:12px;border-radius:2px;background:${i===0?'var(--line)':heatColor(i)};` })),
@@ -3046,9 +3390,18 @@ function screenInsights() {
     $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'By category'),
     catRows.length === 0
       ? $('div', { class: 'empty' }, emptyIcon('coin'), ' No expenses in this range.')
-      : $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
-          ...catRows.map(([cat, val]) => bar(categoryLabel(cat), val, maxCat, val === maxCat)),
+      : $('div', { style: 'display:flex;flex-direction:column;gap:22px;' },
+          donutChart(catRows),
+          $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
+            ...catRows.map(([cat, val]) => bar(categoryLabel(cat), val, maxCat, val === maxCat)),
+          ),
         ),
+  ));
+
+  // Month-by-month grouped bars: spending vs income over the last 12 months
+  c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+    $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Month by month'),
+    monthOverMonthChart(),
   ));
 
   const methodRows = Object.entries(methodTotals).sort((a,b)=>b[1]-a[1]);
@@ -3131,10 +3484,12 @@ function screenInsights() {
 
   return c;
 }
-function statCard(label, value) {
+function statCard(label, value, countKey) {
+  const numEl = $('div', { class: 'display-num', style: 'font-size:30px;margin-top:8px;' }, typeof value === 'number' && countKey ? '' : value);
+  if (countKey && typeof value === 'number') countUp(numEl, value, countKey);
   return $('div', { class: 'card', style: 'padding:20px;' },
     $('div', { class: 'eyebrow' }, label),
-    $('div', { class: 'display-num', style: 'font-size:30px;margin-top:8px;' }, value),
+    numEl,
   );
 }
 function bar(label, value, max, isMax) {
@@ -3146,6 +3501,90 @@ function bar(label, value, max, isMax) {
     $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
       $('div', { style: `height:100%;width:${(value/max)*100}%;background:${isMax ? 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))' : 'linear-gradient(90deg, var(--ink), var(--muted))'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
     ),
+  );
+}
+
+// ---------- donut chart ----------
+// SVG donut built from stroke-dasharray segments. Starts at 12 o'clock and
+// sweeps clockwise; the centre shows the total. Legend lists share per slice.
+const DONUT_PALETTE = ['var(--accent)', 'var(--positive)', '#8b5cf6', '#38bdf8', '#f59e0b', '#f472b6', '#a3e635', '#94a3b8'];
+function donutChart(rows) {
+  const total = rows.reduce((s, [, v]) => s + v, 0);
+  if (!total) return null;
+  const R = 52, C = 2 * Math.PI * R, W = 180, H = 180;
+  let acc = 0;
+  const segments = rows.map(([, val], i) => {
+    const frac = val / total;
+    const len = Math.max(0, frac * C - 2);
+    const finalOff = -acc * C;
+    const seg = $('circle', { cx: W / 2, cy: H / 2, r: R, fill: 'none', stroke: DONUT_PALETTE[i % DONUT_PALETTE.length], 'stroke-width': 16, 'stroke-dasharray': `${len} ${C - len}`, 'stroke-dashoffset': String(finalOff - len), style: 'transition:stroke-dasharray .6s cubic-bezier(0.2,0.8,0.2,1);' });
+    seg._finalOff = finalOff;
+    acc += frac;
+    return seg;
+  });
+  // Draw-in animation via anime.js; reduced-motion and missing-library
+  // fallbacks land on the final state immediately.
+  if (typeof anime !== 'undefined' && !_reduceMotion) {
+    anime({ targets: segments, strokeDashoffset: el => el._finalOff, duration: 1000, delay: anime.stagger(90), easing: 'easeOutQuart' });
+  } else {
+    segments.forEach(seg => seg.setAttribute('stroke-dashoffset', String(seg._finalOff)));
+  }
+  const legend = rows.map(([cat, val], i) => {
+    const pct = Math.round((val / total) * 100);
+    return $('div', { style: 'display:flex;align-items:center;gap:8px;font-size:12px;' },
+      $('span', { style: `width:8px;height:8px;border-radius:2px;background:${DONUT_PALETTE[i % DONUT_PALETTE.length]};flex-shrink:0;` }),
+      $('span', { style: 'flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, categoryLabel(cat)),
+      $('span', { class: 'muted', style: 'flex-shrink:0;' }, `${pct}%`),
+    );
+  });
+  return $('div', { style: 'display:flex;align-items:center;gap:28px;flex-wrap:wrap;' },
+    $('div', { style: 'position:relative;flex-shrink:0;' },
+      $('svg', { viewBox: `0 0 ${W} ${H}`, width: '150', height: '150', 'aria-label': 'Category share donut', style: 'transform:rotate(-90deg);' }, ...segments),
+      $('div', { style: 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;' },
+        $('span', { class: 'display-num', style: 'font-size:20px;' }, fmt(total)),
+        $('span', { class: 'muted', style: 'font-size:10px;' }, 'spent'),
+      ),
+    ),
+    $('div', { style: 'display:flex;flex-direction:column;gap:8px;flex:1;min-width:150px;' }, ...legend),
+  );
+}
+
+// ---------- month-over-month comparison ----------
+// Grouped bars for the last 12 calendar months: spending (accent) vs income
+// (positive), so trends across the year read at a glance.
+function monthOverMonthChart() {
+  const now = new Date();
+  const months = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    let exp = 0, inc = 0;
+    for (const e of entriesForMonth(key)) {
+      if (isSpendingEntry(e)) exp += e.amount;
+      else if (isIncomeEntry(e)) inc += e.amount;
+    }
+    months.push({ key, exp, inc });
+  }
+  const max = Math.max(1, ...months.flatMap(m => [m.exp, m.inc]));
+  const W = 640, H = 170, padB = 24, padT = 10;
+  const slot = W / months.length;
+  const bw = Math.min(16, slot * 0.2);
+  const xAt = i => i * slot + (slot - bw * 2 - 4) / 2;
+  const yAt = v => H - padB - (v / max) * (H - padB - padT);
+  const rects = [];
+  const labels = [];
+  months.forEach((m, i) => {
+    const x = xAt(i);
+    if (m.exp > 0) rects.push($('rect', { x, y: yAt(m.exp), width: bw, height: H - padB - yAt(m.exp), rx: 2, style: 'fill:var(--accent);' }));
+    if (m.inc > 0) rects.push($('rect', { x: x + bw + 4, y: yAt(m.inc), width: bw, height: H - padB - yAt(m.inc), rx: 2, style: 'fill:var(--positive);' }));
+    labels.push($('text', { x: x + bw + 2, y: H - 8, 'text-anchor': 'middle', style: 'fill:var(--muted);font-size:9px;' }, monthLabel(m.key).split(' ')[0].slice(0, 3)));
+  });
+  return $('div', null,
+    $('div', { style: 'display:flex;gap:14px;justify-content:flex-end;margin-bottom:10px;' },
+      $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: 'width:8px;height:8px;border-radius:2px;background:var(--accent);' }), 'Spending'),
+      $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: 'width:8px;height:8px;border-radius:2px;background:var(--positive);' }), 'Income'),
+    ),
+    $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Monthly spending vs income, last 12 months', style: 'width:100%;height:auto;' }, ...rects, ...labels),
   );
 }
 
@@ -3263,7 +3702,7 @@ function openTransferDelete(e) {
           state.entries.push(...removed);
           state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
           persist();
-        }, 'Restored transfer pair');
+        }, 'Restored transfer pair', removed);
         toast('Transfer pair deleted.');
       }
       close();
@@ -3369,7 +3808,7 @@ function openEdit(id) {
         state.entries.push(...removed);
         state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
         persist();
-      }, e.transferId ? 'Restored transfer pair' : `Restored ${e.details}`);
+      }, e.transferId ? 'Restored transfer pair' : `Restored ${e.details}`, removed);
       toast(e.transferId ? 'Transfer pair deleted.' : 'Deleted. You can undo it from the toast.');
     }
     close();
@@ -3511,7 +3950,7 @@ function openSyncSettings() {
             scheduleSyncPush();
             return;
           }
-          if (!confirmCloudReplacement()) {
+          if (!(await confirmCloudReplacement())) {
             pullBtn.disabled = false; pushBtn.disabled = false;
             return;
           }
@@ -3640,6 +4079,26 @@ function toast(text, undoFn, undoLabel) {
   setTimeout(() => t.remove(), 2200);
 }
 
+// Offer the persisted undo journal after a reload. Only the entries that are
+// still missing (not already restored or recreated) are re-added.
+function offerPersistedUndo() {
+  const journal = loadUndoJournal();
+  if (!journal || !Array.isArray(journal.entries) || !journal.entries.length) return;
+  toast(`You can undo “${journal.label || 'that change'}” from before your last reload.`, () => {
+    const missing = journal.entries.filter(j => j && !state.entries.some(e => e.id === j.id));
+    if (missing.length) {
+      state.entries.push(...missing);
+      state.entries.sort((a, b) => a.date.localeCompare(b.date));
+      persist();
+      toast(`Undone: ${journal.label}`);
+    } else {
+      toast('Nothing to undo — that change is already gone.');
+    }
+    clearUndoJournal();
+    render();
+  }, 'Undo');
+}
+
 // ---------- render scheduling ----------
 function captureFocusedField() {
   const active = document.activeElement;
@@ -3680,6 +4139,7 @@ function render() {
   if (renderFrame !== null) return;
   const flush = () => {
     renderFrame = null;
+    libCleanup(); // destroy stale vendor-widget instances (flatpickr / tippy / sortable) before re-render
     try {
       _render();
     } catch (e) {
@@ -3842,6 +4302,7 @@ window.addEventListener('DOMContentLoaded', () => {
   if (locked) showPinLock();
   render();
   if (!locked) startInitSync();
+  if (!locked) offerPersistedUndo();
 });
 
 // Expose tiny global for DevTools tinkering
