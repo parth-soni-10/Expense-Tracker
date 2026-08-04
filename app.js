@@ -1933,14 +1933,6 @@ function currentRoute() {
 }
 window.addEventListener('hashchange', render);
 
-// Global command palette — Ctrl/Cmd+K from anywhere.
-window.addEventListener('keydown', (e) => {
-  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') {
-    e.preventDefault();
-    if (_palette) closePalette(); else openPalette();
-  }
-});
-
 // ---------- DOM helpers ----------
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const SVG_TAGS = new Set(['svg', 'circle', 'path', 'line', 'rect', 'polyline', 'polygon', 'g', 'text', 'tspan', 'defs', 'use', 'marker', 'ellipse', 'linearGradient', 'stop']);
@@ -1999,7 +1991,6 @@ function renderHeader() {
         $('span', { class: 'icon-sun', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>' }),
         $('span', { class: 'icon-moon', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>' }),
       ),
-      $('button', { class: 'nav-action', onClick: openPalette, title: 'Search entries and actions (Ctrl/Cmd+K)' }, '⌘K Search'),
       $('button', { class: 'nav-action assistant-action', onClick: openAssistant, title: 'Ask your spend assistant about your money' }, '✦ Ask'),
       hasPinLock() ? $('button', { class: 'nav-action', onClick: lockApp, title: 'Lock app' }, 'Lock') : null,
       $('button', { class: 'nav-action', onClick: openPinSettings }, 'PIN'),
@@ -4364,107 +4355,6 @@ function openSyncSettings() {
   queueMicrotask(() => modal.querySelector('input')?.focus());
 }
 
-// ---------- command palette ----------
-// Ctrl/Cmd+K (or the header Search chip) opens a fuzzy search across entries,
-// month jumps and quick actions. Renders above the app mount, so re-renders of
-// the screens never disturb it.
-let _palette = null;
-let _paletteOnKey = null;
-function closePalette() {
-  if (!_palette) return;
-  const bg = _palette;
-  _palette = null;
-  document.removeEventListener('keydown', _paletteOnKey, true);
-  bg.remove();
-}
-function openPalette() {
-  if (_palette) { closePalette(); return; }
-  if (hasPinLock() && !pinUnlocked) return;
-  const bg = $('div', { class: 'modal-bg palette-bg', onClick: (ev) => { if (ev.target === bg) closePalette(); } });
-  const input = $('input', { type: 'text', placeholder: 'Search entries, jump to a month, run an action…', 'aria-label': 'Search entries and actions', autocomplete: 'off', spellcheck: 'false' });
-  const results = $('div', { class: 'palette-results' });
-  const modal = $('div', { class: 'modal palette-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Command palette', tabindex: '-1' },
-    $('div', { class: 'palette-input-row' },
-      $('span', { class: 'palette-icon', 'aria-hidden': 'true' }, '⌘'),
-      input,
-      $('kbd', { class: 'palette-kbd' }, 'esc'),
-    ),
-    results,
-    $('div', { class: 'palette-hint' }, '↑↓ navigate · ↵ open · esc close'),
-  );
-  bg.appendChild(modal);
-  document.body.appendChild(bg);
-  _palette = bg;
-
-  let selectedIndex = 0;
-  let items = [];
-
-  const markActive = () => {
-    [...results.children].forEach((row, i) => {
-      if (i === selectedIndex) row.setAttribute('data-active', '');
-      else row.removeAttribute('data-active');
-    });
-    results.children[selectedIndex]?.scrollIntoView({ block: 'nearest' });
-  };
-
-  const renderResults = () => {
-    const q = input.value.trim().toLowerCase();
-    items = [];
-    // Quick actions — always available, filtered by the query below.
-    items.push(
-      { kind: 'action', label: 'New entry', hint: 'add', run: () => { closePalette(); location.hash = '#add'; } },
-      { kind: 'action', label: 'Go to History', hint: 'history', run: () => { closePalette(); location.hash = '#history'; } },
-      { kind: 'action', label: 'Go to Insights', hint: 'insights', run: () => { closePalette(); location.hash = '#insights'; } },
-      { kind: 'action', label: 'Year in review', hint: 'modal', run: () => { closePalette(); openYearInReview(); } },
-      { kind: 'action', label: 'Sync settings', hint: 'modal', run: () => { closePalette(); openSyncSettings(); } },
-      { kind: 'action', label: hasPinLock() ? 'Lock app' : 'Set a PIN', hint: 'privacy', run: () => { closePalette(); if (hasPinLock()) lockApp(); else openPinSettings(); } },
-      { kind: 'action', label: 'Toggle dark mode', hint: 'theme', run: () => { toggleDarkMode(); render(); } },
-    );
-    // Month jumps — only while typing so the list stays focused.
-    if (q) {
-      const months = Array.from(new Set(state.entries.map(e => monthKey(e.date)))).sort((a, b) => b.localeCompare(a)).slice(0, 12);
-      for (const key of months) {
-        if (fuzzyMatch(monthLabel(key), q)) items.push({ kind: 'month', label: `Go to ${monthLabel(key)}`, hint: key, run: () => { closePalette(); location.hash = `history?month=${key}`; } });
-      }
-    }
-    // Entry matches — newest first, capped for responsiveness.
-    if (q) {
-      const all = [...state.entries].sort((a, b) => b.date.localeCompare(a.date) || (a.id < b.id ? 1 : -1));
-      for (const e of all) {
-        const hay = `${e.details || ''} ${e.note || ''} ${categoryLabel(e.category)} ${methodLabel(e.method)} ${fmt(e.amount)} ${friendlyDate(e.date)} ${e.type === 'credit' ? 'income' : 'expense'}`.toLowerCase();
-        if (!fuzzyMatch(hay, q)) continue;
-        items.push({ kind: 'entry', entry: e, label: e.details || '—', hint: `${friendlyDate(e.date)} · ${methodShort(e.method)} · ${e.type === 'credit' ? '+' : '−'}${fmt(e.amount)}`, run: () => { closePalette(); openEdit(e.id); } });
-        if (items.length >= 24) break;
-      }
-    }
-    if (q) items = items.filter(it => it.kind !== 'action' || fuzzyMatch(`${it.label} ${it.hint}`, q));
-    selectedIndex = 0;
-    results.innerHTML = '';
-    if (!items.length) {
-      results.appendChild($('div', { class: 'palette-empty' }, 'No matches.'));
-      return;
-    }
-    for (const it of items) {
-      results.appendChild($('button', { type: 'button', class: 'palette-row', onMouseEnter: () => { selectedIndex = items.indexOf(it); markActive(); }, onClick: () => it.run() },
-        $('span', { class: 'palette-row-label' }, it.label),
-        $('span', { class: 'palette-row-hint' }, it.hint),
-      ));
-    }
-    markActive();
-  };
-
-  _paletteOnKey = (ev) => {
-    if (ev.key === 'Escape') { ev.preventDefault(); closePalette(); return; }
-    if (ev.key === 'ArrowDown') { ev.preventDefault(); if (items.length) { selectedIndex = (selectedIndex + 1) % items.length; markActive(); } }
-    if (ev.key === 'ArrowUp') { ev.preventDefault(); if (items.length) { selectedIndex = (selectedIndex - 1 + items.length) % items.length; markActive(); } }
-    if (ev.key === 'Enter' && items[selectedIndex]) { ev.preventDefault(); items[selectedIndex].run(); }
-  };
-  document.addEventListener('keydown', _paletteOnKey, true);
-  input.addEventListener('input', renderResults);
-  renderResults();
-  queueMicrotask(() => input.focus());
-}
-
 // ---------- spend assistant ----------
 // A glassmorphic chat panel that answers plain-English questions about your
 // money. Fully local — every answer is computed from state through the same
@@ -4695,7 +4585,6 @@ function openAssistant() {
 
   _assistantOnKey = (ev) => {
     if (ev.key === 'Escape') { ev.preventDefault(); closeAssistant(); return; }
-    if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === 'k') { ev.preventDefault(); return; } // keep palette from stacking over the assistant
   };
   document.addEventListener('keydown', _assistantOnKey, true);
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); ask(input.value); } });
