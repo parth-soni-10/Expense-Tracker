@@ -5084,21 +5084,38 @@ function _render() {
   if (!shouldAnimateScreen) restoreFocusedField(focusedField);
 
   // Sticky header — register the scroll listener once. The header is rebuilt on
-  // every render, so the handler re-queries it on each scroll event.
+  // every render, so the cached element is refreshed here on each render. The
+  // handler is rAF-throttled and only touches the DOM when the state changes.
   if (!window.__stickyInit) {
     window.__stickyInit = true;
     let lastScroll = 0;
-    window.addEventListener('scroll', () => {
-      if (window.innerWidth < 640) return;
-      const hdr = document.querySelector('.app-header');
-      if (!hdr) return;
+    let rafId = null;
+    const applySticky = () => {
+      rafId = null;
+      const hdr = window.__stickyHdr;
+      if (!hdr || !hdr.isConnected) return;
+      // Idempotent: classList.toggle with a boolean is a DOM no-op when the
+      // class already matches, so this still only touches the DOM on change.
+      // is-sticky is always ensured — the header is rebuilt on every render
+      // and the fresh element never has it.
       if (!hdr.classList.contains('is-sticky')) hdr.classList.add('is-sticky');
       const now = window.scrollY;
-      if (now > 80 && now > lastScroll) hdr.classList.add('head-hidden');
-      else hdr.classList.remove('head-hidden');
+      hdr.classList.toggle('head-hidden', now > 80 && now > lastScroll);
       lastScroll = now;
+    };
+    window.addEventListener('scroll', () => {
+      if (window.innerWidth < 640) return;
+      const hdr = window.__stickyHdr;
+      if (!hdr || !hdr.isConnected) {
+        window.__stickyHdr = document.querySelector('.app-header');
+        if (!window.__stickyHdr) return;
+        if (!window.__stickyHdr.classList.contains('is-sticky')) window.__stickyHdr.classList.add('is-sticky');
+      }
+      if (rafId === null) rafId = requestAnimationFrame(applySticky);
     }, { passive: true });
   }
+  // Refresh the cached element — the header is rebuilt on every render.
+  window.__stickyHdr = document.querySelector('.app-header');
 }
 
 window.addEventListener('DOMContentLoaded', () => {

@@ -87,7 +87,10 @@
 /* ── Base ── */
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; }
-html, body { transition: background-color 0.45s ease, color 0.35s ease; }
+/* Theme toggles must NOT animate a full-viewport background: a 0.45s
+   background-color transition repaints the entire page every frame. The swap
+   is instant; cards/sticky-header still transition locally for polish. */
+html, body { transition: none; }
 body {
   font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
   font-size: 15px;
@@ -95,28 +98,25 @@ body {
   min-height: 100vh;
   position: relative;
   overflow-x: hidden;
-}
-
-/* ── Static background mesh ──
-   Keep the atmosphere, but do not animate a full-viewport layer. A continuous
-   transformed gradient can trigger compositor work while users scroll or type.
-*/
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background:
+  /* Static background mesh — painted once into the body layer, no fixed
+     overlay, no per-frame compositor work while scrolling or typing. */
+  background-image:
     radial-gradient(ellipse 80% 60% at 20% 10%, var(--accent-glow), transparent 50%),
     radial-gradient(ellipse 60% 80% at 85% 90%, rgba(22,22,22,0.03), transparent 50%),
     radial-gradient(ellipse 50% 50% at 50% 50%, rgba(22,22,22,0.02), transparent 50%);
 }
-[data-theme="dark"] body::before {
-  background:
+[data-theme="dark"] body {
+  background-image:
     radial-gradient(ellipse 80% 60% at 20% 10%, var(--accent-glow), transparent 50%),
     radial-gradient(ellipse 60% 80% at 85% 90%, rgba(237,230,219,0.02), transparent 50%),
     radial-gradient(ellipse 50% 50% at 50% 50%, rgba(237,230,219,0.015), transparent 50%);
+}
+/* background-attachment: fixed re-rasterizes the whole backdrop on scroll in
+   iOS Safari — worse than the layer it replaces. Keep the pinned mesh only on
+   desktop; on mobile let it scroll with the page (visually identical, zero
+   repaint cost). */
+@media (min-width: 640px) {
+  body, [data-theme="dark"] body { background-attachment: fixed; }
 }
 
 h1, h2, h3 { margin: 0; font-weight: 500; letter-spacing: -0.01em; }
@@ -1131,8 +1131,7 @@ input[type='checkbox'] {
 }
 
 @media print {
-  body { background: white; color: black; }
-  body::before { display: none; }
+  body { background: white; color: black; background-image: none; }
   .card { border: 1px solid #ddd; box-shadow: none; }
 }
 
@@ -1310,8 +1309,11 @@ input[type='checkbox'] {
    morning digest
    ══════════════════════════════════════════════════════════════ */
 :root {
-  --glass-blur: 18px;
-  --glass-sat: 1.4;
+  /* blur() samples the backdrop per frame — 18px over a busy page is the
+     single most expensive backdrop-filter config. 8px reads as frosted glass
+     at a fraction of the cost; saturate 1.15 keeps colors vivid. */
+  --glass-blur: 8px;
+  --glass-sat: 1.15;
   --glass-highlight: rgba(255, 255, 255, 0.65);
   --glass-inner: rgba(255, 255, 255, 0.06);
 }
