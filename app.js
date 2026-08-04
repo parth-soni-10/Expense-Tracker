@@ -1273,11 +1273,15 @@ function advanceRecurringDate(current, freq, dayOfMonth) {
     return utcDateKey(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
   }
   if (freq === 'monthly') {
-    // 1-based month (e.g. 8 for August), advance by one.
+    // `month` from the ISO split is 1-based (8 = August). Advance by one
+    // month, then convert back to utcDateKey's 0-based index. The old code
+    // passed the 1-based value straight through, so every monthly advance
+    // skipped a month (Aug → Oct instead of Sep).
     const rawMonth = month + 1;
     const nextYear = year + Math.floor(rawMonth / 12);
-    const normalizedMonth = rawMonth % 12;
-    return utcDateKey(nextYear, normalizedMonth, Math.min(Number(dayOfMonth) || day, daysInMonthParts(nextYear, normalizedMonth)));
+    const normalized1Based = rawMonth % 12 || 12;
+    const monthIndex = normalized1Based - 1;
+    return utcDateKey(nextYear, monthIndex, Math.min(Number(dayOfMonth) || day, daysInMonthParts(nextYear, monthIndex)));
   }
   return current;
 }
@@ -1303,16 +1307,30 @@ function computeInitialNextDate(freq, dayOfMonth) {
 }
 
 function paidRecurring(rec) {
+  // The Paid button commits the pending occurrence. Same code path as the
+  // upcoming-strip "Add now" button, just without a custom date.
+  return payRecurringOn(rec, rec.nextDate);
+}
+
+/** Log an entry for a recurring item on a specific date, advancing nextDate
+ *  only when that occurrence was the pending one. Undo removes the entry and
+ *  restores nextDate. */
+function payRecurringOn(rec, dateStr) {
   const entry = {
-    id: uid(), createdAt: nowIso(), date: rec.nextDate, type: rec.type,
+    id: uid(), createdAt: nowIso(), date: dateStr, type: rec.type,
     category: rec.category || 'misc', details: rec.details,
     amount: rec.amount, method: rec.method, note: rec.note || '',
   };
   const oldDate = rec.nextDate;
   state.entries.push(entry);
   state.entries.sort((a, b) => a.date.localeCompare(b.date));
-  // Advance nextDate
-  rec.nextDate = advanceRecurringDate(rec.nextDate, rec.frequency, rec.dayOfMonth);
+  // Advance the schedule past the paid date so the same logical charge can
+  // never be paid twice — whether this is the pending occurrence or an early
+  // pre-pay from the upcoming strip. ISO dates compare correctly as strings.
+  let guard = 0;
+  while (rec.nextDate <= dateStr && guard++ < 12) {
+    rec.nextDate = advanceRecurringDate(rec.nextDate, rec.frequency, rec.dayOfMonth);
+  }
   persist();
   trackAction(() => {
     state.entries = state.entries.filter(e => e.id !== entry.id);
@@ -1321,6 +1339,33 @@ function paidRecurring(rec) {
   }, `Paid ${rec.details}`, [entry]);
   toast(`Paid: ${rec.details} — ${fmt(rec.amount)}`);
   render();
+}
+
+/** Skip the next occurrence without logging an entry; undo restores the date. */
+function skipRecurring(rec, dateStr = rec.nextDate) {
+  const oldDate = rec.nextDate;
+  let guard = 0;
+  while (rec.nextDate <= dateStr && guard++ < 12) {
+    rec.nextDate = advanceRecurringDate(rec.nextDate, rec.frequency, rec.dayOfMonth);
+  }
+  persist();
+  trackAction(() => { rec.nextDate = oldDate; persist(); }, `Restored "${rec.details}"`);
+  toast(`Skipped: ${rec.details} — next ${friendlyDate(rec.nextDate)}`);
+  render();
+}
+
+/** Next occurrences of a recurring item within a horizon (default 30 days). */
+function upcomingOccurrences(rec, horizonDays = 30) {
+  const out = [];
+  let date = rec.nextDate;
+  let guard = 0;
+  while (guard++ < 60) {
+    const d = daysUntil(date);
+    if (d > horizonDays) break;
+    if (d >= 0) out.push(date);
+    date = advanceRecurringDate(date, rec.frequency, rec.dayOfMonth);
+  }
+  return out.slice(0, 6);
 }
 
 // ---------- Tesco pay helpers ----------
@@ -1698,6 +1743,35 @@ function monthComparison(key = monthKey(today())) {
   return { current, previous, previousKey, difference, percent };
 }
 
+function computeRunway(balance, key = monthKey(today())) {
+  // Callers already hold the running balance (screenDashboard computes it once
+  // at the top), so accept it rather than re-running a full balance pass.
+  const forecast = spendingForecast(key);
+  const dailyAvg = forecast.dailyAverage;
+  const daysLeft = Math.max(0, forecast.totalDays - forecast.elapsed);
+  const projectedEnd = balance - dailyAvg * daysLeft;
+  const daysToZero = balance > 0 && dailyAvg > 0 ? Math.floor(balance / dailyAvg) : null;
+  return { balance, dailyAvg, projectedEnd, daysToZero };
+}
+
+function computeMilestones() {
+  const days = new Set(state.entries.map(e => e.date));
+  let streak = 0;
+  const cursor = new Date();
+  // Grace: a streak still counts if today isn't logged yet but yesterday is.
+  if (!days.has(localDateKey(cursor))) cursor.setDate(cursor.getDate() - 1);
+  while (days.has(localDateKey(cursor))) { streak++; cursor.setDate(cursor.getDate() - 1); }
+  const budget = +state.settings.monthlyBudget || 0;
+  let monthsUnderBudget = 0;
+  if (budget > 0) {
+    for (const key of new Set(state.entries.map(e => monthKey(e.date)))) {
+      const spent = entriesForMonth(key).filter(isSpendingEntry).reduce((s, e) => s + e.amount, 0);
+      if (spent > 0 && spent <= budget) monthsUnderBudget++;
+    }
+  }
+  return { streak, monthsUnderBudget, entryCount: state.entries.length };
+}
+
 function checkpointCoversVersion(version, checkpoint) {
   if (!version || !checkpoint || checkpoint.date === '1970-01-01') return false;
   const versionTime = version.createdAt ? Date.parse(version.createdAt) : NaN;
@@ -1859,6 +1933,14 @@ function currentRoute() {
 }
 window.addEventListener('hashchange', render);
 
+// Global command palette — Ctrl/Cmd+K from anywhere.
+window.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (_palette) closePalette(); else openPalette();
+  }
+});
+
 // ---------- DOM helpers ----------
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const SVG_TAGS = new Set(['svg', 'circle', 'path', 'line', 'rect', 'polyline', 'polygon', 'g', 'text', 'tspan', 'defs', 'use', 'marker', 'ellipse', 'linearGradient', 'stop']);
@@ -1888,6 +1970,13 @@ function $(tag, attrs = {}, ...children) {
   return el;
 }
 
+function toggleDarkMode() {
+  const html = document.documentElement;
+  const wasDark = html.dataset.theme === 'dark';
+  html.dataset.theme = wasDark ? '' : 'dark';
+  try { localStorage.setItem('cents-theme', wasDark ? 'light' : 'dark'); } catch (e) {}
+}
+
 function renderHeader() {
   const route = currentRoute();
   const locked = hasPinLock() && !pinUnlocked;
@@ -1901,18 +1990,16 @@ function renderHeader() {
     ),
     $('div', { class: 'header-actions', style: locked ? 'display:none;' : '' },
       $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Instrument Serif",serif;font-style:italic;font-size:14px;color:var(--muted);' }),      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
-         const html = document.documentElement;
-         const isDark = html.dataset.theme === 'dark';
-         const nextTheme = isDark ? 'light' : 'dark';
-         html.dataset.theme = isDark ? '' : 'dark';
-         event.currentTarget.setAttribute('aria-pressed', String(!isDark));
-         event.currentTarget.setAttribute('aria-label', `Switch to ${isDark ? 'dark' : 'light'} mode`);
-         event.currentTarget.setAttribute('title', `Switch to ${isDark ? 'dark' : 'light'} mode`);
-         try { localStorage.setItem('cents-theme', nextTheme); } catch(e) {}
+         const wasDark = document.documentElement.dataset.theme === 'dark';
+         toggleDarkMode();
+         event.currentTarget.setAttribute('aria-pressed', String(!wasDark));
+         event.currentTarget.setAttribute('aria-label', `Switch to ${wasDark ? 'dark' : 'light'} mode`);
+         event.currentTarget.setAttribute('title', `Switch to ${wasDark ? 'dark' : 'light'} mode`);
        } },
         $('span', { class: 'icon-sun', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>' }),
         $('span', { class: 'icon-moon', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>' }),
       ),
+      $('button', { class: 'nav-action', onClick: openPalette, title: 'Search entries and actions (Ctrl/Cmd+K)' }, '⌘K Search'),
       hasPinLock() ? $('button', { class: 'nav-action', onClick: lockApp, title: 'Lock app' }, 'Lock') : null,
       $('button', { class: 'nav-action', onClick: openPinSettings }, 'PIN'),
       $('button', { class: 'nav-action', onClick: openSyncSettings }, 'Sync'),
@@ -2374,6 +2461,39 @@ function screenDashboard() {
     ),
   ));
 
+  // Streak + milestone chips — personality that rewards consistency.
+  const ms = computeMilestones();
+  const chips = [];
+  if (ms.entryCount > 0) chips.push($('span', { class: 'pill', title: 'Total entries logged' }, `📒 ${ms.entryCount} entr${ms.entryCount === 1 ? 'y' : 'ies'} logged`));
+  if (ms.streak >= 2) chips.push($('span', { class: 'pill', title: 'Consecutive days with at least one entry' }, `🔥 ${ms.streak}-day streak`));
+  if (ms.monthsUnderBudget >= 1) chips.push($('span', { class: 'pill', title: 'Months where spending stayed within budget' }, `🏅 ${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget`));
+  if (chips.length) screen.appendChild($('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px;' }, ...chips));
+
+  // Cash-flow runway — the "am I okay?" answer.
+  const runway = computeRunway(runningBalance);
+  if (runway.dailyAvg > 0) {
+    const tone = runway.balance <= 0 || (runway.daysToZero !== null && runway.daysToZero <= 30) ? 'var(--negative)' : 'var(--positive)';
+    const message = runway.balance <= 0
+      ? 'Your balance is at or below zero — take a look at this month’s spending.'
+      : runway.daysToZero !== null && runway.daysToZero <= 30
+        ? `At your current pace, your balance reaches €0 in about ${Math.max(1, runway.daysToZero)} days.`
+        : `At your current pace, you’ll have about ${fmt(runway.projectedEnd)} left at the start of next month.`;
+    screen.appendChild($('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+      $('div', { class: 'pulse-heading' },
+        $('div', null,
+          $('div', { class: 'eyebrow' }, 'Cash runway'),
+          $('div', { class: 'serif pulse-message', style: 'font-size:18px;' }, message),
+        ),
+        $('span', { class: 'pulse-status', style: `color:${tone};border-color:${tone};` }, runway.daysToZero !== null && runway.daysToZero <= 30 ? 'Watch out' : 'Comfortable'),
+      ),
+      $('div', { class: 'pulse-grid' },
+        stat('Runway', runway.daysToZero !== null ? `${runway.daysToZero} days` : '—'),
+        stat('Daily pace', fmt(runway.dailyAvg)),
+        stat('Month-end projection', fmt(runway.projectedEnd)),
+      ),
+    ));
+  }
+
   // A compact financial pulse makes the dashboard answer the three questions
   // users ask most often: how much is spent, what is projected, and whether the
   // current pace is safe. It is display-only; all values come from existing
@@ -2515,6 +2635,35 @@ function screenDashboard() {
       ),
   );
   screen.appendChild(recCard);
+
+  // Upcoming strip — the next 30 days of scheduled recurring charges, each
+  // payable one-tap without waiting for the due date.
+  const upcoming = [];
+  for (const r of allRecurring) for (const date of upcomingOccurrences(r)) upcoming.push({ rec: r, date });
+  upcoming.sort((a, b) => a.date.localeCompare(b.date));
+  if (upcoming.length) {
+    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+      $('div', { class: 'row between', style: 'margin-bottom:8px;' },
+        $('span', { class: 'eyebrow' }, 'Upcoming · next 30 days'),
+        $('span', { class: 'muted', style: 'font-size:11px;' }, 'Pre-pay a scheduled charge any day it falls due.'),
+      ),
+      $('div', { style: 'display:flex;flex-direction:column;' },
+        ...upcoming.slice(0, 6).map(item => $('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;' },
+          $('div', { style: 'display:flex;align-items:center;gap:10px;min-width:0;flex:1;' },
+            $('span', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, item.rec.details),
+            $('span', { class: 'pill', style: 'border-color:transparent;font-size:10px;flex-shrink:0;' }, item.rec.method),
+            $('span', { class: 'muted', style: 'font-size:11px;flex-shrink:0;' }, friendlyDate(item.date)),
+          ),
+          $('div', { style: 'display:flex;align-items:center;gap:10px;flex-shrink:0;' },
+            $('span', { class: 'display-num', style: `font-size:13px;color:${item.rec.type === 'credit' ? 'var(--positive)' : 'var(--ink)'};` }, (item.rec.type === 'credit' ? '+' : '') + fmt(item.rec.amount)),
+            $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:4px 12px;font-size:11px;', onClick: () => skipRecurring(item.rec, item.date) }, 'Skip'),
+            $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:4px 12px;font-size:11px;', onClick: () => payRecurringOn(item.rec, item.date) }, 'Add now'),
+          ),
+        )),
+      ),
+      upcoming.length > 6 ? $('div', { class: 'muted', style: 'font-size:11px;margin-top:8px;' }, `…and ${upcoming.length - 6} more in the next 30 days.`) : null,
+    ));
+  }
 
   // Category breakdown + recent
   const grid = $('div', { class: 'dashboard-grid', style: 'display:grid;grid-template-columns:1fr;gap:24px;align-items:start;' });
@@ -2687,6 +2836,15 @@ function emptyIcon(kind) {
   const span = $('span', { class: 'empty-icon', style: 'display:block;margin:0 auto 12px;opacity:0.3;' });
   span.innerHTML = emptySVG(kind);
   return span;
+}
+
+function emptyStateCard({ icon = 'receipt', title, blurb, actionLabel = null, actionHref = null }) {
+  return $('div', { class: 'card empty-state', style: 'padding:48px 24px;text-align:center;' },
+    emptyIcon(icon),
+    $('div', { class: 'serif', style: 'font-size:22px;font-style:italic;margin-bottom:6px;' }, title),
+    $('div', { class: 'muted', style: 'font-size:13px;margin:0 auto 18px;max-width:360px;line-height:1.5;' }, blurb),
+    actionLabel && actionHref ? $('a', { href: actionHref, class: 'btn btn-primary' }, actionLabel) : null,
+  );
 }
 
 function stat(label, value) {
@@ -2925,6 +3083,13 @@ function screenAdd() {
     $('span', { class: 'pill add-flow-hint' }, '⌘ / Ctrl + N'),
   ));
 
+  if (state.entries.length === 0) {
+    c.appendChild($('div', { class: 'card', style: 'max-width:540px;margin:0 auto 20px;padding:20px 22px;text-align:center;' },
+      $('div', { class: 'serif', style: 'font-size:19px;font-style:italic;' }, 'You’re starting fresh.'),
+      $('div', { class: 'muted', style: 'font-size:12px;margin-top:4px;' }, 'Every tracker begins with one entry. Add your first one below — the magic field understands plain English.'),
+    ));
+  }
+
   // Natural-language and structured voice entry
   const magicInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => {
     const parsed = parseNaturalLanguage(e.target.value);
@@ -2987,8 +3152,16 @@ function screenAdd() {
 
 // ---------- screens: history ----------
 function screenHistory() {
+  if (state.entries.length === 0) {
+    const emptyC = $('section', { class: 'page-section', 'aria-label': 'History' });
+    emptyC.appendChild($('div', { class: 'page-title-row' }, $('h1', { class: 'page-title' }, 'History')));
+    emptyC.appendChild(emptyStateCard({ icon: 'receipt', title: 'Nothing logged yet', blurb: 'Your history will appear here as you track expenses and income.', actionLabel: 'Add your first entry', actionHref: '#add' }));
+    return emptyC;
+  }
   const params = new URLSearchParams((location.hash.split('?')[1]) || '');
   let activeMonth = params.get('month') || monthKey(today());
+  let activeDay = params.get('day') || null;
+  if (activeDay && !/^\d{4}-\d{2}-\d{2}$/.test(activeDay)) activeDay = null;
   let activeCat = params.get('cat') || 'all';
   let activeMethod = params.get('method') || 'all';
   let searchQuery = params.get('q') || '';
@@ -3002,12 +3175,17 @@ function screenHistory() {
   const monthEntries = entriesForMonth(activeMonth);
   const filtered = searchEntries(monthEntries, searchQuery, { type: 'all', category: activeCat, method: activeMethod });
   // Sort a copy so filtering/history presentation never mutates persisted order.
-  const visible = [...filtered].sort((a, b) => b.date.localeCompare(a.date)
+  let visible = [...filtered].sort((a, b) => b.date.localeCompare(a.date)
     || ((b.createdAt || '')).localeCompare(a.createdAt || '')
     || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  if (activeDay) visible = visible.filter(e => e.date === activeDay);
   const expenseSum = monthEntries.filter(isSpendingEntry).reduce((s, e) => s + e.amount, 0);
   const update = (next = {}) => {
-    if (next.month !== undefined) params.set('month', next.month);
+    if (next.month !== undefined) { params.set('month', next.month); params.delete('day'); }
+    if (next.day !== undefined) {
+      if (next.day) params.set('day', next.day);
+      else params.delete('day');
+    }
     if (next.cat !== undefined) {
       if (next.cat === 'all') params.delete('cat');
       else params.set('cat', next.cat);
@@ -3034,6 +3212,8 @@ function screenHistory() {
       monthNav('→', () => { const i = months.indexOf(activeMonth); if (i > 0) update({ month: months[i - 1] }); }, months.indexOf(activeMonth) <= 0),
     ),
   ));
+
+  c.appendChild(calendarCard(activeMonth, activeDay, (ds) => update({ day: activeDay === ds ? '' : ds })));
 
   const historyAccountMethods = METHODS.filter(m => ACCOUNT_METHOD_IDS.includes(m.id));
   c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
@@ -3152,7 +3332,7 @@ function screenHistory() {
 
   const tableWrap = $('div', { class: 'card', style: 'overflow-x:auto;' });
   if (visible.length === 0) {
-    tableWrap.appendChild($('div', { class: 'empty' }, emptyIcon('receipt'), searchQuery ? ' No results for this search.' : ' Nothing here for this filter.'));
+    tableWrap.appendChild($('div', { class: 'empty' }, emptyIcon('receipt'), searchQuery ? ' No results for this search.' : activeDay ? ` No entries on ${friendlyDate(activeDay)}.` : ' Nothing here for this filter.'));
   } else {
     tableWrap.appendChild($('div', { role: 'row', style: 'display:grid;grid-template-columns:36px 90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);min-width:780px;' },
       $('span', { role: 'columnheader' }, $('input', { type: 'checkbox', 'data-bulk': '', 'aria-label': 'Select all visible', title: 'Select all visible', onChange: (ev) => {
@@ -3222,6 +3402,42 @@ function screenHistory() {
   ));
 
   return c;
+}
+
+function calendarCard(activeMonth, activeDay, onDayChange) {
+  const [y, m] = activeMonth.split('-').map(Number);
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const monAdjusted = (new Date(Date.UTC(y, m - 1, 1)).getUTCDay() + 6) % 7;
+  const byDay = {};
+  for (const e of entriesForMonth(activeMonth)) if (isSpendingEntry(e)) byDay[e.date] = (byDay[e.date] || 0) + e.amount;
+  const maxDay = Math.max(1, ...Object.values(byDay));
+  const cells = [];
+  for (let i = 0; i < monAdjusted; i++) cells.push($('div', { class: 'cal-cell cal-empty' }));
+  for (let d = 1; d <= lastDay; d++) {
+    const ds = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const val = byDay[ds] || 0;
+    const size = val ? 4 + Math.round((val / maxDay) * 8) : 0;
+    cells.push($('button', { type: 'button', class: 'cal-cell cal-day', ...(ds === activeDay ? { 'data-selected': '' } : null), ...(ds === today() ? { 'data-today': '' } : null), 'aria-label': `${friendlyDate(ds)}${val ? `, spent ${fmt(val)}` : ''}`, title: val ? `${friendlyDate(ds)} · ${fmt(val)}` : friendlyDate(ds), onClick: () => onDayChange(ds) },
+      $('span', { class: 'cal-num' }, String(d)),
+      val ? $('span', { class: 'cal-dot', style: `width:${size}px;height:${size}px;` }) : null,
+    ));
+  }
+  return $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+    $('div', { class: 'row between', style: 'margin-bottom:14px;' },
+      $('div', null,
+        $('div', { class: 'eyebrow' }, 'Calendar'),
+        $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, activeDay ? `Showing ${friendlyDate(activeDay)}.` : 'Tap a day to filter the entries below.'),
+      ),
+      activeDay ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:12px;', onClick: () => onDayChange('') }, 'Clear') : null,
+    ),
+    $('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:4px;' },
+      ...['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(l => $('div', { class: 'cal-dow' }, l)),
+      ...cells,
+    ),
+    $('div', { style: 'display:flex;align-items:center;gap:6px;margin-top:10px;font-size:10px;color:var(--muted);' },
+      $('span', null, 'Less'), ...[0.2, 0.4, 0.6, 0.8, 1].map(p => $('span', { style: `display:inline-block;width:10px;height:10px;border-radius:50%;background:${heatColor(p)};opacity:0.85;` })), $('span', null, 'More'),
+    ),
+  );
 }
 
 function monthNav(label, onClick, disabled) {
@@ -3329,6 +3545,10 @@ function screenInsights() {
     ) : null,
   ));
 
+  if (state.entries.length === 0) {
+    c.appendChild(emptyStateCard({ icon: 'chart', title: 'No data yet', blurb: 'Log a few expenses and your spending story, heatmap and charts will appear here.', actionLabel: 'Add your first entry', actionHref: '#add' }));
+  }
+
   c.appendChild($('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px;margin-bottom:32px;' },
     statCard('Average / month', avg, 'ins-avg'),
     statCard('Top method', topMethodEntry ? `${(methodShort(topMethodEntry[0]))} · ${fmt(topMethodEntry[1])}` : '—'),
@@ -3393,7 +3613,7 @@ function screenInsights() {
       : $('div', { style: 'display:flex;flex-direction:column;gap:22px;' },
           donutChart(catRows),
           $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
-            ...catRows.map(([cat, val]) => bar(categoryLabel(cat), val, maxCat, val === maxCat)),
+            ...catRows.map(([cat, val]) => barWithSpark(cat, val, maxCat, val === maxCat)),
           ),
         ),
   ));
@@ -3403,6 +3623,16 @@ function screenInsights() {
     $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Month by month'),
     monthOverMonthChart(),
   ));
+
+  // Category mix over time — stacked areas, so the shape of spending is readable
+  // month to month without losing the category breakdown.
+  const stacked = stackedAreaChart();
+  if (stacked) {
+    c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+      $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Category mix over time'),
+      stacked,
+    ));
+  }
 
   const methodRows = Object.entries(methodTotals).sort((a,b)=>b[1]-a[1]);
   const maxMethod = methodRows[0]?.[1] || 1;
@@ -3504,6 +3734,44 @@ function bar(label, value, max, isMax) {
   );
 }
 
+// ---------- category bars with sparkline ----------
+/** Monthly spending totals for a category over the last N months. */
+function categorySparkData(catId, months = 12) {
+  const now = new Date();
+  const keys = [];
+  for (let i = months - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return keys.map(key => entriesForMonth(key).filter(e => isSpendingEntry(e) && e.category === catId).reduce((s, e) => s + e.amount, 0));
+}
+
+function sparklinePath(values, w = 60, h = 20) {
+  const mn = Math.min(...values), mx = Math.max(...values);
+  const rng = mx - mn || 1;
+  const step = values.length > 1 ? w / (values.length - 1) : 0;
+  return values.map((v, i) => `${i === 0 ? 'M' : 'L'} ${(i * step).toFixed(1)} ${(h - 3 - ((v - mn) / rng) * (h - 6)).toFixed(1)}`).join(' ');
+}
+
+function barWithSpark(cat, val, max, isMax) {
+  const values = categorySparkData(cat);
+  const hasSpark = values.some(v => v > 0);
+  return $('div', null,
+    $('div', { class: 'row between', style: 'font-size:13px;margin-bottom:8px;' },
+      $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' },
+        hasSpark ? $('svg', { width: '60', height: '20', 'aria-hidden': 'true', style: 'flex-shrink:0;' },
+          $('path', { d: sparklinePath(values), style: 'fill:none;stroke:var(--accent);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;' }),
+        ) : null,
+        $('span', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, categoryLabel(cat)),
+      ),
+      $('span', { class: 'display-num', style: 'font-size:14px;' }, fmt(val)),
+    ),
+    $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
+      $('div', { style: `height:100%;width:${(val / max) * 100}%;background:${isMax ? 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))' : 'linear-gradient(90deg, var(--ink), var(--muted))'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
+    ),
+  );
+}
+
 // ---------- donut chart ----------
 // SVG donut built from stroke-dasharray segments. Starts at 12 o'clock and
 // sweeps clockwise; the centre shows the total. Legend lists share per slice.
@@ -3585,6 +3853,45 @@ function monthOverMonthChart() {
       $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: 'width:8px;height:8px;border-radius:2px;background:var(--positive);' }), 'Income'),
     ),
     $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Monthly spending vs income, last 12 months', style: 'width:100%;height:auto;' }, ...rects, ...labels),
+  );
+}
+
+// ---------- stacked area chart ----------
+// Category mix over the last 12 months as stacked SVG areas. Top 6 categories
+// by total spend; everything else is folded out so the legend stays readable.
+function stackedAreaChart() {
+  const now = new Date();
+  const months = [];
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+  const totals = {};
+  for (const key of months) {
+    for (const e of entriesForMonth(key)) if (isSpendingEntry(e)) totals[e.category] = (totals[e.category] || 0) + e.amount;
+  }
+  const topCats = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([c]) => c);
+  if (!topCats.length) return null;
+  const series = topCats.map(cat => months.map(key => entriesForMonth(key).filter(e => isSpendingEntry(e) && e.category === cat).reduce((s, e) => s + e.amount, 0)));
+  const W = 640, H = 170, padL = 8, padR = 8, padB = 24, padT = 10;
+  const maxTotal = Math.max(1, ...months.map((_, i) => topCats.reduce((s, __, ci) => s + series[ci][i], 0)));
+  const xAt = i => padL + (months.length === 1 ? 0 : i * ((W - padL - padR) / (months.length - 1)));
+  const yAt = v => H - padB - (v / maxTotal) * (H - padB - padT);
+  const layers = topCats.map((cat, ci) => {
+    const stack = series[ci].map((v, i) => {
+      const base = ci === 0 ? 0 : topCats.slice(0, ci).reduce((s, __, cj) => s + series[cj][i], 0);
+      return { top: base + v, bottom: base };
+    });
+    const fwd = stack.map((s, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i).toFixed(1)} ${yAt(s.top).toFixed(1)}`).join(' ');
+    const back = stack.slice().reverse().map((s, i) => `L ${xAt(months.length - 1 - i).toFixed(1)} ${yAt(s.bottom).toFixed(1)}`).join(' ');
+    return $('path', { d: `${fwd} ${back} Z`, style: `fill:${DONUT_PALETTE[ci % DONUT_PALETTE.length]};opacity:0.85;` });
+  });
+  const labels = months.map((key, i) => $('text', { x: xAt(i), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === months.length - 1 ? 'end' : 'middle', style: 'fill:var(--muted);font-size:9px;' }, monthLabel(key).split(' ')[0].slice(0, 3)));
+  return $('div', { class: 'chart-fade' },
+    $('div', { style: 'display:flex;gap:14px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:10px;' },
+      ...topCats.map((cat, ci) => $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: `width:8px;height:8px;border-radius:2px;background:${DONUT_PALETTE[ci % DONUT_PALETTE.length]};flex-shrink:0;` }), categoryLabel(cat))),
+    ),
+    $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Category mix over the last 12 months', style: 'width:100%;height:auto;' }, ...layers, ...labels),
   );
 }
 
@@ -4049,6 +4356,107 @@ function openSyncSettings() {
 
   renderBody();
   queueMicrotask(() => modal.querySelector('input')?.focus());
+}
+
+// ---------- command palette ----------
+// Ctrl/Cmd+K (or the header Search chip) opens a fuzzy search across entries,
+// month jumps and quick actions. Renders above the app mount, so re-renders of
+// the screens never disturb it.
+let _palette = null;
+let _paletteOnKey = null;
+function closePalette() {
+  if (!_palette) return;
+  const bg = _palette;
+  _palette = null;
+  document.removeEventListener('keydown', _paletteOnKey, true);
+  bg.remove();
+}
+function openPalette() {
+  if (_palette) { closePalette(); return; }
+  if (hasPinLock() && !pinUnlocked) return;
+  const bg = $('div', { class: 'modal-bg palette-bg', onClick: (ev) => { if (ev.target === bg) closePalette(); } });
+  const input = $('input', { type: 'text', placeholder: 'Search entries, jump to a month, run an action…', 'aria-label': 'Search entries and actions', autocomplete: 'off', spellcheck: 'false' });
+  const results = $('div', { class: 'palette-results' });
+  const modal = $('div', { class: 'modal palette-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Command palette', tabindex: '-1' },
+    $('div', { class: 'palette-input-row' },
+      $('span', { class: 'palette-icon', 'aria-hidden': 'true' }, '⌘'),
+      input,
+      $('kbd', { class: 'palette-kbd' }, 'esc'),
+    ),
+    results,
+    $('div', { class: 'palette-hint' }, '↑↓ navigate · ↵ open · esc close'),
+  );
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+  _palette = bg;
+
+  let selectedIndex = 0;
+  let items = [];
+
+  const markActive = () => {
+    [...results.children].forEach((row, i) => {
+      if (i === selectedIndex) row.setAttribute('data-active', '');
+      else row.removeAttribute('data-active');
+    });
+    results.children[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+  };
+
+  const renderResults = () => {
+    const q = input.value.trim().toLowerCase();
+    items = [];
+    // Quick actions — always available, filtered by the query below.
+    items.push(
+      { kind: 'action', label: 'New entry', hint: 'add', run: () => { closePalette(); location.hash = '#add'; } },
+      { kind: 'action', label: 'Go to History', hint: 'history', run: () => { closePalette(); location.hash = '#history'; } },
+      { kind: 'action', label: 'Go to Insights', hint: 'insights', run: () => { closePalette(); location.hash = '#insights'; } },
+      { kind: 'action', label: 'Year in review', hint: 'modal', run: () => { closePalette(); openYearInReview(); } },
+      { kind: 'action', label: 'Sync settings', hint: 'modal', run: () => { closePalette(); openSyncSettings(); } },
+      { kind: 'action', label: hasPinLock() ? 'Lock app' : 'Set a PIN', hint: 'privacy', run: () => { closePalette(); if (hasPinLock()) lockApp(); else openPinSettings(); } },
+      { kind: 'action', label: 'Toggle dark mode', hint: 'theme', run: () => { toggleDarkMode(); render(); } },
+    );
+    // Month jumps — only while typing so the list stays focused.
+    if (q) {
+      const months = Array.from(new Set(state.entries.map(e => monthKey(e.date)))).sort((a, b) => b.localeCompare(a)).slice(0, 12);
+      for (const key of months) {
+        if (fuzzyMatch(monthLabel(key), q)) items.push({ kind: 'month', label: `Go to ${monthLabel(key)}`, hint: key, run: () => { closePalette(); location.hash = `history?month=${key}`; } });
+      }
+    }
+    // Entry matches — newest first, capped for responsiveness.
+    if (q) {
+      const all = [...state.entries].sort((a, b) => b.date.localeCompare(a.date) || (a.id < b.id ? 1 : -1));
+      for (const e of all) {
+        const hay = `${e.details || ''} ${e.note || ''} ${categoryLabel(e.category)} ${methodLabel(e.method)} ${fmt(e.amount)} ${friendlyDate(e.date)} ${e.type === 'credit' ? 'income' : 'expense'}`.toLowerCase();
+        if (!fuzzyMatch(hay, q)) continue;
+        items.push({ kind: 'entry', entry: e, label: e.details || '—', hint: `${friendlyDate(e.date)} · ${methodShort(e.method)} · ${e.type === 'credit' ? '+' : '−'}${fmt(e.amount)}`, run: () => { closePalette(); openEdit(e.id); } });
+        if (items.length >= 24) break;
+      }
+    }
+    if (q) items = items.filter(it => it.kind !== 'action' || fuzzyMatch(`${it.label} ${it.hint}`, q));
+    selectedIndex = 0;
+    results.innerHTML = '';
+    if (!items.length) {
+      results.appendChild($('div', { class: 'palette-empty' }, 'No matches.'));
+      return;
+    }
+    for (const it of items) {
+      results.appendChild($('button', { type: 'button', class: 'palette-row', onMouseEnter: () => { selectedIndex = items.indexOf(it); markActive(); }, onClick: () => it.run() },
+        $('span', { class: 'palette-row-label' }, it.label),
+        $('span', { class: 'palette-row-hint' }, it.hint),
+      ));
+    }
+    markActive();
+  };
+
+  _paletteOnKey = (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); closePalette(); return; }
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); if (items.length) { selectedIndex = (selectedIndex + 1) % items.length; markActive(); } }
+    if (ev.key === 'ArrowUp') { ev.preventDefault(); if (items.length) { selectedIndex = (selectedIndex - 1 + items.length) % items.length; markActive(); } }
+    if (ev.key === 'Enter' && items[selectedIndex]) { ev.preventDefault(); items[selectedIndex].run(); }
+  };
+  document.addEventListener('keydown', _paletteOnKey, true);
+  input.addEventListener('input', renderResults);
+  renderResults();
+  queueMicrotask(() => input.focus());
 }
 
 // ---------- toast ----------
