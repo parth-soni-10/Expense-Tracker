@@ -1991,11 +1991,10 @@ function renderHeader() {
         $('span', { class: 'icon-sun', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>' }),
         $('span', { class: 'icon-moon', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>' }),
       ),
-      $('button', { class: 'nav-action assistant-action', onClick: openAssistant, title: 'Ask your spend assistant about your money' }, '✦ Ask'),
-      hasPinLock() ? $('button', { class: 'nav-action', onClick: lockApp, title: 'Lock app' }, 'Lock') : null,
-      $('button', { class: 'nav-action', onClick: openPinSettings }, 'PIN'),
-      $('button', { class: 'nav-action', onClick: openSyncSettings }, 'Sync'),
-      $('button', { class: 'nav-action', onClick: () => { exportJSON(state); toast('Exported.'); } }, 'Export'),
+      $('button', { type: 'button', class: 'menu-trigger', title: 'Menu', 'aria-label': 'Open menu', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', onClick: toggleAppMenu },
+        $('span', { class: 'menu-trigger-icon icon-burger', 'aria-hidden': 'true', innerHTML: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>' }),
+        $('span', { class: 'menu-trigger-icon icon-close', 'aria-hidden': 'true', innerHTML: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>' }),
+      ),
     ),
   );
   queueMicrotask(renderSyncIndicator);
@@ -2004,6 +2003,223 @@ function renderHeader() {
 function titleFor(r) {
   return ({ dashboard: 'Dashboard', add: 'New entry', history: 'History', insights: 'Insights' })[r];
 }
+
+// ---------- animated drill-down menu ----------
+// Hamburger opens a springy, blur-backed panel (drawer on desktop, bottom
+// sheet on mobile). Rows with chevrons drill into submenus; each level
+// slides with a bounce while rows stagger in. Escape/back chevron pops back.
+let appMenu = null;   // { backdrop, panel, track, stack }
+
+const MENU_ICONS = {
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8.5" x2="12" y2="15.5"/><line x1="8.5" y1="12" x2="15.5" y2="12"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14.5"/></svg>',
+  chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/></svg>',
+  ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/></svg>',
+  appearance: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>',
+  cloud: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>',
+  data: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>',
+  back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"/></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
+};
+
+function menuRowEl({ icon, label, onClick = null, chevron = false, active = false, danger = false, check = false }) {
+  return $('button', { type: 'button', class: 'menu-row' + (active ? ' active' : '') + (danger ? ' danger' : ''), onClick },
+    $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[icon] || MENU_ICONS.home }),
+    $('span', { class: 'menu-row-label' }, label),
+    check ? $('span', { class: 'menu-row-check', 'aria-hidden': 'true', innerHTML: MENU_ICONS.check }) : null,
+    chevron ? $('span', { class: 'menu-row-chevron', 'aria-hidden': 'true', innerHTML: MENU_ICONS.chevron }) : null,
+  );
+}
+
+// A static info row (status display, not clickable).
+function menuInfoRow(label, value) {
+  return $('div', { class: 'menu-info' },
+    $('span', { class: 'muted', style: 'font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;' }, label),
+    $('span', { class: 'display-num', style: 'font-size:12px;' }, value),
+  );
+}
+
+function buildMenuLevel(id) {
+  const level = $('div', { class: 'menu-level', 'data-level': id });
+  const title = { root: 'Menu', appearance: 'Appearance', privacy: 'Privacy & security', sync: 'Cloud sync', data: 'Data' }[id] || 'Menu';
+  const head = $('div', { class: 'menu-head' });
+  if (id !== 'root') {
+    head.append($('button', { type: 'button', class: 'menu-back', 'aria-label': 'Back', onClick: menuBack, innerHTML: MENU_ICONS.back }));
+  }
+  head.append($('span', { class: 'menu-head-title serif' }, title));
+  if (id === 'root') {
+    head.append($('button', { type: 'button', class: 'menu-close', 'aria-label': 'Close menu', onClick: closeAppMenu, innerHTML: MENU_ICONS.close }));
+  } else {
+    head.append($('span', { class: 'menu-head-spacer' }));
+  }
+  level.append(head);
+
+  const list = $('div', { class: 'menu-list' });
+  if (id === 'root') {
+    const route = currentRoute();
+    ROUTES.forEach(r => list.append($('a', { href: `#${r}`, class: 'menu-row' + (r === route ? ' active' : ''), onClick: closeAppMenu },
+      $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', insights: 'chart' }[r]] }),
+      $('span', { class: 'menu-row-label' }, titleFor(r)),
+      r === route ? $('span', { class: 'menu-row-check', 'aria-hidden': 'true', innerHTML: MENU_ICONS.check }) : null,
+    )));
+    list.append($('div', { class: 'menu-sep' }));
+    list.append(menuRowEl({ icon: 'ask', label: 'Ask the spend assistant', onClick: () => { closeAppMenu(); openAssistant(); } }));
+    list.append(menuRowEl({ icon: 'appearance', label: 'Appearance', chevron: true, onClick: () => menuDrill('appearance') }));
+    list.append(menuRowEl({ icon: 'lock', label: 'Privacy & security', chevron: true, onClick: () => menuDrill('privacy') }));
+    list.append(menuRowEl({ icon: 'cloud', label: 'Cloud sync', chevron: true, onClick: () => menuDrill('sync') }));
+    list.append(menuRowEl({ icon: 'data', label: 'Data', chevron: true, onClick: () => menuDrill('data') }));
+  } else if (id === 'appearance') {
+    const dark = document.documentElement.dataset.theme === 'dark';
+    const setTheme = (wantDark) => {
+      if (dark !== wantDark) { toggleDarkMode(); }
+      menuRefreshLevel('appearance');
+    };
+    list.append(menuRowEl({ icon: 'appearance', label: 'Dark', active: dark, check: dark, onClick: () => setTheme(true) }));
+    list.append(menuRowEl({ icon: 'appearance', label: 'Light', active: !dark, check: !dark, onClick: () => setTheme(false) }));
+  } else if (id === 'privacy') {
+    const pinOn = hasPinLock();
+    list.append(menuInfoRow('Privacy lock', pinOn ? 'On' : 'Off'));
+    list.append(menuRowEl({ icon: 'lock', label: pinOn ? 'Change PIN' : 'Set a PIN', onClick: () => { closeAppMenu(); openPinSettings(); } }));
+    if (pinOn) list.append(menuRowEl({ icon: 'lock', label: 'Lock app now', onClick: () => { closeAppMenu(); lockApp(); } }));
+  } else if (id === 'sync') {
+    const s = getSyncSettings();
+    const st = syncStatus();
+    list.append(menuInfoRow('Status', s.enabled ? st.label : 'Off'));
+    list.append(menuRowEl({ icon: 'cloud', label: 'Sync settings', onClick: () => { closeAppMenu(); openSyncSettings(); } }));
+    if (s.enabled && s.endpoint && s.password) {
+      list.append(menuRowEl({ icon: 'cloud', label: 'Sync now', onClick: () => { scheduleSyncPush(); toast('Syncing…'); menuRefreshLevel('sync'); } }));
+    }
+  } else if (id === 'data') {
+    list.append(menuRowEl({ icon: 'data', label: 'Export data', onClick: () => { closeAppMenu(); exportJSON(state); toast('Exported.'); } }));
+    list.append(menuRowEl({ icon: 'data', label: 'Reset all data', danger: true, onClick: async () => {
+      closeAppMenu();
+      if (!(await swalConfirm({ title: 'Reset all data?', text: 'This clears every entry, balance checkpoint, and setting on this device. Continue?', confirmButtonText: 'Reset', danger: true }))) return;
+      syncRevision++;
+      state = resetToBlank();
+      clearBalanceCaches();
+      scheduleSyncPush();
+      render();
+      toast('All data cleared.');
+    } }));
+  }
+  level.append(list);
+  return level;
+}
+
+function openAppMenu() {
+  if (appMenu || (hasPinLock() && !pinUnlocked)) return;
+  const trigger = document.querySelector('.menu-trigger');
+  const backdrop = $('div', { class: 'menu-backdrop', onClick: ev => { if (ev.target === backdrop) closeAppMenu(); } });
+  const panel = $('div', { class: 'menu-panel', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Menu' });
+  const track = $('div', { class: 'menu-track' });
+  panel.append(track);
+  backdrop.append(panel);
+  document.body.appendChild(backdrop);
+  appMenu = { backdrop, panel, track, stack: [] };
+  document.body.classList.add('menu-open');
+  if (trigger) trigger.setAttribute('aria-expanded', 'true');
+  menuDrill('root', true);
+  document.addEventListener('keydown', onMenuKey, true);
+  queueMicrotask(() => { const first = panel.querySelector('.menu-row, .menu-back'); if (first) first.focus({ preventScroll: true }); });
+}
+
+function closeAppMenu() {
+  if (!appMenu) return;
+  const { backdrop, panel } = appMenu;
+  appMenu = null;
+  document.removeEventListener('keydown', onMenuKey, true);
+  document.body.classList.remove('menu-open');
+  const trigger = document.querySelector('.menu-trigger');
+  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  backdrop.classList.add('closing');
+  panel.classList.add('closing');
+  setTimeout(() => backdrop.remove(), 260);
+  if (trigger) queueMicrotask(() => trigger.focus({ preventScroll: true }));
+}
+
+function toggleAppMenu() {
+  if (appMenu) closeAppMenu();
+  else openAppMenu();
+}
+
+// Any route change (nav rows, bottom tab bar, logo click) dismisses the menu.
+window.addEventListener('hashchange', () => closeAppMenu());
+
+function onMenuKey(ev) {
+  if (ev.key === 'Escape') {
+    ev.preventDefault();
+    if (appMenu && appMenu.stack.length > 1) menuBack();
+    else closeAppMenu();
+  } else if (ev.key === 'Backspace' && appMenu && appMenu.stack.length > 1) {
+    ev.preventDefault();
+    menuBack();
+  } else if (ev.key === 'Tab' && appMenu) {
+    // Trap focus inside the dialog, mirroring the existing modal pattern.
+    const focusables = Array.from(appMenu.panel.querySelectorAll('button, a[href], [tabindex]:not([tabindex="-1"])'))
+      .filter(el => !el.disabled && el.offsetParent !== null);
+    if (!focusables.length) return;
+    const first = focusables[0], last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+    if (ev.shiftKey && active === first) { ev.preventDefault(); last.focus(); }
+    else if (!ev.shiftKey && active === last) { ev.preventDefault(); first.focus(); }
+  }
+}
+
+function menuDrill(id, first = false) {
+  if (!appMenu) return;
+  const { track, stack } = appMenu;
+  const old = track.querySelector('.menu-level');
+  const level = buildMenuLevel(id);
+  if (old && !first) {
+    old.classList.add('out-left');
+    level.classList.add('in-right');
+  } else if (old) {
+    old.classList.add('out');
+    level.classList.add('in-right');
+  }
+  track.append(level);
+  if (stack[stack.length - 1] !== id) stack.push(id);
+  // Stagger animation kicks in via .shown; request paint after insertion.
+  requestAnimationFrame(() => { level.classList.add('shown'); });
+  if (old) setTimeout(() => { if (old.parentNode === track) old.remove(); }, 320);
+}
+
+function menuBack() {
+  if (!appMenu || appMenu.stack.length <= 1) return;
+  appMenu.stack.pop();
+  const prevId = appMenu.stack[appMenu.stack.length - 1];
+  const { track } = appMenu;
+  const current = track.querySelector('.menu-level:last-child');
+  if (!current) return;
+  const prev = buildMenuLevel(prevId);
+  current.classList.add('out-right');
+  track.insertBefore(prev, current);
+  prev.classList.add('in-left');
+  requestAnimationFrame(() => {
+    prev.classList.add('shown');
+    // Keep keyboard/screen-reader users anchored after the level swap.
+    const target = prev.querySelector('.menu-back') || prev.querySelector('.menu-row');
+    if (target) target.focus({ preventScroll: true });
+  });
+  setTimeout(() => current.remove(), 300);
+}
+
+function menuRefreshLevel(id) {
+  if (!appMenu) return;
+  const { track, stack } = appMenu;
+  const levels = Array.from(track.querySelectorAll('.menu-level'));
+  const current = levels[levels.length - 1];
+  if (!current || current.dataset.level !== id) return;
+  const fresh = buildMenuLevel(id);
+  fresh.classList.add('in-right', 'shown');
+  track.replaceChild(fresh, current);
+  if (stack[stack.length - 1] !== id) stack.push(id);
+}
+
 
 // ---------- shared form ----------
 function formView({ initial = null, onSubmit }) {
