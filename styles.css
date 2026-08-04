@@ -1590,12 +1590,27 @@ body.menu-open { overflow: hidden; }
 .menu-backdrop {
   position: fixed; inset: 0; z-index: 55; /* below toasts (60), above modals (50) */
   display: flex; justify-content: flex-end;
-  background: rgba(22, 22, 22, 0.45);
-  -webkit-backdrop-filter: blur(10px) saturate(1.1);
-  backdrop-filter: blur(10px) saturate(1.1);
-  animation: menuBackdropIn 0.22s ease-out;
+  /* Perf: never animate the blurred element itself — that re-blurs the whole
+     page every frame. The blur stays constant; only the un-blurred scrim
+     (::before) fades in/out, so the compositor caches the blur layer. On
+     close, the blur eases back to 0 via a transition instead of popping. */
+  background: transparent;
+  -webkit-backdrop-filter: blur(8px) saturate(1.1);
+  backdrop-filter: blur(8px) saturate(1.1);
+  transition: -webkit-backdrop-filter 0.2s ease, backdrop-filter 0.2s ease;
 }
-.menu-backdrop.closing { animation: menuBackdropOut 0.24s ease-in forwards; }
+.menu-backdrop.closing {
+  -webkit-backdrop-filter: blur(0) saturate(1);
+  backdrop-filter: blur(0) saturate(1);
+}
+.menu-backdrop::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: rgba(22, 22, 22, 0.45);
+  pointer-events: none;
+  animation: menuBackdropIn 0.18s ease-out;
+}
+.menu-backdrop.closing::before { animation: menuBackdropOut 0.18s ease-in forwards; }
 @keyframes menuBackdropIn  { from { opacity: 0; } to { opacity: 1; } }
 @keyframes menuBackdropOut { to   { opacity: 0; } }
 
@@ -1603,14 +1618,15 @@ body.menu-open { overflow: hidden; }
   width: min(400px, 94vw);
   background: var(--bg);
   border-left: 1px solid var(--line);
-  box-shadow: var(--shadow-xl);
+  box-shadow: var(--shadow-lg);
   display: flex; flex-direction: column;
-  animation: menuPanelIn 0.5s cubic-bezier(0.34, 1.4, 0.44, 1);
+  animation: menuPanelIn 0.38s cubic-bezier(0.2, 0.9, 0.3, 1.2);
   overflow: hidden;
+  will-change: transform, opacity;
 }
-.menu-panel.closing { animation: menuPanelOut 0.24s ease-in forwards; }
-@keyframes menuPanelIn  { from { transform: translateX(48px); opacity: 0; } to { transform: none; opacity: 1; } }
-@keyframes menuPanelOut { to   { transform: translateX(48px); opacity: 0; } }
+.menu-panel.closing { animation: menuPanelOut 0.2s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
+@keyframes menuPanelIn  { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes menuPanelOut { to   { transform: translateX(40px); opacity: 0; } }
 
 .menu-track { position: relative; flex: 1; overflow: hidden; }
 
@@ -1619,16 +1635,18 @@ body.menu-open { overflow: hidden; }
   display: flex; flex-direction: column;
   background: var(--bg);
   overflow-y: auto;
+}
+.menu-level.in-right, .menu-level.in-left, .menu-level.out-left, .menu-level.out-right {
   will-change: transform, opacity;
 }
-.menu-level.in-right { animation: levelInRight 0.42s cubic-bezier(0.34, 1.3, 0.44, 1) both; }
-.menu-level.in-left  { animation: levelInLeft  0.42s cubic-bezier(0.34, 1.3, 0.44, 1) both; }
-.menu-level.out-left { animation: levelOutLeft 0.26s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
-.menu-level.out-right{ animation: levelOutRight 0.26s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
-@keyframes levelInRight  { from { transform: translateX(64px); opacity: 0; } to { transform: none; opacity: 1; } }
-@keyframes levelInLeft   { from { transform: translateX(-64px); opacity: 0; } to { transform: none; opacity: 1; } }
-@keyframes levelOutLeft  { to   { transform: translateX(-48px); opacity: 0; } }
-@keyframes levelOutRight { to   { transform: translateX(48px); opacity: 0; } }
+.menu-level.in-right { animation: levelInRight 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.15) both; }
+.menu-level.in-left  { animation: levelInLeft  0.3s cubic-bezier(0.2, 0.9, 0.3, 1.15) both; }
+.menu-level.out-left { animation: levelOutLeft 0.2s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
+.menu-level.out-right{ animation: levelOutRight 0.2s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
+@keyframes levelInRight  { from { transform: translateX(48px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes levelInLeft   { from { transform: translateX(-48px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes levelOutLeft  { to   { transform: translateX(-40px); opacity: 0; } }
+@keyframes levelOutRight { to   { transform: translateX(40px); opacity: 0; } }
 
 .menu-head {
   display: flex; align-items: center; gap: 10px;
@@ -1665,19 +1683,22 @@ body.menu-open { overflow: hidden; }
   transition: background 0.18s, color 0.18s, transform 0.18s cubic-bezier(0.2,0.8,0.2,1.2);
 }
 /* Rows are visible by default (safe under reduced motion); the stagger only
-   hides them while its own animation is playing. */
+   hides them while its own animation is playing. Short + snappy so the menu
+   feels instant instead of drawing itself row by row. `both` holds the
+   hidden start state during the delay, so rows never flash visible then pop
+   back to opacity 0. */
 .menu-level:not(.shown) .menu-row { opacity: 0; }
-.menu-level.shown .menu-row { animation: menuRowIn 0.4s cubic-bezier(0.34, 1.4, 0.44, 1); }
-.menu-level.shown .menu-row:nth-child(1) { animation-delay: 0.03s; }
-.menu-level.shown .menu-row:nth-child(2) { animation-delay: 0.07s; }
-.menu-level.shown .menu-row:nth-child(3) { animation-delay: 0.11s; }
-.menu-level.shown .menu-row:nth-child(4) { animation-delay: 0.15s; }
-.menu-level.shown .menu-row:nth-child(5) { animation-delay: 0.19s; }
-.menu-level.shown .menu-row:nth-child(6) { animation-delay: 0.23s; }
-.menu-level.shown .menu-row:nth-child(7) { animation-delay: 0.27s; }
-.menu-level.shown .menu-row:nth-child(8) { animation-delay: 0.31s; }
+.menu-level.shown .menu-row { animation: menuRowIn 0.28s cubic-bezier(0.2, 0.9, 0.3, 1.2) both; }
+.menu-level.shown .menu-row:nth-child(1) { animation-delay: 0.02s; }
+.menu-level.shown .menu-row:nth-child(2) { animation-delay: 0.05s; }
+.menu-level.shown .menu-row:nth-child(3) { animation-delay: 0.08s; }
+.menu-level.shown .menu-row:nth-child(4) { animation-delay: 0.11s; }
+.menu-level.shown .menu-row:nth-child(5) { animation-delay: 0.14s; }
+.menu-level.shown .menu-row:nth-child(6) { animation-delay: 0.17s; }
+.menu-level.shown .menu-row:nth-child(7) { animation-delay: 0.2s; }
+.menu-level.shown .menu-row:nth-child(8) { animation-delay: 0.23s; }
 @keyframes menuRowIn {
-  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
   to   { opacity: 1; transform: none; }
 }
 .menu-row:hover { background: var(--bg-deep); }
@@ -1725,7 +1746,12 @@ body.menu-open { overflow: hidden; }
 }
 
 @media (max-width: 639px) {
-  .menu-backdrop { justify-content: stretch; align-items: flex-end; }
+  .menu-backdrop {
+    justify-content: stretch; align-items: flex-end;
+    /* Low-end phones: a lighter blur is far cheaper to keep composited. */
+    -webkit-backdrop-filter: blur(4px) saturate(1.1);
+    backdrop-filter: blur(4px) saturate(1.1);
+  }
   .menu-panel {
     width: 100%;
     max-height: 84vh;
@@ -1735,6 +1761,6 @@ body.menu-open { overflow: hidden; }
     animation-name: menuSheetIn;
   }
   .menu-panel.closing { animation-name: menuSheetOut; }
-  @keyframes menuSheetIn  { from { transform: translateY(56px); opacity: 0; } to { transform: none; opacity: 1; } }
-  @keyframes menuSheetOut { to   { transform: translateY(56px); opacity: 0; } }
+  @keyframes menuSheetIn  { from { transform: translateY(44px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @keyframes menuSheetOut { to   { transform: translateY(44px); opacity: 0; } }
 }

@@ -2122,7 +2122,7 @@ function openAppMenu() {
   appMenu = { backdrop, panel, track, stack: [] };
   document.body.classList.add('menu-open');
   if (trigger) trigger.setAttribute('aria-expanded', 'true');
-  menuDrill('root', true);
+  menuDrill('root');
   document.addEventListener('keydown', onMenuKey, true);
   queueMicrotask(() => { const first = panel.querySelector('.menu-row, .menu-back'); if (first) first.focus({ preventScroll: true }); });
 }
@@ -2137,7 +2137,8 @@ function closeAppMenu() {
   if (trigger) trigger.setAttribute('aria-expanded', 'false');
   backdrop.classList.add('closing');
   panel.classList.add('closing');
-  setTimeout(() => backdrop.remove(), 260);
+  // 240ms matches the 0.2s closing animations + a small buffer.
+  setTimeout(() => backdrop.remove(), 240);
   if (trigger) queueMicrotask(() => trigger.focus({ preventScroll: true }));
 }
 
@@ -2169,23 +2170,22 @@ function onMenuKey(ev) {
   }
 }
 
-function menuDrill(id, first = false) {
+function menuDrill(id) {
   if (!appMenu) return;
   const { track, stack } = appMenu;
   const old = track.querySelector('.menu-level');
   const level = buildMenuLevel(id);
-  if (old && !first) {
+  if (old) {
     old.classList.add('out-left');
-    level.classList.add('in-right');
-  } else if (old) {
-    old.classList.add('out');
     level.classList.add('in-right');
   }
   track.append(level);
   if (stack[stack.length - 1] !== id) stack.push(id);
-  // Stagger animation kicks in via .shown; request paint after insertion.
-  requestAnimationFrame(() => { level.classList.add('shown'); });
-  if (old) setTimeout(() => { if (old.parentNode === track) old.remove(); }, 320);
+  // Apply .shown synchronously so the stagger never shows a blank frame;
+  // the CSS animation (with fill-mode both) starts rows hidden and springs
+  // them in without any pop-in flicker.
+  level.classList.add('shown');
+  if (old) setTimeout(() => { if (old.parentNode === track) old.remove(); }, 240);
 }
 
 function menuBack() {
@@ -2198,14 +2198,13 @@ function menuBack() {
   const prev = buildMenuLevel(prevId);
   current.classList.add('out-right');
   track.insertBefore(prev, current);
-  prev.classList.add('in-left');
+  prev.classList.add('in-left', 'shown');
   requestAnimationFrame(() => {
-    prev.classList.add('shown');
     // Keep keyboard/screen-reader users anchored after the level swap.
     const target = prev.querySelector('.menu-back') || prev.querySelector('.menu-row');
     if (target) target.focus({ preventScroll: true });
   });
-  setTimeout(() => current.remove(), 300);
+  setTimeout(() => current.remove(), 240);
 }
 
 function menuRefreshLevel(id) {
