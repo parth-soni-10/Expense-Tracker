@@ -3546,7 +3546,7 @@ function screenHistory() {
   if (visible.length === 0) {
     tableWrap.appendChild($('div', { class: 'empty' }, emptyIcon('receipt'), searchQuery ? ' No results for this search.' : activeDay ? ` No entries on ${friendlyDate(activeDay)}.` : ' Nothing here for this filter.'));
   } else {
-    tableWrap.appendChild($('div', { role: 'row', style: 'display:grid;grid-template-columns:36px 90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;font-size:11px;letter-spacing:0.15em;text-transform:uppercase;color:var(--muted);border-bottom:1px solid var(--line);min-width:780px;' },
+    tableWrap.appendChild($('div', { role: 'row', class: 'history-head-row' },
       $('span', { role: 'columnheader' }, $('input', { type: 'checkbox', 'data-bulk': '', 'aria-label': 'Select all visible', title: 'Select all visible', onChange: (ev) => {
         selected.clear();
         if (ev.target.checked) for (const e of visible) selected.add(e.id);
@@ -3565,24 +3565,24 @@ function screenHistory() {
     for (const e of visible) {
       if (e.date !== previousVisibleDate) {
         previousVisibleDate = e.date;
-        tableWrap.appendChild($('div', { class: 'history-day-header', role: 'row', style: 'display:grid;grid-template-columns:1fr;gap:8px;padding:13px 24px 8px;min-width:780px;background:var(--bg-deep);border-bottom:1px solid var(--line);' },
+        tableWrap.appendChild($('div', { class: 'history-day-header', role: 'row' },
           $('span', { role: 'rowheader', class: 'eyebrow' }, relativeDayLabel(e.date)),
         ));
       }
       const isTransfer = !!e.transferId;
       const settledLabel = isTransfer ? (e.settled ? '✓ settled' : '● unsettled') : '';
-      const settleColor = e.settled ? 'var(--positive)' : 'var(--muted)';
       const rowBalance = cachedBalanceForEntry(e);
       const rowType = e.type === 'note' ? 'note-row' : e.type === 'credit' ? 'income-row' : 'expense-row';
-      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': e.id, 'aria-label': `Edit entry ${e.details} on ${friendlyDate(e.date)}`, style: 'display:grid;grid-template-columns:36px 90px 1fr 110px 100px 90px 30px;gap:24px;padding:14px 24px;align-items:center;border-bottom:1px solid var(--line);cursor:pointer;min-width:780px;outline:none;', onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openEdit(e.id); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEdit(e.id); } } },
-        $('span', { role: 'cell', style: 'display:flex;align-items:center;' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selected.has(e.id) ? true : null, 'aria-label': `Select ${e.details || 'entry'}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
+      const isCredit = e.type === 'credit';
+      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': e.id, 'aria-label': `Edit entry ${e.details} on ${friendlyDate(e.date)}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openEdit(e.id); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEdit(e.id); } } },
+        $('span', { role: 'cell', class: 'history-cell-check' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selected.has(e.id) ? true : null, 'aria-label': `Select ${e.details || 'entry'}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
           if (ev.target.checked) selected.add(e.id); else selected.delete(e.id);
           syncBulkBar();
         } })),
-        $('span', { class: 'muted', style: 'font-size:13px;' }, friendlyDate(e.date)),          $('div', null,
-            $('div', { style: 'font-size:14px;display:flex;align-items:center;gap:6px;' }, e.details || '—',
-              e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, style: 'width:130px;height:28px;' }) : null,
-            isTransfer ? $('span', { style: `font-size:10px;color:${settleColor};cursor:pointer;user-select:none;`, onClick: (ev) => {
+        $('span', { class: 'muted history-date' }, friendlyDate(e.date)),          $('div', null,
+            $('div', { class: 'history-details' }, e.details || '—',
+              e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, class: 'history-audio' }) : null,
+            isTransfer ? $('span', { class: `history-settled${e.settled ? ' is-settled' : ''}`, onClick: (ev) => {
               ev.stopPropagation();
               const newVal = !e.settled;
               for (const x of state.entries) {
@@ -3591,12 +3591,12 @@ function screenHistory() {
               persist(); toast(newVal ? 'Transfer settled.' : 'Transfer unsettled.'); render();
             }, title: 'Click to toggle settled' }, settledLabel) : null,
           ),
-          $('div', { style: 'font-size:11px;color:var(--muted);' }, categoryLabel(e.category)),
+          $('div', { class: 'history-category' }, categoryLabel(e.category)),
         ),
-        $('span', { class: 'display-num', style: 'text-align:right;font-size:15px;color:' + (e.type === 'credit' ? 'var(--positive)' : 'var(--ink)') }, e.type === 'note' ? 'Note' : (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
-        $('span', { class: 'tnum', style: 'text-align:right;font-size:13px;color:' + (rowBalance >= 0 ? 'var(--positive)' : 'var(--negative)'), }, e.type === 'note' ? '—' : fmt(rowBalance)),
-        $('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method)),
-        $('span', { class: 'history-actions', style: 'display:flex;justify-content:flex-end;align-items:center;gap:5px;' },
+        $('span', { class: `display-num history-amount${isCredit ? ' is-credit' : ''}` }, e.type === 'note' ? 'Note' : (isCredit ? '+' : '') + fmt(e.amount)),
+        $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, e.type === 'note' ? '—' : fmt(rowBalance)),
+        $('span', null, $('span', { class: 'pill history-method' }, e.method)),
+        $('span', { class: 'history-actions' },
           $('button', { type: 'button', class: 'history-action-btn', title: 'Edit or delete entry', 'aria-label': `Edit or delete ${e.details || 'entry'}`, onClick: ev => { ev.stopPropagation(); openEdit(e.id); } }, 'Manage'),
         ),
       );
@@ -3968,7 +3968,7 @@ function sparklinePath(values, w = 60, h = 20) {
 function barWithSpark(cat, val, max, isMax) {
   const values = categorySparkData(cat);
   const hasSpark = values.some(v => v > 0);
-  return $('div', null,
+  return $('div', { class: 'insight-bar-row' },
     $('div', { class: 'row between', style: 'font-size:13px;margin-bottom:8px;' },
       $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' },
         hasSpark ? $('svg', { width: '60', height: '20', 'aria-hidden': 'true', style: 'flex-shrink:0;' },

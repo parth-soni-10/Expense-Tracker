@@ -595,6 +595,9 @@ select:focus {
     margin-bottom: 32px;
     border-bottom-color: transparent;
     transition: transform 0.3s cubic-bezier(0.2,0.8,0.2,1), background 0.3s, border-color 0.3s;
+    /* Promote to its own compositor layer so the hide/show slide never
+       repaints the content scrolling underneath it. */
+    will-change: transform;
   }
   [data-theme="dark"] .app-header.is-sticky {
     background: rgba(23,19,16,0.82);
@@ -604,16 +607,77 @@ select:focus {
   }
 }
 
-/* ── History row type indicators ── */
+/* ── History row type indicators ──
+   The row grid lives here (not inline per-row) so hundreds of rebuilt rows
+   share one parsed style. content-visibility lets the browser skip layout &
+   paint for off-screen rows — the single biggest win on long history lists.
+*/
 .history-row {
+  display: grid;
+  grid-template-columns: 36px 90px 1fr 110px 100px 90px 30px;
+  gap: 24px;
+  padding: 14px 24px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+  min-width: 780px;
+  outline: none;
   transition: background 0.15s, box-shadow 0.15s;
   border-left: 3px solid transparent;
+  content-visibility: auto;
+  /* Uniform row height, so a plain size hint is as accurate as `auto` and
+     works on Safari < 18 (which drops the `auto` keyword entirely). */
+  contain-intrinsic-size: 52px;
 }
 .history-row.expense-row { border-left-color: var(--line); }
 .history-row.income-row { border-left-color: var(--positive); }
 .history-row:nth-child(even) { background: rgba(0,0,0,0.015); }
 [data-theme="dark"] .history-row:nth-child(even) { background: rgba(255,255,255,0.02); }
 .history-row:hover { background: var(--bg-deep) !important; box-shadow: var(--shadow-xs); }
+
+/* History column header + day group — same layout, no inline styles. */
+.history-head-row {
+  display: grid;
+  grid-template-columns: 36px 90px 1fr 110px 100px 90px 30px;
+  gap: 24px;
+  padding: 14px 24px;
+  font-size: 11px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  min-width: 780px;
+}
+
+/* History row cells — constant styles live here (not inline per row) so a
+   rebuilt table of hundreds of rows shares one parsed style each. */
+.history-cell-check { display: flex; align-items: center; }
+.history-date { font-size: 13px; }
+.history-details { font-size: 14px; display: flex; align-items: center; gap: 6px; }
+.history-audio { width: 130px; height: 28px; }
+.history-settled {
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--muted);
+}
+.history-settled.is-settled { color: var(--positive); }
+.history-category { font-size: 11px; color: var(--muted); }
+.history-amount { text-align: right; font-size: 15px; color: var(--ink); }
+.history-amount.is-credit { color: var(--positive); }
+.history-balance { text-align: right; font-size: 13px; }
+.history-balance.is-positive { color: var(--positive); }
+.history-balance.is-negative { color: var(--negative); }
+/* Must outrank .pill:hover (0,2,0) — the original inline border-color:transparent
+   always won, so keep it borderless on hover too (color may still tint). */
+.history-method.pill,
+.history-method.pill:hover { border-color: transparent; }
+.history-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 5px;
+}
 
 /* ── Heatmap tooltip popup ── */
 .heat-cell-wrap {
@@ -975,6 +1039,13 @@ select:focus {
   position: sticky;
   left: 0;
   z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  padding: 13px 24px 8px;
+  min-width: 780px;
+  background: var(--bg-deep);
+  border-bottom: 1px solid var(--line);
 }
 .history-action-btn {
   border: 1px solid transparent;
@@ -1029,6 +1100,12 @@ select:focus {
 .insight-narrative-note {
   margin-top: 12px;
   font-size: 12px;
+}
+
+/* Category bars can be long — skip layout/paint for off-screen ones. */
+.insight-bar-row {
+  content-visibility: auto;
+  contain-intrinsic-size: 38px;
 }
 
 @media (max-width: 639px) {
