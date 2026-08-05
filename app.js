@@ -1582,9 +1582,9 @@ function parseReceiptLine(line) {
   // Guess category from keywords
   let cat = 'misc';
   const d = desc.toLowerCase();
-  if (/grocer|tesco|lidl|aldi|supervalu|dunnes/i.test(d)) cat = 'gro';
-  else if (/bus|train|luas|dart|leap|taxi|uber|petrol|diesel/i.test(d)) cat = 'travel';
-  else if (/rent|lease/i.test(d)) cat = 'rent';
+  if (/grocer|tesco|lidl|aldi|supervalu|dunnes|spar|centra|m&s|marks|supermarket|shop|market/i.test(d)) cat = 'gro';
+  else if (/bus|train|luas|dart|leap|taxi|uber|petrol|diesel|fuel|parking|toll|flight|ferry/i.test(d)) cat = 'travel';
+  else if (/rent|lease|mortgage|deposit|landlord/i.test(d)) cat = 'rent';
   else if (/gift.?card|voucher/i.test(d)) cat = 'GC';
   return { details: desc || s, amount: amt || 0, category: cat };
 }
@@ -1608,43 +1608,217 @@ function payeeHistory() {
 function parseNaturalLanguage(text) {
   const raw = String(text || '').trim();
   if (!raw) return null;
-  // Prefer the amount tagged by a currency symbol or a spending verb, then the
-  // first decimal, then any number — so "Bought 2 things for €10" reads €10,
-  // not 2.
-  const currencyAmount = raw.match(/(?:€|eur|euro)\s*(\d+(?:[.,]\d{1,2})?)/i);
-  const verbAmount = raw.match(/\b(?:spent|paid|cost|bought|worth|for)\s+(?:€|eur|euro)?\s*(\d+(?:[.,]\d{1,2})?)/i);
-  const decimalAmount = raw.match(/\b(\d+[.,]\d{1,2})\b/);
-  const anyAmount = raw.match(/\b(\d+)\b/);
-  const amountMatch = currencyAmount || verbAmount || decimalAmount || anyAmount;
-  const amount = amountMatch ? parseAmount(amountMatch[1]) : NaN;
+  const lower = raw.toLowerCase();
+
+  // ---- Date: today, yesterday, "N days ago", weekday names ----
+  let date = today();
+  if (/\byesterday\b|last night/.test(lower)) {
+    const d = new Date(); d.setDate(d.getDate() - 1); date = localDateKey(d);
+  } else {
+    const daysAgo = lower.match(/(\d+)\s+days?\s+ago/);
+    if (daysAgo) {
+      const d = new Date(); d.setDate(d.getDate() - Math.min(365, +daysAgo[1])); date = localDateKey(d);
+    } else {
+      const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      for (let i = 0; i < 7; i++) {
+        if (new RegExp(`\\b(?:last|this)?\\s*${dayNames[i]}\\b`).test(lower)) {
+          const d = new Date();
+          let diff = (d.getDay() - i + 7) % 7;
+          if (diff === 0) diff = 7; // "monday" on a Monday means last week
+          d.setDate(d.getDate() - diff);
+          date = localDateKey(d);
+          break;
+        }
+      }
+    }
+  }
+
+  // ---- Amount: multiplier first ("2 × 4.50" = 9.00), then scored candidates ----
+  let amount = NaN;
+  let amountText = '';
+  const mult = raw.match(/(\d+(?:[.,]\d{1,2})?)\s*[x×@]\s*(?:€|£|\$|euros?\b|eur\b)?\s*(\d+(?:[.,]\d{1,2})?)/i);
+  if (mult) {
+    const qty = parseAmount(mult[1]);
+    const price = parseAmount(mult[2]);
+    if (Number.isFinite(qty) && Number.isFinite(price) && qty > 0 && qty <= 1000 && price > 0) {
+      amount = Math.round(qty * price * 100) / 100;
+      amountText = mult[0];
+    }
+  }
+  if (!Number.isFinite(amount)) {
+    // Score every number: currency-tagged / verb-tagged / decimal / trailing
+    // numbers win; quantity counts ("2 coffees", "2x") lose.
+    // Currency words are word-bounded so "euro" never matches the prefix of
+    // a word like "eurovision" (which would otherwise swallow it as text).
+    const numRe = /(?:€|£|\$|euros?\b|eur\b)?\s*(\d+(?:[.,]\d{1,2})?)\s*(?:€|£|\$|euros?\b|eur\b)?/gi;
+    const candidates = [];
+    let m;
+    while ((m = numRe.exec(raw)) !== null) {
+      const value = parseAmount(m[1]);
+      if (!Number.isFinite(value) || value <= 0) continue;
+      const before = raw.slice(Math.max(0, m.index - 30), m.index).toLowerCase();
+      const after = raw.slice(m.index + m[0].length, m.index + m[0].length + 30).toLowerCase();
+      let score = 0;
+      // Currency must be adjacent (symbol or a whole "euro(s)" word), so the
+      // bonus never fires on a prefix like the "euro" in "Eurovision".
+      if (/[€£$]/.test(m[0]) || /\beuros?\b/.test(m[0])) score += 100;          // currency adjacent
+      if (/\b(?:spent|paid|cost|costs|bought|worth|for|at|total|amount|came to|just|only|about|around|approx)\s*$/.test(before)) score += 60; // spending verb before
+      if (/[.,]\d{1,2}$/.test(m[1])) score += 30;                                // decimals → price-like
+      if (/^(?:st|nd|rd|th)\b/.test(after)) continue;                           // ordinal "1st" → date, never an amount
+      if (/^\s*(?:x|×|things|items|coffees|drinks|people|days|times|tickets?|kg|g|ml|litres?|l|pints|bottles|each|per|apiece|of)\b/.test(after)) score -= 80; // quantity count
+      if (m.index + m[0].length >= raw.length - 1) score += 10;                  // trailing number is often the total
+      candidates.push({ value, score, index: m.index, text: m[0] });
+    }
+    if (candidates.length) {
+      // Best score wins; on ties prefer the LAST number (the trailing total).
+      candidates.sort((a, b) => b.score - a.score || b.index - a.index);
+      amount = candidates[0].value;
+      amountText = candidates[0].text;
+    }
+  }
   if (!Number.isFinite(amount) || amount <= 0) return { error: 'Include an amount, for example €18.50.' };
 
-  const lower = raw.toLowerCase();
-  let date = today();
-  if (/\byesterday\b/.test(lower)) {
-    const d = new Date(); d.setDate(d.getDate() - 1); date = localDateKey(d);
-  }
+  // ---- Method ----
   let method = 'AIB';
   if (/\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+(?:account|pot|fund)\b/.test(lower)) method = 'RS';
   else if (/\brevolut\b/.test(lower)) method = 'Revolut';
   else if (/\btesco\b/.test(lower)) method = 'TG';
   else if (/\blidl\b/.test(lower)) method = 'LG';
   else if (/\baldi\b/.test(lower)) method = 'AG';
+  else if (/\baib\b|\bbank\b|current account/.test(lower)) method = 'AIB';
+
   // Only unambiguous income signals — bare "pay" or "got" is far too common
   // in expense phrasing ("pay the rent", "got petrol") to imply income.
   const isCredit = /\b(income|received|salary|paid into|got paid|paycheck|wage|refund|dividend)\b/.test(lower);
-  const cleaned = raw
-    .replace(amountMatch ? amountMatch[0] : '', '')
-    .replace(/\b(from|on|using|via)\s+(aib|revolut(?: savings)?|rs|tesco|lidl|aldi)\b/ig, '')
-    .replace(/\b(yesterday|today)\b/ig, '')
-    .replace(/\b(income|received|salary|paid into|got paid|got|spent|expense|bought|cost)\b/ig, '')
-    .replace(/\s+/g, ' ').trim();
-  const details = cleaned
-    .replace(/\b(at|from|on|using|via)\s*$/i, '')
-    .replace(/^\s*(at|from|on|using|via)\s+/i, '')
-    .replace(/^[,.: -]+|[,.: -]+$/g, '').trim() || 'Entry';
+
+  // ---- Description: strip values, then classify the leftover words ----
+  // Phase 1 removes everything that is provably not descriptive (amount,
+  // currency, dates, numbers, payment channels, verbs, articles). Phase 2
+  // classifies the survivors: prepositions only survive mid-string (word on
+  // both sides), duplicate words collapse, and content words are title-cased
+  // — so "Spent €18.50 at Tesco from Revolut yesterday" → "Tesco" while
+  // "pint of Guinness" keeps its meaning.
+  const details = cleanMagicDescription(raw, amountText);
   const guessed = parseReceiptLine(details);
   return { date, type: isCredit ? 'credit' : 'expense', amount, details, category: isCredit ? 'misc' : guessed.category, method };
+}
+
+// ── Magic-entry description cleaner ──
+// Two-phase best-effort cleaner: strip provable value-noise first (amount,
+// currency, dates, ordinals, numbers, units, payment channels, verbs,
+// articles), then keep the meaningful words — prepositions only when they sit
+// between two content words, no consecutive duplicates, title-cased.
+const MAGIC_STOP = new Set([
+  'the', 'a', 'an', 'i', 'my', 'our', 'some', 'any', 'just', 'only',
+  'about', 'around', 'approx', 'approximately', 'am', 'pm',
+  'income', 'received', 'salary', 'paid', 'got', 'paycheck', 'wage', 'wages',
+  'refund', 'dividend', 'spent', 'expense', 'expenses', 'bought', 'cost',
+  'costs', 'worth', 'total', 'amount', 'came',
+]);
+// Functional prepositions: pure glue that only survives between two content
+// words ("pint of Guinness"). They never start a description on their own.
+const MAGIC_PREPS = new Set([
+  'at', 'from', 'on', 'using', 'via', 'with', 'for', 'in', 'to', 'of', 'by',
+  'per', 'each',
+]);
+// Positional words that double as the first word of real brand names
+// ("In & Out", "On The Run", "The Point"). They are preserved at the start of
+// a description when what follows looks like a proper noun (capitalised).
+const MAGIC_BRAND_START = new Set(['the', 'a', 'an', 'in', 'on']);
+// Connectors that join two words of a name ("Fish & Chips", "Bar and Grill").
+const MAGIC_CONNECTORS = new Set(['&', 'and']);
+const MAGIC_EDGE_PUNCT = /^[,.;:!?()\[\]"'\-—–]+|[,.;:!?()\[\]"'\-—–]+$/g;
+// Prepositions and connectors stay lowercase mid-description ("Pint of Guinness").
+const MAGIC_LOWERCASE = new Set([...MAGIC_PREPS, 'and']);
+function isContentToken(t) {
+  return !!t && /[a-z0-9]/i.test(t) && !MAGIC_CONNECTORS.has(t.toLowerCase())
+    && !MAGIC_STOP.has(t.toLowerCase()) && !MAGIC_PREPS.has(t.toLowerCase());
+}
+function cleanMagicDescription(raw, amountText) {
+  let s = String(raw || '')
+    .replace(amountText ? amountText : '', ' ')
+    .replace(/[€£$]/g, ' ')
+    .replace(/\b(?:euro|euros|eur)\b/ig, ' ')
+    // Whole date phrases BEFORE standalone numbers, or "3 days ago" → "days ago".
+    .replace(/\b(?:\d+\s+days?\s+ago|(?:last|this)\s+(?:night|morning|afternoon|evening|sunday|monday|tuesday|wednesday|thursday|friday|saturday)|today|tonight|yesterday|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/ig, ' ')
+    .replace(/\b\d+(?:st|nd|rd|th)\b/ig, ' ')                                  // ordinals
+    .replace(/\b\d+(?:[.,]\d{1,2})?\s*(?:kg|g|ml|litres?|l|pcs)\b/ig, ' ')  // measurement units ("2kg") — but NOT countable nouns like "3 pints", whose noun stays
+    .replace(/\b\d+(?:[.,]\d{1,2})?\b/g, ' ')                                  // remaining numbers
+    .replace(/\b(?:x|×|@)\s*\d+(?:[.,]\d{1,2})?\b/ig, ' ')                    // "x2"
+    .replace(/\b\d+(?:[.,]\d{1,2})?\s*[x×@]\b/ig, ' ')                        // "2x"
+    .replace(/\b(aib|revolut(?: savings)?|\brs\b|bank|current account)\b/ig, ' ') // payment channels
+    .replace(/[()\[\]"']+/g, ' ');                                             // brackets/quotes
+
+  const tokens = s.split(/\s+/).filter(Boolean);
+  const kept = [];
+  // Still at the head of the description (no content word kept yet) — the only
+  // place a brand-start "In"/"On"/"The" may legitimately appear.
+  const atHead = () => !kept.some(isContentToken);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i].replace(MAGIC_EDGE_PUNCT, '');
+    const low = t.toLowerCase();
+
+    // Connector: keep when it visibly joins two words ("Fish & Chips",
+    // "Bar and Grill"), drop when it dangles ("Dinner &", "& Sons").
+    // Checked before the symbol filter so "&" survives. The left neighbour
+    // must actually be the last KEPT word — a dropped stop word ("bought &
+    // sold") must not let a leading "&" through.
+    if (t && MAGIC_CONNECTORS.has(low)) {
+      const left = tokens[i - 1]?.replace(MAGIC_EDGE_PUNCT, '');
+      const right = tokens[i + 1]?.replace(MAGIC_EDGE_PUNCT, '');
+      if (kept.length && kept[kept.length - 1] === left
+        && right && /[a-z0-9]/i.test(right)) kept.push(t);
+      continue;
+    }
+    if (!t || !/[a-z0-9]/i.test(t)) continue;                                   // pure-symbol tokens
+
+    if (MAGIC_STOP.has(low)) {
+      // Verbs and filler always drop. Articles keep their place only when they
+      // precede a capitalised proper noun — "The Point", even mid-description
+      // ("coffee at The Point") — never for a generic noun ("the rent" →
+      // "rent", because "rent" is lowercase).
+      const next = nextContentToken(tokens, i);
+      if (MAGIC_BRAND_START.has(low) && next && /[A-Z]/.test(next.charAt(0))) {
+        kept.push(t);
+      }
+      continue;
+    }
+
+    if (MAGIC_PREPS.has(low)) {
+      // Prepositions survive mid-string between two content words, or at the
+      // head of a proper-noun name ("In & Out") — but plain glue like
+      // "at Tesco" / "from Revolut" is dropped.
+      const prevContent = kept.length > 0 && isContentToken(kept[kept.length - 1]);
+      const next = nextContentToken(tokens, i);
+      const brandStart = atHead() && MAGIC_BRAND_START.has(low) && next && /[A-Z]/.test(next.charAt(0));
+      if ((prevContent && next) || brandStart) kept.push(t);
+      continue;
+    }
+
+    if (kept.length && kept[kept.length - 1].toLowerCase() === low) continue;  // de-dupe
+    kept.push(t);
+  }
+
+  let details = kept.join(' ')
+    .replace(/\s*([,;:.])/g, '$1 ')
+    .replace(/\s+/g, ' ')
+    .replace(MAGIC_EDGE_PUNCT, '')
+    .trim();
+  if (!details) return 'Entry';
+  // Title-case content words; keep prepositions/"and" lowercase mid-string, and
+  // never mangle all-caps brands ("M&S", "IKEA", "B&Q").
+  return details.split(' ').map((w, idx) => {
+    if (idx > 0 && MAGIC_LOWERCASE.has(w.toLowerCase())) return w.toLowerCase();
+    if (!/[a-z]/.test(w)) return w;                                             // all-caps token stays untouched
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }).join(' ');
+}
+function nextContentToken(tokens, from) {
+  for (let j = from + 1; j < tokens.length; j++) {
+    const nt = tokens[j].replace(MAGIC_EDGE_PUNCT, '');
+    if (nt && isContentToken(nt)) return nt;
+  }
+  return null;
 }
 
 function duplicateGroups(entries = state.entries) {
@@ -1755,12 +1929,6 @@ function computeRunway(balance, key = monthKey(today())) {
 }
 
 function computeMilestones() {
-  const days = new Set(state.entries.map(e => e.date));
-  let streak = 0;
-  const cursor = new Date();
-  // Grace: a streak still counts if today isn't logged yet but yesterday is.
-  if (!days.has(localDateKey(cursor))) cursor.setDate(cursor.getDate() - 1);
-  while (days.has(localDateKey(cursor))) { streak++; cursor.setDate(cursor.getDate() - 1); }
   const budget = +state.settings.monthlyBudget || 0;
   let monthsUnderBudget = 0;
   if (budget > 0) {
@@ -1769,7 +1937,7 @@ function computeMilestones() {
       if (spent > 0 && spent <= budget) monthsUnderBudget++;
     }
   }
-  return { streak, monthsUnderBudget, entryCount: state.entries.length };
+  return { monthsUnderBudget, entryCount: state.entries.length };
 }
 
 function checkpointCoversVersion(version, checkpoint) {
@@ -2668,11 +2836,10 @@ function screenDashboard() {
     ),
   ));
 
-  // Streak + milestone chips — personality that rewards consistency.
+  // Milestone chips — personality that rewards consistency.
   const ms = computeMilestones();
   const chips = [];
   if (ms.entryCount > 0) chips.push($('span', { class: 'pill', title: 'Total entries logged' }, `📒 ${ms.entryCount} entr${ms.entryCount === 1 ? 'y' : 'ies'} logged`));
-  if (ms.streak >= 2) chips.push($('span', { class: 'pill', title: 'Consecutive days with at least one entry' }, `🔥 ${ms.streak}-day streak`));
   if (ms.monthsUnderBudget >= 1) chips.push($('span', { class: 'pill', title: 'Months where spending stayed within budget' }, `🏅 ${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget`));
   if (chips.length) screen.appendChild($('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px;' }, ...chips));
 
@@ -3305,7 +3472,7 @@ function screenAdd() {
   // Natural-language and structured voice entry
   const magicInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => {
     const parsed = parseNaturalLanguage(e.target.value);
-    magicPreview.textContent = parsed?.error || (parsed ? `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}` : '');
+    magicPreview.textContent = parsed?.error || (parsed ? `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}` : '');
   } });
   const magicPreview = $('div', { class: 'muted', style: 'font-size:12px;min-height:18px;margin-bottom:10px;' });
   const addMagic = () => {
@@ -4593,7 +4760,7 @@ function assistantAnswer(raw) {
 
   // ---- greeting / help ----
   if (/^(hi|hello|hey|yo|help|hiya|what can you do)\b/.test(q)) {
-    return { text: 'I can answer questions about your money — spending, budgets, runway, recurring charges, categories and streaks. Try the suggestions below, or ask in your own words.' };
+    return { text: 'I can answer questions about your money — spending, budgets, runway, recurring charges and categories. Try the suggestions below, or ask in your own words.' };
   }
 
   // ---- what's due / upcoming / recurring ----
@@ -4688,10 +4855,10 @@ function assistantAnswer(raw) {
     }
   }
 
-  // ---- streak / milestones ----
-  if (/\b(streak|milestone|logged|consecutive)\b/.test(q)) {
+  // ---- milestones ----
+  if (/\b(milestone|logged|consecutive)\b/.test(q)) {
     const ms = computeMilestones();
-    return { text: `📒 ${ms.entryCount} entries logged · 🔥 ${ms.streak >= 2 ? ms.streak + '-day streak' : 'no streak yet'} · 🏅 ${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget.` };
+    return { text: `📒 ${ms.entryCount} entries logged · 🏅 ${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget.` };
   }
 
   // ---- income ----
@@ -4851,7 +5018,6 @@ function morningDigest() {
     $('div', { class: 'digest-grid' },
       digestStat('Today', todaySummary.split(' · ')[0], todaySummary.split(' · ').slice(1).join(' · ') || '—'),
       digestStat('Next due', next ? `${next.rec.details}` : '—', next ? (daysUntil(next.date) === 0 ? 'today' : `in ${daysUntil(next.date)}d · ${friendlyDate(next.date)}`) : 'no recurring items'),
-      digestStat('Streak', ms.streak >= 2 ? `🔥 ${ms.streak} days` : '—', ms.streak >= 2 ? 'consecutive logging' : ms.entryCount ? 'log today to start one' : 'log your first entry'),
       digestStat('Runway', runway.dailyAvg > 0 ? runwayLine : '—', runway.dailyAvg > 0 ? `balance ${fmt(balance)}` : 'log spending to estimate'),
     ),
   );
