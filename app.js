@@ -1,6 +1,6 @@
 /* ============================================================
    Expense Tracker — editorial-minimal SPA
-   Hash routing: #dashboard (default) | #add | #history | #insights
+   Hash routing: #dashboard (default) | #add | #history | #balances | #insights
    ============================================================ */
 import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal } from './storage.js';
 import { CATEGORIES, METHODS } from './seed.js';
@@ -2092,7 +2092,7 @@ function setSeason() {
 }
 
 // ---------- router ----------
-const ROUTES = ['dashboard', 'add', 'history', 'insights'];
+const ROUTES = ['dashboard', 'add', 'history', 'balances', 'insights'];
 const isNarrow = () => typeof window !== 'undefined' && window.innerWidth < 640;
 const isTiny = () => typeof window !== 'undefined' && window.innerWidth < 480;
 function currentRoute() {
@@ -2169,7 +2169,7 @@ function renderHeader() {
 }
 
 function titleFor(r) {
-  return ({ dashboard: 'Dashboard', add: 'New entry', history: 'History', insights: 'Insights' })[r];
+  return ({ dashboard: 'Dashboard', add: 'New entry', history: 'History', balances: 'Balances', insights: 'Insights' })[r];
 }
 
 // ---------- animated drill-down menu ----------
@@ -2183,6 +2183,7 @@ const MENU_ICONS = {
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><line x1="12" y1="8.5" x2="12" y2="15.5"/><line x1="8.5" y1="12" x2="15.5" y2="12"/></svg>',
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14.5"/></svg>',
   chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/></svg>',
+  wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12"/><path d="M20 7v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7"/><rect x="16" y="11" width="4" height="5" rx="1"/></svg>',
   ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/></svg>',
   appearance: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>',
@@ -2230,7 +2231,7 @@ function buildMenuLevel(id) {
   if (id === 'root') {
     const route = currentRoute();
     ROUTES.forEach(r => list.append($('a', { href: `#${r}`, class: 'menu-row' + (r === route ? ' active' : ''), onClick: closeAppMenu },
-      $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', insights: 'chart' }[r]] }),
+      $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', balances: 'wallet', insights: 'chart' }[r]] }),
       $('span', { class: 'menu-row-label' }, titleFor(r)),
       r === route ? $('span', { class: 'menu-row-check', 'aria-hidden': 'true', innerHTML: MENU_ICONS.check }) : null,
     )));
@@ -3103,9 +3104,12 @@ function screenDashboard() {
     pendingPerMethod[e.method] = (pendingPerMethod[e.method] || 0) + (e.type === 'credit' ? e.amount : -e.amount);
   }
   const accountsCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
-    $('div', { style: 'margin-bottom:16px;' },
-      $('div', { class: 'eyebrow' }, 'Bank account balances'),
-      $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current end-of-day balances; transaction history stays unchanged.'),
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:16px;' },
+      $('div', null,
+        $('div', { class: 'eyebrow' }, 'Bank account balances'),
+        $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current end-of-day balances; transaction history stays unchanged.'),
+      ),
+      $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage →'),
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
       ...trackedMethods.map(method => {
@@ -3122,7 +3126,13 @@ function screenDashboard() {
   screen.appendChild(accountsCard);
 
   const gcCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:16px;' }, 'Gift card balances'),     $('div', { class: 'muted', style: 'font-size:11px;margin:-8px 0 8px;' }, 'Current provider balances without adding a fake transaction. Totals show recorded activity, or post-reconciliation adjustments when a checkpoint exists.'),
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:16px;' },
+      $('div', null,
+        $('div', { class: 'eyebrow' }, 'Gift card balances'),
+        $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current provider balances without adding a fake transaction. Totals show recorded activity, or post-reconciliation adjustments when a checkpoint exists.'),
+      ),
+      $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage →'),
+    ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },     ...GIFT_CARD_IDS.map(id => {
          const m = METHODS.find(x => x.id === id);
          const totals = computeGiftCardBalance(state.entries, id);
@@ -3594,38 +3604,7 @@ function screenHistory() {
 
   c.appendChild(calendarCard(activeMonth, activeDay, (ds) => update({ day: activeDay === ds ? '' : ds })));
 
-  const historyAccountMethods = METHODS.filter(m => ACCOUNT_METHOD_IDS.includes(m.id));
-  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
-    $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px;' },
-      $('div', null,
-        $('div', { class: 'eyebrow' }, 'Account balances'),
-        $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Reconcile end-of-day actual balances by date; no transaction records are changed.'),
-      ),
-      $('span', { class: 'muted', style: 'font-size:11px;' }, 'AIB · Revolut · Revolut Savings'),
-    ),
-    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
-      ...historyAccountMethods.map(method => renderBalanceEditorRow(method.id, { label: methodShort(method.id), editable: true })),
-    ),
-  ));
-  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:4px;' }, 'Gift card balances'),
-    $('div', { class: 'muted', style: 'font-size:11px;margin-bottom:8px;' }, 'The same reconciliation editor is used for every balance.'),
-    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
-      ...GIFT_CARD_IDS.map(id => {
-        const method = METHODS.find(m => m.id === id);
-        const totals = computeGiftCardBalance(state.entries, id);
-        return renderBalanceEditorRow(id, {
-          label: method?.label?.includes(' · ') ? method.label.split(' · ')[1] : (method?.label || id),
-          secondary: totals.loaded || totals.spent
-            ? `${userCheckpointFor(id, today()) ? 'net adjustments · loads' : 'recorded loads'} ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}`
-            : '',
-           editable: true,
-         });
-       }),
-     ),
-   ));
-
-   // Search bar
+  // Search bar
   const searchInput = $('input', { type: 'text', value: searchQuery, placeholder: 'Search descriptions, notes…', 'aria-label': 'Search entries', autocomplete: 'off', style: 'width:100%;max-width:320px;', onInput: (e) => {
     // Debounced update
     clearTimeout(searchInput._timer);
@@ -3821,6 +3800,54 @@ function calendarCard(activeMonth, activeDay, onDayChange) {
 
 function monthNav(label, onClick, disabled) {
   return $('button', { type: 'button', class: 'btn btn-ghost', disabled: disabled ? '' : null, style: 'padding:6px 12px;font-size:13px;', onClick }, label);
+}
+
+// ---------- screens: balances ----------
+// Reconcile end-of-day actual balances by date; no transaction records are
+// changed. All tracked balances share one inline reconciliation flow.
+function screenBalances() {
+  const c = $('section', { class: 'page-section', 'aria-label': 'Balances' });
+
+  c.appendChild($('div', { class: 'page-title-row' },
+    $('h1', { class: 'page-title' }, 'Balances'),
+    $('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;justify-content:flex-end;' },
+      $('a', { href: '#history', class: 'btn btn-ghost', style: 'padding:8px 14px;font-size:12px;' }, 'Transaction history'),
+    ),
+  ));
+
+  const trackedMethods = METHODS.filter(m => ACCOUNT_METHOD_IDS.includes(m.id));
+  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px;' },
+      $('div', null,
+        $('div', { class: 'eyebrow' }, 'Account balances'),
+        $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Reconcile end-of-day actual balances by date; no transaction records are changed.'),
+      ),
+      $('span', { class: 'muted', style: 'font-size:11px;' }, 'AIB · Revolut · Revolut Savings'),
+    ),
+    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
+      ...trackedMethods.map(method => renderBalanceEditorRow(method.id, { label: methodShort(method.id), editable: true })),
+    ),
+  ));
+
+  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+    $('div', { class: 'eyebrow', style: 'margin-bottom:4px;' }, 'Gift card balances'),
+    $('div', { class: 'muted', style: 'font-size:11px;margin-bottom:8px;' }, 'The same reconciliation editor is used for every balance.'),
+    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
+      ...GIFT_CARD_IDS.map(id => {
+        const method = METHODS.find(m => m.id === id);
+        const totals = computeGiftCardBalance(state.entries, id);
+        return renderBalanceEditorRow(id, {
+          label: method?.label?.includes(' · ') ? method.label.split(' · ')[1] : (method?.label || id),
+          secondary: totals.loaded || totals.spent
+            ? `${userCheckpointFor(id, today()) ? 'net adjustments · loads' : 'recorded loads'} ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}`
+            : '',
+          editable: true,
+        });
+      }),
+    ),
+  ));
+
+  return c;
 }
 
 // ---------- screens: insights ----------
@@ -5184,6 +5211,7 @@ function _render() {
   switch (route) {
     case 'add':      screen.appendChild(screenAdd()); break;
     case 'history':  screen.appendChild(screenHistory()); break;
+    case 'balances': screen.appendChild(screenBalances()); break;
     case 'insights': screen.appendChild(screenInsights()); break;
     default:         screen.appendChild(screenDashboard());
   }
@@ -5197,6 +5225,7 @@ function _render() {
       add: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm5 11h-4v4h-2v-4H7v-2h4V7h2v4h4v2z"/></svg>' },
       history: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>' },
       insights: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="4" height="9"/><rect x="10" y="6" width="4" height="15"/><rect x="17" y="3" width="4" height="18"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"/></svg>' },
+      balances: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12"/><path d="M20 7v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7"/><rect x="16" y="11" width="4" height="5" rx="1"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M4 4h14a3 3 0 0 1 3 3v1h-4.5a2.5 2.5 0 0 0 0 5H21v3a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 1-2.2A3 3 0 0 1 4 4z"/><rect x="14" y="10" width="4" height="2" rx="1"/></svg>' },
     };
     const set = icons[id] || icons.dashboard;
     return $('span', { class: 'bottom-tab-icon', 'aria-hidden': 'true' },
@@ -5208,6 +5237,7 @@ function _render() {
     { id: 'dashboard', label: 'Home' },
     { id: 'add', label: 'Add' },
     { id: 'history', label: 'History' },
+    { id: 'balances', label: 'Balances' },
     { id: 'insights', label: 'Insights' },
   ];
   main.appendChild($('nav', { class: 'bottom-tab-bar', 'aria-label': 'Mobile navigation' },
