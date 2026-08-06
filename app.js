@@ -5207,7 +5207,7 @@ function _render() {
   const route = currentRoute();
   const shouldAnimateScreen = route !== lastRenderedRoute;
   lastRenderedRoute = route;
-  const screen = $('main', { class: `shell screen${shouldAnimateScreen ? '' : ' screen-static'}`, id: 'screen' });
+  const screen = $('main', { class: `shell screen${shouldAnimateScreen ? ' stagger' : ' screen-static'}`, id: 'screen' });
   switch (route) {
     case 'add':      screen.appendChild(screenAdd()); break;
     case 'history':  screen.appendChild(screenHistory()); break;
@@ -5314,7 +5314,32 @@ function _render() {
   window.__stickyHdr = document.querySelector('.app-header');
 }
 
+// Watermelon-style mouse spotlight: feeds --mx/--my CSS vars so the hovered
+// card draws a radial glow that follows the cursor (see .card::after).
+// Desktop-only (fine pointers) and rAF-throttled so touch scroll and rapid
+// moves never read layout or write styles more than once per frame.
+function initCardSpotlight() {
+  if (window.__centsSpotlight) return;
+  window.__centsSpotlight = true;
+  const fine = typeof matchMedia === 'function' && matchMedia('(hover: hover) and (pointer: fine)').matches;
+  if (!fine) return;
+  let rafId = null;
+  document.addEventListener('pointermove', (e) => {
+    if (rafId !== null) return;
+    rafId = requestAnimationFrame(() => {
+      rafId = null;
+      const target = e.target;
+      const card = target && target.closest ? target.closest('.card') : null;
+      if (!card || !card.isConnected) return;
+      const rect = card.getBoundingClientRect();
+      card.style.setProperty('--mx', `${e.clientX - rect.left}px`);
+      card.style.setProperty('--my', `${e.clientY - rect.top}px`);
+    });
+  }, { passive: true });
+}
+
 window.addEventListener('DOMContentLoaded', () => {
+  initCardSpotlight();
   // Create the gate before rendering the app mount. A configured PIN must be
   // the first interactive surface on every full page load.
   const locked = hasPinLock();
