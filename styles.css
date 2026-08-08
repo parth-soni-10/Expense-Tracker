@@ -25,7 +25,6 @@
   --glass-blur: 12px;
   --glass-sat: 1.25;
   --glass-highlight: rgba(255, 255, 255, 0.7);
-  --glass-inner: rgba(255, 255, 255, 0.5);
   --card-glass: rgba(255, 255, 255, 0.74);
 
   /* Gradient hairline border stops */
@@ -34,7 +33,6 @@
   --hairline-c: rgba(180, 83, 9, 0.26);
 
   /* Layered shadow system — soft, diffused, with an accent glow accent */
-  --shadow-xs: 0 1px 2px rgba(28, 23, 18, 0.05);
   --shadow-sm: 0 2px 6px rgba(28, 23, 18, 0.05), 0 1px 2px rgba(28, 23, 18, 0.04);
   --shadow-md: 0 8px 20px rgba(28, 23, 18, 0.07), 0 2px 5px rgba(28, 23, 18, 0.04);
   --shadow-lg: 0 18px 42px rgba(28, 23, 18, 0.10), 0 4px 10px rgba(28, 23, 18, 0.05);
@@ -67,14 +65,12 @@
   --gradient: linear-gradient(135deg, #F2925A 0%, #F59E0B 55%, #FBBF24 100%);
 
   --glass-highlight: rgba(255, 255, 255, 0.10);
-  --glass-inner: rgba(255, 255, 255, 0.05);
   --card-glass: rgba(28, 23, 17, 0.66);
 
   --hairline-a: rgba(242, 146, 90, 0.30);
   --hairline-b: rgba(249, 115, 22, 0.12);
   --hairline-c: rgba(251, 191, 36, 0.24);
 
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.22);
   --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.28), 0 1px 2px rgba(0, 0, 0, 0.18);
   --shadow-md: 0 8px 22px rgba(0, 0, 0, 0.32), 0 2px 5px rgba(0, 0, 0, 0.18);
   --shadow-lg: 0 18px 46px rgba(0, 0, 0, 0.36), 0 4px 10px rgba(0, 0, 0, 0.18);
@@ -156,9 +152,11 @@ body::after {
   from { transform: translate(0, 0) rotate(0deg) scale(1); }
   to   { transform: translate(-8vmax, -6vmax) rotate(-24deg) scale(1.14); }
 }
-@media (min-width: 640px) {
-  body, [data-theme="dark"] body { background-attachment: fixed; }
-}
+/* Note: background-attachment: fixed is deliberately NOT used on the body.
+   It forces Chrome to re-rasterize the large radial gradients on every scroll
+   frame, which is the classic "laggy scroll" culprit. The gradients scroll
+   with the page (tiled + cached) and the two fixed blob layers above keep the
+   pinned Haikei feel at compositor cost. */
 
 h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
 a { color: inherit; text-decoration: none; }
@@ -181,10 +179,10 @@ button { font-family: inherit; cursor: pointer; }
 .tnum { font-variant-numeric: tabular-nums; font-family: 'Space Grotesk', 'DM Sans', sans-serif; font-weight: 500; }
 
 /* ── Shared micro-interaction timing ── */
-.btn, .nav-action, .pill, .nav-link, .btn-link {
+.btn, .pill, .nav-link, .btn-link {
   transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.25s;
 }
-.btn:active, .nav-action:active, .pill:active { transform: scale(0.95); }
+.btn:active, .pill:active { transform: scale(0.95); }
 .btn-primary:active { transform: scale(0.95); }
 
 /* Eyebrow labels */
@@ -207,6 +205,12 @@ button { font-family: inherit; cursor: pointer; }
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-sm), inset 0 1px 0 var(--glass-highlight);
   transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.35s, background 0.3s;
+  /* Debloat: skip layout/paint for cards far below the fold; they render
+     when scrolled near. `auto` remembers each card's real height so the
+     scrollbar stays stable. Never applies to overlays (modals/menus/toasts
+     use their own classes, not .card). */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 420px;
 }
 /* Gradient hairline border */
 .card::before {
@@ -370,25 +374,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 }
 .nav-link:hover { color: var(--ink); background: var(--bg-deep); }
 
-.nav-action {
-  display: inline-flex; align-items: center;
-  font-size: 14px; font-weight: 600;
-  color: #FFFFFF;
-  padding: 10px 20px;
-  border-radius: 999px;
-  background: var(--gradient);
-  border: none;
-  cursor: pointer;
-  box-shadow: var(--shadow-glow);
-  font-family: inherit;
-  letter-spacing: 0.01em;
-  white-space: nowrap;
-  transition: background 0.2s, color 0.2s, border-color 0.2s, transform 0.2s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.25s;
-}
-.nav-action:hover { transform: translateY(-1px); box-shadow: 0 14px 40px -8px var(--accent-glow); }
-.nav-action:active { transform: scale(0.95); }
-[data-theme="dark"] .nav-action { color: #26160C; }
-
 /* Footer action chips */
 .footer-action {
   display: inline-flex; align-items: center;
@@ -451,8 +436,8 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   cursor: pointer;
   position: relative;
   flex-shrink: 0;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  /* No backdrop blur: the header behind them is near-opaque, so blurring
+     the circles would only re-blur two tiny regions every scroll frame. */
   transition: transform 0.2s cubic-bezier(0.34,1.56,0.64,1), background 0.2s, border-color 0.2s, box-shadow 0.25s;
 }
 .dark-toggle:hover, .menu-trigger:hover { background: var(--bg-deep); box-shadow: var(--shadow-sm); }
@@ -506,27 +491,35 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .page-section > .card:last-child, .dashboard-section > .card:last-child { margin-bottom: 0 !important; }
 
 /* Screen entrance — springy rise, then staggered children (motion-primitives) */
-.screen { animation: screenIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.screen { animation: screenIn 0.22s cubic-bezier(0.22, 1, 0.36, 1) both; }
 .screen.screen-static { animation: none; }
 @keyframes screenIn {
-  from { opacity: 0; transform: translateY(10px) scale(0.995); }
+  /* Starts at 0.45 opacity, not 0 — the page is readable on the very first
+     frame instead of blanking for the whole animation (feels instant). */
+  from { opacity: 0.45; transform: translateY(6px); }
   to   { opacity: 1; transform: none; }
 }
-.screen.stagger > * { animation: riseIn 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.screen.stagger > *:nth-child(1) { animation-delay: 0.02s; }
-.screen.stagger > *:nth-child(2) { animation-delay: 0.05s; }
-.screen.stagger > *:nth-child(3) { animation-delay: 0.08s; }
-.screen.stagger > *:nth-child(4) { animation-delay: 0.11s; }
-.screen.stagger > *:nth-child(5) { animation-delay: 0.14s; }
-.screen.stagger > *:nth-child(6) { animation-delay: 0.17s; }
-.screen.stagger > *:nth-child(7) { animation-delay: 0.2s; }
-.screen.stagger > *:nth-child(8) { animation-delay: 0.23s; }
-.screen.stagger > *:nth-child(9) { animation-delay: 0.26s; }
-.screen.stagger > *:nth-child(10) { animation-delay: 0.29s; }
-.screen.stagger > *:nth-child(n+11) { animation-delay: 0.32s; }
+.screen.stagger > * { animation: riseIn 0.26s cubic-bezier(0.22, 1, 0.36, 1) both; }
+/* Delays capped at 0.12s so deep pages settle fast — no 0.8s build-up. */
+.screen.stagger > *:nth-child(1) { animation-delay: 0.01s; }
+.screen.stagger > *:nth-child(2) { animation-delay: 0.02s; }
+.screen.stagger > *:nth-child(3) { animation-delay: 0.04s; }
+.screen.stagger > *:nth-child(4) { animation-delay: 0.06s; }
+.screen.stagger > *:nth-child(5) { animation-delay: 0.08s; }
+.screen.stagger > *:nth-child(6) { animation-delay: 0.1s; }
+.screen.stagger > *:nth-child(n+7) { animation-delay: 0.12s; }
 @keyframes riseIn {
-  from { opacity: 0; transform: translateY(16px); }
+  /* Same partial-visibility trick as screenIn — never fully blank. */
+  from { opacity: 0.35; transform: translateY(10px); }
   to   { opacity: 1; transform: none; }
+}
+
+/* Users who opt out of motion get instant, animation-free navigation. */
+@media (prefers-reduced-motion: reduce) {
+  .screen, .screen.stagger > *, .dashboard-hero, .card, .btn, .pill, .nav-link {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* ── Dashboard hero — gradient bento panel with glow blob ── */
@@ -539,8 +532,9 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   border-radius: var(--radius-xl);
   padding: 26px 30px;
   overflow: hidden;
-  backdrop-filter: blur(8px) saturate(1.2);
-  -webkit-backdrop-filter: blur(8px) saturate(1.2);
+  /* No backdrop blur: the hero sits in the viewport on scroll, and a blur
+     there would re-sample the moving backdrop on every frame. The translucent
+     gradient fill already reads as frosted glass. */
   box-shadow: var(--shadow-lg), var(--shadow-glow), inset 0 1px 0 var(--glass-highlight);
   margin-bottom: 32px;
 }
@@ -691,10 +685,12 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 @media (min-width: 640px) {
   .app-header.is-sticky {
     position: sticky; top: 0; z-index: 40;
+    /* Near-opaque instead of backdrop blur: a full-width sticky bar re-blurs
+       the moving content behind it on EVERY scroll frame, which is heavy on
+       lower-end GPUs. 92% opacity reads as the same frosted glass. The plain
+       background line is the fallback for browsers without color-mix. */
     background: var(--bg);
-    background: color-mix(in srgb, var(--bg) 78%, transparent);
-    -webkit-backdrop-filter: blur(14px) saturate(1.3);
-    backdrop-filter: blur(14px) saturate(1.3);
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
     padding-top: 10px; padding-bottom: 16px;
     margin-bottom: 32px;
     border-bottom-color: transparent;
@@ -802,10 +798,10 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   .bottom-tab-bar {
     display: flex;
     position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 40;
+    /* Near-opaque like the sticky header — no per-frame backdrop blur.
+       The plain background line is the fallback for browsers without color-mix. */
     background: var(--bg);
-    background: color-mix(in srgb, var(--bg) 72%, transparent);
-    -webkit-backdrop-filter: blur(16px) saturate(1.4);
-    backdrop-filter: blur(16px) saturate(1.4);
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
     border: 1px solid var(--line);
     border-radius: 22px;
     box-shadow: var(--shadow-lg), inset 0 1px 0 var(--glass-highlight);
@@ -981,7 +977,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 @media (max-width: 479px) {
   .app-header .nav { gap: 4px; }
   .nav-link { font-size: 12px; padding: 7px 11px; }
-  .nav-action { font-size: 12px; padding: 8px 14px; }
   .app-header .logo a { font-size: 21px !important; }
   .app-header .logo .mark { width: 34px; height: 34px; font-size: 18px; border-radius: 10px; }
 }
@@ -1085,7 +1080,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .dark-toggle:focus-visible,
 .btn:focus-visible,
 .btn-link:focus-visible,
-.nav-action:focus-visible,
 .pill:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 3px;
@@ -1208,7 +1202,6 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
   border: 1px solid var(--line);
 }
 .swal-cancel:hover { background: var(--bg-deep); color: var(--ink); }
-.swal-popup .swal-footer { border-color: var(--line); }
 
 /* ── Tippy.js ── */
 .tippy-box[data-theme~='cents'] {
@@ -1307,7 +1300,6 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
    Spend assistant + morning digest
    ============================================================ */
 .assistant-bg { z-index: 96; }
-.assistant-action { font-style: italic; }
 .assistant-modal {
   max-width: 560px;
   height: min(640px, 84vh);
@@ -1518,6 +1510,11 @@ body.menu-open { overflow: hidden; }
 
 .menu-panel {
   width: min(400px, 94vw);
+  /* Fixed height: every child (.menu-level) is absolutely positioned, so an
+     auto-height panel collapses to 0. A definite height gives the levels a
+     container to fill, with the list scrolling inside when it overflows. */
+  height: min(700px, calc(100vh - 80px));
+  height: min(700px, calc(100dvh - 80px));
   background: var(--card-glass);
   border-left: 1px solid var(--line);
   box-shadow: var(--shadow-xl), inset 0 1px 0 var(--glass-highlight);
@@ -1650,7 +1647,7 @@ body.menu-open { overflow: hidden; }
   }
   .menu-panel {
     width: 100%;
-    max-height: 84vh;
+    height: min(700px, 84vh);
     border-left: none;
     border-top: 1px solid var(--line);
     border-radius: 26px 26px 0 0;

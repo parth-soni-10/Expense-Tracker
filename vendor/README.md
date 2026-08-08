@@ -16,15 +16,25 @@ falls back to native behaviour.
 | `flatpickr.min.js`      | flatpickr        | 4.6.13    | MIT     | https://github.com/flatpickr/flatpickr                    |
 | `flatpickr.min.css`     | flatpickr styles | 4.6.13    | MIT     | https://github.com/flatpickr/flatpickr                    |
 
+## Load strategy (kept deliberately light)
+
+`index.html` loads **only `sweetalert2.min.js`** eagerly (confirm dialogs are
+used by every destructive action). Everything else — flatpickr (+ its CSS),
+tippy + Popper, SortableJS, canvas-confetti and anime.js — is **fetched
+lazily on first use** by `loadVendor()` in `app.js`, so the initial page load
+downloads ~200KB less JavaScript. `vendor/*` files still ship with the site;
+they're just requested on demand (e.g. the first time a date field is opened,
+the heatmap renders, a category chip list is shown, confetti fires, or the
+insights donut animates).
+
 ## Load order matters
 
-`index.html` loads these as classic `<script defer>` tags **before** the
-`app.js` module. `popper.min.js` MUST come before `tippy-bundle.umd.min.js`:
+When lazy-loading, `popper.min.js` MUST load before `tippy-bundle.umd.min.js`:
 tippy's UMD bundle reads `window.Popper` at load time and throws if it's
-missing.
+missing. `loadVendor()` in `app.js` resolves Popper first, then tippy.
 
 ## Updating
 
 Download the same file paths from jsDelivr/unpkg (the URLs in the git
 history of this folder), or re-fetch from the project repos above. Keep the
-filenames identical — `index.html` references them by name.
+filenames identical — `app.js` references them by name.

@@ -19,6 +19,9 @@ desktop.ini
 # Logs
 *.log
 
+# Test files — development-only, never ship or commit
+/testing/
+
 # Build outputs (when scaffolding the real app)
 node_modules/
 dist/

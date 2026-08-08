@@ -7,7 +7,7 @@
 const KEY = 'cents:syncSettings';
 const PRIVACY_KEY = 'cents:privacySettings';
 
-export const SYNC_DEFAULTS = Object.freeze({
+const SYNC_DEFAULTS = Object.freeze({
   enabled: false,
   // Same-origin by default; override if proxying somewhere else.
   endpoint: '/.netlify/functions/sync',

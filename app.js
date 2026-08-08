@@ -6,14 +6,56 @@ import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, upd
 import { CATEGORIES, METHODS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync } from './sync.js';
+import { mergeStates } from './sync-merge.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
-// load or is missing, the app falls back to its native behaviour.
+// load or is missing, the app falls back to its native behaviour. Only
+// SweetAlert2 (confirm dialogs, used by every destructive action) is loaded
+// eagerly; the rest are fetched lazily on first use so the initial load
+// stays light.
 const _fpInstances = new Set();    // flatpickr instances
 const _tippyInstances = new Set(); // tippy.js instances
 const _sortables = new Set();      // sortablejs instances
 let _chipSortLast = 0;             // guards the click that ends a chip drag
+
+// Fetch a vendored script (and/or stylesheet) exactly once. Resolves when the
+// global it defines becomes available, rejects on network failure — callers
+// always degrade gracefully.
+const _vendorCache = new Map();
+function loadVendor(name, { js, css } = {}) {
+  if (!_vendorCache.has(name)) {
+    _vendorCache.set(name, new Promise((resolve, reject) => {
+      // Wait for EVERY requested asset (a lib's JS plus its optional CSS)
+      // before resolving — settling on whichever loads first could resolve
+      // while the JS global is still undefined, and the caller's one-shot
+      // .then would then never wire the widget.
+      let pending = 0;
+      const done = () => { pending -= 1; if (pending <= 0) resolve(); };
+      const fail = (asset) => reject(new Error('vendor asset failed: ' + asset));
+      if (css) {
+        pending += 1;
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = css;
+        link.onload = done;
+        link.onerror = () => fail(css);
+        document.head.appendChild(link);
+      }
+      if (js) {
+        pending += 1;
+        const s = document.createElement('script');
+        s.src = js;
+        s.async = true;
+        s.onload = done;
+        s.onerror = () => fail(js);
+        document.head.appendChild(s);
+      }
+      if (pending === 0) resolve();
+    }));
+  }
+  return _vendorCache.get(name);
+}
 
 // Destroy every vendored-widget instance before a re-render replaces the DOM.
 function libCleanup() {
@@ -48,9 +90,20 @@ function swalConfirm({ title, text, confirmButtonText = 'Yes', cancelButtonText 
 
 // Themed date picker. Falls back to the native <input type="date">. The
 // element's own "change" listeners still fire, so existing handlers keep
-// working with or without the library.
-function wireFlatpickr(el, { defaultDate, onChange } = {}) {
-  if (typeof flatpickr === 'undefined' || !el) return null;
+// working with or without the library. flatpickr is fetched on first use;
+// the input is usable with the native picker meanwhile and is enhanced in
+// place once the library arrives (re-rendered elements are skipped).
+function wireFlatpickr(el, opts = {}) {
+  if (!el) return null;
+  if (typeof flatpickr !== 'undefined') return _wireFlatpickrNow(el, opts);
+  loadVendor('flatpickr', { js: 'vendor/flatpickr.min.js', css: 'vendor/flatpickr.min.css' })
+    .then(() => { if (el.isConnected) _wireFlatpickrNow(el, opts); })
+    .catch(() => {});
+  return null;
+}
+
+function _wireFlatpickrNow(el, { defaultDate, onChange } = {}) {
+  if (!el || typeof flatpickr === 'undefined') return null;
   if (el._fp) { try { el._fp.destroy(); } catch (e) {} el._fp = null; }
   const inst = flatpickr(el, {
     dateFormat: 'Y-m-d',
@@ -69,9 +122,23 @@ function wireFlatpickr(el, { defaultDate, onChange } = {}) {
 }
 
 // Rich heatmap tooltips via tippy.js delegation. Falls back to the existing
-// .heat-tip hover popups when tippy is unavailable.
+// .heat-tip hover popups when tippy is unavailable. tippy + Popper are
+// fetched lazily on first use; the CSS-only fallback covers the interim.
 function wireHeatTippy(gridEl) {
-  if (typeof tippy === 'undefined' || !gridEl) return;
+  if (!gridEl) return;
+  if (typeof tippy !== 'undefined' && typeof Popper !== 'undefined') return _wireHeatTippyNow(gridEl);
+  // The tippy bundle reads window.Popper, so load Popper first, then tippy.
+  const popperReady = typeof Popper !== 'undefined'
+    ? Promise.resolve()
+    : loadVendor('popper', { js: 'vendor/popper.min.js' });
+  popperReady
+    .then(() => loadVendor('tippy', { js: 'vendor/tippy-bundle.umd.min.js' }))
+    .then(() => { if (gridEl.isConnected) _wireHeatTippyNow(gridEl); })
+    .catch(() => {});
+}
+
+function _wireHeatTippyNow(gridEl) {
+  if (!gridEl || typeof tippy === 'undefined' || typeof Popper === 'undefined') return;
   gridEl.classList.add('has-tippy'); // suppress the CSS-only .heat-tip fallback
   const inst = tippy(gridEl, {
     delegate: '.heat-cell[data-tip]',
@@ -91,8 +158,18 @@ function wireHeatTippy(gridEl) {
 
 // Drag-to-reorder custom category chips (Add/Edit form). Built-in seed
 // categories keep their fixed order; custom categories reorder around them.
+// SortableJS is fetched lazily on first use; chips just aren't draggable
+// until it arrives (or if it fails).
 function wireChipSortable(containerEl) {
-  if (typeof Sortable === 'undefined' || !containerEl) return;
+  if (!containerEl) return;
+  if (typeof Sortable !== 'undefined') return _wireChipSortableNow(containerEl);
+  loadVendor('sortable', { js: 'vendor/Sortable.min.js' })
+    .then(() => { if (containerEl.isConnected) _wireChipSortableNow(containerEl); })
+    .catch(() => {});
+}
+
+function _wireChipSortableNow(containerEl) {
+  if (!containerEl || typeof Sortable === 'undefined') return;
   if (containerEl._sortable) { try { containerEl._sortable.destroy(); } catch (e) {} containerEl._sortable = null; }
   if (containerEl.querySelectorAll('[data-custom]').length < 2) return;
   const sortable = Sortable.create(containerEl, {
@@ -156,6 +233,7 @@ function startInitSync() {
   if (syncBootStarted) return;
   syncBootStarted = true;
   initSync().finally(() => setSyncPulsing(false));
+  startSyncPolling();
 }
 
 async function hashPin(pin, salt = '') {
@@ -321,26 +399,117 @@ function hasLocalDataToProtect() {
     || Object.values(settings.coins || {}).some(count => Number(count) > 0);
 }
 
-async function confirmCloudReplacement() {
-  return !hasLocalDataToProtect()
-    || swalConfirm({ title: 'Replace local data?', text: 'Pulling from the cloud will replace this device’s local data. Continue?', confirmButtonText: 'Pull' });
+// ---------- merge-based reconciliation ----------
+// Every pull path (boot, poll, manual, conflict recovery) funnels through
+// applyReconcile. Merging never discards data: entries are unioned (newest
+// version wins per entry), deletion tombstones are honored, and a newer
+// reset on either side wins wholesale.
+
+// Delete tombstones: an id stays here until every device has merged, so a
+// deleted entry can never resurrect from another device's older copy.
+const MAX_TOMBSTONES = 4000;
+function tombstoneIds(ids) {
+  const settings = state.settings || (state.settings = {});
+  const list = Array.isArray(settings.deletedEntryIds) ? settings.deletedEntryIds : [];
+  const set = new Set(list);
+  let changed = false;
+  for (const id of ids) { if (id && !set.has(id)) { set.add(id); changed = true; } }
+  if (changed) {
+    const capped = [...set];
+    if (capped.length > MAX_TOMBSTONES) capped.splice(0, capped.length - MAX_TOMBSTONES);
+    settings.deletedEntryIds = capped;
+  }
+}
+function untombstoneIds(ids) {
+  const settings = state.settings;
+  if (!settings || !Array.isArray(settings.deletedEntryIds)) return;
+  const set = new Set(settings.deletedEntryIds);
+  let changed = false;
+  for (const id of ids) { if (id && set.delete(id)) changed = true; }
+  if (changed) settings.deletedEntryIds = [...set];
 }
 
-function localIsFresherThanCloud(pullResult) {
-  // A reset is a deletion tombstone. GitHub's Contents response does not
-  // reliably include a commit timestamp, so never resurrect an older cloud
-  // copy merely because that timestamp is unavailable.
-  const localResetTime = state.localResetAt ? Date.parse(state.localResetAt) : NaN;
-  if (Number.isFinite(localResetTime)) {
-    const cloudResetTime = pullResult?.content?.localResetAt
-      ? Date.parse(pullResult.content.localResetAt)
-      : NaN;
-    if (!Number.isFinite(cloudResetTime)) return true;
-    if (localResetTime !== cloudResetTime) return localResetTime > cloudResetTime;
+// Whose reset is newer? A reset is a deliberate "start over" — the newer
+// reset wins wholesale and the other side's pre-reset data is discarded.
+function resetWinnerOver(cloudContent) {
+  const localReset = state.localResetAt ? Date.parse(state.localResetAt) : NaN;
+  const cloudReset = cloudContent?.localResetAt ? Date.parse(cloudContent.localResetAt) : NaN;
+  const hasLocal = Number.isFinite(localReset);
+  const hasCloud = Number.isFinite(cloudReset);
+  if (hasLocal && !hasCloud) return 'local';
+  if (!hasLocal && hasCloud) return 'cloud';
+  if (hasLocal && hasCloud) return localReset === cloudReset ? 'tie' : (localReset > cloudReset ? 'local' : 'cloud');
+  return 'none';
+}
+
+function adoptState(raw) {
+  state = validateState(raw);
+  clearBalanceCaches();
+  saveState(state);
+  updateAllowedCategories(allCategories().map(c => c.id));
+}
+
+// Fold a pull result into local state. Never discards data. Returns
+// 'adopted' (cloud merged in), 'pushed' (local kept, push queued),
+// 'error' (nothing changed).
+async function applyReconcile(r, { quiet = false, boot = false } = {}) {
+  if (!r.ok) {
+    patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
+    notifySyncChange();
+    return 'error';
   }
-  const localTime = state.lastLocalChangeAt ? Date.parse(state.lastLocalChangeAt) : NaN;
-  const cloudTime = pullResult?.lastModifiedAt ? Date.parse(pullResult.lastModifiedAt) : NaN;
-  return Number.isFinite(localTime) && Number.isFinite(cloudTime) && localTime > cloudTime;
+  if (!r.content) {
+    // No cloud file yet — first sync. Keep local; a push creates the file.
+    patchSyncSettings({ lastError: null, lastErrorAt: null });
+    if (hasLocalDataToProtect()) {
+      if (!quiet) toast('First sync — pushing your data to the cloud.');
+      scheduleSyncPush();
+    }
+    notifySyncChange();
+    return 'pushed';
+  }
+  if (!isUsableCloudContent(r.content)) {
+    patchSyncSettings({ lastError: 'malformed cloud data', lastErrorAt: new Date().toISOString() });
+    if (!quiet) toast('Cloud data is malformed — local data was kept.');
+    notifySyncChange();
+    return 'error';
+  }
+  const winner = resetWinnerOver(r.content);
+  if (winner === 'local') {
+    // This device reset more recently than the cloud — keep local and push it
+    // over the cloud (merging would resurrect the entries the reset cleared).
+    patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
+    if (!quiet) toast('A reset happened on this device after the cloud copy — local data kept.');
+    scheduleSyncPush();
+    notifySyncChange();
+    return 'pushed';
+  }
+  // 'tie' (identical reset marker) falls through to the merge below — both
+  // sides are post-reset, so unioning can only add genuinely new entries, and
+  // skipping would silently hide them on this device.
+  if (winner === 'cloud') {
+    adoptState(r.content);
+    patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
+    if (!quiet) toast('A reset happened on another device — this device now matches the cloud.');
+    notifySyncChange();
+    render();
+    return 'adopted';
+  }
+  // Normal merge: union entries, newest version wins per entry, tombstones honored.
+  const prevCount = state.entries.length;
+  const merged = mergeStates(cloudPayload(), r.content);
+  adoptState(merged);
+  const diff = state.entries.length - prevCount;
+  patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
+  if (!quiet) {
+    if (diff > 0) toast(`Synced ${diff} new entr${diff === 1 ? 'y' : 'ies'} from another device.`);
+    else if (diff < 0) toast(`Removed ${-diff} entr${diff === -1 ? 'y' : 'ies'} deleted on another device.`);
+    else if (boot && prevCount === 0) toast(state.entries.length ? `Welcome back — pulled ${state.entries.length} entr${state.entries.length === 1 ? 'y' : 'ies'} from the cloud.` : 'Cloud is empty — nothing to pull.');
+    else toast('In sync with the cloud.');
+  }
+  notifySyncChange();
+  render();
+  return 'adopted';
 }
 
 // ---------- sync scheduler ----------
@@ -364,7 +533,7 @@ function scheduleSyncPush() {
 }
 
 let sessionSyncFailed = false;
-async function doAutoPush() {
+async function doPushNow(message) {
   pushTimer = null;
   if (syncInFlight || syncExclusive) { scheduleSyncPush(); return; }
   syncInFlight = true;
@@ -375,30 +544,36 @@ async function doAutoPush() {
     const payload = cloudPayload();
     const s = getSyncSettings();
     setSyncPulsing(true);
-    let r = await syncPush(payload, { sha: s.lastSha, message: 'cents: auto push' });
-    // Do not pull a fresh SHA and retry the old payload: that would silently
-    // overwrite changes made on another device. A later local edit will queue
-    // another attempt, while a manual Push can surface a real conflict.
-    if (revision !== syncRevision) {
-      // A newer local mutation happened while this request was in flight. The
-      // old payload may be on the server, so retain its SHA as the parent for
-      // the queued push, but never mark the newer state as synced.
-      if (r.ok) patchSyncSettings({ lastSha: r.sha });
-      scheduleSyncPush();
-      return;
-    }
+    let r = await syncPush(payload, { sha: s.lastSha, message });
     if (r.ok) {
+      if (revision !== syncRevision) {
+        // A newer local mutation happened while this request was in flight. The
+        // old payload may be on the server, so retain its SHA as the parent for
+        // the queued push, but never mark the newer state as synced.
+        patchSyncSettings({ lastSha: r.sha });
+        scheduleSyncPush();
+        return;
+      }
       patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
       if (sessionSyncFailed) {
         toast('✨ Cloud sync recovered.');
         sessionSyncFailed = false;
       }
-    } else {
-      patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
-      if (!sessionSyncFailed && r.reason !== 'conflict') {
-        toast('☠ Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.');
-        sessionSyncFailed = true;
-      }
+      notifySyncChange();
+      return;
+    }
+    // The cloud moved underneath us (409 sha conflict, or GitHub refused a
+    // sha-less write to an existing file) — pull, merge, and retry instead of
+    // deadlocking or clobbering the other device's changes.
+    if (r.reason === 'conflict' || r.reason === 'http') {
+      syncInFlight = false;
+      await resolveConflictAndPush();
+      return;
+    }
+    patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
+    if (!sessionSyncFailed) {
+      toast('☠ Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.');
+      sessionSyncFailed = true;
     }
     notifySyncChange();
   } catch (error) {
@@ -414,6 +589,89 @@ async function doAutoPush() {
     syncInFlight = false;
   }
 }
+function doAutoPush() { return doPushNow('cents: auto push'); }
+
+// Conflict recovery: pull, merge into local, push the merged result back.
+async function resolveConflictAndPush() {
+  if (syncExclusive) { scheduleSyncPush(); return; }
+  syncExclusive = true;
+  try {
+    const r = await syncPull();
+    if (!r.ok) {
+      patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
+      if (!sessionSyncFailed) {
+        toast('☠ Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.');
+        sessionSyncFailed = true;
+      }
+      notifySyncChange();
+      return;
+    }
+    if (!r.content) {
+      // Cloud file vanished or was never created — push ours fresh.
+      const push = await syncPush(cloudPayload(), { sha: null, message: 'cents: auto push' });
+      if (push.ok) patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: push.sha, lastError: null, lastErrorAt: null });
+      notifySyncChange();
+      return;
+    }
+    if (!isUsableCloudContent(r.content)) {
+      patchSyncSettings({ lastError: 'malformed cloud data', lastErrorAt: new Date().toISOString() });
+      notifySyncChange();
+      return;
+    }
+    const winner = resetWinnerOver(r.content);
+    if (winner === 'cloud') {
+      adoptState(r.content);
+      patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
+      toast('A reset happened on another device — this device now matches the cloud.');
+      notifySyncChange();
+      render();
+      return;
+    }
+    if (winner === 'local') {
+      // This device reset more recently than the cloud — keep local and push
+      // it over the cloud. Merging here would resurrect the entries the reset
+      // cleared (the reset side has none, the union would keep the old cloud
+      // entries), so never merge in this branch. A 'tie' (equal reset marker)
+      // falls through to the merge below: both sides are post-reset, so the
+      // union only adds genuinely new entries.
+      patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
+      const push = await syncPush(cloudPayload(), { sha: r.sha, message: 'cents: auto push' });
+      if (push.ok) patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: push.sha, lastError: null, lastErrorAt: null });
+      else scheduleSyncPush(); // retry any failure (conflict, http, network) — the guards keep it bounded
+      notifySyncChange();
+      return;
+    }
+    // Merge, adopt, and push the merged truth back to the cloud.
+    const prevCount = state.entries.length;
+    const merged = mergeStates(cloudPayload(), r.content);
+    adoptState(merged);
+    const diff = state.entries.length - prevCount;
+    const pushRevision = syncRevision;
+    const push = await syncPush(cloudPayload(), { sha: r.sha, message: 'cents: auto merge' });
+    if (push.ok) {
+      if (pushRevision !== syncRevision) {
+        // Newer local edits landed mid-flight and rode along in cloudPayload();
+        // keep the SHA and queue one more push to mark them synced.
+        patchSyncSettings({ lastSha: push.sha, lastError: null, lastErrorAt: null });
+        scheduleSyncPush();
+      } else {
+        patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: push.sha, lastError: null, lastErrorAt: null });
+        toast(diff > 0 ? `Merged changes from another device (${diff} new entr${diff === 1 ? 'y' : 'ies'}).` : 'Merged changes from another device — nothing lost.');
+        sessionSyncFailed = false;
+      }
+    } else if (push.reason === 'conflict' || push.reason === 'http') {
+      // Raced again — don't loop forever; the next poll/push reconciles.
+      patchSyncSettings({ lastError: 'conflict — will retry automatically', lastErrorAt: new Date().toISOString() });
+      scheduleSyncPush();
+    } else {
+      patchSyncSettings({ lastError: push.message || push.reason || 'error', lastErrorAt: new Date().toISOString() });
+    }
+    notifySyncChange();
+    render();
+  } finally {
+    syncExclusive = false;
+  }
+}
 
 async function initSync() {
   const s = getSyncSettings();
@@ -423,84 +681,99 @@ async function initSync() {
     return;
   }
   syncExclusive = true;
-  const pullRevision = syncRevision;
-  let r;
   try {
-    r = await syncPull();
-  if (r.ok && isUsableCloudContent(r.content)) {
-    const incomingCount = r.content.entries.length;
-    const localCount = state.entries.length;
-    const localEditedAt = state.lastLocalChangeAt ? Date.parse(state.lastLocalChangeAt) : null;
-    const cloudEditedAt = r.lastModifiedAt ? Date.parse(r.lastModifiedAt) : null;
-    // lastLocalChangeAt lives at the top of `state` (load-bearing — see persist()).
-    const localIsFresher = localIsFresherThanCloud(r);
-
-    if (localIsFresher) {
-      // Cloud is stale — keep the user's local edits and push them up instead of clobbering.
-      // The cloud SHA is the correct parent for the queued push, but the
-      // local copy is not synced until that push succeeds.
-      patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
-      toast('Cloud is older than your local copy — pushing your changes.');
-      scheduleSyncPush();
-      notifySyncChange();
-      return;
-    }
-    // A known SHA means this device already has this exact cloud revision.
-    // Otherwise, never replace local entries/settings silently during boot.
-    const cloudRevisionKnown = typeof r.sha === 'string' && r.sha.length > 0;
-    if ((!cloudRevisionKnown || getSyncSettings().lastSha !== r.sha) && hasLocalDataToProtect() && !(await confirmCloudReplacement())) {
-      // Do not record the rejected cloud SHA: doing so would make a later boot
-      // treat the still-unmerged local copy as already reconciled.
-      notifySyncChange();
-      return;
-    }
-
-    if (pullRevision !== syncRevision) {
-      toast('A newer local change was kept; cloud pull skipped.');
-      notifySyncChange();
-      return;
-    }
-    syncRevision++;
-    state = validateState(r.content);
-    clearBalanceCaches();
-    saveState(state);
-    updateAllowedCategories(allCategories().map(c => c.id));
-    patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
-    // Tell the user honestly what just happened.
-    if (incomingCount !== localCount) {
-      if (localCount > 0 && localEditedAt && cloudEditedAt && cloudEditedAt > localEditedAt) {
-        toast(`Cloud replaced your local copy (${localCount} → ${incomingCount} entr${incomingCount === 1 ? 'y' : 'ies'}).`);
-      } else if (localCount === 0) {
-        toast(`Pulled ${incomingCount} entr${incomingCount === 1 ? 'y' : 'ies'} from cloud.`);
-      } else {
-        toast(`Synced from cloud (${incomingCount} entr${incomingCount === 1 ? 'y' : 'ies'}).`);
-      }
-    } else {
-      toast('In sync with cloud.');
-    }
-    render();
-  } else if (r.ok && !r.content) {
-    // An absent cloud file is not an authoritative empty dataset. Keep local
-    // data untouched and let the normal push create the first cloud revision.
-    patchSyncSettings({ lastError: null, lastErrorAt: null });
-    if (hasLocalDataToProtect()) {
-      toast('Cloud file is empty — local data was kept and will be pushed.');
-      scheduleSyncPush();
-    } else {
-      toast('Cloud file is empty — nothing to pull.');
-    }
-    notifySyncChange();
-  } else if (r.ok) {
-    patchSyncSettings({ lastError: 'malformed cloud data', lastErrorAt: new Date().toISOString() });
-    toast('Cloud data is malformed — local data was kept.');
-  } else {
-    patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
-  }
-  notifySyncChange();
+    const r = await syncPull();
+    await applyReconcile(r, { boot: true });
   } finally {
     syncExclusive = false;
   }
 }
+
+// ---------- background reconciliation ----------
+// Polls the cloud every 30s and re-syncs when the tab regains focus, so a
+// change made on another device appears here without a reload or manual pull.
+let syncPollTimer = null;
+function startSyncPolling() {
+  stopSyncPolling();
+  syncPollTimer = setInterval(silentSyncPoll, 30000);
+}
+function stopSyncPolling() {
+  if (syncPollTimer) {
+    clearInterval(syncPollTimer);
+    syncPollTimer = null;
+  }
+}
+// True while the user is focused in a form field inside the app mount.
+// Adopting + re-rendering then would destroy the in-progress draft (render
+// restores focus, not the typed value), so polls defer until focus leaves.
+// Note: covers INPUT/TEXTAREA/SELECT; the app uses real inputs everywhere, so
+// contenteditable drafts (tagName DIV) would not be protected if ever added.
+function isTypingInApp() {
+  const active = document.activeElement;
+  if (!active || !/^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) return false;
+  const main = document.getElementById('app');
+  return !main || main.contains(active);
+}
+
+async function silentSyncPoll() {
+  const s = getSyncSettings();
+  if (!s.enabled || !s.endpoint || !s.password) return;
+  if (syncInFlight || syncExclusive) return;
+  // Never rebuild the UI mid-typing — the next poll picks the change up.
+  if (isTypingInApp()) return;
+  syncExclusive = true;
+  try {
+    const r = await syncPull();
+    if (!r.ok) {
+      // Transient network blips shouldn't spam the header. Record the error
+      // only when a successful sync has never happened, so a fresh setup
+      // still gets feedback while it's being configured.
+      if (!getSyncSettings().lastSyncAt) {
+        patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
+      }
+      notifySyncChange();
+      return;
+    }
+    if (!r.content) {
+      if (hasLocalDataToProtect()) scheduleSyncPush();
+      patchSyncSettings({ lastError: null, lastErrorAt: null });
+      notifySyncChange();
+      return;
+    }
+    if (!isUsableCloudContent(r.content)) {
+      patchSyncSettings({ lastError: 'malformed cloud data', lastErrorAt: new Date().toISOString() });
+      notifySyncChange();
+      return;
+    }
+    // Only adopt when the cloud revision actually differs from what we last
+    // saw — merging an identical revision would still rebuild the UI.
+    if (getSyncSettings().lastSha !== r.sha) {
+      await applyReconcile(r, { quiet: true });
+    } else {
+      patchSyncSettings({ lastError: null, lastErrorAt: null });
+      notifySyncChange();
+    }
+  } finally {
+    syncExclusive = false;
+  }
+}
+
+let _tabVisibleTimer = null;
+function onTabVisible() {
+  const s = getSyncSettings();
+  if (!s.enabled || !s.endpoint || !s.password) return;
+  // Debounce so a focus storm (focus + visibilitychange) only pulls once.
+  if (_tabVisibleTimer) return;
+  _tabVisibleTimer = setTimeout(() => {
+    _tabVisibleTimer = null;
+    silentSyncPoll();
+    scheduleSyncPush();
+  }, 400);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') onTabVisible();
+});
+window.addEventListener('focus', onTabVisible);
 
 /** Set sync dot to pulsing while a push/pull is in flight. */
 let _syncActive = false;
@@ -816,7 +1089,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
           state.entries.push(loadEntry);
           state.entries.sort((a, b) => a.date.localeCompare(b.date));
           persist();
-          trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); persist(); }, `${cardName} load ${fmt(amt)}`, [loadEntry]);
+          trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); tombstoneIds([eid]); persist(); }, `${cardName} load ${fmt(amt)}`, [loadEntry]);
           editing = false;
           toast(`Loaded ${fmt(amt)} onto ${cardName}.`);
           render();
@@ -1334,6 +1607,7 @@ function payRecurringOn(rec, dateStr) {
   persist();
   trackAction(() => {
     state.entries = state.entries.filter(e => e.id !== entry.id);
+    tombstoneIds([entry.id]);
     rec.nextDate = oldDate;
     persist();
   }, `Paid ${rec.details}`, [entry]);
@@ -1378,7 +1652,7 @@ function fillThursday(dateStr) {
     state.entries.push(tescoEntry);
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
-    trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); persist(); }, `Tesco ${friendlyDate(dateStr)}`, [tescoEntry]);
+    trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); tombstoneIds([eid]); persist(); }, `Tesco ${friendlyDate(dateStr)}`, [tescoEntry]);
     toast(`Filled Tesco pay for ${friendlyDate(dateStr)} — ${fmt(defaultAmt)}`);
     render();
   } else {
@@ -1401,6 +1675,7 @@ function autoFillAll(unpaidThursdays) {
     persist();
     trackAction(() => {
       state.entries = state.entries.filter(e => !created.includes(e.id));
+      tombstoneIds(created);
       persist();
     }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`, createdEntries);
     toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays — ${fmt(defaultAmt)} each`);
@@ -1499,7 +1774,14 @@ function triggerConfetti() {
     setTimeout(() => window.confetti({ ...base, particleCount: 26, angle: 120, spread: 60, startVelocity: 42, ticks: 110, origin: { x: 1, y: 0.8 } }), 350);
     return;
   }
-  // DOM fallback when the library is missing.
+  // Lazy-load canvas-confetti; the DOM fallback below covers a load failure.
+  loadVendor('confetti', { js: 'vendor/confetti.browser.min.js' })
+    .then(() => { if (typeof window.confetti === 'function') triggerConfetti(); else domConfetti(colors); })
+    .catch(() => domConfetti(colors));
+}
+
+// DOM confetti fallback when the library is missing or fails to load.
+function domConfetti(colors) {
   for (let i = 0; i < 60; i++) {
     const piece = document.createElement('div');
     piece.className = 'confetti-piece';
@@ -1993,8 +2275,9 @@ function deleteEntryOrTransfer(id) {
   state.entries = transferId
     ? state.entries.filter(entry => entry.transferId !== transferId)
     : state.entries.filter(entry => entry.id !== id);
-  // Keep this helper safe for every caller, including transfer modals and
-  // future deletion flows. Deletions must survive reload and sync.
+  // Tombstone the removed ids so the deletion also propagates to other
+  // devices through the cloud merge.
+  tombstoneIds(removed.map(e => e.id));
   persist();
   return true;
 }
@@ -2013,8 +2296,9 @@ async function removeDuplicateEntry(id) {
   }
   const removedIds = new Set(removed.map(e => e.id));
   state.entries = state.entries.filter(e => !removedIds.has(e.id));
+  tombstoneIds([...removedIds]);
   persist();
-  trackAction(() => { state.entries.push(...removed); state.entries.sort((a, b) => a.date.localeCompare(b.date)); persist(); }, `Restored ${target.details}`, removed);
+  trackAction(() => { state.entries.push(...removed); state.entries.sort((a, b) => a.date.localeCompare(b.date)); untombstoneIds(removed.map(e => e.id)); persist(); }, `Restored ${target.details}`, removed);
   toast(target.transferId ? 'Duplicate transfer pair deleted.' : 'Duplicate deleted.');
   render();
 }
@@ -2692,38 +2976,19 @@ async function doResync() {
   if (syncInFlight || syncExclusive) { toast('A sync is already in progress.'); return; }
   syncExclusive = true;
   try {
-    const prevCount = state.entries.length;
-    const pullRevision = syncRevision;
     const r = await syncPull();
-    if (r.ok && isUsableCloudContent(r.content)) {
-      if (localIsFresherThanCloud(r)) {
-        patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
-        toast('Cloud is older than your local copy — local data was kept and will be pushed.');
-        scheduleSyncPush();
-        notifySyncChange();
-        return;
-      }
-      if (!(await confirmCloudReplacement())) return;
-      if (pullRevision !== syncRevision) {
-        toast('A newer local change was kept; cloud pull skipped.');
-        return;
-      }
-      syncRevision++;
-      state = validateState(r.content);
-      saveState(state);
-      updateAllowedCategories(allCategories().map(c => c.id));
-      patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
-      const diff = state.entries.length - prevCount;
-      toast(diff > 0 ? `Pulled ${diff} new entr${diff === 1 ? 'y' : 'ies'}.` : diff < 0 ? `Cloud has ${state.entries.length} entries.` : 'Already up to date.');
-      notifySyncChange();
-      render();
-    } else if (r.ok && !r.content) {
-      toast(hasLocalDataToProtect() ? 'Cloud file is empty — local data was kept. Use Push to create it.' : 'Cloud file is empty — nothing to pull.');
-    } else if (r.ok) {
-      toast('Pull failed: cloud data is malformed.');
-    } else {
+    if (!r.ok) {
       toast('Pull failed: ' + (r.message || r.reason));
+      patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
+      notifySyncChange();
+      return;
     }
+    if (!r.content) {
+      if (hasLocalDataToProtect()) { toast('Cloud file is empty — local data was kept and will be pushed.'); scheduleSyncPush(); }
+      else toast('Cloud file is empty — nothing to pull.');
+      return;
+    }
+    await applyReconcile(r, {});
   } finally {
     syncExclusive = false;
   }
@@ -3677,10 +3942,12 @@ function screenHistory() {
     const removedCopy = affected.map(e => ({ ...e }));
     const removeIds = new Set(removedCopy.map(e => e.id));
     state.entries = state.entries.filter(e => !removeIds.has(e.id));
+    tombstoneIds([...removeIds]);
     persist();
     trackAction(() => {
       state.entries.push(...removedCopy);
       state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      untombstoneIds(removedCopy.map(e => e.id));
       persist();
     }, `Restored ${removedCopy.length} deleted entr${removedCopy.length === 1 ? 'y' : 'ies'}`, removedCopy);
     toast(protectedCount ? `Deleted ${removedCopy.length} (${protectedCount} kept — protected).` : `Deleted ${removedCopy.length} entr${removedCopy.length === 1 ? 'y' : 'ies'}.`);
@@ -4140,6 +4407,24 @@ function bar(label, value, max, isMax) {
   );
 }
 
+// Draw-in the donut segments with anime.js; loads the library lazily on
+// first use. If the segments were detached by a re-render mid-load, or the
+// library fails, the final (fully-drawn) state is set instead.
+function drawDonutAnimated(segments) {
+  if (typeof anime !== 'undefined') {
+    anime({ targets: segments, strokeDashoffset: el => el._finalOff, duration: 1000, delay: anime.stagger(90), easing: 'easeOutQuart' });
+    return;
+  }
+  const settle = () => segments.forEach(seg => seg.setAttribute('stroke-dashoffset', String(seg._finalOff)));
+  loadVendor('anime', { js: 'vendor/anime.min.js' })
+    .then(() => {
+      if (typeof anime !== 'undefined' && segments.every(seg => seg.isConnected)) {
+        anime({ targets: segments, strokeDashoffset: el => el._finalOff, duration: 1000, delay: anime.stagger(90), easing: 'easeOutQuart' });
+      } else settle();
+    })
+    .catch(settle);
+}
+
 // ---------- category bars with sparkline ----------
 /** Monthly spending totals for a category over the last N months. */
 function categorySparkData(catId, months = 12) {
@@ -4197,9 +4482,10 @@ function donutChart(rows) {
     return seg;
   });
   // Draw-in animation via anime.js; reduced-motion and missing-library
-  // fallbacks land on the final state immediately.
-  if (typeof anime !== 'undefined' && !_reduceMotion) {
-    anime({ targets: segments, strokeDashoffset: el => el._finalOff, duration: 1000, delay: anime.stagger(90), easing: 'easeOutQuart' });
+  // fallbacks land on the final state immediately. anime.js is fetched
+  // lazily on first use; until it arrives the donut just shows final state.
+  if (!_reduceMotion) {
+    drawDonutAnimated(segments);
   } else {
     segments.forEach(seg => seg.setAttribute('stroke-dashoffset', String(seg._finalOff)));
   }
@@ -4414,6 +4700,7 @@ function openTransferDelete(e) {
         trackAction(() => {
           state.entries.push(...removed);
           state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+          untombstoneIds(removed.map(e => e.id));
           persist();
         }, 'Restored transfer pair', removed);
         toast('Transfer pair deleted.');
@@ -4520,6 +4807,7 @@ function openEdit(id) {
       trackAction(() => {
         state.entries.push(...removed);
         state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+        untombstoneIds(removed.map(e => e.id));
         persist();
       }, e.transferId ? 'Restored transfer pair' : `Restored ${e.details}`, removed);
       toast(e.transferId ? 'Transfer pair deleted.' : 'Deleted. You can undo it from the toast.');
@@ -4604,6 +4892,10 @@ function openSyncSettings() {
       saveBtnLabel.textContent = 'Save & test';
       if (r.ok) {
         patchSyncSettings({ endpoint: newEndpoint, password: newPassword, enabled: true, lastError: null, lastErrorAt: null });
+        // Start background reconciliation immediately so data flows both ways
+        // as soon as the connection is established.
+        startSyncPolling();
+        silentSyncPoll();
         toast('Connected.');
         notifySyncChange();
         renderBody();
@@ -4647,47 +4939,12 @@ function openSyncSettings() {
         try {
         pullBtn.disabled = true; pushBtn.disabled = true;
         pullLabel.textContent = 'Pulling…';
-        const pullRevision = syncRevision;
         const r = await syncPull();
         pullBtn.disabled = false; pushBtn.disabled = false;
         pullLabel.textContent = 'Pull';
-        if (r.ok && r.content) {
-          if (!isUsableCloudContent(r.content)) {
-            pullBtn.disabled = false; pushBtn.disabled = false;
-            toast('Pull failed: cloud data is malformed.');
-            return;
-          }
-          if (localIsFresherThanCloud(r)) {
-            patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
-            toast('Cloud is older than your local copy — local data was kept and will be pushed.');
-            scheduleSyncPush();
-            return;
-          }
-          if (!(await confirmCloudReplacement())) {
-            pullBtn.disabled = false; pushBtn.disabled = false;
-            return;
-          }
-          if (pullRevision !== syncRevision) {
-            toast('A newer local change was kept; cloud pull skipped.');
-            return;
-          }
-          syncRevision++;
-          state = validateState(r.content);
-          saveState(state);
-          updateAllowedCategories(allCategories().map(c => c.id));
-          patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
-          toast(`Pulled ${state.entries.length} entries.`);
-          notifySyncChange();
-          renderBody();
-          render();
-        } else if (r.ok && !r.content) {
-          toast(hasLocalDataToProtect() ? 'Cloud file is empty — local data was kept. Use Push to create it.' : 'Cloud file is empty.');
-        } else {
-          patchSyncSettings({ lastError: r.message || r.reason, lastErrorAt: new Date().toISOString() });
-          toast('Pull failed: ' + (r.message || r.reason));
-          notifySyncChange();
-          renderBody();
-        }
+        // Merge-based: unions local and cloud, never wholesale-replaces.
+        await applyReconcile(r, {});
+        renderBody();
         } finally {
           syncExclusive = false;
         }
@@ -4695,41 +4952,13 @@ function openSyncSettings() {
 
       const pushBtn = $('button', { type: 'button', class: 'btn btn-primary', onClick: async () => {
         if (syncInFlight || syncExclusive) { toast('A sync is already in progress.'); return; }
-        syncExclusive = true;
-        try {
         pullBtn.disabled = true; pushBtn.disabled = true;
         pushLabel.textContent = 'Pushing…';
-        const pushRevision = syncRevision;
-        const payload = cloudPayload();
-        const currentSync = getSyncSettings();
-        const r = await syncPush(payload, { sha: currentSync.lastSha, message: 'cents: manual push' });
+        // doPushNow handles conflict recovery itself (pull, merge, retry).
+        await doPushNow('cents: manual push');
         pullBtn.disabled = false; pushBtn.disabled = false;
         pushLabel.textContent = 'Push';
-        if (pushRevision !== syncRevision) {
-          if (r.ok) patchSyncSettings({ lastSha: r.sha });
-          toast('A newer local change was kept; queued for sync.');
-          scheduleSyncPush();
-          return;
-        }
-        if (r.ok) {
-          patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
-          toast('Pushed to cloud.');
-          notifySyncChange();
-          renderBody();
-        } else if (r.reason === 'conflict') {
-          patchSyncSettings({ lastError: 'conflict \u2014 pull first', lastErrorAt: new Date().toISOString() });
-          toast('Conflict \u2014 cloud changed. Pull first.');
-          notifySyncChange();
-          renderBody();
-        } else {
-          patchSyncSettings({ lastError: r.message || r.reason, lastErrorAt: new Date().toISOString() });
-          toast('Push failed: ' + (r.message || r.reason));
-          notifySyncChange();
-          renderBody();
-        }
-        } finally {
-          syncExclusive = false;
-        }
+        renderBody();
       } }, pushLabel);
 
       modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;padding-top:18px;border-top:1px solid var(--line);' }, pullBtn, pushBtn));
@@ -4750,6 +4979,7 @@ function openSyncSettings() {
           // timer must not revive a disconnected sync if the user reconnects
           // quickly; an in-flight request is protected by revision checks.
           cancelScheduledSyncPush();
+          stopSyncPolling();
           syncRevision++;
           clearSyncSettings();
           toast('Sync disabled.');
@@ -5088,6 +5318,7 @@ function offerPersistedUndo() {
     if (missing.length) {
       state.entries.push(...missing);
       state.entries.sort((a, b) => a.date.localeCompare(b.date));
+      untombstoneIds(missing.map(e => e.id));
       persist();
       toast(`Undone: ${journal.label}`);
     } else {
@@ -5256,7 +5487,7 @@ function _render() {
   }
 
   main.appendChild($('footer', { style: 'max-width:980px;margin:0 auto;padding:32px 28px 64px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line);' },
-    $('span', null, String(state.entries.length), ' entries \u00b7 stored locally'),
+    $('span', null, String(state.entries.length), ` entr${state.entries.length === 1 ? 'y' : 'ies'} \u00b7 `, getSyncSettings().enabled ? 'cloud-synced' : 'stored locally'),
     $('span', { style: 'display:flex;justify-content:flex-end;flex-wrap:wrap;gap:0 8px;align-items:center;' },
       $('button', { type: 'button', class: 'footer-action danger', onClick: function() {
         if (this.textContent === 'Reset') { this.textContent = 'Confirm reset'; return; }

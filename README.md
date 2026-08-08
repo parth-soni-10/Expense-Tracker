@@ -17,7 +17,8 @@ A minimal, aesthetic single-page expense tracker. Pure static site, hosted on Ne
 .
 ├── index.html                shell, fonts, loads app.js
 ├── styles.css                editorial palette + components
-├── app.js                    hash router, 4 screens, modals (edit, import, sync)
+├── app.js                    hash router, 5 screens, modals (edit, import, sync)
+├── sync-merge.js             pure cloud-reconciliation merge logic (union + LWW)
 ├── sync.js                   client-side GitHub-sync primitives
 ├── settings.js               sync configuration in localStorage
 ├── storage.js                localStorage CRUD, strict validation, JSON I/O
@@ -123,16 +124,24 @@ On the first save, the cloud file is created automatically. From then on every c
 | What you do        | What happens                                        |
 | ------------------ | --------------------------------------------------- |
 | Add / edit / delete an entry | Saves locally + auto-pushes to GitHub       |
-| Open the app on another device | Boot-pulls from GitHub and shows toast      |
-| Click **Pull**     | Re-fetches cloud state into this device             |
-| Click **Push**     | Force-syncs current local state to cloud            |
-| See "Conflict"     | Cloud changed under you — click **Pull** then re-save |
+| Open the app on another device | Boot-merges cloud into local, shows toast  |
+| Leave the app open on two devices | A 30s background poll keeps both in sync  |
+| Switch back to a tab | A pull runs immediately, so another device's edits appear right away |
+| Click **Pull**     | Merges cloud into local (never replaces)            |
+| Click **Push**     | Pushes local state, merging first if needed         |
 
 The button text "synced 2m ago" in the header shows the freshness of the last sync.
 
-### Conflict handling
+### Conflict handling — automatic, no data loss
 
-The function sends `sha` on every PUT. If the cloud file changed since your last read, GitHub returns 409, the app shows "Conflict — pull first", and the cloud state is preserved. Resolving it: Pull → review → Push again. Multi-device updates work without surprises.
+The function sends `sha` on every PUT. If the cloud file changed since your last read, GitHub returns 409. Instead of deadlocking, the app **pulls the cloud state, merges it with your local state, and pushes the merged result back** — all automatically. Merging never discards data:
+
+- **Entries** — unioned by id; for the same entry the newest version wins.
+- **Deletions** — recorded as tombstones, so a deleted entry never resurrects from another device's older copy (undo still restores it).
+- **Settings** — scalar values (budget, currency) come from the newer side; custom categories, recurring rules, and balance checkpoints are unioned.
+- **Resets** — treated as a deliberate "start over"; the newer reset wins on every device.
+
+You no longer have to think about conflicts — both devices converge automatically within ~30s.
 
 ### Security caveats (be honest)
 

@@ -4,6 +4,10 @@
 # JSDOM smoke tests were created for one debugging session.
 smoke*.mjs
 
+# Node unit tests live in testing/ (gitignored too) — never ship them.
+# Run with `node testing/merge-test.mjs`.
+testing/
+
 # Cruft from the npm install that brought in JSDOM for the smoke tests —
 # none of this is needed by the static site or the function, and uploading
 # node_modules to Netlify wastes both time and bandwidth. List exact names
