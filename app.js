@@ -1548,7 +1548,7 @@ function openGiftCardHistoryModal(methodId) {
   // Summary card
   const summaryGrid = $('div', { style: `display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;padding:16px;background:var(--card);border-radius:var(--radius);margin-bottom:20px;` });
   const summaryStat = (label, value, color) => $('div', { style: 'text-align:center;' },
-    $('div', { class: 'eyebrow', style: 'font-size:10px;' }, label),
+    $('div', { class: 'eyebrow' }, label),
     $('div', { class: 'display-num', style: `font-size:16px;margin-top:4px;color:${color || 'inherit'};` }, value),
   );
   summaryGrid.appendChild(summaryStat('Balance', fmt(totals.balance), totals.balance >= 0 ? 'var(--positive)' : 'var(--negative)'));
@@ -2775,7 +2775,7 @@ function formView({ initial = null, onSubmit }) {
   const noteTab = pillTab('Note', 'note', data.type === 'note');
   tabs.append(expenseTab, creditTab, transferTab, noteTab);
   function pillTab(label, type, active) {
-    const btn = $('button', { type: 'button', class: 'pill', role: 'tab', 'data-id': label.toLowerCase(), 'aria-selected': active ? 'true' : 'false',          style: `padding:${isNarrow() ? '6px 14px' : '8px 18px'};font-size:12px;cursor:pointer;background:${active ? 'var(--accent-soft)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};border-color:${active ? 'transparent' : 'var(--line)'};`, onClick: () => {
+    const btn = $('button', { type: 'button', class: 'pill', role: 'tab', 'data-id': label.toLowerCase(), 'aria-selected': active ? 'true' : 'false',          style: `height:28px;padding:0 12px;font-size:13px;line-height:16px;font-weight:500;border-radius:6px;cursor:pointer;background:${active ? 'var(--accent-soft)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};border-color:${active ? 'transparent' : 'var(--line)'};`, onClick: () => {
       data.type = type;
       if (isTransfer()) {
         data.transferFrom = data.transferFrom || 'AIB';
@@ -3022,7 +3022,7 @@ function formView({ initial = null, onSubmit }) {
   const payeeList = $('datalist', { id: 'payee-list' }, ...payeeHistory().map(payee => $('option', { value: payee })));
   let detailsLabel;
   let noteFieldSection;
-  const formEl = $('div', { class: 'card', style: `padding:${isNarrow() ? '20px' : '32px'};max-width:540px;margin:0 auto;` },
+  const formEl = $('div', { class: 'card', style: `padding:${isNarrow() ? '20px 16px' : '32px 16px'};max-width:540px;margin:0 auto;` },
     payeeList,
     tabs,
     amountSection,
@@ -3131,13 +3131,13 @@ function screenDashboard() {
     const pathD = vals.map((v, i) => `${i === 0 ? 'M' : 'L'} ${i * step} ${sparkH - ((v - mn) / rng) * (sparkH - 4) - 2}`).join(' ');
     const areaD = pathD + ` L ${(vals.length - 1) * step} ${sparkH} L 0 ${sparkH} Z`;
     const lastVal = vals[vals.length - 1];
-    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '14px 18px' : '18px 24px'};margin-bottom:24px;display:flex;align-items:center;gap:16px;` },
+    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '14px 16px' : '18px 16px'};margin-bottom:24px;display:flex;align-items:center;gap:16px;` },
       $('svg', { viewBox: `0 0 ${sparkW} ${sparkH}`, style: 'flex:1;min-width:120px;height:40px;', 'aria-label': 'Net worth trend' },
         $('path', { d: areaD, style: `fill:${isUp ? 'var(--positive)' : 'var(--negative)'};opacity:0.1;` }),
         $('path', { d: pathD, style: `fill:none;stroke:${isUp ? 'var(--positive)' : 'var(--negative)'};stroke-width:1.5;stroke-linecap:round;` }),
       ),
       $('div', { style: 'text-align:right;flex-shrink:0;' },
-        $('div', { class: 'eyebrow', style: 'font-size:10px;' }, 'Net worth'),
+        $('div', { class: 'eyebrow' }, 'Net worth'),
         (() => {
           const el = $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(lastVal));
           countUp(el, lastVal, 'dash-networth');
@@ -3208,7 +3208,7 @@ function screenDashboard() {
       : runway.daysToZero !== null && runway.daysToZero <= 30
         ? `At your current pace, your balance reaches €0 in about ${Math.max(1, runway.daysToZero)} days.`
         : `At your current pace, you’ll have about ${fmt(runway.projectedEnd)} left at the start of next month.`;
-    screen.appendChild($('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+    screen.appendChild($('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
       $('div', { class: 'pulse-heading' },
         $('div', null,
           $('div', { class: 'eyebrow' }, 'Cash runway'),
@@ -3231,7 +3231,7 @@ function screenDashboard() {
   const pulse = spendingForecast(key);
   const pulseComparison = monthComparison(key);
   const pulseTone = pulse.budget && pulse.projected > pulse.budget ? 'var(--negative)' : 'var(--positive)';
-  screen.appendChild($('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+  screen.appendChild($('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
     $('div', { class: 'pulse-heading' },
       $('div', null,
         $('div', { class: 'eyebrow' }, 'Financial pulse'),
@@ -3242,8 +3242,8 @@ function screenDashboard() {
       $('span', { class: 'pulse-status', style: `color:${pulseTone};border-color:${pulseTone};` }, pulse.budget ? (pulse.projected > pulse.budget ? 'Needs attention' : 'On track') : 'Tracking'),
     ),
     $('div', { class: 'pulse-grid' },
-      stat('Spent', fmt(pulse.spent)),
-      stat('Projected', fmt(pulse.projected)),
+      stat('Spent', fmt(pulse.spent), 'var(--negative)'),
+      stat('Projected', fmt(pulse.projected), 'var(--negative)'),
       pulse.budget ? stat('Remaining', fmt(pulse.remaining)) : stat('Daily pace', fmt(pulse.dailyAverage)),
     ),
     pulseComparison.previous > 0 ? $('div', { class: 'pulse-footnote muted' },
@@ -3253,7 +3253,7 @@ function screenDashboard() {
 
   // Budget bar card
   if (budget > 0) {
-    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:${isNarrow() ? '22px' : '32px'};` },
+    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:${isNarrow() ? '22px' : '32px'};` },
       $('div', { class: 'row between' },
         $('span', { class: 'eyebrow' }, 'Spent of budget'),
         (() => {
@@ -3278,10 +3278,10 @@ function screenDashboard() {
         })()),
       $('div', { style: `display:grid;grid-template-columns:repeat(auto-fill,minmax(${isNarrow() ? '90px' : '130px'},1fr));gap:${isNarrow() ? '12px' : '24px'};padding-top:20px;border-top:1px solid var(--line);` },
         stat('Net', fmt(totalForMonth(key))),
-        stat('Spent', fmt(expenseSum)),
-        stat('Income', fmt(incomeSum)),
+        stat('Spent', fmt(expenseSum), 'var(--negative)'),
+        stat('Income', fmt(incomeSum), 'var(--positive)'),
         stat('Balance', fmt(runningBalance)),
-        stat('Avg / day', fmt(expenseSum / Math.max(now.getDate(), 1))),
+        stat('Avg / day', fmt(expenseSum / Math.max(now.getDate(), 1)), 'var(--negative)'),
         stat('Month elapsed', Math.round((now.getDate() / new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()) * 100) + '%'),
         ...(budget && expenseSum > 0 ? [stat('Burn rate', (() => {
           const daysLeft = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate();
@@ -3297,7 +3297,7 @@ function screenDashboard() {
   // Spending forecast
   const forecast = spendingForecast(key);
   const forecastTone = forecast.budget && forecast.projected > forecast.budget ? 'var(--negative)' : 'var(--positive)';
-  screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+  screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
     $('div', { class: 'row between', style: 'margin-bottom:14px;' },
       $('div', null,
         $('div', { class: 'eyebrow' }, 'Spending forecast'),
@@ -3322,7 +3322,7 @@ function screenDashboard() {
     const d = daysUntil(r.nextDate);
     return d >= 0 && d <= 7;
   }).length;
-  const recCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+  const recCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('div', { style: 'display:flex;align-items:center;gap:10px;' },
         $('span', { class: 'eyebrow' }, `Recurring · ${allRecurring.length}`),
@@ -3337,7 +3337,7 @@ function screenDashboard() {
           const isOverdue = r.nextDate <= today();
           const daysAway = daysUntil(r.nextDate);
           const isDueSoon = !isOverdue && daysAway >= 0 && daysAway <= 7;
-          return $('div', { 'data-rec-id': r.id, class: 'rec-row', style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;transition:all .3s;' },
+          return $('div', { 'data-rec-id': r.id, class: 'rec-row', style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;' },
             $('div', { style: 'display:flex;align-items:center;gap:10px;flex:1;min-width:0;' },
               $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:13px;line-height:1;padding:0;flex-shrink:0;', onClick: () => openNewRecurring(r), title: 'Edit recurring', 'aria-label': `Edit ${r.details}` }, '✎'),
               $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0;flex-shrink:0;', onClick: () => {
@@ -3353,7 +3353,7 @@ function screenDashboard() {
               isDueSoon ? $('span', { class: 'pill', style: 'border-color:var(--accent);color:var(--accent);font-size:10px;flex-shrink:0;' }, daysAway === 0 ? 'today' : `in ${daysAway}d`) : null,
             ),
             $('div', { style: 'display:flex;align-items:center;gap:10px;flex-shrink:0;' },
-              $('span', { class: 'display-num', style: `font-size:13px;color:${r.type === 'credit' ? 'var(--positive)' : 'var(--ink)'};` }, (r.type === 'credit' ? '+' : '') + fmt(r.amount)),
+              $('span', { class: 'display-num', style: `font-size:13px;color:${r.type === 'credit' ? 'var(--positive)' : 'var(--negative)'};` }, (r.type === 'credit' ? '+' : '') + fmt(r.amount)),
               $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:4px 12px;font-size:11px;', onClick: (ev) => {
         const rowEl = ev.target.closest('[data-rec-id]');
         if (rowEl) { rowEl.classList.add('paid-anim'); setTimeout(() => paidRecurring(r), 500); }
@@ -3372,7 +3372,7 @@ function screenDashboard() {
   for (const r of allRecurring) for (const date of upcomingOccurrences(r)) upcoming.push({ rec: r, date });
   upcoming.sort((a, b) => a.date.localeCompare(b.date));
   if (upcoming.length) {
-    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
       $('div', { class: 'row between', style: 'margin-bottom:8px;' },
         $('span', { class: 'eyebrow' }, 'Upcoming · next 30 days'),
         $('span', { class: 'muted', style: 'font-size:11px;' }, 'Pre-pay a scheduled charge any day it falls due.'),
@@ -3385,7 +3385,7 @@ function screenDashboard() {
             $('span', { class: 'muted', style: 'font-size:11px;flex-shrink:0;' }, friendlyDate(item.date)),
           ),
           $('div', { style: 'display:flex;align-items:center;gap:10px;flex-shrink:0;' },
-            $('span', { class: 'display-num', style: `font-size:13px;color:${item.rec.type === 'credit' ? 'var(--positive)' : 'var(--ink)'};` }, (item.rec.type === 'credit' ? '+' : '') + fmt(item.rec.amount)),
+            $('span', { class: 'display-num', style: `font-size:13px;color:${item.rec.type === 'credit' ? 'var(--positive)' : 'var(--negative)'};` }, (item.rec.type === 'credit' ? '+' : '') + fmt(item.rec.amount)),
             $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:4px 12px;font-size:11px;', onClick: () => skipRecurring(item.rec, item.date) }, 'Skip'),
             $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:4px 12px;font-size:11px;', onClick: () => payRecurringOn(item.rec, item.date) }, 'Add now'),
           ),
@@ -3402,7 +3402,7 @@ function screenDashboard() {
     grid.style.gridTemplateColumns = 'minmax(0, 2fr) minmax(0, 3fr)';
   }
 
-  const catCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};` },
+  const catCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('span', { class: 'eyebrow' }, 'By category'),
       $('span', { class: 'muted', style: 'font-size:11px;' }, 'this month'),
@@ -3436,7 +3436,7 @@ function screenDashboard() {
               $('div', { style: 'font-weight:500;' }, e.details || '—'),
               $('div', { style: `font-size:11px;color:var(--muted);${isNarrow() ? 'display:none;' : ''}` }, `${categoryLabel(e.category)} · ${methodLabel(e.method)}`),
             ),
-            $('span', { class: 'display-num', style: `text-align:right;font-size:${isNarrow() ? '13px' : '15px'};color:${e.type === 'credit' ? 'var(--positive)' : 'var(--ink)'}` }, (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
+            $('span', { class: 'display-num', style: `text-align:right;font-size:${isNarrow() ? '13px' : '15px'};color:${e.type === 'credit' ? 'var(--positive)' : 'var(--negative)'}` }, (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
             ...(isNarrow() ? [] : [$('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method))]),
           ]),
         ),
@@ -3578,7 +3578,7 @@ function emptyIcon(kind) {
 }
 
 function emptyStateCard({ icon = 'receipt', title, blurb, actionLabel = null, actionHref = null }) {
-  return $('div', { class: 'card empty-state', style: 'padding:48px 24px;text-align:center;' },
+  return $('div', { class: 'card empty-state', style: 'padding:48px 16px;text-align:center;' },
     emptyIcon(icon),
     $('div', { class: 'serif', style: 'font-size:22px;font-style:italic;margin-bottom:6px;' }, title),
     $('div', { class: 'muted', style: 'font-size:13px;margin:0 auto 18px;max-width:360px;line-height:1.5;' }, blurb),
@@ -3586,14 +3586,17 @@ function emptyStateCard({ icon = 'receipt', title, blurb, actionLabel = null, ac
   );
 }
 
-function stat(label, value) {
+function stat(label, value, color) {
   return $('div', null,
     $('div', { class: 'eyebrow' }, label),
-    $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '18px' : '22px'};margin-top:4px;` }, value),
+    $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '18px' : '22px'};margin-top:4px;${color ? `color:${color};` : ''}` }, value),
   );
 }
 
 // ---------- cash widget ----------
+// The one active window-scroll handler that hides the cash breakdown tooltip
+// on scroll; re-renders swap it out instead of stacking duplicates.
+let cashTipScrollHandler = null;
 function cashWidget() {
   const coins = { ...COINS_DEFAULT, ...(state.settings.coins || {}) };
   const total = computeCashTotal(coins);
@@ -3608,14 +3611,47 @@ function cashWidget() {
     $('span', { class: 'display-num', style: `font-size:16px;color:${total > 0 ? 'var(--accent)' : 'var(--muted)'};` }, fmt(total)),
   );
 
-  const tip = $('div', { style: `position:absolute;bottom:100%;left:50%;transform:translateX(-50%);margin-bottom:10px;padding:12px 16px;background:var(--ink);color:var(--bg);border-radius:10px;font-size:12px;line-height:1.7;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s;z-index:100;box-shadow:0 4px 16px rgba(0,0,0,0.18);display:${hasAny ? '' : 'none'};` },
-    ...(hasAny ? tipLines.map(l => $('div', null, l)) : []),
-    hasAny ? $('div', { style: 'margin-top:6px;padding-top:6px;border-top:1px solid rgba(0,0,0,0.15);font-weight:600;' }, `Total: ${fmt(total)}`) : null,
-  );
-  wrapper.appendChild(tip);
+  // The breakdown tooltip is body-attached and fixed-positioned so the hero's
+  // overflow:hidden can't clip it, and aligned to the widget's edges instead
+  // of centered over the card (where it covered the balance number).
+  const oldTip = document.querySelector('.cash-tip');
+  if (oldTip) {
+    clearTimeout(tipTimeout);
+    if (cashTipScrollHandler) {
+      window.removeEventListener('scroll', cashTipScrollHandler);
+      cashTipScrollHandler = null;
+    }
+    oldTip.remove();
+  }
+  if (hasAny) {
+    const tip = $('div', { class: 'cash-tip', style: 'position:fixed;padding:12px 16px;background:var(--ink);color:var(--bg);border-radius:10px;font-size:12px;line-height:1.7;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .15s;z-index:200;box-shadow:0 4px 16px rgba(0,0,0,0.18);' },
+      ...tipLines.map(l => $('div', null, l)),
+      $('div', { style: 'margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.22);font-weight:600;' }, `Total: ${fmt(total)}`),
+    );
+    document.body.appendChild(tip);
+    const positionTip = () => {
+      const r = wrapper.getBoundingClientRect();
+      const tipW = tip.offsetWidth, tipH = tip.offsetHeight;
+      // Right edge of the tip aligns with the right edge of the widget, but
+      // never let it drift off either side of the viewport (a nowrap tip can
+      // be wider than the space left of the widget on narrow screens).
+      const left = Math.max(8, Math.min(Math.round(r.right - tipW), window.innerWidth - tipW - 8));
+      tip.style.left = `${left}px`;
+      // Prefer opening below; flip above when there isn't room on screen.
+      const below = r.bottom + 8;
+      tip.style.top = `${below + tipH <= window.innerHeight - 8 ? below : Math.max(8, r.top - tipH - 8)}px`;
+    };
+    const showTip = () => { positionTip(); tip.style.opacity = '1'; };
+    const hideTip = () => { tip.style.opacity = '0'; };
+    wrapper.addEventListener('mouseenter', () => { clearTimeout(tipTimeout); showTip(); });
+    wrapper.addEventListener('mouseleave', () => { tipTimeout = setTimeout(hideTip, 150); });
+    // Scrolling moves the widget away from under the cursor — never leave the
+    // tip floating at a stale position. The handler is module-level so a
+    // re-render removes the previous one instead of stacking duplicates.
+    cashTipScrollHandler = () => { if (tip.style.opacity === '1') hideTip(); };
+    window.addEventListener('scroll', cashTipScrollHandler, { passive: true });
+  }
 
-  wrapper.addEventListener('mouseenter', () => { clearTimeout(tipTimeout); tip.style.opacity = '1'; });
-  wrapper.addEventListener('mouseleave', () => { tipTimeout = setTimeout(() => tip.style.opacity = '0', 150); });
   wrapper.addEventListener('click', () => openCashEditor());
 
   return wrapper;
@@ -3775,16 +3811,24 @@ function openCashEditor() {
   const rows = COINS.map(c => {
     const key = String(c.val);
     const countEl = $('span', { style: 'min-width:24px;text-align:center;font-weight:500;' }, String(coins[key]));
+    // Per-row subtotal must live in a node we can refresh — computing it once
+    // at render froze every row at €0.00 while only the total updated.
+    const subEl = $('span', { class: 'muted', style: 'font-size:12px;width:55px;text-align:right;' }, fmt(coins[key] * c.val));
+    const refresh = () => {
+      countEl.textContent = String(coins[key]);
+      subEl.textContent = fmt(coins[key] * c.val);
+      totalEl.textContent = fmt(computeCashTotal(coins));
+    };
     const decr = $('button', { type: 'button', style: 'width:28px;height:28px;border:1px solid var(--line);border-radius:6px;background:transparent;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;justify-content:center;', onClick: () => {
-      if (coins[key] > 0) { coins[key]--; countEl.textContent = String(coins[key]); totalEl.textContent = fmt(computeCashTotal(coins)); }
+      if (coins[key] > 0) { coins[key]--; refresh(); }
     } }, '−');
     const incr = $('button', { type: 'button', style: 'width:28px;height:28px;border:1px solid var(--line);border-radius:6px;background:transparent;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;justify-content:center;', onClick: () => {
-      coins[key]++; countEl.textContent = String(coins[key]); totalEl.textContent = fmt(computeCashTotal(coins));
+      coins[key]++; refresh();
     } }, '+');
     return $('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);' },
       $('span', { style: 'font-size:14px;font-weight:500;width:50px;' }, c.label),
       $('div', { style: 'display:flex;align-items:center;gap:10px;' }, decr, countEl, incr),
-      $('span', { class: 'muted', style: 'font-size:12px;width:55px;text-align:right;' }, fmt(coins[key] * c.val)),
+      subEl,
     );
   });
 
@@ -3823,7 +3867,7 @@ function screenAdd() {
   ));
 
   if (state.entries.length === 0) {
-    c.appendChild($('div', { class: 'card', style: 'max-width:540px;margin:0 auto 20px;padding:20px 22px;text-align:center;' },
+    c.appendChild($('div', { class: 'card', style: 'max-width:540px;margin:0 auto 20px;padding:20px 16px;text-align:center;' },
       $('div', { class: 'serif', style: 'font-size:19px;font-style:italic;' }, 'You’re starting fresh.'),
       $('div', { class: 'muted', style: 'font-size:12px;margin-top:4px;' }, 'Every tracker begins with one entry. Add your first one below — the magic field understands plain English.'),
     ));
@@ -3863,7 +3907,7 @@ function screenAdd() {
     recognition.onend = () => { voiceInputBtn.textContent = '🎙 Voice'; voiceInputBtn.disabled = false; };
     recognition.start();
   } }, '🎙 Voice');
-  c.appendChild($('div', { class: 'card', style: `max-width:540px;margin:0 auto 20px;padding:${isNarrow() ? '18px' : '22px'};` },
+  c.appendChild($('div', { class: 'card', style: `max-width:540px;margin:0 auto 20px;padding:${isNarrow() ? '18px 16px' : '22px 16px'};` },
     $('div', { class: 'eyebrow', style: 'margin-bottom:6px;' }, 'Magic entry'),
     $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:10px;' }, 'Describe it naturally, check the preview, then add it.'),
     magicInput,
@@ -3973,7 +4017,7 @@ function screenHistory() {
   catCounts.all = monthEntries.length;
 
   const filterRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 12px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
-  filterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;font-size:10px;' }, 'Category'));
+  filterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;' }, 'Category'));
   filterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': 'all', 'data-active': activeCat === 'all' ? 'true' : 'false', 'aria-pressed': activeCat === 'all' ? 'true' : 'false', onClick: () => update({ cat: 'all' }) }, `All · ${catCounts.all || 0}`));
   for (const c2 of allCategories()) {
     const count = catCounts[c2.id] || 0;
@@ -4040,7 +4084,7 @@ function screenHistory() {
     render();
   }
 
-  const tableWrap = $('div', { class: 'card', style: 'overflow-x:auto;' });
+  const tableWrap = $('div', { class: 'card', style: 'overflow-x:auto;padding:0;' });
   if (visible.length === 0) {
     tableWrap.appendChild($('div', { class: 'empty' }, emptyIcon('receipt'), searchQuery ? ' No results for this search.' : activeDay ? ` No entries on ${friendlyDate(activeDay)}.` : ' Nothing here for this filter.'));
   } else {
@@ -4132,7 +4176,7 @@ function calendarCard(activeMonth, activeDay, onDayChange) {
       val ? $('span', { class: 'cal-dot', style: `width:${size}px;height:${size}px;` }) : null,
     ));
   }
-  return $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+  return $('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
     $('div', { class: 'row between', style: 'margin-bottom:14px;' },
       $('div', null,
         $('div', { class: 'eyebrow' }, 'Calendar'),
@@ -4151,7 +4195,7 @@ function calendarCard(activeMonth, activeDay, onDayChange) {
 }
 
 function monthNav(label, onClick, disabled) {
-  return $('button', { type: 'button', class: 'btn btn-ghost', disabled: disabled ? '' : null, style: 'padding:6px 12px;font-size:13px;', onClick }, label);
+  return $('button', { type: 'button', class: 'btn btn-ghost', disabled: disabled ? '' : null, style: 'height:28px;padding:0 12px;font-size:13px;line-height:16px;font-weight:500;border-radius:6px;', onClick }, label);
 }
 
 // ---------- screens: balances ----------
@@ -4168,7 +4212,7 @@ function screenBalances() {
   ));
 
   const trackedMethods = METHODS.filter(m => ACCOUNT_METHOD_IDS.includes(m.id));
-  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
     $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px;' },
       $('div', null,
         $('div', { class: 'eyebrow' }, 'Account balances'),
@@ -4181,7 +4225,7 @@ function screenBalances() {
     ),
   ));
 
-  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-bottom:24px;` },
+  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
     $('div', { class: 'eyebrow', style: 'margin-bottom:4px;' }, 'Gift card balances'),
     $('div', { class: 'muted', style: 'font-size:11px;margin-bottom:8px;' }, 'The same reconciliation editor is used for every balance.'),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
@@ -4293,7 +4337,7 @@ function screenInsights() {
     : 0;
   const insightDelta = insightTotal - insightPrevious;
 
-  c.appendChild($('div', { class: 'insight-narrative card', style: 'padding:24px;margin-bottom:24px;' },
+  c.appendChild($('div', { class: 'insight-narrative card', style: 'padding:24px 16px;margin-bottom:24px;' },
     $('div', { class: 'eyebrow' }, 'The short version'),
     $('p', { class: 'serif insight-narrative-text' }, recent.some(isSpendingEntry)
       ? `You spent ${fmt(insightTotal)} in this range${topCategoryEntry ? `, led by ${categoryLabel(topCategoryEntry[0])} at ${fmt(topCategoryEntry[1])}` : ''}.`
@@ -4350,7 +4394,7 @@ function screenInsights() {
     ...heatCells,
   );
   wireHeatTippy(heatGrid);
-  c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:12px;' }, `Spending heatmap · ${monthLabel(heatKey)}`),
     heatGrid,
     $('div', { style: 'margin-top:8px;font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;' },
@@ -4364,7 +4408,7 @@ function screenInsights() {
   const catRows = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]);
   const maxCat = catRows[0]?.[1] || 1;
 
-  c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'By category'),
     catRows.length === 0
       ? $('div', { class: 'empty' }, emptyIcon('coin'), ' No expenses in this range.')
@@ -4377,7 +4421,7 @@ function screenInsights() {
   ));
 
   // Month-by-month grouped bars: spending vs income over the last 12 months
-  c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Month by month'),
     monthOverMonthChart(),
   ));
@@ -4386,16 +4430,14 @@ function screenInsights() {
   // month to month without losing the category breakdown.
   const stacked = stackedAreaChart();
   if (stacked) {
-    c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+    c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
       $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Category mix over time'),
       stacked,
     ));
   }
 
   const methodRows = Object.entries(methodTotals).sort((a,b)=>b[1]-a[1]);
-  const maxMethod = methodRows[0]?.[1] || 1;
-
-  c.appendChild($('div', { class: 'card', style: 'padding:24px;' },
+  const maxMethod = methodRows[0]?.[1] || 1;    c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Payment mix'),
     methodRows.length === 0
       ? $('div', { class: 'empty' }, emptyIcon('coin'), ' No expenses in this range.')
@@ -4412,12 +4454,12 @@ function screenInsights() {
     const minValue = Math.min(0, ...values), maxValue = Math.max(1, ...values), range = maxValue - minValue || 1;
     const xAt = i => padX + (balanceHistory.points.length === 1 ? 0 : i * ((chartW - padX * 1.5) / (balanceHistory.points.length - 1)));
     const yAt = value => chartH - padY - ((value - minValue) / range) * (chartH - padY * 2);
-    const palette = ['var(--accent)', 'var(--positive)', '#8b5cf6'];
+    const palette = ['var(--chart-line)', 'var(--positive)', '#8b5cf6'];
     const lines = balanceHistory.methods.map((method, index) => {
       const d = balanceHistory.points.map((point, i) => `${i ? 'L' : 'M'} ${xAt(i)} ${yAt(point.balances[method.id])}`).join(' ');
       return $('path', { d, style: `fill:none;stroke:${palette[index]};stroke-width:2;stroke-linecap:round;stroke-linejoin:round;` });
     });
-    c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;overflow:hidden;' },
+    c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;overflow:hidden;' },
       $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:14px;' },
         $('div', null,        $('div', { class: 'eyebrow' }, 'Account balance history'), $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Month-end balances anchored to dated reconciliation checkpoints.')),
         $('div', { style: 'display:flex;gap:10px;flex-wrap:wrap;' }, ...balanceHistory.methods.map((m, i) => $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: `width:7px;height:7px;border-radius:50%;background:${palette[i]};` }), methodShort(m.id)))),
@@ -4433,7 +4475,7 @@ function screenInsights() {
   // Monthly review assistant
   const reviewKey = monthKey(today());
   const review = reviewForMonth(reviewKey);
-  c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:12px;' }, `Monthly review · ${monthLabel(reviewKey)} · month to date`),
     $('div', { style: 'display:flex;flex-direction:column;gap:8px;' }, ...review.lines.map(line => $('div', { class: 'serif', style: 'font-size:16px;font-style:italic;' }, line))),
   ));
@@ -4441,7 +4483,7 @@ function screenInsights() {
   // Duplicate cleanup
   const duplicateSets = duplicateGroups();
   if (duplicateSets.length) {
-    c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+    c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
       $('div', { class: 'row between', style: 'margin-bottom:12px;' }, $('div', { class: 'eyebrow' }, `Possible duplicates · ${duplicateSets.reduce((sum, group) => sum + group.length - 1, 0)}`), $('span', { class: 'muted', style: 'font-size:11px;' }, 'Keep the first, remove extras')),
       $('div', { style: 'display:flex;flex-direction:column;gap:10px;' }, ...duplicateSets.flatMap(group => group.slice(1).map(entry => $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;' },
         $('div', { style: 'min-width:0;' }, $('div', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, entry.details), $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, `${friendlyDate(entry.date)} · ${methodShort(entry.method)} · ${fmt(entry.amount)}`)),
@@ -4453,7 +4495,7 @@ function screenInsights() {
   // Data health card
   const health = computeDataHealth(state.entries);
   const healthColor = health.score >= 80 ? 'var(--positive)' : health.score >= 50 ? 'var(--accent)' : 'var(--negative)';
-  c.appendChild($('div', { class: 'card', style: 'padding:24px;margin-bottom:24px;' },
+  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
     $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' },
       $('div', { class: 'eyebrow' }, 'Data health'),
       $('span', { class: 'display-num', style: `font-size:22px;color:${healthColor};` }, `${health.score}%`),
@@ -4475,7 +4517,7 @@ function screenInsights() {
 function statCard(label, value, countKey) {
   const numEl = $('div', { class: 'display-num', style: 'font-size:30px;margin-top:8px;' }, typeof value === 'number' && countKey ? '' : value);
   if (countKey && typeof value === 'number') countUp(numEl, value, countKey);
-  return $('div', { class: 'card', style: 'padding:20px;' },
+  return $('div', { class: 'card', style: 'padding:20px 16px;' },
     $('div', { class: 'eyebrow' }, label),
     numEl,
   );
@@ -4536,7 +4578,7 @@ function barWithSpark(cat, val, max, isMax) {
     $('div', { class: 'row between', style: 'font-size:13px;margin-bottom:8px;' },
       $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' },
         hasSpark ? $('svg', { width: '60', height: '20', 'aria-hidden': 'true', style: 'flex-shrink:0;' },
-          $('path', { d: sparklinePath(values), style: 'fill:none;stroke:var(--accent);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;' }),
+          $('path', { d: sparklinePath(values), style: 'fill:none;stroke:var(--chart-line);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;' }),
         ) : null,
         $('span', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, categoryLabel(cat)),
       ),
@@ -4620,13 +4662,13 @@ function monthOverMonthChart() {
   const labels = [];
   months.forEach((m, i) => {
     const x = xAt(i);
-    if (m.exp > 0) rects.push($('rect', { x, y: yAt(m.exp), width: bw, height: H - padB - yAt(m.exp), rx: 2, style: 'fill:var(--accent);' }));
+    if (m.exp > 0) rects.push($('rect', { x, y: yAt(m.exp), width: bw, height: H - padB - yAt(m.exp), rx: 2, style: 'fill:var(--chart-bar);' }));
     if (m.inc > 0) rects.push($('rect', { x: x + bw + 4, y: yAt(m.inc), width: bw, height: H - padB - yAt(m.inc), rx: 2, style: 'fill:var(--positive);' }));
     labels.push($('text', { x: x + bw + 2, y: H - 8, 'text-anchor': 'middle', style: 'fill:var(--muted);font-size:9px;' }, monthLabel(m.key).split(' ')[0].slice(0, 3)));
   });
   return $('div', null,
     $('div', { style: 'display:flex;gap:14px;justify-content:flex-end;margin-bottom:10px;' },
-      $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: 'width:8px;height:8px;border-radius:2px;background:var(--accent);' }), 'Spending'),
+      $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: 'width:8px;height:8px;border-radius:2px;background:var(--chart-bar);' }), 'Spending'),
       $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: 'width:8px;height:8px;border-radius:2px;background:var(--positive);' }), 'Income'),
     ),
     $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Monthly spending vs income, last 12 months', style: 'width:100%;height:auto;' }, ...rects, ...labels),
@@ -4703,7 +4745,7 @@ function openYearInReview() {
 
   const rows = [
     ['Total earned', fmt(totalEarned), 'var(--positive)'],
-    ['Total spent', fmt(totalSpent), 'var(--ink)'],
+    ['Total spent', fmt(totalSpent), 'var(--negative)'],
     ['Net', fmt(totalEarned - totalSpent), (totalEarned - totalSpent) >= 0 ? 'var(--positive)' : 'var(--negative)'],
     ['Entries logged', String(yearEntries.length), ''],
     ['Top category', topCat ? `${categoryLabel(topCat[0])} · ${fmt(topCat[1])}` : '—', ''],
@@ -4772,7 +4814,7 @@ function openTransferDelete(e) {
   for (const p of pair) {
     modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;' },
       $('span', null, $('span', { class: 'pill', style: 'border-color:transparent;margin-right:8px;' }, methodShort(p.method)), p.details, ' · ', friendlyDate(p.date)),
-      $('span', { class: 'display-num', style: `color:${p.type === 'credit' ? 'var(--positive)' : 'var(--ink)'};` }, (p.type === 'credit' ? '+' : '') + fmt(p.amount)),
+      $('span', { class: 'display-num', style: `color:${p.type === 'credit' ? 'var(--positive)' : 'var(--negative)'};` }, (p.type === 'credit' ? '+' : '') + fmt(p.amount)),
     ));
   }
 
@@ -5220,7 +5262,7 @@ function assistantAnswer(raw) {
         const values = categorySparkData(catId);
         if (values.some(v => v > 0)) {
           chart = $('svg', { viewBox: '0 0 120 36', style: 'width:100%;height:36px;margin-top:10px;', 'aria-label': `${categoryLabel(catId)} 12-month trend` },
-            $('path', { d: sparklinePath(values, 120, 36), style: 'fill:none;stroke:var(--accent);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;' }),
+            $('path', { d: sparklinePath(values, 120, 36), style: 'fill:none;stroke:var(--chart-line);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;' }),
           );
         }
       }
@@ -5381,7 +5423,7 @@ function morningDigest() {
     note ? $('div', { class: 'digest-stat-note' }, note) : null,
   );
 
-  return $('div', { class: 'card digest-card', style: `padding:${isNarrow() ? '20px' : '26px'};margin-bottom:24px;` },
+  return $('div', { class: 'card digest-card', style: `padding:${isNarrow() ? '20px 16px' : '26px 16px'};margin-bottom:24px;` },
     $('div', { class: 'row between', style: 'align-items:flex-start;margin-bottom:16px;' },
       $('div', null,
         $('div', { class: 'eyebrow' }, 'Morning digest'),
@@ -5509,7 +5551,7 @@ function render() {
       shadow: isDark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)',
     };
     mount.innerHTML =
-      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;background:' + c.bg + ';font-family:DM Sans,system-ui,sans-serif;z-index:9999;">' +
+      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;background:' + c.bg + ';font-family:Inter,system-ui,sans-serif;z-index:9999;">' +
         '<div style="max-width:560px;padding:32px 36px;border:1px solid ' + c.line + ';border-radius:16px;background:' + c.card + ';line-height:1.55;font-size:14px;box-shadow:0 8px 32px ' + c.shadow + ';">' +
           '<div style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-size:22px;color:' + c.ink + ';">cents.</div>' +
           '<h1 style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-weight:400;font-size:28px;margin:4px 0 8px;">Render crashed.</h1>' +
