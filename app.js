@@ -5468,24 +5468,33 @@ function toast(text, undoFn, undoLabel) {
 }
 
 // Offer the persisted undo journal after a reload. Only the entries that are
-// still missing (not already restored or recreated) are re-added.
+// still missing (not already restored or recreated) are re-added. The journal
+// is consumed as soon as the offer is shown — a dismissed toast (or another
+// reload) must never re-offer the same change.
 function offerPersistedUndo() {
   const journal = loadUndoJournal();
   if (!journal || !Array.isArray(journal.entries) || !journal.entries.length) return;
+  const missing = journal.entries.filter(j => j && !state.entries.some(e => e.id === j.id));
+  if (!missing.length) {
+    // Nothing left to restore (the entries still exist, e.g. a load that was
+    // never undone, or an already-restored delete). Drop the stale journal
+    // silently so the offer stops appearing on every reload.
+    clearUndoJournal();
+    return;
+  }
   toast(`You can undo “${journal.label || 'that change'}” from before your last reload.`, () => {
-    const missing = journal.entries.filter(j => j && !state.entries.some(e => e.id === j.id));
-    if (missing.length) {
-      state.entries.push(...missing);
-      state.entries.sort((a, b) => a.date.localeCompare(b.date));
-      untombstoneIds(missing.map(e => e.id));
-      persist();
-      toast(`Undone: ${journal.label}`);
-    } else {
-      toast('Nothing to undo — that change is already gone.');
-    }
+    state.entries.push(...missing);
+    state.entries.sort((a, b) => a.date.localeCompare(b.date));
+    untombstoneIds(missing.map(e => e.id));
+    persist();
+    toast(`Undone: ${journal.label}`);
     clearUndoJournal();
     render();
   }, 'Undo');
+  // One-shot: the offer is now shown, so clear the journal — clicking Undo
+  // still works (the closure holds the entries), but the next reload won't
+  // re-offer an already-seen change.
+  clearUndoJournal();
 }
 
 // ---------- render scheduling ----------
