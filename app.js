@@ -225,6 +225,10 @@ function mutationTimestamp(entry) {
 }
 let pinUnlocked = false;
 let pinOverlay = null;
+// A boot-time sync setup link cannot toast while the PIN overlay is up
+// (it sits above the toast layer), so the message is queued and shown the
+// moment the device is unlocked.
+let pendingSetupLinkToast = null;
 let syncBootStarted = false;
 let lastRenderedRoute = null;
 let renderFrame = null;
@@ -250,17 +254,31 @@ async function hashPinPlain(pin) {
   return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Site-wide default credential. Every device boots locked and unlocks with
+// this built-in PIN ("100901") until a personal PIN is saved on that device.
+// It is a plain SHA-256 like the legacy device-hash path, so verification
+// needs no salt. By design this is casual-access protection — the default is
+// visible in the shipped source.
+const DEFAULT_PIN_HASH = '3bc83f9bf0224554bd08d03d598a4c44d7eda855bbf034131e48d1dba72d5d7d'; // SHA-256("100901")
+const DEFAULT_PIN_PLAIN = '100901'; // used only when Web Crypto is unavailable (plain-HTTP contexts)
+
 function getPinCredential() {
   const devicePin = getPrivacyPin();
-  if (devicePin.hash) return devicePin;
+  if (devicePin.hash) return { ...devicePin, isDefault: false };
   const legacyHash = state?.settings?.pinHash;
-  return typeof legacyHash === 'string' && /^[a-f0-9]{64}$/i.test(legacyHash)
-    ? { salt: null, hash: legacyHash.toLowerCase() }
-    : { salt: null, hash: null };
+  if (typeof legacyHash === 'string' && /^[a-f0-9]{64}$/i.test(legacyHash)) {
+    return { salt: null, hash: legacyHash.toLowerCase(), isDefault: false };
+  }
+  return { salt: null, hash: DEFAULT_PIN_HASH, isDefault: true };
 }
 
 function hasPinLock() {
-  return !!getPinCredential().hash;
+  // The privacy lock is always on: every device opens locked, using the
+  // built-in "100901" PIN until a personal PIN is set there.
+  return true;
+}
+function hasCustomPin() {
+  return !getPinCredential().isDefault;
 }
 
 function closePinOverlay() {
@@ -268,30 +286,45 @@ function closePinOverlay() {
 }
 
 function showPinLock() {
-  if (pinUnlocked || !hasPinLock() || pinOverlay) return;
-  const input = $('input', { type: 'password', inputmode: 'numeric', maxlength: '6', autocomplete: 'off', placeholder: '••••', 'aria-label': 'PIN', style: 'width:100%;text-align:center;letter-spacing:.35em;font-size:24px;' });
-  const message = $('p', { class: 'muted', style: 'font-size:13px;text-align:center;min-height:20px;margin:12px 0;' });
+  if (pinUnlocked || pinOverlay) return;
+  const input = $('input', { type: 'password', maxlength: '20', autocomplete: 'off', placeholder: 'PIN', 'aria-label': 'PIN', style: 'width:100%;text-align:center;letter-spacing:.35em;font-size:24px;' });
+  const message = $('p', { class: 'muted', style: 'font-size:13px;text-align:center;min-height:20px;margin:12px 0;' }, 'Enter your PIN.');
   const submit = async () => {
     const value = String(input.value || '').trim();
-    if (!/^\d{4,6}$/.test(value)) { message.textContent = 'Enter your 4–6 digit PIN.'; input.focus(); return; }
+    if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { message.textContent = 'Use 4–20 letters or numbers.'; input.focus(); return; }
+    const saved = getPinCredential();
+    let matches = false;
     try {
-      const saved = getPinCredential();
-      const saltedMatch = saved.salt !== null && (await hashPin(value, saved.salt)) === saved.hash;
-      // Older builds used plain SHA-256(pin). This also keeps the lock active
-      // if a browser cannot persist the migrated device-only credential.
-      const legacyMatch = saved.salt === null && (await hashPinPlain(value)) === saved.hash;
-      if (!saltedMatch && !legacyMatch) {
-        message.textContent = 'That PIN is not correct.';
-        input.value = '';
-        input.focus();
-        return;
+      if (saved.salt !== null) {
+        matches = (await hashPin(value, saved.salt)) === saved.hash;
+      } else if (globalThis.crypto?.subtle) {
+        // Plain SHA-256 path (legacy hashes and the built-in default).
+        matches = (await hashPinPlain(value)) === saved.hash;
+      } else {
+        // No Web Crypto (plain-HTTP context): the built-in default credential
+        // is casual protection, so verify it by direct comparison. Personal
+        // salted hashes cannot be checked without Web Crypto.
+        matches = saved.isDefault && value === DEFAULT_PIN_PLAIN;
       }
-      pinUnlocked = true;
-      closePinOverlay();
-      render();
-      startInitSync();
     } catch (err) {
-      message.textContent = 'PIN verification is unavailable in this browser.';
+      matches = false;
+    }
+    if (!matches) {
+      message.textContent = globalThis.crypto?.subtle
+        ? 'That PIN is not correct.'
+        : 'PIN verification needs a secure (HTTPS) connection on this device.';
+      input.value = '';
+      input.focus();
+      return;
+    }
+    pinUnlocked = true;
+    closePinOverlay();
+    render();
+    startInitSync();
+    offerPersistedUndo();
+    if (pendingSetupLinkToast) {
+      toast(pendingSetupLinkToast);
+      pendingSetupLinkToast = null;
     }
   };
   const overlay = $('div', { class: 'modal-bg', style: 'z-index:10000;background:rgba(0,0,0,.82);' },
@@ -311,7 +344,6 @@ function showPinLock() {
 }
 
 function lockApp() {
-  if (!hasPinLock()) { toast('Set a PIN first.'); return; }
   pinUnlocked = false;
   render();
   showPinLock();
@@ -324,14 +356,14 @@ function openPinSettings() {
   const onKey = ev => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onKey, true);
   bg.appendChild(modal); document.body.appendChild(bg);
-  const current = hasPinLock();
-  const pin = $('input', { type: 'password', inputmode: 'numeric', maxlength: '6', autocomplete: 'new-password', placeholder: current ? 'New PIN (leave blank to keep)' : '4–6 digits', 'aria-label': 'New PIN' });
-  const confirm = $('input', { type: 'password', inputmode: 'numeric', maxlength: '6', autocomplete: 'new-password', placeholder: 'Repeat PIN', 'aria-label': 'Repeat PIN' });
-  const status = $('p', { class: 'muted', style: 'font-size:12px;min-height:18px;' }, current ? 'A PIN protects this device when the app opens.' : 'Your PIN is stored as a one-way hash on this device. This protects casual access, not localStorage or DevTools.');
+  const custom = hasCustomPin();
+  const pin = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: custom ? 'New PIN (leave blank to keep)' : 'Your PIN', 'aria-label': 'New PIN' });
+  const confirm = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'Repeat PIN', 'aria-label': 'Repeat PIN' });
+  const status = $('p', { class: 'muted', style: 'font-size:12px;min-height:18px;' }, custom ? 'Your PIN is stored as a one-way hash on this device. This protects casual access, not localStorage or DevTools.' : 'The default PIN is 100901 and works on every device. Set a personal PIN here to replace it on this device.');
   const save = async () => {
     const value = pin.value.trim();
-    if (!value && current) { close(); return; }
-    if (!/^\d{4,6}$/.test(value)) { status.textContent = 'Use 4–6 digits.'; pin.focus(); return; }
+    if (!value && custom) { close(); return; }
+    if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { status.textContent = 'Use 4–20 letters or numbers.'; pin.focus(); return; }
     if (value !== confirm.value.trim()) { status.textContent = 'The PINs do not match.'; confirm.focus(); return; }
     try {
       if (!globalThis.crypto?.getRandomValues) throw new Error('Secure randomness is unavailable');
@@ -341,27 +373,27 @@ function openPinSettings() {
       // Remove any legacy in-state fallback once the device-only credential is
       // definitely stored, so exports/sync cannot retain stale PIN material.
       if (state.settings?.pinHash) delete state.settings.pinHash;
-      persist(); pinUnlocked = true; close(); toast('Privacy lock enabled.'); render();
+      persist(); pinUnlocked = true; close(); toast(custom ? 'PIN changed.' : 'Personal PIN set — the default no longer unlocks this device.'); render();
     } catch (err) {
       status.textContent = 'PIN security is unavailable in this browser.';
     }
   };
   modal.append(
     $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;' }, $('h2', { class: 'serif', style: 'font-size:28px;font-style:italic;font-weight:400;' }, 'Privacy lock'), $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
-    $('p', { class: 'serif', style: 'font-style:italic;font-size:16px;' }, current ? 'Change or remove your PIN.' : 'Keep financial data private on shared devices.'),
+    $('p', { class: 'serif', style: 'font-style:italic;font-size:16px;' }, custom ? 'Change or reset your PIN.' : 'The app locks on every device by default.'),
     $('div', { style: 'display:flex;flex-direction:column;gap:12px;margin:20px 0;' }, pin, confirm),
     status,
     $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:18px;' },
-      current ? $('button', { type: 'button', class: 'btn btn-danger', onClick: () => {
-        if (!clearPrivacyPin()) { toast('Could not remove the PIN from this device.'); return; }
+      custom ? $('button', { type: 'button', class: 'btn btn-danger', onClick: () => {
+        if (!clearPrivacyPin()) { toast('Could not reset the PIN on this device.'); return; }
         if (state.settings?.pinHash) delete state.settings.pinHash;
         persist();
         pinUnlocked = true;
         close();
-        toast('Privacy lock removed.');
+        toast('Reset to the default PIN (100901).');
         render();
-      } }, 'Remove PIN') : null,
-      $('button', { type: 'button', class: 'btn btn-primary', onClick: save }, current ? 'Save PIN' : 'Enable PIN'),
+      } }, 'Reset to default PIN') : null,
+      $('button', { type: 'button', class: 'btn btn-primary', onClick: save }, custom ? 'Save PIN' : 'Set PIN'),
     ),
   );
   queueMicrotask(() => pin.focus());
@@ -510,6 +542,60 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
   notifySyncChange();
   render();
   return 'adopted';
+}
+
+// ---------- sync setup links ----------
+// A new device can adopt sync without typing the app password: open a link
+// like ?centsSync=<password> (or <endpoint>|<password> for non-default
+// proxies) and this handler configures + enables sync automatically, then
+// strips the credential from the URL bar. The password only gates the Netlify
+// proxy; the GitHub PAT never leaves the server.
+function syncSetupPayload() {
+  const s = getSyncSettings();
+  if (!s.password) return null;
+  const isDefaultEndpoint = !s.endpoint || s.endpoint === '/.netlify/functions/sync';
+  return encodeURIComponent(isDefaultEndpoint ? s.password : `${s.endpoint}|${s.password}`);
+}
+function syncSetupLink() {
+  const payload = syncSetupPayload();
+  if (!payload) return null;
+  return `${location.origin}${location.pathname}?centsSync=${payload}`;
+}
+function applySetupLinkIfPresent() {
+  const raw = new URLSearchParams(location.search).get('centsSync');
+  if (!raw) return;
+  const decoded = decodeURIComponent(raw);
+  const current = getSyncSettings();
+  let endpoint = current.endpoint;
+  let password = decoded;
+  // endpoint|password is only meaningful when the part before the pipe looks
+  // like a real endpoint; otherwise the whole string is the password, so a
+  // password that itself contains '|' round-trips unharmed.
+  const separator = decoded.indexOf('|');
+  const possibleEndpoint = separator >= 0 ? decoded.slice(0, separator) : '';
+  const looksLikeEndpoint = possibleEndpoint === ''
+    || /^\/(?!\/)/.test(possibleEndpoint)
+    || /^https:\/\//i.test(possibleEndpoint)
+    || /^http:\/\/localhost(?::\d+)?(?:\/|$)/i.test(possibleEndpoint);
+  if (separator >= 0 && looksLikeEndpoint) {
+    endpoint = possibleEndpoint || endpoint;
+    password = decoded.slice(separator + 1);
+  }
+  const safeEndpoint = endpoint === ''
+    || /^\/(?!\/)/.test(endpoint)
+    || /^https:\/\//i.test(endpoint)
+    || /^http:\/\/localhost(?::\d+)?(?:\/|$)/i.test(endpoint);
+  // Never leave a credential (or a garbage link) sitting in the address bar.
+  try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
+  if (!password || !safeEndpoint) {
+    pendingSetupLinkToast = 'That sync link is not valid.';
+    return;
+  }
+  patchSyncSettings({ endpoint, password, enabled: true, lastError: null, lastErrorAt: null });
+  pendingSetupLinkToast = 'Cloud sync configured from link.';
+  notifySyncChange();
+  // Sync itself begins after unlock (startInitSync in showPinLock), so a
+  // locked device still pulls the cloud copy as soon as it's opened.
 }
 
 // ---------- sync scheduler ----------
@@ -2534,10 +2620,9 @@ function buildMenuLevel(id) {
     list.append(menuRowEl({ icon: 'appearance', label: 'Dark', active: dark, check: dark, onClick: () => setTheme(true) }));
     list.append(menuRowEl({ icon: 'appearance', label: 'Light', active: !dark, check: !dark, onClick: () => setTheme(false) }));
   } else if (id === 'privacy') {
-    const pinOn = hasPinLock();
-    list.append(menuInfoRow('Privacy lock', pinOn ? 'On' : 'Off'));
-    list.append(menuRowEl({ icon: 'lock', label: pinOn ? 'Change PIN' : 'Set a PIN', onClick: () => { closeAppMenu(); openPinSettings(); } }));
-    if (pinOn) list.append(menuRowEl({ icon: 'lock', label: 'Lock app now', onClick: () => { closeAppMenu(); lockApp(); } }));
+    list.append(menuInfoRow('Privacy lock', 'On'));
+    list.append(menuRowEl({ icon: 'lock', label: hasCustomPin() ? 'Change PIN' : 'Set PIN', onClick: () => { closeAppMenu(); openPinSettings(); } }));
+    list.append(menuRowEl({ icon: 'lock', label: 'Lock app now', onClick: () => { closeAppMenu(); lockApp(); } }));
   } else if (id === 'sync') {
     const s = getSyncSettings();
     const st = syncStatus();
@@ -4972,6 +5057,38 @@ function openSyncSettings() {
         modal.appendChild($('p', { class: 'muted', style: 'font-size:12px;margin-top:4px;font-family:"JetBrains Mono",Menlo,monospace;' }, 'Repo: ', s.repoLabel));
       }
 
+      // One-tap onboarding for other devices: a link that configures sync
+      // without typing the password.
+      if (s.password) {
+        const link = syncSetupLink();
+        if (link) {
+          const linkInput = $('input', { type: 'text', readonly: true, value: link, 'aria-label': 'Sync setup link', style: 'font-size:11px;font-family:"JetBrains Mono",Menlo,monospace;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius);width:100%;min-width:0;color:var(--muted);background:var(--bg-deep);' });
+          const copyBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 10px;font-size:11px;flex-shrink:0;', onClick: async () => {
+            // Race the clipboard against a short timeout: a browser that
+            // neither grants nor rejects the write (permission hang) must
+            // still produce feedback, with the link pre-selected so a manual
+            // copy is one tap away either way.
+            let copied = false;
+            try {
+              await Promise.race([
+                navigator.clipboard.writeText(link),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('clipboard timeout')), 900)),
+              ]);
+              copied = true;
+            } catch { copied = false; }
+            linkInput.select();
+            toast(copied
+              ? 'Setup link copied — open it on your other device.'
+              : 'Copy the link above to use on your other device.');
+          } }, 'Copy');
+          modal.appendChild($('div', { style: 'margin-top:24px;padding-top:18px;border-top:1px solid var(--line);' },
+            $('div', { class: 'eyebrow' }, 'Add another device'),
+            $('p', { class: 'muted', style: 'font-size:12px;margin:6px 0 10px;' }, 'Open this link on your other device and sync starts automatically — no password to type. Anyone with the link can read and write your synced data, so keep it private.'),
+            $('div', { style: 'display:flex;gap:8px;align-items:center;' }, linkInput, copyBtn),
+          ));
+        }
+      }
+
       modal.appendChild($('div', { style: 'margin-top:24px;padding-top:18px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;' },
         $('span', { class: 'muted', style: 'font-size:12px;font-family:"Instrument Serif",serif;font-style:italic;' }, 'Disconnect to wipe sync settings from this device.'),
         $('button', { type: 'button', class: 'btn btn-danger', onClick: () => {
@@ -5571,13 +5688,12 @@ function initCardSpotlight() {
 
 window.addEventListener('DOMContentLoaded', () => {
   initCardSpotlight();
-  // Create the gate before rendering the app mount. A configured PIN must be
-  // the first interactive surface on every full page load.
-  const locked = hasPinLock();
-  if (locked) showPinLock();
+  // The privacy lock is site-wide: the unlock screen is the first interactive
+  // surface on every full page load, on every device. Cloud sync and the
+  // persisted-undo offer start after a successful unlock (see showPinLock).
+  applySetupLinkIfPresent();
+  if (hasPinLock()) showPinLock();
   render();
-  if (!locked) startInitSync();
-  if (!locked) offerPersistedUndo();
 });
 
 // Expose tiny global for DevTools tinkering
