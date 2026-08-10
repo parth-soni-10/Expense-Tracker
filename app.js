@@ -1146,7 +1146,7 @@ function totalAccountBalanceAt(date = today(), checkpointsByMethod = null) {
   return ACCOUNT_METHOD_IDS.reduce((sum, id) => sum + balanceAtForEntries(entries, id, date, checkpoints), 0);
 }
 
-function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', editable = false } = {}) {
+function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', editable = false, canLoad = false } = {}) {
   const row = $('div', { class: 'balance-editor-row', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;' });
   let editing = false;
   let editMode = 'reconcile'; // 'reconcile' | 'load'
@@ -1161,7 +1161,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
   const draw = () => {
     row.innerHTML = '';
     if (editing) {
-      // ---- Load money mode (gift cards only) ----
+      // ---- Load money mode (top-up credit entry) ----
       if (editMode === 'load') {
         const loadAmount = $('input', { type: 'text', inputmode: 'decimal', value: '', placeholder: '0.00', 'aria-label': `${label} load amount`, autocomplete: 'off', style: `width:${isNarrow() ? '86px' : '104px'};padding:6px 8px;border:1px solid var(--accent);border-radius:var(--radius);text-align:right;font-size:12px;` });
         const loadDate = $('input', { type: 'date', value: today(), max: today(), 'aria-label': `${label} load date`, style: `width:${isNarrow() ? '124px' : '138px'};padding:6px 8px;border:1px solid var(--line);border-radius:var(--radius);font-size:12px;` });
@@ -1188,7 +1188,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
             $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);' }, 'Load'),
           ),
           $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
-            $('span', { class: 'muted', style: 'font-size:10px;' }, 'add a credit entry to top up this card'),
+            $('span', { class: 'muted', style: 'font-size:10px;' }, `add a credit entry to top up this ${isGiftCard ? 'card' : 'account'}`),
             loadAmount, loadDate,
             $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: loadSave }, 'Load'),
             $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
@@ -1248,10 +1248,10 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
           $('div', { class: 'display-num', style: `font-size:14px;color:${balance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(balance)),
           summary && Math.abs(difference) >= 0.01 ? $('div', { class: 'muted', style: 'font-size:10px;' }, `${difference >= 0 ? '+' : ''}${fmt(difference)} vs book`) : null,
         ),
-        editable && isGiftCard ? $('span', { style: 'display:flex;gap:4px;align-items:center;' },
+        editable && (isGiftCard || canLoad) ? $('span', { style: 'display:flex;gap:4px;align-items:center;' },
           $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'load'; editing = true; draw(); }, 'aria-label': `Load ${label}` }, '+Load'),
           $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'reconcile'; editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎'),
-          $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => openGiftCardHistoryModal(methodId), 'aria-label': `${label} history` }, '📋'),
+          isGiftCard ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => openGiftCardHistoryModal(methodId), 'aria-label': `${label} history` }, '📋') : null,
         ) : editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎') : null,
         editable && summary ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:10px;padding:3px 5px;color:var(--negative);', onClick: async () => {
           if (!(await swalConfirm({ title: 'Remove reconciliation?', text: `Remove the ${label} reconciliation from ${friendlyDate(summary.point.date)}?`, confirmButtonText: 'Remove', danger: true }))) return;
@@ -4221,7 +4221,7 @@ function screenBalances() {
       $('span', { class: 'muted', style: 'font-size:11px;' }, 'AIB · Revolut · Revolut Savings'),
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
-      ...trackedMethods.map(method => renderBalanceEditorRow(method.id, { label: methodShort(method.id), editable: true })),
+      ...trackedMethods.map(method => renderBalanceEditorRow(method.id, { label: methodShort(method.id), editable: true, canLoad: true })),
     ),
   ));
 
