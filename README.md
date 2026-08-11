@@ -172,23 +172,6 @@ netlify dev            # in this folder
 - **Default budget?** `SEED_SETTINGS.monthlyBudget` in `seed.js`
 - **Reset everything on this device?** Use the "Reset" link in the footer, or in DevTools: `__cents.state = resetToBlank(); __cents.render();`
 
-## Android app (APK)
-
-The repo ships a Capacitor Android project that wraps the same web app into
-an installable `.apk`. You don't build it locally — a GitHub Actions workflow
-(`.github/workflows/build-apk.yml`) builds it on every push and uploads the
-APK as a downloadable artifact:
-
-1. Open the repo's **Actions** tab → **Build Android APK** → latest run.
-2. Download the **cents-android-apk** artifact and unzip it.
-3. Install `app-debug.apk` on your phone (allow "unknown sources").
-
-To build it yourself: `npm ci && npm run apk` (needs Node 22+, JDK 21 and the
-Android SDK). Notes for the APK build: cloud sync's default endpoint is
-site-relative, so in the app's **Cloud sync** settings point the endpoint at
-your deployed Netlify function (e.g. `https://<site>.netlify.app/.netlify/functions/sync`);
-fingerprint/Face ID unlock is a browser feature and stays PIN-only inside the
-WebView.
 
 ## Privacy
 
