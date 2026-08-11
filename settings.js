@@ -23,13 +23,20 @@ const SYNC_DEFAULTS = Object.freeze({
   repoLabel: '',      // e.g. "yourname/cents-data \u00b7 data.json @ main"
 });
 
-function normalizeSyncSettings(raw) {
-  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  const candidateEndpoint = typeof source.endpoint === 'string' ? source.endpoint.trim() : '';
-  const validEndpoint = candidateEndpoint === ''
+/** Is an endpoint URL acceptable? Same-origin path, https, or a localhost
+ *  http URL. Empty string is allowed (means "use the default"). Shared by
+ *  settings normalization and the sync test-connection flow. */
+export function isValidEndpoint(candidateEndpoint) {
+  return candidateEndpoint === ''
     || (/^\/(?!\/)/.test(candidateEndpoint))
     || /^https:\/\//i.test(candidateEndpoint)
     || /^http:\/\/localhost(?::\d+)?(?:\/|$)/i.test(candidateEndpoint);
+}
+
+function normalizeSyncSettings(raw) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const candidateEndpoint = typeof source.endpoint === 'string' ? source.endpoint.trim() : '';
+  const validEndpoint = isValidEndpoint(candidateEndpoint);
   return {
     ...SYNC_DEFAULTS,
     enabled: source.enabled === true,

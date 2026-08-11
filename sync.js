@@ -10,7 +10,7 @@
    as APP_PASSWORD is sent in the X-Cents-Password header.
    ============================================================ */
 
-import { getSyncSettings, patchSyncSettings } from './settings.js';
+import { getSyncSettings, patchSyncSettings, isValidEndpoint } from './settings.js';
 
 const TIMEOUT_MS = 12000;
 
@@ -92,11 +92,7 @@ export async function syncPush(content, { sha = null, message = 'cents: update e
 /** Used by the Settings modal "Test connection" button \u2014 hits GET on a non-existent to validate auth. */
 export async function syncTestConnection(endpoint, password) {
   const candidateEndpoint = typeof endpoint === 'string' ? endpoint.trim() : '';
-  const safeEndpoint = candidateEndpoint === ''
-    || (/^\/(?!\/)/.test(candidateEndpoint))
-    || /^https:\/\//i.test(candidateEndpoint)
-    || /^http:\/\/localhost(?::\d+)?(?:\/|$)/i.test(candidateEndpoint);
-  if (!candidateEndpoint || !safeEndpoint || !password) return { ok: false, reason: 'invalid_endpoint' };
+  if (!candidateEndpoint || !isValidEndpoint(candidateEndpoint) || !password) return { ok: false, reason: 'invalid_endpoint' };
   let resp;
   try {
     resp = await withTimeout(fetch(candidateEndpoint, {

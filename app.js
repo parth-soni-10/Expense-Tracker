@@ -838,7 +838,7 @@ async function doPushNow(message) {
       }
       patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
       if (sessionSyncFailed) {
-        toast('✨ Cloud sync recovered.');
+        toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;' }, iconSpan('sparkle'), 'Cloud sync recovered.'));
         sessionSyncFailed = false;
       }
       notifySyncChange();
@@ -854,7 +854,7 @@ async function doPushNow(message) {
     }
     patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
     if (!sessionSyncFailed) {
-      toast('☠ Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.');
+      toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));' }, iconSpan('alert'), 'Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.'));
       sessionSyncFailed = true;
     }
     notifySyncChange();
@@ -862,7 +862,7 @@ async function doPushNow(message) {
     const message = error?.message || 'sync failed';
     patchSyncSettings({ lastError: message, lastErrorAt: new Date().toISOString() });
     if (!sessionSyncFailed) {
-      toast('☠ Cloud sync failed: ' + message + '. Changes saved locally.');
+      toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));' }, iconSpan('alert'), 'Cloud sync failed: ' + message + '. Changes saved locally.'));
       sessionSyncFailed = true;
     }
     notifySyncChange();
@@ -882,7 +882,7 @@ async function resolveConflictAndPush() {
     if (!r.ok) {
       patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
       if (!sessionSyncFailed) {
-        toast('☠ Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.');
+        toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));' }, iconSpan('alert'), 'Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.'));
         sessionSyncFailed = true;
       }
       notifySyncChange();
@@ -1386,7 +1386,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
           $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
             $('span', { class: 'muted', style: 'font-size:10px;' }, `add a credit entry to top up this ${isGiftCard ? 'card' : 'account'}`),
             loadAmount, loadDate,
-            $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: loadSave }, 'Load'),
+            $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: loadSave }, iconSpan('plus', 'sm'), 'Load'),
             $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
           ),
         );
@@ -1445,10 +1445,10 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
           summary && Math.abs(difference) >= 0.01 ? $('div', { class: 'muted', style: 'font-size:10px;' }, `${difference >= 0 ? '+' : ''}${fmt(difference)} vs book`) : null,
         ),
         editable && (isGiftCard || canLoad) ? $('span', { style: 'display:flex;gap:4px;align-items:center;' },
-          $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'load'; editing = true; draw(); }, 'aria-label': `Load ${label}` }, '+Load'),
-          $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'reconcile'; editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎'),
-          isGiftCard ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => openGiftCardHistoryModal(methodId), 'aria-label': `${label} history` }, '📋') : null,
-        ) : editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, '✎') : null,
+          $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'load'; editing = true; draw(); }, 'aria-label': `Load ${label}` }, iconSpan('plus', 'sm'), 'Load'),
+          $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'reconcile'; editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, iconSpan('pencil', 'sm')),
+          isGiftCard ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => openGiftCardHistoryModal(methodId), 'aria-label': `${label} history` }, iconSpan('clipboard', 'sm')) : null,
+        ) : editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, iconSpan('pencil', 'sm')) : null,
         editable && summary ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:10px;padding:3px 5px;color:var(--negative);', onClick: async () => {
           if (!(await swalConfirm({ title: 'Remove reconciliation?', text: `Remove the ${label} reconciliation from ${friendlyDate(summary.point.date)}?`, confirmButtonText: 'Remove', danger: true }))) return;
           if (removeBalanceCheckpoint(methodId, summary.point.date)) {
@@ -2709,7 +2709,7 @@ function renderHeader() {
   return $('header', { class: 'app-header', 'aria-label': 'App header' },
     $('div', { class: 'logo' },
       $('div', { class: 'mark' }, $('span', { class: 'mark-icon', 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 6.5A7 7 0 1 0 17 17.5"/><line x1="2.5" y1="8" x2="12" y2="8"/><line x1="2.5" y1="16" x2="12" y2="16"/></svg>' })),
-      $('a', { href: '#dashboard', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
+      $('a', { href: '#dashboard', class: 'logo-wordmark', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary', style: locked ? 'display:none;' : '' },
       ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : null }, titleFor(r))),
@@ -2760,6 +2760,49 @@ const MENU_ICONS = {
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"/></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
 };
+
+// Full stroke-icon set — Lucide-style 24px grid, currentColor, 1.9 stroke.
+// Extends MENU_ICONS so menus, pills, buttons, toasts and headers share one
+// visual language (replaces the scattered emoji glyphs).
+const ICONS = {
+  ...MENU_ICONS,
+  // Plain plus for tiny buttons — the menu's circled plus reads as a record
+  // button at 12px.
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+  pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
+  clipboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>',
+  book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
+  medal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/></svg>',
+  alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4M12 17h.01"/></svg>',
+  mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
+  'arrow-up': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
+  'arrow-right': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>',
+  'arrow-down': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>',
+  'chevron-left': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>',
+  'chevron-right': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
+  'check-circle': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>',
+  circle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="10"/></svg>',
+  sparkle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3Z"/></svg>',
+  coffee: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h1a4 4 0 1 1 0 8h-1"/><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z"/><line x1="6" y1="2" x2="6" y2="4"/><line x1="10" y1="2" x2="10" y2="4"/><line x1="14" y1="2" x2="14" y2="4"/></svg>',
+  sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>',
+  'cloud-sun': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/><path d="M15.947 12.65a4 4 0 0 0-5.925-4.128"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6Z"/></svg>',
+  moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
+};
+
+/** Return the SVG markup for a named icon ('' when unknown). */
+function iconSVG(name) {
+  return ICONS[name] || '';
+}
+
+/** A decorative icon span. Optional extra class(es) and inline style. */
+function iconSpan(name, cls = '', style) {
+  const s = $('span', { class: `icon${cls ? ' ' + cls : ''}`, 'aria-hidden': 'true' });
+  if (style) s.setAttribute('style', style);
+  s.innerHTML = iconSVG(name);
+  return s;
+}
 
 function menuRowEl({ icon, label, onClick = null, chevron = false, active = false, danger = false, check = false }) {
   return $('button', { type: 'button', class: 'menu-row' + (active ? ' active' : '') + (danger ? ' danger' : ''), onClick },
@@ -3347,7 +3390,7 @@ function screenDashboard() {
   const syncS = getSyncSettings();
   const resyncBtn = (syncS.enabled && syncS.endpoint && syncS.password)
     ? $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:13px;gap:6px;', onClick: () => doResync() },
-        $('span', { style: 'font-size:15px;', 'aria-hidden': 'true' }, '↻'),
+        iconSpan('refresh'),
         'Resync',
       )
     : null;
@@ -3355,7 +3398,7 @@ function screenDashboard() {
   // Hero — the monthly total and balance count up from their previous values
   const heroTotalEl = $('span', { class: 'serif' }, fmt(expenseSum));
   countUp(heroTotalEl, expenseSum, 'dash-total');
-  const heroBalanceEl = $('span', { class: 'display-num', style: `font-size:16px;color:${runningBalance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(runningBalance));
+  const heroBalanceEl = $('span', { class: 'display-num', style: `font-size:13px;color:${runningBalance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(runningBalance));
   countUp(heroBalanceEl, runningBalance, 'dash-balance');
   screen.appendChild($('div', { class: 'page-title-row dashboard-hero' },
     $('div', null,
@@ -3365,7 +3408,7 @@ function screenDashboard() {
         $('span', { class: 'dashboard-budget', style: `font-size:${isNarrow() ? '14px' : '18px'};` }, budget ? `/ ${fmt(budget)}` : ''),
       ),
       $('p', { class: 'dashboard-context', style: `font-size:${isNarrow() ? '13px' : '15px'};gap:${isNarrow() ? '10px' : '18px'};` },
-        $('span', null, 'Balance ', heroBalanceEl),
+        $('span', null, 'Balance '), $('span', { class: `signed-chip ${runningBalance >= 0 ? 'is-positive' : 'is-negative'}` }, heroBalanceEl),
         cashWidget(),
       ),
     ),
@@ -3386,8 +3429,8 @@ function screenDashboard() {
   // Milestone chips — personality that rewards consistency.
   const ms = computeMilestones();
   const chips = [];
-  if (ms.entryCount > 0) chips.push($('span', { class: 'pill', title: 'Total entries logged' }, `📒 ${ms.entryCount} entr${ms.entryCount === 1 ? 'y' : 'ies'} logged`));
-  if (ms.monthsUnderBudget >= 1) chips.push($('span', { class: 'pill', title: 'Months where spending stayed within budget' }, `🏅 ${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget`));
+  if (ms.entryCount > 0) chips.push($('span', { class: 'pill', title: 'Total entries logged' }, iconSpan('book', 'sm'), `${ms.entryCount} entr${ms.entryCount === 1 ? 'y' : 'ies'} logged`));
+  if (ms.monthsUnderBudget >= 1) chips.push($('span', { class: 'pill', title: 'Months where spending stayed within budget' }, iconSpan('medal', 'sm'), `${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget`));
   if (chips.length) screen.appendChild($('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px;' }, ...chips));
 
   // Morning digest — a glass briefing that answers “how is today looking?” in
@@ -3484,7 +3527,7 @@ function screenDashboard() {
           const dailyAvg = expenseSum / Math.max(now.getDate(), 1);
           const projected = expenseSum + dailyAvg * daysLeft;
           const pctProj = Math.round((projected / budget) * 100);
-          return pctProj > 100 ? `⚠ ${pctProj}%` : `${pctProj}%`;
+          return pctProj > 100 ? $('span', { style: 'display:inline-flex;align-items:center;gap:5px;' }, iconSpan('alert', 'md'), `${pctProj}%`) : `${pctProj}%`;
         })())] : []),
       ),
     ));
@@ -3535,7 +3578,7 @@ function screenDashboard() {
           const isDueSoon = !isOverdue && daysAway >= 0 && daysAway <= 7;
           return $('div', { 'data-rec-id': r.id, class: 'rec-row', style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;' },
             $('div', { style: 'display:flex;align-items:center;gap:10px;flex:1;min-width:0;' },
-              $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:13px;line-height:1;padding:0;flex-shrink:0;', onClick: () => openNewRecurring(r), title: 'Edit recurring', 'aria-label': `Edit ${r.details}` }, '✎'),
+              $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:13px;line-height:1;padding:0;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;', onClick: () => openNewRecurring(r), title: 'Edit recurring', 'aria-label': `Edit ${r.details}` }, iconSpan('pencil', 'sm')),
               $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0;flex-shrink:0;', onClick: () => {
                 const removed = state.settings.recurring.filter(x => x.id === r.id);
                 state.settings.recurring = state.settings.recurring.filter(x => x.id !== r.id);
@@ -3621,7 +3664,7 @@ function screenDashboard() {
   const recentCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};overflow-x:auto;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('span', { class: 'eyebrow' }, 'Recent'),
-      $('a', { href: '#history', class: 'btn-link' }, 'See all →'),
+      $('a', { href: '#history', class: 'btn-link' }, 'See all ', iconSpan('arrow-right', 'sm')),
     ),
     recent.length === 0
       ? $('div', { class: 'empty' }, emptyIcon('chart'), ' No entries yet.')
@@ -3655,7 +3698,7 @@ function screenDashboard() {
         $('div', { class: 'eyebrow' }, 'Bank account balances'),
         $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current end-of-day balances; transaction history stays unchanged.'),
       ),
-      $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage →'),
+      $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage ', iconSpan('arrow-right', 'sm')),
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
       ...trackedMethods.map(method => {
@@ -3677,7 +3720,7 @@ function screenDashboard() {
         $('div', { class: 'eyebrow' }, 'Gift card balances'),
         $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current provider balances without adding a fake transaction. Totals show recorded activity, or post-reconciliation adjustments when a checkpoint exists.'),
       ),
-      $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage →'),
+      $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage ', iconSpan('arrow-right', 'sm')),
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },     ...GIFT_CARD_IDS.map(id => {
          const m = METHODS.find(x => x.id === id);
@@ -3753,7 +3796,7 @@ function catBarGradient(catId) {
     GC: 'linear-gradient(90deg, #C2410C, #F97316)',
     misc: 'linear-gradient(90deg, #6B6B6B, #9CA3AF)',
   };
-  return map[catId] || 'linear-gradient(90deg, var(--ink), var(--muted))';
+  return map[catId] || 'var(--bar-soft)';
 }
 
 /** Inline SVG icons for empty states. Returns an HTML string suitable for innerHTML. */
@@ -4092,6 +4135,7 @@ function screenAdd() {
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist(); toast('Entry created from your description.'); location.hash = '#dashboard';
   };
+  const restoreVoiceLabel = () => { voiceInputBtn.textContent = ''; voiceInputBtn.append(iconSpan('mic', 'sm'), ' Voice'); };
   const voiceInputBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => {
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) { toast('Voice input is not supported in this browser.'); return; }
@@ -4100,9 +4144,9 @@ function screenAdd() {
     voiceInputBtn.textContent = 'Listening…'; voiceInputBtn.disabled = true;
     recognition.onresult = ev => { magicInput.value = ev.results[0][0].transcript; magicInput.dispatchEvent(new Event('input')); };
     recognition.onerror = () => toast('Could not hear that. Try again.');
-    recognition.onend = () => { voiceInputBtn.textContent = '🎙 Voice'; voiceInputBtn.disabled = false; };
+    recognition.onend = () => { restoreVoiceLabel(); voiceInputBtn.disabled = false; };
     recognition.start();
-  } }, '🎙 Voice');
+  } }, iconSpan('mic', 'sm'), ' Voice');
   c.appendChild($('div', { class: 'card', style: `max-width:540px;margin:0 auto 20px;padding:${isNarrow() ? '18px 16px' : '22px 16px'};` },
     $('div', { class: 'eyebrow', style: 'margin-bottom:6px;' }, 'Magic entry'),
     $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:10px;' }, 'Describe it naturally, check the preview, then add it.'),
@@ -4186,9 +4230,9 @@ function screenHistory() {
   c.appendChild($('div', { class: 'page-title-row' },
     $('h1', { class: 'page-title' }, monthLabel(activeMonth)),
     $('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;justify-content:flex-end;' },
-      monthNav('←', () => { const i = months.indexOf(activeMonth); if (i < months.length - 1) update({ month: months[i + 1] }); }, months.indexOf(activeMonth) >= months.length - 1),
+      monthNav(iconSpan('chevron-left', 'md'), () => { const i = months.indexOf(activeMonth); if (i < months.length - 1) update({ month: months[i + 1] }); }, months.indexOf(activeMonth) >= months.length - 1),
       monthNav(monthKey(today()) === activeMonth ? 'Today' : 'Jump', () => update({ month: monthKey(today()) }), false),
-      monthNav('→', () => { const i = months.indexOf(activeMonth); if (i > 0) update({ month: months[i - 1] }); }, months.indexOf(activeMonth) <= 0),
+      monthNav(iconSpan('chevron-right', 'md'), () => { const i = months.indexOf(activeMonth); if (i > 0) update({ month: months[i - 1] }); }, months.indexOf(activeMonth) <= 0),
     ),
   ));
 
@@ -4202,7 +4246,7 @@ function screenHistory() {
   } });
   c.appendChild($('div', { style: 'margin-bottom:16px;' },
     $('div', { style: 'display:flex;gap:8px;align-items:center;' },
-      $('span', { style: 'font-size:16px;color:var(--muted);', 'aria-hidden': 'true' }, '🔍'),
+      $('span', { style: 'color:var(--muted);', 'aria-hidden': 'true' }, iconSpan('search')),
       searchInput,
       searchQuery ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:12px;', onClick: () => { searchInput.value = ''; update({ q: '' }); } }, 'Clear') : null,
     ),
@@ -4308,7 +4352,18 @@ function screenHistory() {
         ));
       }
       const isTransfer = !!e.transferId;
-      const settledLabel = isTransfer ? (e.settled ? '✓ settled' : '● unsettled') : '';
+      const settledLabel = isTransfer
+        ? $('span', { class: `history-settled${e.settled ? ' is-settled' : ''}`, onClick: (ev) => {
+            ev.stopPropagation();
+            const newVal = !e.settled;
+            for (const x of state.entries) {
+              if (x.transferId === e.transferId) x.settled = newVal;
+            }
+            persist(); toast(newVal ? 'Transfer settled.' : 'Transfer unsettled.'); render();
+          }, title: 'Click to toggle settled' },
+            iconSpan(e.settled ? 'check-circle' : 'circle', 'sm'),
+            e.settled ? ' settled' : ' unsettled')
+        : null;
       const rowBalance = cachedBalanceForEntry(e);
       const rowType = e.type === 'note' ? 'note-row' : e.type === 'credit' ? 'income-row' : 'expense-row';
       const isCredit = e.type === 'credit';
@@ -4320,14 +4375,7 @@ function screenHistory() {
         $('span', { class: 'muted history-date' }, friendlyDate(e.date)),          $('div', null,
             $('div', { class: 'history-details' }, e.details || '—',
               e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, class: 'history-audio' }) : null,
-            isTransfer ? $('span', { class: `history-settled${e.settled ? ' is-settled' : ''}`, onClick: (ev) => {
-              ev.stopPropagation();
-              const newVal = !e.settled;
-              for (const x of state.entries) {
-                if (x.transferId === e.transferId) x.settled = newVal;
-              }
-              persist(); toast(newVal ? 'Transfer settled.' : 'Transfer unsettled.'); render();
-            }, title: 'Click to toggle settled' }, settledLabel) : null,
+            isTransfer ? settledLabel : null,
           ),
           $('div', { class: 'history-category' }, categoryLabel(e.category)),
         ),
@@ -4501,7 +4549,7 @@ function screenInsights() {
     $('h1', { class: 'page-title' }, 'Where it goes.'),
     $('div', { style: 'display:flex;align-items:center;gap:8px;' },
       fromInput,
-      $('span', { class: 'muted', style: 'font-size:13px;' }, '→'),
+      $('span', { class: 'muted', style: 'font-size:13px;display:inline-flex;' }, iconSpan('arrow-right', 'sm')),
       toInput,
       (fromParam || toParam) ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:12px;', onClick: () => { location.hash = 'insights'; } }, 'Reset') : null,
     ),
@@ -4573,19 +4621,30 @@ function screenInsights() {
     const val = heatByDay[ds] || 0;
     const intensity = maxDay > 0 ? val / maxDay : 0;
     const color = intensity === 0 ? 'var(--line)' : heatColor(
-      intensity < 0.25 ? 0.3 : intensity < 0.5 ? 0.55 : intensity < 0.75 ? 0.75 : 1
+      intensity < 0.25 ? 0.22 : intensity < 0.5 ? 0.42 : intensity < 0.75 ? 0.65 : 0.9
     );
     const tip = val > 0 ? `${fmt(val)}` : '';
     const ttip = val > 0 ? `${friendlyDate(ds)} · ${fmt(val)}` : '';
     heatCells.push($('div', { class: 'heat-cell-wrap', style: 'position:relative;' },
       tip ? $('div', { class: 'heat-tip' }, tip) : null,
-      $('div', { class: 'heat-cell', 'data-tip': ttip || null, style: `border-radius:3px;aspect-ratio:1;background:${color};cursor:default;font-size:9px;display:flex;align-items:center;justify-content:center;${val === 0 ? 'opacity:0.5;' : ''}${ds === today() ? 'box-shadow:0 0 0 1.5px var(--ink);' : ''}` },
+      $('div', {
+        class: 'heat-cell', 'data-tip': ttip || null, role: 'button', tabindex: '0',
+        'aria-label': `${friendlyDate(ds)}${val ? `, spent ${fmt(val)}` : ''} — view ${val ? 'these entries' : 'this day'} in history`,
+        onClick: () => { location.hash = `history?month=${heatKey}&day=${ds}`; },
+        onKeydown: (ev) => {
+          if (ev.key === 'Enter' || ev.key === ' ') {
+            ev.preventDefault();
+            location.hash = `history?month=${heatKey}&day=${ds}`;
+          }
+        },
+        style: `border-radius:5px;aspect-ratio:1;background:${color};cursor:pointer;font-size:9px;display:flex;align-items:center;justify-content:center;${val === 0 ? 'opacity:0.5;' : ''}${ds === today() ? 'box-shadow:0 0 0 1.5px var(--ink);' : ''}`,
+      },
         val > 0 ? $('span', { style: 'color:var(--ink);font-weight:600;font-size:8px;' }, String(d)) : null,
       ),
     ));
   }
 
-  const heatGrid = $('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:3px;' },
+  const heatGrid = $('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:4px;' },
     ...['M','T','W','T','F','S','S'].map(l => $('div', { style: 'text-align:center;font-size:10px;color:var(--muted);padding-bottom:4px;' }, l)),
     ...heatCells,
   );
@@ -4595,7 +4654,7 @@ function screenInsights() {
     heatGrid,
     $('div', { style: 'margin-top:8px;font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;' },
       $('span', null, 'Less'),
-      ...[0, 0.25, 0.5, 0.75, 1].map(i => $('span', { style: `display:inline-block;width:12px;height:12px;border-radius:2px;background:${i===0?'var(--line)':heatColor(i)};` })),
+      ...[0, 0.25, 0.5, 0.75, 1].map(i => $('span', { style: `display:inline-block;width:12px;height:12px;border-radius:3px;background:${i===0?'var(--line)':heatColor(i)};` })),
       $('span', null, 'More'),
     ),
   ));
@@ -4697,7 +4756,7 @@ function screenInsights() {
       $('span', { class: 'display-num', style: `font-size:22px;color:${healthColor};` }, `${health.score}%`),
     ),
     health.issues.length === 0
-      ? $('div', { class: 'empty', style: 'padding:8px 0;' }, 'Your data looks clean! ✨')
+      ? $('div', { class: 'empty', style: 'padding:8px 0;display:inline-flex;align-items:center;gap:6px;' }, 'Your data looks clean!', iconSpan('sparkle', 'sm'))
       : $('div', { style: 'display:flex;flex-direction:column;gap:6px;' },
           ...health.issues.map(issue => $('div', { style: 'font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);' }, '· ', issue)),
         ),
@@ -4705,7 +4764,7 @@ function screenInsights() {
 
   // Year-in-review button
   c.appendChild($('div', { style: 'text-align:center;padding:16px 0;' },
-    $('button', { type: 'button', class: 'btn btn-ghost', onClick: openYearInReview }, '📊 Year in review'),
+    $('button', { type: 'button', class: 'btn btn-ghost', onClick: openYearInReview }, iconSpan('chart', 'md'), 'Year in review'),
   ));
 
   return c;
@@ -4725,7 +4784,7 @@ function bar(label, value, max, isMax) {
       $('span', { class: 'display-num', style: 'font-size:14px;' }, fmt(value)),
     ),
     $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
-      $('div', { style: `height:100%;width:${(value/max)*100}%;background:${isMax ? 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))' : 'linear-gradient(90deg, var(--ink), var(--muted))'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
+      $('div', { style: `height:100%;width:${(value/max)*100}%;background:${isMax ? 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))' : 'var(--bar-soft)'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
     ),
   );
 }
@@ -4781,7 +4840,7 @@ function barWithSpark(cat, val, max, isMax) {
       $('span', { class: 'display-num', style: 'font-size:14px;' }, fmt(val)),
     ),
     $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
-      $('div', { style: `height:100%;width:${(val / max) * 100}%;background:${isMax ? 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))' : 'linear-gradient(90deg, var(--ink), var(--muted))'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
+      $('div', { style: `height:100%;width:${(val / max) * 100}%;background:${isMax ? 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))' : 'var(--bar-soft)'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
     ),
   );
 }
@@ -5470,7 +5529,7 @@ function assistantAnswer(raw) {
   // ---- milestones ----
   if (/\b(milestone|logged|consecutive)\b/.test(q)) {
     const ms = computeMilestones();
-    return { text: `📒 ${ms.entryCount} entries logged · 🏅 ${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget.` };
+    return { text: `${ms.entryCount} entries logged · ${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget.` };
   }
 
   // ---- income ----
@@ -5534,7 +5593,7 @@ function openAssistant() {
         $('div', { class: 'eyebrow' }, 'Spend assistant'),
         $('div', { class: 'muted', style: 'font-size:11px;margin-top:2px;' }, 'Answers from your own data — nothing leaves this device.'),
       ),
-      $('button', { type: 'button', class: 'assistant-close', 'aria-label': 'Close assistant', onClick: closeAssistant }, '✕'),
+      $('button', { type: 'button', class: 'assistant-close', 'aria-label': 'Close assistant', onClick: closeAssistant }, iconSpan('close', 'md')),
     ),
     thread,
     chips,
@@ -5548,7 +5607,7 @@ function openAssistant() {
   function bubble(text, chart) {
     const lines = String(text).split('\n');
     thread.appendChild($('div', { class: 'assistant-row assistant-row--bot' },
-      $('div', { class: 'assistant-avatar', 'aria-hidden': 'true' }, '✦'),
+      $('div', { class: 'assistant-avatar', 'aria-hidden': 'true', innerHTML: ICONS.sparkle }),
       $('div', { class: 'assistant-bubble' }, ...lines.map(l => $('div', null, l)), chart || null),
     ));
     thread.scrollTop = thread.scrollHeight;
@@ -5564,7 +5623,7 @@ function openAssistant() {
     thread.scrollTop = thread.scrollHeight;
     // Typing indicator — a short delay sells the “assistant” feel.
     const typing = $('div', { class: 'assistant-row assistant-row--bot' },
-      $('div', { class: 'assistant-avatar', 'aria-hidden': 'true' }, '✦'),
+      $('div', { class: 'assistant-avatar', 'aria-hidden': 'true', innerHTML: ICONS.sparkle }),
       $('div', { class: 'assistant-bubble assistant-typing' }, ...Array.from({ length: 3 }, () => $('span', { class: 'typing-dot' }))),
     );
     thread.appendChild(typing);
@@ -5584,7 +5643,7 @@ function openAssistant() {
   input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); ask(input.value); } });
   sendBtn.addEventListener('click', () => ask(input.value));
 
-  bubble('Hi — I’m your spend assistant. Ask me about your spending, budget, runway, or what’s coming up. Try one of the suggestions below. 👇');
+  bubble('Hi — I’m your spend assistant. Ask me about your spending, budget, runway, or what’s coming up. Try one of the suggestions below.');
   queueMicrotask(() => input.focus());
 }
 
@@ -5623,9 +5682,9 @@ function morningDigest() {
     $('div', { class: 'row between', style: 'align-items:flex-start;margin-bottom:16px;' },
       $('div', null,
         $('div', { class: 'eyebrow' }, 'Morning digest'),
-        $('div', { class: 'serif', style: `font-size:${isNarrow() ? '22px' : '26px'};font-style:italic;margin-top:4px;` }, `${greeting}${hour < 5 ? ' ☕' : hour < 12 ? ' ☀️' : hour < 18 ? ' 🌤️' : ' 🌙'}`),
+        $('div', { class: 'serif', style: `font-size:${isNarrow() ? '22px' : '26px'};font-style:italic;margin-top:4px;display:flex;align-items:center;gap:8px;` }, greeting, iconSpan(hour < 5 ? 'coffee' : hour < 12 ? 'sun' : hour < 18 ? 'cloud-sun' : 'moon', 'greet-icon')),
       ),
-      $('span', { class: 'digest-emoji', 'aria-hidden': 'true' }, '☕'),
+      $('span', { class: 'digest-emoji', 'aria-hidden': 'true', innerHTML: ICONS.coffee }),
     ),
     $('div', { class: 'digest-grid' },
       digestStat('Today', todaySummary.split(' · ')[0], todaySummary.split(' · ').slice(1).join(' · ') || '—'),
@@ -5863,7 +5922,7 @@ function _render() {
         toast('All entries cleared.');
         this.textContent = 'Reset';
       } }, 'Reset'),
-      $('button', { type: 'button', class: 'footer-action', onClick: () => window.scrollTo({ top: 0, behavior: 'smooth' }) }, '↑ Top'),
+      $('button', { type: 'button', class: 'footer-action', onClick: () => window.scrollTo({ top: 0, behavior: 'smooth' }) }, iconSpan('arrow-up', 'sm'), 'Top'),
     ),
   ));
 

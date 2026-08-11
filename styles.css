@@ -52,6 +52,9 @@
   --radius-xl: 30px;
   --radius-card: 14px;
 
+  /* Insight bar fill — quiet neutral drifting warm (rounded gradient bars) */
+  --bar-soft: linear-gradient(90deg, var(--muted), color-mix(in srgb, var(--accent) 45%, var(--muted)));
+
   --page-gap: 24px;
   --page-title-gap: 28px;
 
@@ -109,6 +112,17 @@
 [data-theme="dark"][data-season="autumn"] { --accent: #ea580c; --accent-2: #f97316; --gradient: linear-gradient(135deg, #ea580c, #f97316 55%, #fbbf24); --accent-glow: rgba(234,88,12,0.14); }
 [data-theme="dark"][data-season="winter"] { --accent: #60a5fa; --accent-2: #38bdf8; --gradient: linear-gradient(135deg, #60a5fa, #38bdf8 55%, #22d3ee); --accent-glow: rgba(96,165,250,0.14); }
 
+/* Seasonal paper tint — the background takes a barely-there cast so the
+   season change feels holistic, not just an accent swap. */
+[data-season="spring"] { --bg: #FAF6EE; --bg-deep: #F1ECDF; }
+[data-season="summer"] { --bg: #FAF6EF; --bg-deep: #F2EDE1; }
+[data-season="autumn"] { --bg: #F9F2E7; --bg-deep: #EFE8D8; }
+[data-season="winter"] { --bg: #F4F6F5; --bg-deep: #E9EEEC; }
+[data-theme="dark"][data-season="spring"] { --bg: #181410; --bg-deep: #211B14; }
+[data-theme="dark"][data-season="summer"] { --bg: #191512; --bg-deep: #221C16; }
+[data-theme="dark"][data-season="autumn"] { --bg: #1A1511; --bg-deep: #231C14; }
+[data-theme="dark"][data-season="winter"] { --bg: #121518; --bg-deep: #1A1E21; }
+
 /* ============================================================
    Base
    ============================================================ */
@@ -133,6 +147,7 @@ body {
   /* Haikei-style generative mesh — layered radial glows pinned to the layer
      behind every card. Painted once, no per-frame work while scrolling. */
   background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"),
     radial-gradient(ellipse 90% 60% at 15% -5%, var(--accent-glow), transparent 55%),
     radial-gradient(ellipse 70% 70% at 110% 25%, rgba(194, 65, 12, 0.06), transparent 55%),
     radial-gradient(ellipse 60% 70% at -10% 90%, rgba(217, 119, 6, 0.05), transparent 55%),
@@ -140,6 +155,7 @@ body {
 }
 [data-theme="dark"] body {
   background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"),
     radial-gradient(ellipse 90% 60% at 15% -5%, var(--accent-glow), transparent 55%),
     radial-gradient(ellipse 70% 70% at 110% 25%, rgba(242, 146, 90, 0.05), transparent 55%),
     radial-gradient(ellipse 60% 70% at -10% 90%, rgba(245, 158, 11, 0.04), transparent 55%),
@@ -310,7 +326,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   background: transparent;
   transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.12s var(--ease-out), box-shadow 0.2s;
 }
-.btn:active { transform: scale(0.96); }
 /* Primary — gradient pill with a shine sweep */
 .btn-primary {
   position: relative;
@@ -375,7 +390,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   background: var(--card-glass);
   transition: transform 0.14s var(--ease-out), background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.2s;
 }
-.pill:active { transform: scale(0.96); }
 .pill:hover { border-color: var(--accent); color: var(--accent); box-shadow: var(--shadow-glow); }
 .pill-cat {
   font-family: inherit; text-transform: none; letter-spacing: normal;
@@ -726,6 +740,10 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   transform: scale(1.25);
   z-index: 1;
   box-shadow: var(--shadow-md), 0 0 14px var(--accent-glow);
+}
+.heat-cell:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ── Sticky header with backdrop blur ── */
@@ -1712,4 +1730,74 @@ body.menu-open { overflow: hidden; }
   .menu-panel.closing { animation-name: menuSheetOut; }
   @keyframes menuSheetIn  { from { transform: translateY(44px); opacity: 0; } to { transform: none; opacity: 1; } }
   @keyframes menuSheetOut { to   { transform: translateY(44px); opacity: 0; } }
+}
+
+/* ============================================================
+   Visual polish — stroke icons, signed chips, wordmark gradient,
+   grain texture, empty-state motif, focus rings
+   ============================================================ */
+
+/* Inline SVG icon spans (Lucide-style strokes, currentColor) */
+.icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: middle; line-height: 0; flex-shrink: 0;
+}
+.icon svg { width: 16px; height: 16px; display: block; }
+.icon.sm svg { width: 12px; height: 12px; }
+.icon.md svg { width: 14px; height: 14px; }
+
+/* Header wordmark — ink fading into the warm accent, like .page-title */
+.logo-wordmark {
+  background: linear-gradient(115deg, var(--ink) 55%, var(--accent-2));
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: transparent;
+}
+
+/* Signed-number chips — soft tinted pills for balances that can go either way */
+.signed-chip {
+  display: inline-flex; align-items: center;
+  padding: 3px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600;
+  border: 1px solid transparent;
+  vertical-align: middle;
+}
+.signed-chip.is-positive {
+  color: var(--positive);
+  background: color-mix(in srgb, var(--positive) 9%, transparent);
+  border-color: color-mix(in srgb, var(--positive) 30%, transparent);
+}
+.signed-chip.is-negative {
+  color: var(--negative);
+  background: color-mix(in srgb, var(--negative) 9%, transparent);
+  border-color: color-mix(in srgb, var(--negative) 30%, transparent);
+}
+
+/* Empty-state motif — soft accent blob behind the illustrated icon */
+.empty-state { position: relative; overflow: hidden; }
+.empty-state::after {
+  content: '';
+  position: absolute; top: -50px; left: 50%; transform: translateX(-50%);
+  width: 210px; height: 210px; border-radius: 50%;
+  background: radial-gradient(closest-side, var(--accent-glow), transparent 70%);
+  pointer-events: none;
+}
+.empty-state > * { position: relative; }
+.empty-icon { opacity: 0.5; }
+
+/* Tabular figures on every financial surface */
+.digest-stat-value, .balance-editor-row .display-num { font-variant-numeric: tabular-nums; }
+
+/* Links that carry an icon glyph sit neatly next to their label */
+.btn-link { display: inline-flex; align-items: center; gap: 5px; }
+.history-settled { display: inline-flex; align-items: center; gap: 3px; }
+
+/* Icon sizing on surfaces that used emoji */
+.digest-emoji svg { width: 26px; height: 26px; }
+.assistant-avatar svg { width: 16px; height: 16px; }
+.greet-icon svg { width: 18px; height: 18px; }
+
+/* Keyboard focus everywhere else */
+button:focus-visible, a:focus-visible, select:focus-visible, [role='button']:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }

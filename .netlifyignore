@@ -1,20 +1,12 @@
 # Don't drag development-only artefacts into the Netlify deploy.
 # Mirrors .gitignore plus anything that's only needed locally.
 
-# JSDOM smoke tests were created for one debugging session.
-smoke*.mjs
-
 # Node unit tests live in testing/ (gitignored too) — never ship them.
 # Run with `node testing/merge-test.mjs`.
 testing/
 
-# Cruft from the npm install that brought in JSDOM for the smoke tests —
-# none of this is needed by the static site or the function, and uploading
-# node_modules to Netlify wastes both time and bandwidth. List exact names
-# so user-named `client-package.json` etc. is NOT excluded by accident.
+# Defensive: if npm dependencies are ever reintroduced, keep them off the site.
 node_modules/
-package.json
-package-lock.json
 
 # Standard noise
 .DS_Store
