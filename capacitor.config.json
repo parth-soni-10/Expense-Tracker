@@ -1,0 +1,8 @@
+{
+  "appId": "app.cents.tracker",
+  "appName": "cents.",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}

@@ -473,7 +473,7 @@ function showPinLock() {
     if (!ok || !pinOverlay) return;
     const label = biometricLabel();
     if (hasBiometricCredential()) {
-      bioArea.append($('button', { type: 'button', class: 'btn-ghost', style: 'width:100%;margin:16px 0 8px;', onClick: () => {
+      bioArea.append($('button', { type: 'button', class: 'btn btn-ghost', style: 'width:100%;margin:16px 0 8px;', onClick: () => {
         message.textContent = 'Touch ' + label + ' when prompted.';
         unlockWithBiometric().then(res => {
           if (!pinOverlay) return;
@@ -576,7 +576,7 @@ function openPinSettings() {
         $('span', { style: 'font-size:13px;color:var(--muted);' }, cred
           ? 'Fingerprint unlock is on for this device.'
           : 'Unlock with ' + label + ' instead of the PIN.'),
-        $('button', { type: 'button', class: cred ? 'btn-danger' : 'btn-ghost', onClick: () => {
+        $('button', { type: 'button', class: cred ? 'btn btn-danger' : 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: () => {
           if (cred) {
             if (clearBiometricCredential()) { toast('Fingerprint unlock disabled.'); fill(); }
             else { toast('Could not disable fingerprint unlock.'); }

@@ -1,0 +1,49 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+      - 'app.js'
+      - 'styles.css'
+      - 'settings.js'
+      - 'storage.js'
+      - 'seed.js'
+      - 'sync.js'
+      - 'sync-merge.js'
+      - 'vendor/**'
+      - 'capacitor.config.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Capacitor toolchain
+        run: npm ci
+
+      - name: Build the APK
+        run: npm run apk
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: cents-android-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

@@ -341,11 +341,18 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
      behind it on every frame. */
   background: var(--card);
   background: color-mix(in srgb, var(--card) 94%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius);
 }
 .btn-ghost:hover { background: var(--bg-deep); border-color: var(--muted); box-shadow: var(--shadow-sm); }
-.btn-danger { color: var(--negative); border-radius: 999px; }
-.btn-danger:hover { background: color-mix(in srgb, var(--negative) 10%, transparent); box-shadow: var(--shadow-sm); }
+/* Destructive — real button chrome (soft red fill + border) instead of
+   floating red text, so danger actions read as buttons everywhere. */
+.btn-danger {
+  color: var(--negative);
+  border: 1px solid color-mix(in srgb, var(--negative) 35%, transparent);
+  background: color-mix(in srgb, var(--negative) 10%, transparent);
+  border-radius: var(--radius);
+}
+.btn-danger:hover { background: color-mix(in srgb, var(--negative) 16%, transparent); border-color: var(--negative); box-shadow: var(--shadow-sm); }
 .btn-link {
   color: var(--accent); padding: 4px 0; font-size: 13px;
   border-bottom: 1.5px solid transparent;
