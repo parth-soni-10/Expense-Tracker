@@ -6,6 +6,7 @@
 
 const KEY = 'cents:syncSettings';
 const PRIVACY_KEY = 'cents:privacySettings';
+const BIOMETRIC_KEY = 'cents:biometric';
 
 const SYNC_DEFAULTS = Object.freeze({
   enabled: false,
@@ -104,6 +105,46 @@ export function clearPrivacyPin() {
     return !getPrivacyPin().hash;
   } catch (e) {
     console.warn('Failed to clear privacy settings:', e);
+    return false;
+  }
+}
+
+// Device-only biometric credential (WebAuthn platform authenticator —
+// fingerprint / Face ID). Like the PIN hash this lives under its own key,
+// separate from synced expense state, so a credential ID can never be
+// exported or pushed to GitHub. The credential ID is stored base64url.
+const B64URL_RE = /^[A-Za-z0-9_-]+$/;
+
+export function getBiometricCredential() {
+  try {
+    const raw = localStorage.getItem(BIOMETRIC_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const credentialId = typeof parsed.credentialId === 'string' && B64URL_RE.test(parsed.credentialId)
+      ? parsed.credentialId : null;
+    return credentialId ? { credentialId } : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setBiometricCredential(credentialId) {
+  if (typeof credentialId !== 'string' || !B64URL_RE.test(credentialId) || credentialId.length > 512) return false;
+  try {
+    localStorage.setItem(BIOMETRIC_KEY, JSON.stringify({ credentialId }));
+    return !!getBiometricCredential();
+  } catch (e) {
+    console.warn('Failed to save biometric settings:', e);
+    return false;
+  }
+}
+
+export function clearBiometricCredential() {
+  try {
+    localStorage.removeItem(BIOMETRIC_KEY);
+    return !getBiometricCredential();
+  } catch (e) {
+    console.warn('Failed to clear biometric settings:', e);
     return false;
   }
 }

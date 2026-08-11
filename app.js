@@ -4,7 +4,7 @@
    ============================================================ */
 import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal } from './storage.js';
 import { CATEGORIES, METHODS } from './seed.js';
-import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin } from './settings.js';
+import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 
@@ -281,8 +281,130 @@ function hasCustomPin() {
   return !getPinCredential().isDefault;
 }
 
+// ---------- Biometric unlock (fingerprint / Face ID) ----------
+// Uses the Web Authentication API with the platform authenticator, so on
+// mobile the OS fingerprint / Face ID prompt does the verification. The
+// credential ID is device-only (settings.js) and never leaves localStorage,
+// like the PIN hash. Where no platform authenticator exists (desktop without
+// Touch ID / Windows Hello, plain-HTTP contexts) the PIN stays the only path
+// and these helpers simply no-op.
+const B64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+function b64urlEncode(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i], b1 = i + 1 < bytes.length ? bytes[i + 1] : 0, b2 = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += B64URL_ALPHABET[b0 >> 2];
+    out += B64URL_ALPHABET[((b0 & 3) << 4) | (b1 >> 4)];
+    out += i + 1 < bytes.length ? B64URL_ALPHABET[((b1 & 15) << 2) | (b2 >> 6)] : '';
+    out += i + 2 < bytes.length ? B64URL_ALPHABET[b2 & 63] : '';
+  }
+  return out;
+}
+function b64urlDecode(str) {
+  const out = [];
+  let buf = 0, bits = 0;
+  for (const c of String(str)) {
+    const v = B64URL_ALPHABET.indexOf(c);
+    if (v === -1) continue;
+    buf = (buf << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out.push((buf >> bits) & 255);
+    }
+  }
+  return new Uint8Array(out);
+}
+let _bioSupported = null;
+function biometricSupported() {
+  if (_bioSupported !== null) return _bioSupported;
+  _bioSupported = (async () => {
+    try {
+      return Boolean(
+        globalThis.isSecureContext &&
+        typeof window.PublicKeyCredential === 'function' &&
+        typeof window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === 'function' &&
+        await window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+      );
+    } catch { return false; }
+  })();
+  return _bioSupported;
+}
+function biometricLabel() {
+  const ua = navigator.userAgent || '';
+  if (/iPhone|iPad|iPod/i.test(ua)) return 'Face ID';
+  if (/Android/i.test(ua)) return 'fingerprint';
+  if (/Macintosh/i.test(ua)) return 'Touch ID';
+  if (/Windows/i.test(ua)) return 'Windows Hello';
+  return 'biometrics';
+}
+function hasBiometricCredential() {
+  return !!getBiometricCredential();
+}
+async function registerBiometric() {
+  if (!await biometricSupported()) return { ok: false, reason: 'unsupported' };
+  try {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+    const user = new Uint8Array(16);
+    crypto.getRandomValues(user);
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { id: location.hostname, name: 'cents.' },
+        user: { id: user, name: 'cents-device', displayName: 'cents.' },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+        timeout: 60000,
+        authenticatorSelection: { authenticatorAttachment: 'platform', userVerification: 'required' },
+        attestation: 'none',
+      },
+    });
+    if (!cred || !cred.rawId) return { ok: false, reason: 'failed' };
+    if (!setBiometricCredential(b64urlEncode(new Uint8Array(cred.rawId)))) return { ok: false, reason: 'failed' };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err && err.name === 'NotAllowedError' ? 'cancelled' : 'failed' };
+  }
+}
+async function unlockWithBiometric() {
+  const stored = getBiometricCredential();
+  if (!stored) return { ok: false, reason: 'none' };
+  if (!await biometricSupported()) return { ok: false, reason: 'unsupported' };
+  try {
+    const challenge = new Uint8Array(32);
+    crypto.getRandomValues(challenge);
+    await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        timeout: 60000,
+        rpId: location.hostname,
+        allowCredentials: [{ type: 'public-key', id: b64urlDecode(stored.credentialId) }],
+        userVerification: 'required',
+      },
+    });
+    return { ok: true };
+  } catch (err) {
+    // NotAllowedError = user cancelled or the OS credential was removed.
+    return { ok: false, reason: err && err.name === 'NotAllowedError' ? 'cancelled' : 'failed' };
+  }
+}
+
 function closePinOverlay() {
   if (pinOverlay) { pinOverlay.remove(); pinOverlay = null; }
+}
+
+// The post-unlock sequence shared by the PIN path and the biometric path:
+// sync boot and the persisted-undo offer both wait until the lock is open.
+function completeUnlock() {
+  pinUnlocked = true;
+  closePinOverlay();
+  render();
+  startInitSync();
+  offerPersistedUndo();
+  if (pendingSetupLinkToast) {
+    toast(pendingSetupLinkToast);
+    pendingSetupLinkToast = null;
+  }
 }
 
 function showPinLock() {
@@ -317,22 +439,19 @@ function showPinLock() {
       input.focus();
       return;
     }
-    pinUnlocked = true;
-    closePinOverlay();
-    render();
-    startInitSync();
-    offerPersistedUndo();
-    if (pendingSetupLinkToast) {
-      toast(pendingSetupLinkToast);
-      pendingSetupLinkToast = null;
-    }
+    completeUnlock();
   };
+  // Filled asynchronously once the platform-authenticator check resolves —
+  // empty on devices without fingerprint/Face ID, so the lock screen stays
+  // PIN-only there and this container adds no layout space.
+  const bioArea = $('div', null);
   const overlay = $('div', { class: 'modal-bg', style: 'z-index:10000;background:rgba(0,0,0,.82);' },
     $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Unlock cents', style: 'max-width:360px;text-align:center;' },
       $('div', { class: 'serif', style: 'font-size:32px;font-style:italic;margin-bottom:4px;' }, 'cents.'),
       $('p', { class: 'eyebrow', style: 'margin:0;' }, 'Privacy lock'),
       $('p', { class: 'serif', style: 'font-style:italic;font-size:18px;margin:20px 0 4px;' }, 'Welcome back.'),
       message,
+      bioArea,
       input,
       $('button', { type: 'button', class: 'btn btn-primary', style: 'width:100%;margin-top:12px;', onClick: submit }, 'Unlock'),
     ),
@@ -341,6 +460,43 @@ function showPinLock() {
   document.body.appendChild(overlay);
   input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
   queueMicrotask(() => input.focus());
+  biometricSupported().then(ok => {
+    if (!ok || !pinOverlay) return;
+    const label = biometricLabel();
+    if (hasBiometricCredential()) {
+      bioArea.append($('button', { type: 'button', class: 'btn-ghost', style: 'width:100%;margin:16px 0 8px;', onClick: () => {
+        message.textContent = 'Touch ' + label + ' when prompted.';
+        unlockWithBiometric().then(res => {
+          if (!pinOverlay) return;
+          if (res.ok) {
+            completeUnlock();
+          } else {
+            message.textContent = res.reason === 'cancelled'
+              ? 'Fingerprint cancelled — use your PIN.'
+              : 'Fingerprint unavailable — use your PIN.';
+            input.focus();
+          }
+        });
+      } }, 'Unlock with ' + label));
+    } else {
+      bioArea.append($('button', { type: 'button', class: 'btn-link', style: 'margin:14px 0 6px;', onClick: () => {
+        message.textContent = 'Enable ' + label + '? Verify with ' + label + ' when prompted.';
+        registerBiometric().then(res => {
+          if (!pinOverlay) return;
+          if (res.ok) {
+            completeUnlock();
+            toast('Fingerprint unlock enabled.');
+          } else if (res.reason === 'cancelled') {
+            message.textContent = 'Not enabled — use your PIN.';
+            input.focus();
+          } else {
+            message.textContent = 'Fingerprint is not available on this device — use your PIN.';
+            input.focus();
+          }
+        });
+      } }, 'Enable ' + label + ' unlock'));
+    }
+  });
 }
 
 function lockApp() {
@@ -378,11 +534,14 @@ function openPinSettings() {
       status.textContent = 'PIN security is unavailable in this browser.';
     }
   };
+  // Biometric row — hidden until the platform-authenticator check resolves.
+  const bioRow = $('div', { style: 'display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);' });
   modal.append(
     $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;' }, $('h2', { class: 'serif', style: 'font-size:28px;font-style:italic;font-weight:400;' }, 'Privacy lock'), $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
     $('p', { class: 'serif', style: 'font-style:italic;font-size:16px;' }, custom ? 'Change or reset your PIN.' : 'The app locks on every device by default.'),
     $('div', { style: 'display:flex;flex-direction:column;gap:12px;margin:20px 0;' }, pin, confirm),
     status,
+    bioRow,
     $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:18px;' },
       custom ? $('button', { type: 'button', class: 'btn btn-danger', onClick: () => {
         if (!clearPrivacyPin()) { toast('Could not reset the PIN on this device.'); return; }
@@ -397,6 +556,34 @@ function openPinSettings() {
     ),
   );
   queueMicrotask(() => pin.focus());
+  biometricSupported().then(ok => {
+    if (!ok || !bg.isConnected) return;
+    bioRow.style.display = 'flex';
+    const fill = () => {
+      const cred = hasBiometricCredential();
+      const label = biometricLabel();
+      bioRow.replaceChildren();
+      bioRow.append(
+        $('span', { style: 'font-size:13px;color:var(--muted);' }, cred
+          ? 'Fingerprint unlock is on for this device.'
+          : 'Unlock with ' + label + ' instead of the PIN.'),
+        $('button', { type: 'button', class: cred ? 'btn-danger' : 'btn-ghost', onClick: () => {
+          if (cred) {
+            if (clearBiometricCredential()) { toast('Fingerprint unlock disabled.'); fill(); }
+            else { toast('Could not disable fingerprint unlock.'); }
+          } else {
+            registerBiometric().then(res => {
+              if (!bg.isConnected) return;
+              if (res.ok) { toast('Fingerprint unlock enabled.'); fill(); }
+              else if (res.reason === 'cancelled') { toast('Fingerprint not enabled — you can try again.'); }
+              else { toast('Fingerprint is not available on this device.'); }
+            });
+          }
+        } }, cred ? 'Disable' : 'Enable'),
+      );
+    };
+    fill();
+  });
 }
 
 function persist() {
@@ -5753,4 +5940,5 @@ window.__cents = {
   initSync, scheduleSyncPush, doAutoPush,
   renderSyncIndicator, openSyncSettings,
   syncPull, syncPush,
+  registerBiometric, unlockWithBiometric,
 };
