@@ -315,12 +315,21 @@ function b64urlDecode(str) {
   }
   return new Uint8Array(out);
 }
+// Biometric unlock is a mobile-only convenience: the OS fingerprint / Face ID
+// prompt is the natural unlock on phones, but on desktops (Windows Hello,
+// Touch ID) it would surface a button nobody asked for there — so the whole
+// biometric surface is gated behind this check.
+function isMobileDevice() {
+  const ua = navigator.userAgent || '';
+  return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+}
 let _bioSupported = null;
 function biometricSupported() {
   if (_bioSupported !== null) return _bioSupported;
   _bioSupported = (async () => {
     try {
       return Boolean(
+        isMobileDevice() &&
         globalThis.isSecureContext &&
         typeof window.PublicKeyCredential === 'function' &&
         typeof window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === 'function' &&
