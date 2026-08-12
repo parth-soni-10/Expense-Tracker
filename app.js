@@ -418,7 +418,12 @@ function completeUnlock() {
 
 function showPinLock() {
   if (pinUnlocked || pinOverlay) return;
-  const input = $('input', { type: 'password', maxlength: '20', autocomplete: 'off', placeholder: 'PIN', 'aria-label': 'PIN', style: 'width:100%;text-align:center;letter-spacing:.35em;font-size:24px;' });
+  const label = biometricLabel();
+  // new-password (not off): tells desktop browsers this is not a credential
+  // field, so the phone-registered passkey/fingerprint credential synced into
+  // Chrome/Safari autofill never gets offered on the website — the website is
+  // PIN-only, biometrics stay mobile.
+  const input = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'PIN', 'aria-label': 'PIN', style: 'width:100%;text-align:center;letter-spacing:.35em;font-size:24px;' });
   const message = $('p', { class: 'muted', style: 'font-size:13px;text-align:center;min-height:20px;margin:12px 0;' }, 'Enter your PIN.');
   const submit = async () => {
     const value = String(input.value || '').trim();
@@ -450,10 +455,49 @@ function showPinLock() {
     }
     completeUnlock();
   };
-  // Filled asynchronously once the platform-authenticator check resolves —
-  // empty on devices without fingerprint/Face ID, so the lock screen stays
-  // PIN-only there and this container adds no layout space.
+  // Biometric surface (filled in once the platform-authenticator check
+  // resolves) and the PIN surface. On phones with a registered credential the
+  // fingerprint / Face ID button is the primary unlock and the PIN input stays
+  // hidden behind a "Use PIN instead" toggle; everywhere else the PIN shows
+  // first, exactly as before.
   const bioArea = $('div', null);
+  const pinArea = $('div', { style: 'display:none;' },
+    input,
+    $('button', { type: 'button', class: 'btn btn-primary', style: 'width:100%;margin-top:12px;', onClick: submit }, 'Unlock'),
+  );
+  let bioBusy = false;
+  const attemptBio = (auto) => {
+    if (bioBusy) return;
+    bioBusy = true;
+    message.textContent = 'Touch ' + label + ' when prompted.';
+    unlockWithBiometric().then(res => {
+      bioBusy = false;
+      if (!pinOverlay) return;
+      if (res.ok) {
+        completeUnlock();
+      } else if (auto) {
+        // The automatic prompt can be suppressed by the browser when there is
+        // no user gesture yet (some Android builds) — keep the door open.
+        message.textContent = 'Tap ' + label + ' to unlock, or use your PIN.';
+      } else {
+        // The PIN input lives behind the "Use PIN instead" toggle here.
+        message.textContent = res.reason === 'cancelled'
+          ? 'Fingerprint cancelled — tap again or use your PIN.'
+          : 'Fingerprint unavailable — use your PIN.';
+      }
+    });
+  };
+  const showPin = () => {
+    bioArea.style.display = 'none';
+    pinArea.style.display = '';
+    message.textContent = 'Enter your PIN.';
+    queueMicrotask(() => input.focus());
+  };
+  const showBio = () => {
+    bioArea.style.display = '';
+    pinArea.style.display = 'none';
+    attemptBio(false);
+  };
   const overlay = $('div', { class: 'modal-bg', style: 'z-index:10000;background:rgba(0,0,0,.82);' },
     $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Unlock cents', style: 'max-width:360px;text-align:center;' },
       $('div', { class: 'serif', style: 'font-size:32px;font-style:italic;margin-bottom:4px;' }, 'cents.'),
@@ -461,33 +505,25 @@ function showPinLock() {
       $('p', { class: 'serif', style: 'font-style:italic;font-size:18px;margin:20px 0 4px;' }, 'Welcome back.'),
       message,
       bioArea,
-      input,
-      $('button', { type: 'button', class: 'btn btn-primary', style: 'width:100%;margin-top:12px;', onClick: submit }, 'Unlock'),
+      pinArea,
     ),
   );
   pinOverlay = overlay;
   document.body.appendChild(overlay);
   input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
-  queueMicrotask(() => input.focus());
   biometricSupported().then(ok => {
-    if (!ok || !pinOverlay) return;
-    const label = biometricLabel();
-    if (hasBiometricCredential()) {
-      bioArea.append($('button', { type: 'button', class: 'btn btn-ghost', style: 'width:100%;margin:16px 0 8px;', onClick: () => {
-        message.textContent = 'Touch ' + label + ' when prompted.';
-        unlockWithBiometric().then(res => {
-          if (!pinOverlay) return;
-          if (res.ok) {
-            completeUnlock();
-          } else {
-            message.textContent = res.reason === 'cancelled'
-              ? 'Fingerprint cancelled — use your PIN.'
-              : 'Fingerprint unavailable — use your PIN.';
-            input.focus();
-          }
-        });
-      } }, 'Unlock with ' + label));
-    } else {
+    if (!pinOverlay) return;
+    if (!ok) {
+      // No platform authenticator on this device (desktop, plain HTTP):
+      // the PIN is the only path, shown as before.
+      pinArea.style.display = '';
+      queueMicrotask(() => input.focus());
+      return;
+    }
+    if (!hasBiometricCredential()) {
+      // Phone with no credential registered yet: PIN first, offer enrollment.
+      pinArea.style.display = '';
+      queueMicrotask(() => input.focus());
       bioArea.append($('button', { type: 'button', class: 'btn-link', style: 'margin:14px 0 6px;', onClick: () => {
         message.textContent = 'Enable ' + label + '? Verify with ' + label + ' when prompted.';
         registerBiometric().then(res => {
@@ -504,7 +540,21 @@ function showPinLock() {
           }
         });
       } }, 'Enable ' + label + ' unlock'));
+      return;
     }
+    // Phone with a registered credential: biometrics is the primary unlock.
+    // The PIN input stays hidden until the user asks for it.
+    bioArea.append(
+      $('button', { type: 'button', class: 'btn btn-primary', style: 'width:100%;', onClick: () => attemptBio(false) }, 'Unlock with ' + label),
+      $('button', { type: 'button', class: 'btn-link', style: 'margin:14px 0 4px;', onClick: showPin }, 'Use PIN instead'),
+    );
+    pinArea.append($('button', { type: 'button', class: 'btn-link', style: 'margin:12px 0 0;', onClick: showBio }, 'Use ' + label + ' instead'));
+    message.textContent = 'Touch ' + label + ' when prompted.';
+    // Fire the OS prompt automatically once the lock screen has painted.
+    // iOS 16+ allows one gesture-free credentials.get per page load, so the
+    // fingerprint / Face ID prompt appears without any tap; on browsers that
+    // suppress it the button above is the graceful fallback.
+    setTimeout(() => { if (pinOverlay && !pinUnlocked) attemptBio(true); }, 350);
   });
 }
 
@@ -5869,6 +5919,13 @@ function _render() {
     case 'insights': screen.appendChild(screenInsights()); break;
     default:         screen.appendChild(screenDashboard());
   }
+  // A per-child rise animation on a huge subtree (the History table) forces
+  // the browser to rasterize the whole thing into a composite layer on every
+  // navigation — keep the single cheap screenIn fade for heavy screens and
+  // stagger only light ones, so navigation stays instant.
+  if (shouldAnimateScreen && (screen.querySelector('.history-row') || screen.children.length > 12)) {
+    screen.classList.remove('stagger');
+  }
   main.appendChild(screen);
 
   // Bottom tab bar on mobile
@@ -5978,6 +6035,11 @@ function initCardSpotlight() {
   const fine = typeof matchMedia === 'function' && matchMedia('(hover: hover) and (pointer: fine)').matches;
   if (!fine) return;
   let rafId = null;
+  // Repainting the card's radial gradient is the most expensive thing the
+  // page does while the mouse is moving (a full-surface paint per frame), so
+  // the glow is throttled to ~25fps and sub-10px micro-moves are skipped —
+  // the eye can't track the glow faster than that, and the page stays fluid.
+  let lastSpot = { card: null, x: -1e9, y: -1e9, t: 0 };
   document.addEventListener('pointermove', (e) => {
     if (rafId !== null) return;
     rafId = requestAnimationFrame(() => {
@@ -5986,8 +6048,15 @@ function initCardSpotlight() {
       const card = target && target.closest ? target.closest('.card') : null;
       if (!card || !card.isConnected) return;
       const rect = card.getBoundingClientRect();
-      card.style.setProperty('--mx', `${e.clientX - rect.left}px`);
-      card.style.setProperty('--my', `${e.clientY - rect.top}px`);
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const now = performance.now();
+      if (card === lastSpot.card
+        && Math.abs(x - lastSpot.x) < 10 && Math.abs(y - lastSpot.y) < 10
+        && now - lastSpot.t < 40) return;
+      lastSpot = { card, x, y, t: now };
+      card.style.setProperty('--mx', `${x}px`);
+      card.style.setProperty('--my', `${y}px`);
     });
   }, { passive: true });
 }

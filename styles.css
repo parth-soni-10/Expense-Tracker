@@ -281,7 +281,7 @@ button { font-family: inherit; cursor: pointer; }
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.35s;
-  background: radial-gradient(420px circle at var(--mx, 50%) var(--my, 0%), var(--accent-glow), transparent 65%);
+  background: radial-gradient(340px circle at var(--mx, 50%) var(--my, 0%), var(--accent-glow), transparent 62%);
 }
 .card:hover::after { opacity: 1; }
 
@@ -770,8 +770,8 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
    ============================================================ */
 .history-row {
   display: grid;
-  grid-template-columns: 36px 90px 1fr 110px 100px 90px 30px;
-  gap: 24px;
+  grid-template-columns: 36px 90px 1fr 110px 100px 90px 72px;
+  gap: 18px;
   padding: 15px 24px;
   align-items: center;
   border-bottom: 1px solid var(--line);
@@ -793,9 +793,10 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 }
 .history-head-row {
   display: grid;
-  grid-template-columns: 36px 90px 1fr 110px 100px 90px 30px;
-  gap: 24px;
+  grid-template-columns: 36px 90px 1fr 110px 100px 90px 72px;
+  gap: 18px;
   padding: 15px 24px;
+  border-left: 3px solid transparent; /* matches .history-row so header labels line up with the data rows */
   font-size: 11px;
   letter-spacing: 0.15em;
   text-transform: uppercase;
@@ -1128,7 +1129,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .history-day-header {
   position: sticky; left: 0; z-index: 1;
   display: grid; grid-template-columns: 1fr; gap: 8px;
-  padding: 14px 24px 8px; min-width: 780px;
+  padding: 14px 27px 8px; min-width: 780px; /* left 27px = 24px padding + 3px row border, so labels align with rows */
   background: var(--bg-deep);
   border-bottom: 1px solid var(--line);
 }
