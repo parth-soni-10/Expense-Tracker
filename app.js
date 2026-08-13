@@ -1174,32 +1174,21 @@ const GIFT_CARD_IDS = ['TG', 'LG', 'AG'];
 // Account groups: a parent "account" that aggregates several sub-accounts.
 // The parent holds no entries of its own; its balance is the sum of its members.
 const ACCOUNT_GROUPS = [
-  { id: 'revolut', label: 'Revolut', members: ['Revolut', 'RS'], memberLabels: ['Main', 'Savings'] },
+  { label: 'Revolut', members: ['Revolut', 'RS'] },
 ];
-function accountGroupMemberLabel(group, methodId) {
-  const index = group.members.indexOf(methodId);
-  return index >= 0 && group.memberLabels?.[index] ? group.memberLabels[index] : methodShort(methodId);
-}
-function groupSplitLabel(group) {
-  return group.members.map(id => accountGroupMemberLabel(group, id)).join(' + ');
-}
-function groupBalanceAt(group, date = today()) {
-  return group.members.reduce((sum, id) => sum + balanceAt(id, date), 0);
-}
 /** Populate a <select> with standalone methods and account-group optgroups. */
 function appendMethodOptions(select, ids, selectedId) {
   select.innerHTML = '';
-  const orderedGroups = ACCOUNT_GROUPS.filter(group => ids.some(id => group.members.includes(id)));
-  const groupedIds = new Set(orderedGroups.flatMap(group => group.members));
+  const groups = ACCOUNT_GROUPS.filter(group => ids.some(id => group.members.includes(id)));
+  const groupedIds = new Set(groups.flatMap(group => group.members));
   for (const id of ids) {
     if (groupedIds.has(id)) continue;
     select.appendChild($('option', { value: id, selected: selectedId === id ? '' : null }, methodLabel(id)));
   }
-  for (const group of orderedGroups) {
+  for (const group of groups) {
     const optgroup = $('optgroup', { label: group.label });
     for (const id of group.members) {
-      if (!ids.includes(id)) continue;
-      optgroup.appendChild($('option', { value: id, selected: selectedId === id ? '' : null }, accountGroupMemberLabel(group, id)));
+      if (ids.includes(id)) optgroup.appendChild($('option', { value: id, selected: selectedId === id ? '' : null }, methodLabel(id)));
     }
     select.appendChild(optgroup);
   }
@@ -1426,7 +1415,7 @@ function totalAccountBalanceAt(date = today(), checkpointsByMethod = null) {
   return ACCOUNT_METHOD_IDS.reduce((sum, id) => sum + balanceAtForEntries(entries, id, date, checkpoints), 0);
 }
 
-function renderBalanceEditorRow(methodId, { label = methodShort(methodId), fullLabel = label, secondary = '', editable = false, canLoad = false, indent = false } = {}) {
+function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', editable = false, canLoad = false, indent = false } = {}) {
   const row = $('div', { class: 'balance-editor-row', style: `display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;${indent ? `padding-left:${isNarrow() ? '26px' : '32px'};` : ''}border-bottom:1px solid var(--line);font-size:13px;` });
   let editing = false;
   let editMode = 'reconcile'; // 'reconcile' | 'load'
@@ -1492,7 +1481,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), fullL
         if (!isValidCheckpointDate(date.value) || date.value > today()) { toast('Choose today or an earlier reconciliation date.'); date.focus(); return; }
         if (!saveBalanceCheckpoint(methodId, date.value, next)) { toast('Could not save that reconciliation.'); return; }
         editing = false;
-        toast(`${fullLabel} reconciled at ${fmt(next)}.`);
+        toast(`${label} reconciled at ${fmt(next)}.`);
         render();
       };
       amount.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } if (ev.key === 'Escape') { editing = false; draw(); } });
@@ -1534,7 +1523,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), fullL
           isGiftCard ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => openGiftCardHistoryModal(methodId), 'aria-label': `${label} history` }, iconSpan('clipboard', 'sm')) : null,
         ) : editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, iconSpan('pencil', 'sm')) : null,
         editable && summary ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:10px;padding:3px 5px;color:var(--negative);', onClick: async () => {
-          if (!(await swalConfirm({ title: 'Remove reconciliation?', text: `Remove the ${fullLabel} reconciliation from ${friendlyDate(summary.point.date)}?`, confirmButtonText: 'Remove', danger: true }))) return;
+          if (!(await swalConfirm({ title: 'Remove reconciliation?', text: `Remove the ${label} reconciliation from ${friendlyDate(summary.point.date)}?`, confirmButtonText: 'Remove', danger: true }))) return;
           if (removeBalanceCheckpoint(methodId, summary.point.date)) {
             toast(`${label} reconciliation removed.`);
             render();
@@ -1547,40 +1536,28 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), fullL
   return row;
 }
 
-/** Parent row for an account group — read-only total with a "Total" badge,
- *  followed by its indented sub-account rows (rendered separately). */
-function renderAccountGroupRow(group) {
-  const total = groupBalanceAt(group);
-  return $('div', { class: 'balance-editor-row account-group-row', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;background:var(--accent-soft);' },
-    $('div', { style: 'display:flex;align-items:center;gap:10px;min-width:0;flex:1;' },
-      $('span', { style: 'font-weight:600;white-space:nowrap;' }, group.label),
-      $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);border:1px solid var(--line);' }, 'Total'),
-      $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, groupSplitLabel(group)),
-    ),
-    $('div', { style: 'text-align:right;' },
-      $('div', { class: 'display-num', style: `font-size:14px;color:${total >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(total)),
-    ),
-  );
-}
-
 /** Ordered account rows for the balance UIs: standalone accounts first, then
- *  each group as a total header plus indented sub-account rows. */
+ *  each group as a total header plus its indented sub-account rows. */
 function renderAccountBalanceRows({ editable = false, secondaryFor = () => '' } = {}) {
   const rows = [];
   const groupedIds = new Set(ACCOUNT_GROUPS.flatMap(group => group.members));
   for (const id of ACCOUNT_METHOD_IDS) {
     if (groupedIds.has(id)) continue;
-    rows.push(renderBalanceEditorRow(id, {
-      label: methodShort(id), secondary: secondaryFor(id), editable, canLoad: true,
-    }));
+    rows.push(renderBalanceEditorRow(id, { label: methodShort(id), secondary: secondaryFor(id), editable, canLoad: true }));
   }
   for (const group of ACCOUNT_GROUPS) {
-    rows.push(renderAccountGroupRow(group));
+    const total = group.members.reduce((sum, id) => sum + balanceAt(id), 0);
+    rows.push($('div', { class: 'balance-editor-row account-group-row', style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line);font-size:13px;background:var(--accent-soft);' },
+      $('div', { style: 'display:flex;align-items:center;gap:10px;min-width:0;flex:1;' },
+        $('span', { style: 'font-weight:600;white-space:nowrap;' }, group.label),
+        $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);border:1px solid var(--line);' }, 'Total'),
+      ),
+      $('div', { style: 'text-align:right;' },
+        $('div', { class: 'display-num', style: `font-size:14px;color:${total >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(total)),
+      ),
+    ));
     for (const id of group.members) {
-      rows.push(renderBalanceEditorRow(id, {
-        label: accountGroupMemberLabel(group, id), fullLabel: methodShort(id),
-        secondary: secondaryFor(id), editable, canLoad: true, indent: true,
-      }));
+      rows.push(renderBalanceEditorRow(id, { label: methodShort(id), secondary: secondaryFor(id), editable, canLoad: true, indent: true }));
     }
   }
   return rows;
@@ -4044,8 +4021,9 @@ function openNewRecurring(existing = null) {
 
   const amtInput = $('input', { type: 'text', inputmode: 'decimal', placeholder: '0.00', 'aria-label': 'Amount', onInput: (e) => data.amount = e.target.value });
   const descInput = $('input', { type: 'text', placeholder: 'e.g. Rent, Netflix', 'aria-label': 'Description', onInput: (e) => data.details = e.target.value });
-  const methodSel = $('select', { 'aria-label': 'Method', onChange: (e) => data.method = e.target.value });
-  appendMethodOptions(methodSel, METHODS.map(m => m.id), data.method);
+  const methodSel = $('select', { 'aria-label': 'Method', onChange: (e) => data.method = e.target.value },
+    ...METHODS.map(m => $('option', { value: m.id }, m.label)),
+  );
   const catSel = $('select', { 'aria-label': 'Category', onChange: (e) => data.category = e.target.value },
     ...allCategories().map(c => $('option', { value: c.id }, c.label)),
   );
