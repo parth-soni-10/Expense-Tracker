@@ -13,7 +13,7 @@ export const CATEGORIES = [
 
 export const METHODS = [
   { id: 'AIB',     label: 'AIB bank' },
-  { id: 'Revolut', label: 'Revolut' },
+  { id: 'Revolut', label: 'Revolut Main' },
   { id: 'RS',      label: 'Revolut Savings' },
   { id: 'TG',      label: 'TG · Tesco' },
   { id: 'LG',      label: 'LG · Lidl' },

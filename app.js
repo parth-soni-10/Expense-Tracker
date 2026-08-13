@@ -1174,8 +1174,12 @@ const GIFT_CARD_IDS = ['TG', 'LG', 'AG'];
 // Account groups: a parent "account" that aggregates several sub-accounts.
 // The parent holds no entries of its own; its balance is the sum of its members.
 const ACCOUNT_GROUPS = [
-  { label: 'Revolut', members: ['Revolut', 'RS'] },
+  { id: 'revolut', label: 'Revolut', members: ['Revolut', 'RS'] },
 ];
+/** Resolve a History "Account" filter value that refers to a whole group. */
+function accountGroupForKey(key) {
+  return ACCOUNT_GROUPS.find(group => `group:${group.id}` === key) || null;
+}
 /** Populate a <select> with standalone methods and account-group optgroups. */
 function appendMethodOptions(select, ids, selectedId) {
   select.innerHTML = '';
@@ -4288,7 +4292,9 @@ function screenHistory() {
   if (!months.includes(activeMonth) && months.length && activeMonth !== monthKey(today())) activeMonth = months[0];
 
   const monthEntries = entriesForMonth(activeMonth);
-  const filtered = searchEntries(monthEntries, searchQuery, { type: 'all', category: activeCat, method: activeMethod });
+  const activeMethodGroup = accountGroupForKey(activeMethod);
+  const filtered = searchEntries(monthEntries, searchQuery, { type: 'all', category: activeCat, method: activeMethodGroup ? 'all' : activeMethod })
+    .filter(e => !activeMethodGroup || activeMethodGroup.members.includes(e.method));
   // Sort a copy so filtering/history presentation never mutates persisted order.
   let visible = [...filtered].sort((a, b) => b.date.localeCompare(a.date)
     || ((b.createdAt || '')).localeCompare(a.createdAt || '')
@@ -4361,6 +4367,12 @@ function screenHistory() {
   const methodFilterRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 16px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
   methodFilterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;font-size:10px;' }, 'Account'));
   methodFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': 'all', 'data-active': activeMethod === 'all' ? 'true' : 'false', 'aria-pressed': activeMethod === 'all' ? 'true' : 'false', onClick: () => update({ method: 'all' }) }, `All · ${monthEntries.length}`));
+  for (const group of ACCOUNT_GROUPS) {
+    const key = `group:${group.id}`;
+    const count = group.members.reduce((sum, id) => sum + (methodCounts[id] || 0), 0);
+    if (count === 0 && activeMethod !== key) continue;
+    methodFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': key, 'data-active': activeMethod === key ? 'true' : 'false', 'aria-pressed': activeMethod === key ? 'true' : 'false', onClick: () => update({ method: key }) }, `${group.label} · ${count}`));
+  }
   for (const method of METHODS) {
     const count = methodCounts[method.id] || 0;
     if (count === 0 && activeMethod !== method.id) continue;
