@@ -45,6 +45,16 @@
     Cache-Control = "no-cache, must-revalidate"
     X-Content-Type-Options = "nosniff"
 
+# Web App Manifest — Chrome expects a JSON MIME type before it treats the
+# site as installable; Netlify's default for .json would also work, but be
+# explicit so the PWA signal can never be missed.
+[[headers]]
+  for = "/manifest.json"
+  [headers.values]
+    Content-Type = "application/manifest+json; charset=utf-8"
+    Cache-Control = "no-cache, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+
 # Catch-all: only generic safety headers, no Cache-Control (each specific
 # rule above already owns that for the paths it covers, and we don't want
 # duplicate Cache-Control values to fight over the response).
