@@ -1,19 +1,42 @@
-/* cents. service worker — minimal, network-first.
+/* cents. service worker — network-first, with a non-blocking shell warm.
  *
- * Install is deliberately instant: no precache. Chrome counts the app as
- * installable the moment this worker is active, so a heavyweight
- * caches.addAll(...) during install only delays it — and on a flaky mobile
- * connection one failed fetch stalls the install event entirely, which is
- * exactly the "install never appears" bug this worker exists to avoid.
- * The shell is captured lazily by the runtime cache on the first controlled
- * load instead, so offline boot still works after one full online visit.
+ * Install stays instant: the worker never awaits a precache, so Chrome marks
+ * the app installable the moment it activates (a heavyweight addAll() here is
+ * exactly the "install never appears" bug this avoids). Instead the shell is
+ * warmed in the background — each entry individually caught so one failure can
+ * never fail the worker — which lets the first visit still populate the cache
+ * for a later offline open. The runtime cache below fills in anything the warm
+ * missed, so offline boot is guaranteed after one full online visit.
  *
  * Network-first: every request tries the network and only falls back to a
  * cached copy when offline. It never serves stale content while online.
  */
 const CACHE = 'cents-v1';
+const SHELL = [
+  '/',
+  '/index.html',
+  '/app.js',
+  '/styles.css',
+  '/seed.js',
+  '/settings.js',
+  '/storage.js',
+  '/sync.js',
+  '/sync-merge.js',
+  '/manifest.json',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+  '/vendor/sweetalert2.min.js'
+];
 
-self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('install', () => {
+  self.skipWaiting();
+  // Fire-and-forget warm: populates the cache during this first visit without
+  // gating activation. The controlled page keeps the worker alive long enough
+  // for these to complete in practice.
+  caches.open(CACHE).then((c) => {
+    SHELL.forEach((url) => c.add(url).catch(() => {}));
+  });
+});
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
@@ -28,8 +51,9 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(
     fetch(e.request)
       .then((res) => {
-        // Warm the runtime cache with anything fetched while online, so a
-        // later offline session (e.g. lazy-loaded vendor libs) still works.
+        // Cache anything fetched while online (including cross-origin assets
+        // like Google Fonts, which are CORS-enabled), so a later offline
+        // session still works.
         if (res && res.ok) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
