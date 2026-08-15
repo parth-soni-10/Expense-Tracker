@@ -1,13 +1,10 @@
 {
-  "name": "cents. — personal expense tracker",
+  "name": "cents.",
   "short_name": "cents.",
-  "id": "/",
   "start_url": "/",
-  "scope": "/",
   "display": "standalone",
   "background_color": "#171310",
   "theme_color": "#171310",
-  "description": "A calm, beautiful personal expense tracker. Track spending, budgets, balances and recurring bills.",
   "icons": [
     { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
