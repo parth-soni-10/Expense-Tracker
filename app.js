@@ -3844,6 +3844,7 @@ function screenDashboard() {
   // Build local today string the same way thursdaysInMonth does (no UTC shift)
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const unpaidThursdays = thursdays.filter(d => !incomeByDate[d] && d <= todayStr);
+  const paidTotal = thursdays.reduce((sum, d) => sum + (incomeByDate[d] || 0), 0);
 
   const payCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
@@ -3856,6 +3857,10 @@ function screenDashboard() {
     thursdays.length === 0
       ? $('div', { class: 'empty' }, 'No Thursdays this month.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:4px;' },
+          $('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;font-weight:600;' },
+            $('span', { class: 'eyebrow', style: 'margin:0;' }, 'Total'),
+            $('span', { class: 'display-num', style: 'font-size:16px;color:var(--positive);' }, `+${fmt(paidTotal)}`),
+          ),
           ...thursdays.map(d => {
             const paid = incomeByDate[d] != null;
             const isPast = d < todayStr;
