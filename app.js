@@ -2863,6 +2863,7 @@ const MENU_ICONS = {
   chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>',
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"/></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
 };
 
 // Full stroke-icon set — Lucide-style 24px grid, currentColor, 1.9 stroke.
@@ -2949,6 +2950,9 @@ function buildMenuLevel(id) {
       r === route ? $('span', { class: 'menu-row-check', 'aria-hidden': 'true', innerHTML: MENU_ICONS.check }) : null,
     )));
     list.append($('div', { class: 'menu-sep' }));
+    if (canInstallApp()) {
+      list.append(menuRowEl({ icon: 'download', label: 'Install app', onClick: () => { closeAppMenu(); promptInstall(); } }));
+    }
     list.append(menuRowEl({ icon: 'ask', label: 'Ask the spend assistant', onClick: () => { closeAppMenu(); openAssistant(); } }));
     list.append(menuRowEl({ icon: 'appearance', label: 'Appearance', chevron: true, onClick: () => menuDrill('appearance') }));
     list.append(menuRowEl({ icon: 'lock', label: 'Privacy & security', chevron: true, onClick: () => menuDrill('privacy') }));
@@ -6113,6 +6117,39 @@ function initCardSpotlight() {
     });
   }, { passive: true });
 }
+
+// ---- PWA install prompt ----
+// Chrome/Edge fire `beforeinstallprompt` once the site is installable. We
+// capture it so the in-app "Install app" menu row can trigger the native
+// prompt directly (the browser's own install menu stays available too).
+let deferredInstallPrompt = null;
+
+function isStandaloneApp() {
+  return !!((window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true);
+}
+
+function canInstallApp() {
+  return !!deferredInstallPrompt && !isStandaloneApp();
+}
+
+async function promptInstall() {
+  if (!deferredInstallPrompt) return;
+  const evt = deferredInstallPrompt;
+  deferredInstallPrompt = null;
+  evt.prompt();
+  const choice = await evt.userChoice;
+  if (choice && choice.outcome === 'accepted') toast('App installing…');
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  toast('App installed.');
+});
 
 window.addEventListener('DOMContentLoaded', () => {
   initCardSpotlight();
