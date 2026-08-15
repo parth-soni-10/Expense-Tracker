@@ -55,6 +55,15 @@
     Cache-Control = "no-cache, must-revalidate"
     X-Content-Type-Options = "nosniff"
 
+# PWA install icons — same no-cache model as the other assets, so a regenerated
+# icon is never masked by a stale cached copy.
+[[headers]]
+  for = "/icons/*"
+  [headers.values]
+    Content-Type = "image/png"
+    Cache-Control = "no-cache, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+
 # Catch-all: only generic safety headers, no Cache-Control (each specific
 # rule above already owns that for the paths it covers, and we don't want
 # duplicate Cache-Control values to fight over the response).

@@ -1,37 +1,19 @@
 /* cents. service worker — minimal, network-first.
  *
- * The app's deploy model is "always fresh": Netlify serves every asset with
- * no-cache, must-revalidate. This worker respects that — every request tries
- * the network first and only falls back to a cached copy when the network is
- * actually unavailable. It never serves stale content while online.
+ * Install is deliberately instant: no precache. Chrome counts the app as
+ * installable the moment this worker is active, so a heavyweight
+ * caches.addAll(...) during install only delays it — and on a flaky mobile
+ * connection one failed fetch stalls the install event entirely, which is
+ * exactly the "install never appears" bug this worker exists to avoid.
+ * The shell is captured lazily by the runtime cache on the first controlled
+ * load instead, so offline boot still works after one full online visit.
  *
- * Its other job is installability: Chrome requires a fetch-handling service
- * worker before a site can be installed as a standalone app.
+ * Network-first: every request tries the network and only falls back to a
+ * cached copy when offline. It never serves stale content while online.
  */
 const CACHE = 'cents-v1';
-const SHELL = [
-  '/',
-  '/index.html',
-  '/app.js',
-  '/styles.css',
-  '/seed.js',
-  '/settings.js',
-  '/storage.js',
-  '/sync.js',
-  '/sync-merge.js',
-  '/manifest.json',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
-  '/vendor/sweetalert2.min.js'
-];
 
-self.addEventListener('install', (e) => {
-  e.waitUntil(
-    caches.open(CACHE)
-      .then((c) => c.addAll(SHELL))
-      .then(() => self.skipWaiting())
-  );
-});
+self.addEventListener('install', () => self.skipWaiting());
 
 self.addEventListener('activate', (e) => {
   e.waitUntil(
