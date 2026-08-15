@@ -39,11 +39,24 @@
        standalone (no browser chrome) on Android Chrome and iOS Safari. -->
   <link rel="manifest" href="manifest.json" />
   <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png" />
-  <link rel="apple-touch-icon" href="icons/icon-180.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/icon-180.png" />
+
+  <script>
+    // Register the service worker immediately — before the app bundle is even
+    // fetched — so Chrome can mark the site installable the moment the page
+    // starts loading instead of waiting for the 344 KB app.js to download and
+    // run. Silent failure: the app works with or without SW support.
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(function () {});
+    }
+  </script>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+  <!-- Fonts load without blocking first paint: media="print" defers the CSS,
+       flipping to "all" once loaded. System fonts render instantly meanwhile
+       (display=swap + the existing font-family fallbacks). -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 
   <link rel="stylesheet" href="styles.css">
 

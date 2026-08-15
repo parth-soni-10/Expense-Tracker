@@ -6115,13 +6115,6 @@ function initCardSpotlight() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  // PWA: register the service worker so the site is installable and installed
-  // copies open standalone. Network-first (see sw.js) — it never serves stale
-  // data, so it can't interfere with the always-fresh deploy model. Silent
-  // failure: the app must work with or without SW support.
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
-  }
   initCardSpotlight();
   // The privacy lock is site-wide: the unlock screen is the first interactive
   // surface on every full page load, on every device. Cloud sync and the
