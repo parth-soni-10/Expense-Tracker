@@ -498,8 +498,8 @@ function showPinLock() {
     pinArea.style.display = 'none';
     attemptBio(false);
   };
-  const overlay = $('div', { class: 'modal-bg', style: 'z-index:10000;background:rgba(0,0,0,.82);' },
-    $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Unlock cents', style: 'max-width:360px;text-align:center;' },
+  const overlay = $('div', { class: 'modal-bg pin-lock-bg', style: 'z-index:10000;background:rgba(0,0,0,.82);' },
+    $('div', { class: 'modal pin-lock', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Unlock cents', style: 'max-width:360px;text-align:center;' },
       $('div', { class: 'serif', style: 'font-size:32px;margin-bottom:4px;' }, 'cents.'),
       $('p', { class: 'eyebrow', style: 'margin:0;' }, 'Privacy lock'),
       $('p', { class: 'serif', style: 'font-size:18px;margin:20px 0 4px;' }, 'Welcome back.'),

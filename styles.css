@@ -1063,6 +1063,20 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   .modal { padding: 22px 14px; padding-bottom: calc(22px + env(safe-area-inset-bottom, 0px)); border-radius: 24px 24px 0 0; }
 }
 
+/* The privacy lock is a full-screen gate, not an action sheet: keep it a
+   centered card with the Ledger sharp radius on every screen size instead of
+   the mobile bottom-sheet treatment other modals get. */
+@media (max-width: 639px) {
+  .pin-lock-bg { align-items: center; padding: 20px; padding-bottom: 20px; }
+  .pin-lock {
+    max-width: 360px !important;
+    padding: 32px 24px;
+    padding-bottom: 32px;
+    border-radius: var(--radius-xl);
+    max-height: 90vh;
+  }
+}
+
 @media (max-width: 639px) {
   .toast-host { bottom: calc(20px + env(safe-area-inset-bottom, 0px)); left: 14px; right: 14px; transform: none; }
   .toast { font-size: 14px; padding: 13px 16px; text-align: center; border-radius: 18px; }
