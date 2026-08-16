@@ -4483,7 +4483,7 @@ function screenHistory() {
           if (ev.target.checked) selected.add(e.id); else selected.delete(e.id);
           syncBulkBar();
         } })),
-        $('span', { class: 'muted history-date' }, friendlyDate(e.date)),          $('div', null,
+        $('span', { class: 'muted history-date' }, friendlyDate(e.date)),          $('div', { class: 'history-details-wrap' },
             $('div', { class: 'history-details' }, e.details || '-',
               e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, class: 'history-audio' }) : null,
             isTransfer ? settledLabel : null,
@@ -4492,7 +4492,7 @@ function screenHistory() {
         ),
         $('span', { class: `display-num history-amount${isCredit ? ' is-credit' : ''}` }, e.type === 'note' ? 'Note' : (isCredit ? '+' : '') + fmt(e.amount)),
         $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, e.type === 'note' ? '-' : fmt(rowBalance)),
-        $('span', null, $('span', { class: 'pill history-method' }, e.method)),
+        $('span', { class: 'history-method-wrap' }, $('span', { class: 'pill history-method' }, e.method)),
         $('span', { class: 'history-actions' },
           $('button', { type: 'button', class: 'history-action-btn', title: 'Edit or delete entry', 'aria-label': `Edit or delete ${e.details || 'entry'}`, onClick: ev => { ev.stopPropagation(); openEdit(e.id); } }, 'Manage'),
         ),
@@ -5661,7 +5661,10 @@ function restoreFocusedField(snapshot) {
 // ---------- top-level render ----------
 function render() {
   if (renderFrame !== null) return;
+  let flushed = false;
   const flush = () => {
+    if (flushed) return;
+    flushed = true;
     renderFrame = null;
     libCleanup(); // destroy stale vendor-widget instances (flatpickr / tippy / sortable) before re-render
     try {
@@ -5701,8 +5704,13 @@ function render() {
       console.error('Render crashed:', e);
     }
   };
-  if (typeof window.requestAnimationFrame === 'function') renderFrame = window.requestAnimationFrame(flush);
-  else renderFrame = window.setTimeout(flush, 0);
+  if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(flush);
+  // Watchdog: rAF can be throttled or blocked outright (occluded iframe,
+  // background tab, embedded webview), which would silently freeze every
+  // subsequent navigation since render only ever flushed on the animation
+  // frame. Keep a short timer as a guaranteed flush - whichever fires first
+  // wins, and the `flushed` guard keeps it idempotent.
+  renderFrame = window.setTimeout(flush, 24);
 }
 
 function _render() {

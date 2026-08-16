@@ -616,7 +616,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
    Modal
    ============================================================ */
 .modal-bg {
-  position: fixed; inset: 0; background: rgba(28, 23, 18, 0.5);
+  position: fixed; inset: 0; background: rgba(16, 18, 16, 0.5);
   display: grid; place-items: center; padding: 20px; z-index: 50;
   /* Static 6px blur behind an open modal is composited once and cached (the
      page is locked); the old 10px never re-rendered cheaply on mobile GPUs. */
@@ -769,7 +769,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 }
 .history-row.expense-row { border-left-color: var(--line); }
 .history-row.income-row { border-left-color: var(--positive); }
-.history-row:nth-child(even) { background: rgba(28,23,18,0.02); }
+.history-row:nth-child(even) { background: rgba(16,18,16,0.02); }
 [data-theme="dark"] .history-row:nth-child(even) { background: rgba(255,255,255,0.02); }
 .history-row:hover {
   background: var(--accent-soft) !important;
@@ -1443,7 +1443,7 @@ body.menu-open { overflow: hidden; }
 .menu-backdrop::before {
   content: '';
   position: absolute; inset: 0;
-  background: rgba(28, 23, 18, 0.45);
+  background: rgba(16, 18, 16, 0.45);
   pointer-events: none;
   animation: menuBackdropIn 0.18s ease-out;
 }
@@ -1766,3 +1766,29 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 /* Rows and cells: flat on hover, no emerald ring wash */
 .cal-day:hover { box-shadow: none; }
 .history-row:hover { box-shadow: inset 0 0 0 1px var(--line); }
+
+/* ============================================================
+   Mobile: history table autofits the screen (stacked rows)
+   ============================================================ */
+@media (max-width: 639px) {
+  /* Column headers do not map to the stacked layout, so hide them. */
+  .history-head-row { display: none; }
+  .history-row {
+    min-width: 0;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto auto auto;
+    gap: 3px 12px;
+    padding: 13px 14px;
+    contain-intrinsic-size: 74px;
+  }
+  .history-cell-check { grid-column: 1; grid-row: 1; align-self: start; padding-top: 1px; }
+  .history-date { grid-column: 2; grid-row: 1; font-size: 12px; }
+  .history-details-wrap { grid-column: 2; grid-row: 2; min-width: 0; }
+  .history-details { flex-wrap: wrap; }
+  .history-amount { grid-column: 3; grid-row: 1; }
+  .history-balance { grid-column: 3; grid-row: 2; font-size: 11px; }
+  .history-method-wrap { grid-column: 2; grid-row: 3; }
+  .history-actions { grid-column: 3; grid-row: 3; }
+  .history-day-header { min-width: 0; padding: 12px 14px 8px; }
+  .history-audio { width: 100%; }
+}
