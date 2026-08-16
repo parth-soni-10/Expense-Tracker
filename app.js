@@ -546,9 +546,9 @@ function showPinLock() {
     // The PIN input stays hidden until the user asks for it.
     bioArea.append(
       $('button', { type: 'button', class: 'btn btn-primary', style: 'width:100%;', onClick: () => attemptBio(false) }, 'Unlock with ' + label),
-      $('button', { type: 'button', class: 'btn-link', style: 'margin:14px 0 4px;', onClick: showPin }, 'Use PIN instead'),
+      $('button', { type: 'button', class: 'btn btn-ghost', style: 'width:100%;margin-top:10px;', onClick: showPin }, 'Use PIN instead'),
     );
-    pinArea.append($('button', { type: 'button', class: 'btn-link', style: 'margin:12px 0 0;', onClick: showBio }, 'Use ' + label + ' instead'));
+    pinArea.append($('button', { type: 'button', class: 'btn btn-ghost', style: 'width:100%;margin-top:10px;', onClick: showBio }, 'Use ' + label + ' instead'));
     message.textContent = 'Touch ' + label + ' when prompted.';
     // Fire the OS prompt automatically once the lock screen has painted.
     // iOS 16+ allows one gesture-free credentials.get per page load, so the
@@ -556,6 +556,144 @@ function showPinLock() {
     // suppress it the button above is the graceful fallback.
     setTimeout(() => { if (pinOverlay && !pinUnlocked) attemptBio(true); }, 350);
   });
+}
+
+// ---------- first-run onboarding ----------
+// A short three-step setup shown on a genuinely fresh install (no entries, no
+// checkpoints, no personal PIN). It replaces the old "boot locked with the
+// default 100901 PIN and land on a dense dashboard" experience: choose a PIN,
+// set a monthly budget, and pick one main account with its opening balance.
+// Every step can be skipped, so the flow never blocks access - the app's
+// existing defaults stay in place and onboarding is marked complete either way.
+function needsOnboarding() {
+  if (state.settings.onboarded) return false;
+  if (state.entries.length > 0) return false;
+  if (hasCustomPin()) return false;
+  return !Object.values(state.settings.balanceCheckpoints || {}).some(points => Array.isArray(points) && points.length > 0);
+}
+
+function showOnboarding() {
+  if (pinUnlocked || pinOverlay) return;
+  pinUnlocked = true; // the dashboard renders behind the overlay; no lock screen on first boot
+
+  const inputStyle = 'width:100%;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:12px 14px;font-size:15px;outline:none;transition:border-color .15s;box-sizing:border-box;';
+  const focusRing = (e) => { e.target.style.borderColor = 'var(--accent)'; };
+  const field = (label, input) => $('div', { style: 'margin-bottom:14px;' },
+    $('label', { class: 'eyebrow', style: 'display:block;margin-bottom:6px;' }, label),
+    input,
+  );
+
+  const titleEl = $('h1', { style: 'font-size:24px;font-weight:600;letter-spacing:-0.02em;margin:0 0 6px;' });
+  const subEl = $('p', { class: 'muted', style: 'font-size:13px;line-height:1.5;margin:0 0 20px;min-height:20px;' });
+  const bodyEl = $('div', { style: 'margin-bottom:22px;' });
+  const primaryEl = $('button', { type: 'button', class: 'btn btn-primary', style: 'width:100%;' });
+  const skipEl = $('button', { type: 'button', class: 'btn-link', style: 'margin-top:12px;width:100%;text-align:center;' });
+  const dotsEl = $('div', { class: 'onboarding-dots', style: 'display:flex;gap:6px;justify-content:center;margin-bottom:20px;', 'aria-hidden': 'true' });
+
+  const card = $('div', { class: 'modal onboarding', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Set up cents', style: 'max-width:420px;' },
+    $('div', { class: 'serif', style: 'font-size:30px;margin-bottom:2px;' }, 'cents.'),
+    $('p', { class: 'eyebrow', style: 'margin:0 0 16px;' }, 'Set up'),
+    dotsEl,
+    titleEl, subEl, bodyEl, primaryEl, skipEl,
+  );
+  const overlay = $('div', { class: 'modal-bg onboarding-bg', style: 'z-index:10001;background:rgba(0,0,0,.82);' }, card);
+
+  let step = 0;
+  const setDots = () => {
+    dotsEl.replaceChildren();
+    ['PIN', 'Budget', 'Account'].forEach((label, i) => {
+      dotsEl.append($('span', {
+        class: 'onboarding-dot' + (i === step ? ' active' : ''),
+        style: `width:${i === step ? '20px' : '6px'};height:6px;border-radius:999px;background:${i === step ? 'var(--accent)' : 'var(--muted)'};transition:all .2s;opacity:${i === step ? '1' : '.35'};`,
+      }));
+    });
+  };
+
+  const advance = () => { step += 1; draw(); };
+  const finish = () => {
+    state.settings.onboarded = true;
+    persist();
+    overlay.remove();
+    pinOverlay = null;
+    render();
+    startInitSync();
+    toast('cents. is ready. Add an expense any time.');
+  };
+  const skip = () => { if (step === 2) finish(); else advance(); };
+
+  const draw = () => {
+    setDots();
+    if (step === 0) {
+      titleEl.textContent = 'Choose your PIN';
+      subEl.textContent = 'Locks cents. on this device. Any 4-20 letters or numbers.';
+      const pin = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'PIN', 'aria-label': 'New PIN', style: inputStyle, onFocus: focusRing });
+      const confirm = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'Repeat PIN', 'aria-label': 'Repeat PIN', style: inputStyle, onFocus: focusRing });
+      bodyEl.replaceChildren(field('New PIN', pin), field('Repeat PIN', confirm));
+      primaryEl.textContent = 'Continue';
+      skipEl.textContent = 'Keep the default PIN';
+      primaryEl.onclick = async () => {
+        const value = pin.value.trim();
+        if (!value) { subEl.textContent = 'Choose a PIN, or tap "Keep the default PIN".'; pin.focus(); return; }
+        if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { subEl.textContent = 'Use 4-20 letters or numbers.'; pin.focus(); return; }
+        if (value !== confirm.value.trim()) { subEl.textContent = 'The PINs do not match.'; confirm.focus(); return; }
+        try {
+          if (!globalThis.crypto?.getRandomValues) throw new Error('no crypto');
+          const salt = globalThis.crypto.randomUUID?.() || Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
+          if (!setPrivacyPin(await hashPin(value, salt), salt)) { subEl.textContent = 'Could not save the PIN on this device.'; return; }
+          if (state.settings?.pinHash) delete state.settings.pinHash;
+          advance();
+        } catch {
+          subEl.textContent = 'PIN security is unavailable in this browser - you can keep the default.';
+        }
+      };
+      skipEl.onclick = advance;
+      queueMicrotask(() => pin.focus());
+    } else if (step === 1) {
+      titleEl.textContent = 'Monthly budget';
+      subEl.textContent = 'A soft limit to measure your spending against.';
+      const currency = state.settings.currency || '€';
+      const budget = $('input', { type: 'text', inputmode: 'decimal', placeholder: String(+state.settings.monthlyBudget || ''), 'aria-label': 'Monthly budget', autocomplete: 'off', style: inputStyle, onFocus: focusRing });
+      bodyEl.replaceChildren(field('Budget per month', $('div', { style: 'position:relative;' },
+        $('span', { style: `position:absolute;left:14px;top:50%;transform:translateY(-50%);font-size:15px;color:var(--muted);` }, currency),
+        budget,
+      )));
+      // Keep the input's own padding, add left room for the currency prefix.
+      budget.style.paddingLeft = '34px';
+      primaryEl.textContent = 'Continue';
+      skipEl.textContent = 'Skip';
+      primaryEl.onclick = () => {
+        const value = parseFloat(budget.value);
+        if (Number.isFinite(value) && value >= 0) {
+          state.settings.monthlyBudget = Math.min(value, 1_000_000);
+          persist();
+        }
+        advance();
+      };
+      skipEl.onclick = advance;
+      budget.addEventListener('keydown', e => { if (e.key === 'Enter') primaryEl.onclick(); });
+      queueMicrotask(() => budget.focus());
+    } else {
+      titleEl.textContent = 'Your main account';
+      subEl.textContent = 'Where most of your money lives. Set its current balance to reconcile against.';
+      const select = $('select', { 'aria-label': 'Main account', style: inputStyle });
+      ACCOUNT_METHOD_IDS.forEach(id => select.append($('option', { value: id }, methodLabel(id))));
+      const balance = $('input', { type: 'text', inputmode: 'decimal', placeholder: 'Current balance', 'aria-label': 'Current balance', autocomplete: 'off', style: inputStyle, onFocus: focusRing });
+      bodyEl.replaceChildren(field('Account', select), field('Current balance', balance));
+      primaryEl.textContent = 'Done';
+      skipEl.textContent = 'Skip for now';
+      primaryEl.onclick = () => {
+        const value = parseFloat(balance.value);
+        if (Number.isFinite(value)) saveBalanceCheckpoint(select.value, today(), value);
+        finish();
+      };
+      skipEl.onclick = finish;
+      balance.addEventListener('keydown', e => { if (e.key === 'Enter') primaryEl.onclick(); });
+      queueMicrotask(() => balance.focus());
+    }
+  };
+
+  document.body.appendChild(overlay);
+  draw();
 }
 
 function lockApp() {
@@ -2357,7 +2495,7 @@ function parseNaturalLanguage(text) {
 
   // Only unambiguous income signals - bare "pay" or "got" is far too common
   // in expense phrasing ("pay the rent", "got petrol") to imply income.
-  const isCredit = /\b(income|received|salary|paid into|got paid|paycheck|wage|refund|dividend)\b/.test(lower);
+  const isCredit = /\b(income|received|salary|paid into|got paid|paycheck|payday|wage|refund|dividend)\b/.test(lower);
 
   // ---- Description: strip values, then classify the leftover words ----
   // Phase 1 removes everything that is provably not descriptive (amount,
@@ -3535,62 +3673,9 @@ function screenDashboard() {
   if (ms.monthsUnderBudget >= 1) chips.push($('span', { class: 'pill', title: 'Months where spending stayed within budget' }, iconSpan('medal', 'sm'), `${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget`));
   if (chips.length) screen.appendChild($('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px;' }, ...chips));
 
-  // Morning digest - a glass briefing that answers “how is today looking?” in
-  // one glance. Pure display; reuses computeRunway, computeMilestones and the
-  // recurring engine.
-  screen.appendChild(morningDigest());
-
-  // Cash-flow runway - the "am I okay?" answer.
-  const runway = computeRunway(runningBalance);
-  if (runway.dailyAvg > 0) {
-    const tone = runway.balance <= 0 || (runway.daysToZero !== null && runway.daysToZero <= 30) ? 'var(--negative)' : 'var(--positive)';
-    const message = runway.balance <= 0
-      ? 'Your balance is at or below zero - take a look at this month’s spending.'
-      : runway.daysToZero !== null && runway.daysToZero <= 30
-        ? `At your current pace, your balance reaches €0 in about ${Math.max(1, runway.daysToZero)} days.`
-        : `At your current pace, you’ll have about ${fmt(runway.projectedEnd)} left at the start of next month.`;
-    screen.appendChild($('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
-      $('div', { class: 'pulse-heading' },
-        $('div', null,
-          $('div', { class: 'eyebrow' }, 'Cash runway'),
-          $('div', { class: 'serif pulse-message', style: 'font-size:18px;' }, message),
-        ),
-        $('span', { class: 'pulse-status', style: `color:${tone};border-color:${tone};` }, runway.daysToZero !== null && runway.daysToZero <= 30 ? 'Watch out' : 'Comfortable'),
-      ),
-      $('div', { class: 'pulse-grid' },
-        stat('Runway', runway.daysToZero !== null ? `${runway.daysToZero} days` : '-'),
-        stat('Daily pace', fmt(runway.dailyAvg)),
-        stat('Month-end projection', fmt(runway.projectedEnd)),
-      ),
-    ));
-  }
-
-  // A compact financial pulse makes the dashboard answer the three questions
-  // users ask most often: how much is spent, what is projected, and whether the
-  // current pace is safe. It is display-only; all values come from existing
-  // financial helpers.
-  const pulse = spendingForecast(key);
-  const pulseComparison = monthComparison(key);
-  const pulseTone = pulse.budget && pulse.projected > pulse.budget ? 'var(--negative)' : 'var(--positive)';
-  screen.appendChild($('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
-    $('div', { class: 'pulse-heading' },
-      $('div', null,
-        $('div', { class: 'eyebrow' }, 'Financial pulse'),
-        $('div', { class: 'serif pulse-message' }, pulse.budget
-          ? (pulse.projected > pulse.budget ? 'Your current pace is above budget.' : 'You are comfortably within budget.')
-          : 'Your month at a glance.'),
-      ),
-      $('span', { class: 'pulse-status', style: `color:${pulseTone};border-color:${pulseTone};` }, pulse.budget ? (pulse.projected > pulse.budget ? 'Needs attention' : 'On track') : 'Tracking'),
-    ),
-    $('div', { class: 'pulse-grid' },
-      stat('Spent', fmt(pulse.spent), 'var(--negative)'),
-      stat('Projected', fmt(pulse.projected), 'var(--negative)'),
-      pulse.budget ? stat('Remaining', fmt(pulse.remaining)) : stat('Daily pace', fmt(pulse.dailyAverage)),
-    ),
-    pulseComparison.previous > 0 ? $('div', { class: 'pulse-footnote muted' },
-      `${pulseComparison.difference <= 0 ? 'Down' : 'Up'} ${fmt(Math.abs(pulseComparison.difference))} from ${monthLabel(pulseComparison.previousKey)}.`,
-    ) : null,
-  ));
+  // Pulse - the single "how am I doing?" glance: headline number, key figures,
+  // and a tap-through to Insights for the full picture.
+  screen.appendChild(dashboardPulse(key, expenseSum, runningBalance));
 
   // Budget bar card
   if (budget > 0) {
@@ -3634,27 +3719,6 @@ function screenDashboard() {
       ),
     ));
   }
-
-  // Spending forecast
-  const forecast = spendingForecast(key);
-  const forecastTone = forecast.budget && forecast.projected > forecast.budget ? 'var(--negative)' : 'var(--positive)';
-  screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
-    $('div', { class: 'row between', style: 'margin-bottom:14px;' },
-      $('div', null,
-        $('div', { class: 'eyebrow' }, 'Spending forecast'),
-        $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, `Based on ${forecast.elapsed} days of activity`),
-      ),
-      $('span', { class: 'pill', style: `border-color:transparent;color:${forecastTone};` }, forecast.budget ? (forecast.projected > forecast.budget ? 'Over budget' : 'On track') : 'Estimate'),
-    ),
-    $('div', { style: `display:grid;grid-template-columns:repeat(auto-fit,minmax(${isNarrow() ? '120px' : '150px'},1fr));gap:16px;` },
-      stat('Current spending', fmt(forecast.spent)),
-      stat('Projected total', fmt(forecast.projected)),
-      forecast.budget ? stat('Projected remaining', fmt(forecast.remaining)) : stat('Daily average', fmt(forecast.dailyAverage)),
-    ),
-    forecast.previousDaily !== null && forecast.dailyAverage > 0 ? $('div', { class: 'serif', style: 'font-size:15px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);' },
-      `You are spending ${fmt(Math.abs(forecast.previousDaily - forecast.dailyAverage))} ${forecast.dailyAverage <= forecast.previousDaily ? 'less' : 'more'} per day than last month.`,
-    ) : null,
-  ));
 
   // Recurring transactions - always show card so "+ New" is accessible
   const allRecurring = state.settings.recurring || [];
@@ -4215,12 +4279,38 @@ function screenAdd() {
     ));
   }
 
-  // Natural-language and structured voice entry
-  const magicInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => {
-    const parsed = parseNaturalLanguage(e.target.value);
-    magicPreview.textContent = parsed?.error || (parsed ? `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}` : '');
-  } });
+  // Natural-language and structured voice entry. The preview is a live parse:
+  // a gentle on-ramp hint when empty, the parser's guidance when it can't find
+  // an amount, and the fully resolved entry the moment it can.
   const magicPreview = $('div', { class: 'muted', style: 'font-size:12px;min-height:18px;margin-bottom:10px;' });
+  const renderMagicPreview = (text) => {
+    const parsed = parseNaturalLanguage(text);
+    if (!String(text || '').trim()) {
+      magicPreview.textContent = 'Start with an amount - the preview fills in as you type.';
+      magicPreview.style.color = '';
+      return;
+    }
+    if (parsed?.error) {
+      magicPreview.textContent = parsed.error;
+      magicPreview.style.color = 'var(--negative)';
+      return;
+    }
+    magicPreview.style.color = '';
+    magicPreview.textContent = parsed ? `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}` : '';
+  };
+  const magicInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => renderMagicPreview(e.target.value) });
+  const magicExamples = [
+    { label: 'coffee 3.50', hint: 'an expense' },
+    { label: 'rent 850', hint: 'a bill' },
+    { label: 'payday 1450', hint: 'income' },
+  ];
+  const magicChips = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;' },
+    ...magicExamples.map(ex => $('button', { type: 'button', class: 'magic-chip', 'aria-label': `Example: ${ex.label} (${ex.hint})`, onClick: () => {
+      magicInput.value = ex.label;
+      renderMagicPreview(magicInput.value);
+      magicInput.focus();
+    } }, ex.label)),
+  );
   const addMagic = () => {
     const parsed = parseNaturalLanguage(magicInput.value);
     if (!parsed || parsed.error) { toast(parsed?.error || 'Describe an entry first.'); magicInput.focus(); return; }
@@ -4253,6 +4343,7 @@ function screenAdd() {
   c.appendChild($('div', { class: 'card', style: `max-width:540px;margin:0 auto 20px;padding:${isNarrow() ? '18px 16px' : '22px 16px'};` },
     $('div', { class: 'eyebrow', style: 'margin-bottom:6px;' }, 'Magic entry'),
     $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:10px;' }, 'Describe it naturally, check the preview, then add it.'),
+    magicChips,
     magicInput,
     magicPreview,
     $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' }, voiceInputBtn, $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: addMagic }, 'Add entry')),
@@ -5518,50 +5609,78 @@ function openSyncSettings() {
   queueMicrotask(() => modal.querySelector('input')?.focus());
 }
 
-/** Glass “morning digest” briefing card for the dashboard. */
-function morningDigest() {
-  const now = new Date();
-  const hour = now.getHours();
-  const greeting = hour < 5 ? 'Up late' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
+/** Pulse - the dashboard's single "how am I doing?" block.
+    It merges the old morning digest, cash runway, financial pulse and spending
+    forecast cards into one glance: a headline number, the key figures, and a
+    tap-through to Insights for the full picture. */
+function dashboardPulse(key, expenseSum, runningBalance) {
   const t = today();
   const todays = state.entries.filter(e => e.date === t && e.type !== 'note');
   const spentToday = todays.filter(isSpendingEntry).reduce((s, e) => s + e.amount, 0);
   const earnedToday = todays.filter(isIncomeEntry).reduce((s, e) => s + e.amount, 0);
   const todaySummary = todays.length
     ? `${todays.length} entr${todays.length === 1 ? 'y' : 'ies'}${spentToday ? ' · −' + fmt(spentToday) : ''}${earnedToday ? ' · +' + fmt(earnedToday) : ''}`
-    : 'Nothing logged yet';
+    : 'nothing yet';
 
   const items = [];
   for (const r of state.settings.recurring || []) for (const date of upcomingOccurrences(r)) items.push({ rec: r, date });
   items.sort((a, b) => a.date.localeCompare(b.date));
   const next = items[0] || null;
 
-  const ms = computeMilestones();
-  const { balance } = computeBalance();
-  const runway = computeRunway(balance);
-  const runwayLine = runway.dailyAvg > 0
-    ? (runway.daysToZero != null && runway.daysToZero <= 3650 ? `≈ ${runway.daysToZero} days to €0` : `≈ ${fmt(runway.projectedEnd)} at month-end`)
-    : '-';
+  const runway = computeRunway(runningBalance);
+  const forecast = spendingForecast(key);
+  const comparison = monthComparison(key);
 
-  const digestStat = (label, value, note) => $('div', { class: 'digest-stat' },
-    $('div', { class: 'digest-stat-label' }, label),
-    $('div', { class: 'digest-stat-value' }, value),
-    note ? $('div', { class: 'digest-stat-note' }, note) : null,
-  );
+  // One headline: the single most important number, plus a plain sentence.
+  let headline, caption, message, tone, status;
+  if (runningBalance <= 0) {
+    headline = fmt(0); caption = 'balance';
+    message = 'Your balance is at or below zero.';
+    tone = 'var(--negative)'; status = 'Watch out';
+  } else if (runway.dailyAvg > 0 && runway.daysToZero !== null && runway.daysToZero <= 30) {
+    headline = `${Math.max(1, runway.daysToZero)} days`; caption = 'to €0';
+    message = 'At your current pace.';
+    tone = 'var(--negative)'; status = 'Watch out';
+  } else if (forecast.budget && forecast.projected > forecast.budget) {
+    headline = `${Math.round((forecast.projected / forecast.budget) * 100)}%`; caption = 'of budget';
+    message = `Projected ${fmt(forecast.projected)} against ${fmt(forecast.budget)}.`;
+    tone = 'var(--negative)'; status = 'Over budget';
+  } else if (forecast.budget) {
+    headline = fmt(Math.max(0, forecast.remaining)); caption = 'left this month';
+    message = 'You are comfortably within budget.';
+    tone = 'var(--positive)'; status = 'On track';
+  } else {
+    headline = fmt(runningBalance); caption = 'balance';
+    message = 'Set a monthly budget to see your pace.';
+    tone = 'var(--muted)'; status = 'Tracking';
+  }
 
-  return $('div', { class: 'card digest-card', style: `padding:${isNarrow() ? '20px 16px' : '26px 16px'};margin-bottom:24px;` },
-    $('div', { class: 'row between', style: 'align-items:flex-start;margin-bottom:16px;' },
+  return $('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
+    $('div', { class: 'pulse-heading' },
       $('div', null,
-        $('div', { class: 'eyebrow' }, 'Morning digest'),
-        $('div', { class: 'serif', style: `font-size:${isNarrow() ? '22px' : '26px'};margin-top:4px;display:flex;align-items:center;gap:8px;` }, greeting, iconSpan(hour < 5 ? 'coffee' : hour < 12 ? 'sun' : hour < 18 ? 'cloud-sun' : 'moon', 'greet-icon')),
+        $('div', { class: 'eyebrow' }, 'Pulse'),
+        $('div', { style: 'display:flex;align-items:baseline;gap:8px;margin-top:6px;' },
+          $('span', { class: 'serif', style: `font-size:${isNarrow() ? '24px' : '28px'};line-height:1.1;color:${tone};` }, headline),
+          $('span', { class: 'muted', style: 'font-size:13px;' }, caption),
+        ),
+        $('div', { class: 'muted', style: 'font-size:13px;margin-top:4px;' }, message),
       ),
-      $('span', { class: 'digest-emoji', 'aria-hidden': 'true', innerHTML: ICONS.coffee }),
+      $('span', { class: 'pulse-status', style: `color:${tone};border-color:${tone};` }, status),
     ),
-    $('div', { class: 'digest-grid' },
-      digestStat('Today', todaySummary.split(' · ')[0], todaySummary.split(' · ').slice(1).join(' · ') || '-'),
-      digestStat('Next due', next ? `${next.rec.details}` : '-', next ? (daysUntil(next.date) === 0 ? 'today' : `in ${daysUntil(next.date)}d · ${friendlyDate(next.date)}`) : 'no recurring items'),
-      digestStat('Runway', runway.dailyAvg > 0 ? runwayLine : '-', runway.dailyAvg > 0 ? `balance ${fmt(balance)}` : 'log spending to estimate'),
+    $('div', { class: 'pulse-grid' },
+      stat('Runway', runway.dailyAvg > 0 && runway.daysToZero !== null ? `${runway.daysToZero} days` : '-'),
+      stat('Spent', fmt(forecast.spent), 'var(--negative)'),
+      stat('Projected', fmt(forecast.projected), 'var(--negative)'),
+      forecast.budget ? stat('Remaining', fmt(forecast.remaining)) : stat('Balance', fmt(runningBalance)),
     ),
+    $('div', { style: 'display:flex;flex-wrap:wrap;gap:4px 20px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);' },
+      $('span', null, 'Today ', $('span', { style: 'color:var(--ink);' }, todaySummary)),
+      $('span', null, 'Next due ', $('span', { style: 'color:var(--ink);' }, next ? `${next.rec.details}${daysUntil(next.date) === 0 ? ' today' : ` in ${daysUntil(next.date)}d`}` : '-')),
+    ),
+    comparison.previous > 0 ? $('div', { class: 'pulse-footnote muted' },
+      `${comparison.difference <= 0 ? 'Down' : 'Up'} ${fmt(Math.abs(comparison.difference))} from ${monthLabel(comparison.previousKey)}.`,
+    ) : null,
+    $('a', { href: '#insights', class: 'btn-link', style: 'margin-top:10px;font-size:13px;' }, 'See details ', iconSpan('arrow-right', 'sm')),
   );
 }
 
@@ -5925,11 +6044,13 @@ window.addEventListener('appinstalled', () => {
 
 window.addEventListener('DOMContentLoaded', () => {
   initCardSpotlight();
-  // The privacy lock is site-wide: the unlock screen is the first interactive
-  // surface on every full page load, on every device. Cloud sync and the
-  // persisted-undo offer start after a successful unlock (see showPinLock).
+  // First-run setup replaces the default-PIN lock on a fresh install; every
+  // later visit boots to the privacy lock as before. Cloud sync and the
+  // persisted-undo offer start after the first surface resolves (onboarding
+  // or unlock).
   applySetupLinkIfPresent();
-  if (hasPinLock()) showPinLock();
+  if (needsOnboarding()) showOnboarding();
+  else if (hasPinLock()) showPinLock();
   render();
 });
 

@@ -25,7 +25,10 @@ const SHELL = [
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
-  '/vendor/sweetalert2.min.js'
+  '/vendor/sweetalert2.min.js',
+  '/fonts/space-grotesk-latin.woff2',
+  '/fonts/ibm-plex-mono-400-latin.woff2',
+  '/fonts/ibm-plex-mono-500-latin.woff2'
 ];
 
 self.addEventListener('install', () => {
@@ -51,9 +54,8 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(
     fetch(e.request)
       .then((res) => {
-        // Cache anything fetched while online (including cross-origin assets
-        // like Google Fonts, which are CORS-enabled), so a later offline
-        // session still works.
+        // Cache anything fetched while online so a later offline session
+        // still works.
         if (res && res.ok) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});

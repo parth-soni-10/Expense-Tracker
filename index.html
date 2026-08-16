@@ -51,13 +51,8 @@
     }
   </script>
 
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <!-- Fonts load without blocking first paint: media="print" defers the CSS,
-       flipping to "all" once loaded. System fonts render instantly meanwhile
-       (display=swap + the existing font-family fallbacks). -->
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'" crossorigin="anonymous">
-
+  <!-- Fonts are self-hosted in /fonts (see the @font-face rules in styles.css)
+       so the app makes no third-party connection on load. -->
   <link rel="stylesheet" href="styles.css">
 
   <!-- ============================================================

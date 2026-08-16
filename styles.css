@@ -3,6 +3,32 @@
    Monochrome + emerald. Hairline rules, tabular money, sharp radii.
    Space Grotesk + IBM Plex Mono. Flat surfaces, one accent.
    ============================================================ */
+
+/* Self-hosted fonts (latin subset) - no Google Fonts request, so no third-
+   party connection on load. Space Grotesk ships as a single variable font
+   covering weights 300-700; IBM Plex Mono is two static weights (400/500).
+   system-ui / monospace remain the instant fallback while the woff2 loads. */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url('fonts/space-grotesk-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('fonts/ibm-plex-mono-400-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('fonts/ibm-plex-mono-500-latin.woff2') format('woff2');
+}
 :root {
   --bg: #F5F5F2;
   --bg-deep: #ECECE7;
@@ -331,7 +357,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .btn-primary:hover { transform: translateY(-1px) scale(1.02); box-shadow: 0 14px 40px -8px var(--accent-glow); }
 .btn-primary:hover::after { animation: btnShine 0.9s ease; }
 @keyframes btnShine { to { left: 130%; } }
-[data-theme="dark"] .btn-primary { color: #26160C; }
+[data-theme="dark"] .btn-primary { color: #101210; }
 .btn-ghost {
   color: var(--ink);
   border-color: var(--line);
@@ -354,11 +380,33 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .btn-danger:hover { background: color-mix(in srgb, var(--negative) 16%, transparent); border-color: var(--negative); box-shadow: var(--shadow-sm); }
 .btn-link {
   color: var(--accent); padding: 4px 0; font-size: 13px;
+  /* A .btn-link is a text link, not a chrome button: strip the native
+     grey buttonface + outset border that a bare <button> would otherwise
+     render (this showed up as a grey box on the lock screen). */
+  background: none;
+  border: none;
   border-bottom: 1.5px solid transparent;
   transition: border-color 0.2s, color 0.2s;
 }
 .btn-link:hover { border-bottom-color: var(--accent); opacity: 0.85; }
 .btn-link:active { opacity: 0.6; transform: translateY(1px); }
+
+/* Magic-entry example chips — tappable on-ramps that fill the parser field */
+.magic-chip {
+  font-size: 12px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: inherit;
+  font-weight: 500;
+  transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.12s var(--ease-out);
+}
+.magic-chip:hover { border-color: var(--accent); color: var(--accent); }
+.magic-chip:active { transform: scale(0.97); }
+.magic-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ============================================================
    Pills
@@ -1052,15 +1100,16 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 }
 
 @media (max-width: 639px) {
-  .modal-bg { padding: 12px; align-items: flex-end; padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+  .modal-bg { padding: 16px; align-items: center; }
   .modal {
-    max-width: 100% !important; padding: 26px 18px;
-    padding-bottom: calc(26px + env(safe-area-inset-bottom, 0px));
-    border-radius: 26px 26px 0 0; max-height: 92vh;
+    max-width: 100% !important;
+    padding: 26px 20px;
+    border-radius: var(--radius-xl);
+    max-height: 90vh;
   }
 }
 @media (max-width: 479px) {
-  .modal { padding: 22px 14px; padding-bottom: calc(22px + env(safe-area-inset-bottom, 0px)); border-radius: 24px 24px 0 0; }
+  .modal { padding: 22px 16px; }
 }
 
 /* The privacy lock is a full-screen gate, not an action sheet: keep it a
@@ -1371,66 +1420,6 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
 @media (max-width: 639px) { .cal-day { font-size: 11px; } }
 
 /* ============================================================
-   Morning digest
-   ============================================================ */
-.digest-card {
-  position: relative;
-  overflow: hidden;
-  background: linear-gradient(135deg, var(--card-glass), color-mix(in srgb, var(--accent-soft) 50%, transparent));
-  border: 1px solid transparent;
-  background-clip: padding-box;
-  box-shadow: inset 0 1px 0 var(--glass-highlight), var(--shadow-sm);
-}
-.digest-card::before {
-  content: '';
-  position: absolute; inset: 0;
-  background: radial-gradient(600px 140px at 18% -20%, var(--accent-glow), transparent 60%);
-  pointer-events: none;
-}
-.digest-card::after {
-  content: '';
-  position: absolute; inset: 0; border-radius: inherit; padding: 1px;
-  background: linear-gradient(155deg, var(--hairline-a), var(--hairline-b) 45%, var(--hairline-c));
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
-  opacity: 0.6;
-}
-.digest-emoji {
-  font-size: 30px; opacity: .9; filter: saturate(1.1);
-  animation: digestFloat 5s ease-in-out infinite;
-}
-@keyframes digestFloat {
-  0%, 100% { transform: translateY(0) rotate(-3deg); }
-  50% { transform: translateY(-5px) rotate(3deg); }
-}
-.digest-grid {
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 12px;
-}
-.digest-stat {
-  border-radius: var(--radius);
-  border: 1px solid var(--line);
-  background: var(--card-glass);
-  padding: 13px 15px;
-  box-shadow: inset 0 1px 0 var(--glass-highlight);
-}
-.digest-stat-label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
-  color: var(--muted); margin-bottom: 4px; font-weight: 600;
-}
-.digest-stat-value { font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.digest-stat-note { font-size: 11px; color: var(--muted); margin-top: 3px; }
-
-@media (max-width: 639px) {
-  .digest-grid { grid-template-columns: 1fr 1fr; }
-}
-
-/* ============================================================
    Animated drill-down menu
    ============================================================ */
 .menu-trigger .menu-trigger-icon {
@@ -1667,14 +1656,13 @@ body.menu-open { overflow: hidden; }
 .empty-icon { opacity: 0.5; }
 
 /* Tabular figures on every financial surface */
-.digest-stat-value, .balance-editor-row .display-num { font-variant-numeric: tabular-nums; }
+.balance-editor-row .display-num { font-variant-numeric: tabular-nums; }
 
 /* Links that carry an icon glyph sit neatly next to their label */
 .btn-link { display: inline-flex; align-items: center; gap: 5px; }
 .history-settled { display: inline-flex; align-items: center; gap: 3px; }
 
-/* Icon sizing on surfaces that used emoji */
-.digest-emoji svg { width: 26px; height: 26px; }
+/* Icon sizing */
 .greet-icon svg { width: 18px; height: 18px; }
 
 /* Keyboard focus everywhere else */
@@ -1749,15 +1737,14 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 [data-theme="dark"] .app-header .logo .mark { color: #ffffff; }
 .app-header .logo:hover .mark { transform: none; box-shadow: none; }
 
-/* Hero / pulse / insight / digest: flat surfaces with hairlines */
-.dashboard-hero, .financial-pulse, .insight-narrative, .digest-card {
+/* Hero / pulse / insight: flat surfaces with hairlines */
+.dashboard-hero, .financial-pulse, .insight-narrative {
   background: var(--card);
   border: 1px solid var(--line);
   box-shadow: none;
 }
 .dashboard-hero::before, .dashboard-hero::after,
-.financial-pulse::before, .insight-narrative::before,
-.digest-card::before, .digest-card::after { display: none; }
+.financial-pulse::before, .insight-narrative::before { display: none; }
 
 /* Modal: solid surface + hairline, no gradient edge */
 .modal {

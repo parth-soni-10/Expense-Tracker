@@ -21,7 +21,7 @@ you act → state updated in memory → persisted to localStorage → (optionall
 - Vanilla JS (no framework), hand-written CSS in `styles.css`
 - `localStorage` for primary storage
 - Optional **GitHub sync** via a Netlify Function (Node, ~140 lines)
-- Google Fonts at first load (Space Grotesk + IBM Plex Mono) - falls back to system fonts if blocked
+- Self-hosted fonts in `fonts/` (Space Grotesk + IBM Plex Mono, latin subset) - no third-party requests; system fonts are the fallback while woff2 loads
 
 ## Files
 
@@ -35,6 +35,7 @@ you act → state updated in memory → persisted to localStorage → (optionall
 ├── settings.js               sync configuration in localStorage
 ├── storage.js                localStorage CRUD, strict validation, JSON I/O
 ├── seed.js                   structural defaults (categories, methods, settings)
+├── fonts/                    self-hosted Space Grotesk + IBM Plex Mono woff2
 ├── netlify.toml              static hosting + SPA fallback
 └── netlify/
     └── functions/
