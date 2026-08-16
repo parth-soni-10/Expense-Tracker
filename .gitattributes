@@ -1,2 +1,4 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# All text files use LF in both the repository and the working tree,
+# regardless of the user's core.autocrlf setting. Binary files are left
+# untouched via text=auto detection.
+* text=auto eol=lf
