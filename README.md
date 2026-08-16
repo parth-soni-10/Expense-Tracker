@@ -21,14 +21,14 @@ you act → state updated in memory → persisted to localStorage → (optionall
 - Vanilla JS (no framework), hand-written CSS in `styles.css`
 - `localStorage` for primary storage
 - Optional **GitHub sync** via a Netlify Function (Node, ~140 lines)
-- Google Fonts at first load (Instrument Serif + Inter) — falls back to system fonts if blocked
+- Google Fonts at first load (Space Grotesk + IBM Plex Mono) - falls back to system fonts if blocked
 
 ## Files
 
 ```
 .
 ├── index.html                shell, fonts, loads app.js
-├── styles.css                editorial palette + components
+├── styles.css                monochrome + emerald palette + components
 ├── app.js                    hash router, screens, modals, undo, PIN & biometric lock
 ├── sync-merge.js             pure cloud-reconciliation merge logic (union + LWW)
 ├── sync.js                   client-side GitHub-sync primitives

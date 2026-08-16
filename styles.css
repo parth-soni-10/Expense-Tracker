@@ -1,59 +1,59 @@
 /* ============================================================
-   cents. — design system v2
-   Watermelon UI × Motion Primitives × Haikei
-   Warm cream / espresso base · gradient accents · glass surfaces
-   generative mesh background · springy micro-interactions
+   cents. - design system v3 - Ledger
+   Monochrome + emerald. Hairline rules, tabular money, sharp radii.
+   Space Grotesk + IBM Plex Mono. Flat surfaces, one accent.
    ============================================================ */
 :root {
-  --bg: #FAF8F3;
-  --bg-deep: #F3EFE6;
+  --bg: #F5F5F2;
+  --bg-deep: #ECECE7;
   --card: #FFFFFF;
-  --ink: #333333;
-  --muted: #777777;
-  --line: #E9E1D3;
-  --accent: #C2410C;
-  --accent-2: #F97316;
-  --accent-soft: #FDEFE2;
-  --accent-glow: rgba(194, 65, 12, 0.14);
-  --positive: #15803D;
-  --negative: #B91C1C;
+  --ink: #161712;
+  --muted: #6E6E67;
+  --line: #E3E3DC;
+  --accent: #157A4A;
+  --accent-2: #157A4A;
+  --accent-soft: #E9F2EC;
+  --accent-glow: rgba(21, 122, 74, 0.12);
+  --positive: #157A4A;
+  --negative: #C0392B;
 
-  /* Chart tokens — #519DFA lines, #0077E6 bars */
-  --chart-line: #519DFA;
-  --chart-bar: #0077E6;
+  /* Chart tokens - emerald lines, emerald bars */
+  --chart-line: #157A4A;
+  --chart-bar: #157A4A;
 
   /* Filter controls — 28px height, 13/16px medium, 6px radius */
   --filter-h: 28px;
   --filter-radius: 6px;
 
-  /* Brand gradient — the warm-fire ramp used on primaries & active states */
-  --gradient: linear-gradient(135deg, #C2410C 0%, #EA580C 45%, #F59E0B 100%);
+  /* Brand fill - solid emerald (kept as a single value so every
+     `background: var(--gradient)` surface renders flat) */
+  --gradient: #157A4A;
 
-  /* Glass tokens */
-  --glass-blur: 12px;
-  --glass-sat: 1.25;
-  --glass-highlight: rgba(255, 255, 255, 0.7);
-  --card-glass: rgba(255, 255, 255, 0.74);
+  /* Glass tokens neutralized - Ledger surfaces are solid */
+  --glass-blur: 0px;
+  --glass-sat: 1;
+  --glass-highlight: rgba(255, 255, 255, 0);
+  --card-glass: #FFFFFF;
 
-  /* Gradient hairline border stops */
-  --hairline-a: rgba(194, 65, 12, 0.22);
-  --hairline-b: rgba(249, 115, 22, 0.10);
-  --hairline-c: rgba(180, 83, 9, 0.26);
+  /* Hairline stops - emerald tint used sparingly for focus rings */
+  --hairline-a: rgba(21, 122, 74, 0.30);
+  --hairline-b: rgba(21, 122, 74, 0.10);
+  --hairline-c: rgba(21, 122, 74, 0.18);
 
-  /* Layered shadow system — soft, diffused, with an accent glow accent */
-  --shadow-sm: 0 2px 6px rgba(28, 23, 18, 0.05), 0 1px 2px rgba(28, 23, 18, 0.04);
-  --shadow-md: 0 8px 20px rgba(28, 23, 18, 0.07), 0 2px 5px rgba(28, 23, 18, 0.04);
-  --shadow-lg: 0 18px 42px rgba(28, 23, 18, 0.10), 0 4px 10px rgba(28, 23, 18, 0.05);
-  --shadow-xl: 0 28px 64px rgba(28, 23, 18, 0.13), 0 6px 16px rgba(28, 23, 18, 0.06);
-  --shadow-glow: 0 10px 34px -10px var(--accent-glow);
+  /* Shadows - near-flat, hairline + tiny lift only */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.07);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.09);
+  --shadow-xl: 0 16px 40px rgba(0, 0, 0, 0.12);
+  --shadow-glow: 0 0 0 1px var(--hairline-a);
 
-  --radius: 14px;
-  --radius-lg: 22px;
-  --radius-xl: 30px;
-  --radius-card: 14px;
+  --radius: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-card: 8px;
 
-  /* Insight bar fill — quiet neutral drifting warm (rounded gradient bars) */
-  --bar-soft: linear-gradient(90deg, var(--muted), color-mix(in srgb, var(--accent) 45%, var(--muted)));
+  /* Insight bar fill - neutral hairline tone */
+  --bar-soft: var(--line);
 
   --page-gap: 24px;
   --page-title-gap: 28px;
@@ -65,36 +65,36 @@
 
 /* ── Dark mode — warm espresso night ── */
 [data-theme="dark"] {
-  --bg: #171310;
-  --bg-deep: #211B14;
-  --card: #272019;
-  --ink: #F1EAE0;
-  --muted: #A99C8B;
-  --line: #3A322A;
-  --accent: #F2925A;
-  --accent-2: #F59E0B;
-  --accent-soft: #33261A;
-  --accent-glow: rgba(242, 146, 90, 0.14);
-  --positive: #4ADE80;
-  --negative: #F87171;
+  --bg: #101210;
+  --bg-deep: #161916;
+  --card: #171A17;
+  --ink: #E8EBE5;
+  --muted: #8C928A;
+  --line: #272B26;
+  --accent: #35B877;
+  --accent-2: #35B877;
+  --accent-soft: #1C2A20;
+  --accent-glow: rgba(53, 184, 119, 0.14);
+  --positive: #3EC98A;
+  --negative: #F06A5B;
 
-  --chart-line: #6FB5F9;
-  --chart-bar: #2E8FF0;
+  --chart-line: #35B877;
+  --chart-bar: #35B877;
 
-  --gradient: linear-gradient(135deg, #F2925A 0%, #F59E0B 55%, #FBBF24 100%);
+  --gradient: #35B877;
 
-  --glass-highlight: rgba(255, 255, 255, 0.10);
-  --card-glass: rgba(28, 23, 17, 0.66);
+  --glass-highlight: rgba(255, 255, 255, 0.05);
+  --card-glass: #171A17;
 
-  --hairline-a: rgba(242, 146, 90, 0.30);
-  --hairline-b: rgba(249, 115, 22, 0.12);
-  --hairline-c: rgba(251, 191, 36, 0.24);
+  --hairline-a: rgba(53, 184, 119, 0.34);
+  --hairline-b: rgba(53, 184, 119, 0.12);
+  --hairline-c: rgba(53, 184, 119, 0.22);
 
-  --shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.28), 0 1px 2px rgba(0, 0, 0, 0.18);
-  --shadow-md: 0 8px 22px rgba(0, 0, 0, 0.32), 0 2px 5px rgba(0, 0, 0, 0.18);
-  --shadow-lg: 0 18px 46px rgba(0, 0, 0, 0.36), 0 4px 10px rgba(0, 0, 0, 0.18);
-  --shadow-xl: 0 28px 68px rgba(0, 0, 0, 0.40), 0 6px 16px rgba(0, 0, 0, 0.20);
-  --shadow-glow: 0 10px 40px -10px var(--accent-glow);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 8px 26px rgba(0, 0, 0, 0.50);
+  --shadow-xl: 0 16px 44px rgba(0, 0, 0, 0.55);
+  --shadow-glow: 0 0 0 1px var(--hairline-a);
 }
 
 [data-theme="dark"] .modal-bg { background: rgba(0, 0, 0, 0.74); }
@@ -103,25 +103,9 @@
 [data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.85); }
 
 /* ── Seasonal palette shifts (accent + gradient drift together) ── */
-[data-season="spring"] { --accent: #C2410C; --accent-2: #F97316; --gradient: linear-gradient(135deg, #C2410C, #EA580C 45%, #F59E0B); --accent-glow: rgba(194,65,12,0.14); }
-[data-season="summer"] { --accent: #D97706; --accent-2: #F59E0B; --gradient: linear-gradient(135deg, #D97706, #F59E0B 45%, #FBBF24); --accent-glow: rgba(217,119,6,0.14); }
-[data-season="autumn"] { --accent: #B45309; --accent-2: #D97706; --gradient: linear-gradient(135deg, #B45309, #D97706 45%, #F59E0B); --accent-glow: rgba(180,83,9,0.14); }
-[data-season="winter"] { --accent: #1E40AF; --accent-2: #0EA5E9; --gradient: linear-gradient(135deg, #1E40AF, #2563EB 45%, #0EA5E9); --accent-glow: rgba(30,64,175,0.12); }
-[data-theme="dark"][data-season="spring"] { --accent: #f2925a; --accent-2: #f59e0b; --gradient: linear-gradient(135deg, #f2925a, #f59e0b 55%, #fbbf24); --accent-glow: rgba(242,146,90,0.14); }
-[data-theme="dark"][data-season="summer"] { --accent: #f59e0b; --accent-2: #fbbf24; --gradient: linear-gradient(135deg, #f59e0b, #fbbf24 55%, #fcd34d); --accent-glow: rgba(245,158,11,0.14); }
-[data-theme="dark"][data-season="autumn"] { --accent: #ea580c; --accent-2: #f97316; --gradient: linear-gradient(135deg, #ea580c, #f97316 55%, #fbbf24); --accent-glow: rgba(234,88,12,0.14); }
-[data-theme="dark"][data-season="winter"] { --accent: #60a5fa; --accent-2: #38bdf8; --gradient: linear-gradient(135deg, #60a5fa, #38bdf8 55%, #22d3ee); --accent-glow: rgba(96,165,250,0.14); }
 
 /* Seasonal paper tint — the background takes a barely-there cast so the
    season change feels holistic, not just an accent swap. */
-[data-season="spring"] { --bg: #FAF6EE; --bg-deep: #F1ECDF; }
-[data-season="summer"] { --bg: #FAF6EF; --bg-deep: #F2EDE1; }
-[data-season="autumn"] { --bg: #F9F2E7; --bg-deep: #EFE8D8; }
-[data-season="winter"] { --bg: #F4F6F5; --bg-deep: #E9EEEC; }
-[data-theme="dark"][data-season="spring"] { --bg: #181410; --bg-deep: #211B14; }
-[data-theme="dark"][data-season="summer"] { --bg: #191512; --bg-deep: #221C16; }
-[data-theme="dark"][data-season="autumn"] { --bg: #1A1511; --bg-deep: #231C14; }
-[data-theme="dark"][data-season="winter"] { --bg: #121518; --bg-deep: #1A1E21; }
 
 /* ============================================================
    Base
@@ -138,7 +122,7 @@ button, a, [role='button'], select, input[type='checkbox'], input[type='radio'],
   -webkit-user-select: none; user-select: none;
 }
 body {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif;
   font-size: 15px;
   line-height: 1.5;
   min-height: 100vh;
@@ -202,15 +186,15 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
 a { color: inherit; text-decoration: none; }
 button { font-family: inherit; cursor: pointer; }
 
-/* Serif display font — the cents. brand voice */
+/* Display font - Space Grotesk - the cents. brand voice */
 .serif {
-  font-family: 'Instrument Serif', 'Times New Roman', serif;
-  font-style: italic;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  
   letter-spacing: -0.02em;
 }
 /* Metrics — Inter 18/24 semi bold, -0.1px tracking (the ledger face) */
 .display-num {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
   font-feature-settings: 'tnum';
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.1px;
@@ -218,7 +202,7 @@ button { font-family: inherit; cursor: pointer; }
   font-size: 18px;
   line-height: 24px;
 }
-.tnum { font-variant-numeric: tabular-nums; font-family: 'Inter', system-ui, sans-serif; font-weight: 500; letter-spacing: -0.1px; }
+.tnum { font-variant-numeric: tabular-nums; font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 500; letter-spacing: -0.1px; }
 
 /* ── Shared micro-interaction timing ──
    Calm and fast: hovers glide at 0.14–0.15s, presses land in ~0.12s. The old
@@ -467,7 +451,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   background: var(--gradient);
   color: #FFFFFF;
   display: grid; place-items: center;
-  font-family: 'Instrument Serif', serif; font-style: italic;
+  font-family: 'Space Grotesk', system-ui, sans-serif; 
   font-size: 22px; font-weight: 500;
   box-shadow: var(--shadow-glow), inset 0 1px 0 rgba(255,255,255,0.35);
   transition: transform 0.25s var(--ease-spring), box-shadow 0.25s;
@@ -513,8 +497,8 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   padding: 48px 24px;
   text-align: center;
   color: var(--muted);
-  font-family: 'Instrument Serif', serif;
-  font-style: italic;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  
   font-size: 17px;
 }
 
@@ -526,8 +510,8 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   margin-bottom: var(--page-title-gap);
 }
 .page-title {
-  font-family: 'Instrument Serif', 'Times New Roman', serif;
-  font-style: italic; font-weight: 400;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+   font-weight: 400;
   font-size: 38px; line-height: 1.05;
   letter-spacing: -0.02em;
   color: var(--ink);
@@ -616,7 +600,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .dashboard-hero > * { position: relative; }
 .dashboard-hero .dashboard-total { line-height: 1; margin: 8px 0 0; }
 .dashboard-hero .dashboard-budget {
-  color: var(--muted); font-family: 'Inter', system-ui, sans-serif;
+  color: var(--muted); font-family: 'Space Grotesk', system-ui, sans-serif;
   font-style: normal; margin-left: 8px;
 }
 .dashboard-hero .dashboard-context {
@@ -684,7 +668,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   background: color-mix(in srgb, var(--ink) 88%, transparent);
   color: var(--bg);
   padding: 13px 22px; border-radius: 999px;
-  font-family: 'Instrument Serif', serif; font-style: italic; font-size: 16px;
+  font-family: 'Space Grotesk', system-ui, sans-serif;  font-size: 16px;
   animation: toastIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
   display: flex; align-items: center; gap: 14px;
   box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.15);
@@ -694,7 +678,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 }
 .toast:hover { transform: translateY(-2px); box-shadow: var(--shadow-xl); }
 .toast .toast-undo {
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
   font-style: normal; font-size: 12px;
   color: var(--accent-2); cursor: pointer; font-weight: 700;
   white-space: nowrap; padding: 3px 10px;
@@ -833,7 +817,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   transition: opacity 0.15s;
   z-index: 10;
   box-shadow: var(--shadow-md);
-  font-family: 'Inter', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   font-feature-settings: 'tnum';
 }
 .heat-cell-wrap:hover .heat-tip { opacity: 1; }
@@ -1252,12 +1236,12 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
   background-clip: padding-box;
   border-radius: var(--radius-xl);
   padding: 30px;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
   box-shadow: var(--shadow-xl), inset 0 1px 0 var(--glass-highlight);
 }
 .swal-title {
-  font-family: 'Instrument Serif', Georgia, serif;
-  font-style: italic; font-weight: 400;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+   font-weight: 400;
   font-size: 24px;
   color: var(--ink);
 }
@@ -1288,7 +1272,7 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 8px 12px;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
   font-size: 12px; line-height: 1.45;
   box-shadow: var(--shadow-md);
 }
@@ -1307,7 +1291,7 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
   border: 1px solid var(--line);
   border-radius: 16px;
   box-shadow: var(--shadow-xl);
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: 'Space Grotesk', system-ui, sans-serif;
 }
 .flatpickr-calendar.arrowTop:before { border-bottom-color: var(--line); }
 .flatpickr-calendar.arrowTop:after { border-bottom-color: var(--card); }
@@ -1684,3 +1668,101 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role='button']:foc
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+
+/* ============================================================
+   Ledger skin - flat surfaces, hairline rules, one accent
+   ============================================================ */
+
+/* Flat background: no mesh noise, no drifting blobs */
+body, [data-theme="dark"] body { background-image: none; }
+body::before, body::after { display: none; }
+
+/* Typography: Space Grotesk display, IBM Plex Mono numerals */
+body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
+.serif {
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-style: normal;
+  letter-spacing: -0.01em;
+}
+.display-num, .tnum {
+  font-family: 'IBM Plex Mono', 'Space Grotesk', monospace;
+  font-weight: 500;
+}
+.toast { font-family: 'Space Grotesk', system-ui, sans-serif; font-style: normal; }
+.toast .toast-undo { font-family: 'Space Grotesk', system-ui, sans-serif; }
+.empty { font-family: 'Space Grotesk', system-ui, sans-serif; font-style: normal; font-size: 15px; }
+.page-title {
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-style: normal; font-weight: 600;
+}
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .page-title { background: none; -webkit-text-fill-color: currentColor; }
+}
+.logo-wordmark { background: none; -webkit-text-fill-color: currentColor; color: inherit; }
+.swal-title { font-family: 'Space Grotesk', system-ui, sans-serif; font-style: normal; font-weight: 600; }
+
+/* Cards: solid surface + hairline border, no glass/gradient/spotlight */
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+.card::before, .card::after { display: none; }
+.card:hover { transform: none; box-shadow: none; }
+
+/* Primary button: solid emerald, no shine sweep */
+.btn-primary {
+  background: var(--accent);
+  color: #ffffff;
+  border-radius: var(--radius);
+  box-shadow: none;
+}
+.btn-primary::after { display: none; }
+.btn-primary:hover { transform: none; box-shadow: none; }
+[data-theme="dark"] .btn-primary { color: #ffffff; }
+.pill-cat[data-active="true"] { color: #ffffff; }
+[data-theme="dark"] .pill-cat[data-active="true"] { color: #ffffff; }
+
+/* Header mark: solid emerald square */
+.app-header .logo .mark {
+  background: var(--accent);
+  color: #ffffff;
+  border-radius: var(--radius);
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-style: normal;
+  box-shadow: none;
+}
+[data-theme="dark"] .app-header .logo .mark { color: #ffffff; }
+.app-header .logo:hover .mark { transform: none; box-shadow: none; }
+
+/* Hero / pulse / insight / digest: flat surfaces with hairlines */
+.dashboard-hero, .financial-pulse, .insight-narrative, .digest-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: none;
+}
+.dashboard-hero::before, .dashboard-hero::after,
+.financial-pulse::before, .insight-narrative::before,
+.digest-card::before, .digest-card::after { display: none; }
+
+/* Modal: solid surface + hairline, no gradient edge */
+.modal {
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-lg);
+}
+.modal::before { display: none; }
+
+/* Selected calendar day + date picker + dialogs: solid emerald, white text */
+.cal-day[data-selected] { color: #ffffff; }
+[data-theme="dark"] .cal-day[data-selected] { color: #ffffff; }
+.flatpickr-day.selected, .flatpickr-day.selected:hover, .flatpickr-day.selected:focus { color: #ffffff; }
+[data-theme='dark'] .flatpickr-day.selected { color: #ffffff; }
+.swal-confirm { background: var(--accent); color: #ffffff; box-shadow: none; }
+[data-theme='dark'] .swal-confirm { color: #ffffff; }
+.swal-confirm:hover { transform: none; box-shadow: none; }
+.swal-popup { border: 1px solid var(--line); background: var(--card); }
+
+/* Rows and cells: flat on hover, no emerald ring wash */
+.cal-day:hover { box-shadow: none; }
+.history-row:hover { box-shadow: inset 0 0 0 1px var(--line); }

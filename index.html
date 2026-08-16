@@ -11,8 +11,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <meta name="color-scheme" content="dark" />
-  <meta name="description" content="cents. — a calm, beautiful personal expense tracker. Track spending, budgets, balances and recurring bills." />
-  <meta name="theme-color" content="#171310" />
+  <meta name="description" content="cents. - a calm, precise personal expense tracker. Track spending, budgets, balances and recurring bills." />
+  <meta name="theme-color" content="#101210" />
   <script>
     // Keep browser chrome (scrollbars, address bar, status bar) in sync with
     // the app theme — light mode should not leave dark chrome behind.
@@ -22,7 +22,7 @@
       function syncChrome() {
         var dark = document.documentElement.dataset.theme === 'dark';
         if (schemeMeta) schemeMeta.content = dark ? 'dark' : 'light';
-        if (themeMeta) themeMeta.content = dark ? '#171310' : '#FAF8F3';
+        if (themeMeta) themeMeta.content = dark ? '#101210' : '#F5F5F2';
       }
       syncChrome();
       new MutationObserver(syncChrome).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
@@ -32,9 +32,9 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="cents." />
   <meta name="mobile-web-app-capable" content="yes" />
-  <title>cents. — personal expense tracker</title>
+  <title>cents. - personal expense tracker</title>
   <!-- Ledger Mark favicon: the open c and double ledger lines echo the header logo. -->
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23161616'/%3E%3Cpath d='M23 8.5a9.3 9.3 0 1 0 0 15' fill='none' stroke='%23FAF8F3' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='M3.5 10.5h12M3.5 21.5h12' fill='none' stroke='%23FAF8F3' stroke-width='2.6' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23101110'/%3E%3Cpath d='M23 8.5a9.3 9.3 0 1 0 0 15' fill='none' stroke='%2335B877' stroke-width='2.6' stroke-linecap='round'/%3E%3Cpath d='M3.5 10.5h12M3.5 21.5h12' fill='none' stroke='%23E8EBE5' stroke-width='2.6' stroke-linecap='round'/%3E%3C/svg%3E" />
   <!-- PWA: manifest + install icons make an added-to-homescreen copy open
        standalone (no browser chrome) on Android Chrome and iOS Safari. -->
   <link rel="manifest" href="manifest.json" />
@@ -56,7 +56,7 @@
   <!-- Fonts load without blocking first paint: media="print" defers the CSS,
        flipping to "all" once loaded. System fonts render instantly meanwhile
        (display=swap + the existing font-family fallbacks). -->
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" media="print" onload="this.media='all'" crossorigin="anonymous">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" media="print" onload="this.media='all'" crossorigin="anonymous">
 
   <link rel="stylesheet" href="styles.css">
 
@@ -111,7 +111,7 @@
               '<h1>Render error.</h1>' +
               '<div class="bf-err"><span>Last error captured</span><code>' + escapeHtml(window.__centsLastError) + '</code></div>' +
               '<p>JavaScript loaded but rendering threw. The header is up but the body never finished. Every click on a nav link re-runs <code>render()</code> and re-hits the same throw.</p>' +
-              '<ol><li>Hard refresh &mdash; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> &nbsp;/&nbsp; macOS: <kbd>&#8984;</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></li></ol>' +
+              '<ol><li>Hard refresh - <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> &nbsp;/&nbsp; macOS: <kbd>&#8984;</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></li></ol>' +
               '</div>';
           }
           return;
@@ -135,20 +135,20 @@
         var headline, blurb, steps;
         if (isFileProtocol) {
           headline = 'App can&rsquo;t run from <code>file://</code>.';
-          blurb = 'Browsers block ES&ndash;module imports over the <code>file://</code> protocol for security. You opened this page by double&ndash;clicking <code>index.html</code> instead of running a local web server.';
+          blurb = 'Browsers block ES-module imports over the <code>file://</code> protocol for security. You opened this page by double-clicking <code>index.html</code> instead of running a local web server.';
           steps =
             '<ol>' +
               '<li>Open a terminal in this directory (the one containing <code>index.html</code>).</li>' +
               '<li>Run: <code>./serve.sh</code> &nbsp;(or on Windows native cmd: <code>serve.bat</code>). It picks the first available static server and prints its URL.</li>' +
-              '<li>Open that URL in your browser &mdash; default is <a href="http://localhost:8080/">http://localhost:8080/</a> if you didn&rsquo;t pass a port.</li>' +
+              '<li>Open that URL in your browser - default is <a href="http://localhost:8080/">http://localhost:8080/</a> if you didn&rsquo;t pass a port.</li>' +
             '</ol>';
         } else {
           headline = 'App didn&rsquo;t start.';
           blurb = 'The JavaScript module did not finish loading or initializing. Most often this is a stale browser cache or a Netlify deploy that&rsquo;s missing files.';
           steps =
             '<ol>' +
-              '<li>Hard refresh &mdash; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> &nbsp;/&nbsp; macOS: <kbd>&#8984;</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></li>' +
-              '<li>If still blank: DevTools (<kbd>F12</kbd>) &rarr; <strong>Console</strong>. The first red line is the real cause &mdash; paste it back if you need help.</li>' +
+              '<li>Hard refresh - <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> &nbsp;/&nbsp; macOS: <kbd>&#8984;</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></li>' +
+              '<li>If still blank: DevTools (<kbd>F12</kbd>) &rarr; <strong>Console</strong>. The first red line is the real cause - paste it back if you need help.</li>' +
               '<li>If you just redeployed: Netlify dashboard &rarr; <strong>Deploys</strong> &rarr; <em>Trigger deploy</em> &rarr; tick <strong>Clear cache and deploy</strong>.</li>' +
             '</ol>';
         }
@@ -170,32 +170,33 @@
   </script>
 
   <style>
-    #boot-fail { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 32px; background: #FAF8F3; font-family: 'Inter', system-ui, sans-serif; color: #1a1a1a; z-index: 9999; }
+    #boot-fail { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 32px; background: #F5F5F2; font-family: 'Space Grotesk', system-ui, sans-serif; color: #161712; z-index: 9999; }
     #boot-fail[hidden] { display: none; }
-    #boot-fail .bf-card { max-width: 560px; padding: 36px 40px; border: 1px solid #e4e0d6; border-radius: 12px; background: #fff; line-height: 1.55; font-size: 14px; box-shadow: 0 4px 12px rgba(0,0,0,0.06), 0 1px 3px rgba(0,0,0,0.04); }
-    #boot-fail .bf-mark { font-family: "Instrument Serif", Georgia, serif; font-style: italic; font-size: 24px; letter-spacing: -0.02em; color: #1a1a1a; }
-    #boot-fail h1 { font-family: "Instrument Serif", Georgia, serif; font-style: italic; font-weight: 400; font-size: 30px; margin: 6px 0 10px; }
+    #boot-fail .bf-card { max-width: 560px; padding: 36px 40px; border: 1px solid #E3E3DC; border-radius: 10px; background: #fff; line-height: 1.55; font-size: 14px; box-shadow: 0 8px 24px rgba(0,0,0,0.09); }
+    #boot-fail .bf-mark { font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 700; font-size: 22px; letter-spacing: -0.02em; color: #161712; }
+    #boot-fail .bf-mark::after { content: ''; display: inline-block; width: 6px; height: 6px; margin-left: 4px; border-radius: 1px; background: #157A4A; vertical-align: 2px; }
+    #boot-fail h1 { font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 600; font-size: 28px; margin: 6px 0 10px; }
     #boot-fail ol { padding-left: 22px; margin: 12px 0 0; }
     #boot-fail li { margin-bottom: 10px; }
-    #boot-fail kbd { background: #f4f0e7; padding: 2px 7px; border-radius: 5px; border: 1px solid #e4e0d6; font-family: ui-monospace, monospace; font-size: 12px; }
-    #boot-fail code { background: #f4f0e7; padding: 2px 7px; border-radius: 5px; font-family: ui-monospace, monospace; font-size: 12px; color: #6d6457; }
-    #boot-fail em { font-family: "Instrument Serif", Georgia, serif; font-style: italic; }
-    #boot-fail .bf-err { margin: 14px 0 18px; padding: 12px 14px; background: #fff5f0; border: 1px solid #f4d7c8; border-radius: 10px; font-size: 12px; }
-    #boot-fail .bf-err span { font-style: italic; color: #6d6457; font-family: "Instrument Serif", Georgia, serif; }
+    #boot-fail kbd { background: #ECECE7; padding: 2px 7px; border-radius: 4px; border: 1px solid #E3E3DC; font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+    #boot-fail code { background: #ECECE7; padding: 2px 7px; border-radius: 4px; font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: #6E6E67; }
+    #boot-fail .bf-err { margin: 14px 0 18px; padding: 12px 14px; background: #E9F2EC; border: 1px solid #BFD6C9; border-radius: 8px; font-size: 12px; }
+    #boot-fail .bf-err span { color: #6E6E67; font-family: "Space Grotesk", system-ui, sans-serif; font-weight: 600; }
     #boot-fail .bf-err code { display: block; margin-top: 6px; font-size: 11px; word-break: break-word; white-space: pre-wrap; line-height: 1.4; background: transparent; padding: 0; }
     /* Dark mode overrides */
-    [data-theme="dark"] #boot-fail { background: #171310; color: #ede6db; }
-    [data-theme="dark"] #boot-fail .bf-card { background: #272219; border-color: #373128; box-shadow: 0 6px 16px rgba(0,0,0,0.28), 0 2px 4px rgba(0,0,0,0.15); }
-    [data-theme="dark"] #boot-fail .bf-mark { color: #ede6db; }
-    [data-theme="dark"] #boot-fail kbd { background: #272219; border-color: #373128; }
-    [data-theme="dark"] #boot-fail code { background: #272219; color: #a29a8b; }
-    [data-theme="dark"] #boot-fail .bf-err { background: #2f2219; border-color: #4a3a2a; }
-    [data-theme="dark"] #boot-fail .bf-err span { color: #a29a8b; }
+    [data-theme="dark"] #boot-fail { background: #101210; color: #E8EBE5; }
+    [data-theme="dark"] #boot-fail .bf-card { background: #171A17; border-color: #272B26; box-shadow: 0 8px 26px rgba(0,0,0,0.5); }
+    [data-theme="dark"] #boot-fail .bf-mark { color: #E8EBE5; }
+    [data-theme="dark"] #boot-fail .bf-mark::after { background: #35B877; }
+    [data-theme="dark"] #boot-fail kbd { background: #161916; border-color: #272B26; }
+    [data-theme="dark"] #boot-fail code { background: #161916; color: #8C928A; }
+    [data-theme="dark"] #boot-fail .bf-err { background: #1C2A20; border-color: #2E3D33; }
+    [data-theme="dark"] #boot-fail .bf-err span { color: #8C928A; }
   </style>
 </head>
 <body>
   <noscript>
-    <div style="padding:32px;font-family:serif;">This app needs JavaScript enabled to run.</div>
+    <div style="padding:32px;font-family:'Space Grotesk',system-ui,sans-serif;">This app needs JavaScript enabled to run.</div>
   </noscript>
   <div id="app"></div>
   <div id="boot-fail" hidden></div>

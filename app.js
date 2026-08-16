@@ -1,5 +1,5 @@
 /* ============================================================
-   Expense Tracker — editorial-minimal SPA
+   Expense Tracker - editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #balances | #insights
    ============================================================ */
 import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal } from './storage.js';
@@ -20,14 +20,14 @@ const _sortables = new Set();      // sortablejs instances
 let _chipSortLast = 0;             // guards the click that ends a chip drag
 
 // Fetch a vendored script (and/or stylesheet) exactly once. Resolves when the
-// global it defines becomes available, rejects on network failure — callers
+// global it defines becomes available, rejects on network failure - callers
 // always degrade gracefully.
 const _vendorCache = new Map();
 function loadVendor(name, { js, css } = {}) {
   if (!_vendorCache.has(name)) {
     _vendorCache.set(name, new Promise((resolve, reject) => {
       // Wait for EVERY requested asset (a lib's JS plus its optional CSS)
-      // before resolving — settling on whichever loads first could resolve
+      // before resolving - settling on whichever loads first could resolve
       // while the JS global is still undefined, and the caller's one-shot
       // .then would then never wire the widget.
       let pending = 0;
@@ -257,7 +257,7 @@ async function hashPinPlain(pin) {
 // Site-wide default credential. Every device boots locked and unlocks with
 // this built-in PIN ("100901") until a personal PIN is saved on that device.
 // It is a plain SHA-256 like the legacy device-hash path, so verification
-// needs no salt. By design this is casual-access protection — the default is
+// needs no salt. By design this is casual-access protection - the default is
 // visible in the shipped source.
 const DEFAULT_PIN_HASH = '3bc83f9bf0224554bd08d03d598a4c44d7eda855bbf034131e48d1dba72d5d7d'; // SHA-256("100901")
 const DEFAULT_PIN_PLAIN = '100901'; // used only when Web Crypto is unavailable (plain-HTTP contexts)
@@ -317,7 +317,7 @@ function b64urlDecode(str) {
 }
 // Biometric unlock is a mobile-only convenience: the OS fingerprint / Face ID
 // prompt is the natural unlock on phones, but on desktops (Windows Hello,
-// Touch ID) it would surface a button nobody asked for there — so the whole
+// Touch ID) it would surface a button nobody asked for there - so the whole
 // biometric surface is gated behind this check.
 function isMobileDevice() {
   const ua = navigator.userAgent || '';
@@ -421,13 +421,13 @@ function showPinLock() {
   const label = biometricLabel();
   // new-password (not off): tells desktop browsers this is not a credential
   // field, so the phone-registered passkey/fingerprint credential synced into
-  // Chrome/Safari autofill never gets offered on the website — the website is
+  // Chrome/Safari autofill never gets offered on the website - the website is
   // PIN-only, biometrics stay mobile.
   const input = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'PIN', 'aria-label': 'PIN', style: 'width:100%;text-align:center;letter-spacing:.35em;font-size:24px;' });
   const message = $('p', { class: 'muted', style: 'font-size:13px;text-align:center;min-height:20px;margin:12px 0;' }, 'Enter your PIN.');
   const submit = async () => {
     const value = String(input.value || '').trim();
-    if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { message.textContent = 'Use 4–20 letters or numbers.'; input.focus(); return; }
+    if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { message.textContent = 'Use 4-20 letters or numbers.'; input.focus(); return; }
     const saved = getPinCredential();
     let matches = false;
     try {
@@ -477,13 +477,13 @@ function showPinLock() {
         completeUnlock();
       } else if (auto) {
         // The automatic prompt can be suppressed by the browser when there is
-        // no user gesture yet (some Android builds) — keep the door open.
+        // no user gesture yet (some Android builds) - keep the door open.
         message.textContent = 'Tap ' + label + ' to unlock, or use your PIN.';
       } else {
         // The PIN input lives behind the "Use PIN instead" toggle here.
         message.textContent = res.reason === 'cancelled'
-          ? 'Fingerprint cancelled — tap again or use your PIN.'
-          : 'Fingerprint unavailable — use your PIN.';
+          ? 'Fingerprint cancelled - tap again or use your PIN.'
+          : 'Fingerprint unavailable - use your PIN.';
       }
     });
   };
@@ -500,9 +500,9 @@ function showPinLock() {
   };
   const overlay = $('div', { class: 'modal-bg', style: 'z-index:10000;background:rgba(0,0,0,.82);' },
     $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Unlock cents', style: 'max-width:360px;text-align:center;' },
-      $('div', { class: 'serif', style: 'font-size:32px;font-style:italic;margin-bottom:4px;' }, 'cents.'),
+      $('div', { class: 'serif', style: 'font-size:32px;margin-bottom:4px;' }, 'cents.'),
       $('p', { class: 'eyebrow', style: 'margin:0;' }, 'Privacy lock'),
-      $('p', { class: 'serif', style: 'font-style:italic;font-size:18px;margin:20px 0 4px;' }, 'Welcome back.'),
+      $('p', { class: 'serif', style: 'font-size:18px;margin:20px 0 4px;' }, 'Welcome back.'),
       message,
       bioArea,
       pinArea,
@@ -532,10 +532,10 @@ function showPinLock() {
             completeUnlock();
             toast('Fingerprint unlock enabled.');
           } else if (res.reason === 'cancelled') {
-            message.textContent = 'Not enabled — use your PIN.';
+            message.textContent = 'Not enabled - use your PIN.';
             input.focus();
           } else {
-            message.textContent = 'Fingerprint is not available on this device — use your PIN.';
+            message.textContent = 'Fingerprint is not available on this device - use your PIN.';
             input.focus();
           }
         });
@@ -578,7 +578,7 @@ function openPinSettings() {
   const save = async () => {
     const value = pin.value.trim();
     if (!value && custom) { close(); return; }
-    if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { status.textContent = 'Use 4–20 letters or numbers.'; pin.focus(); return; }
+    if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { status.textContent = 'Use 4-20 letters or numbers.'; pin.focus(); return; }
     if (value !== confirm.value.trim()) { status.textContent = 'The PINs do not match.'; confirm.focus(); return; }
     try {
       if (!globalThis.crypto?.getRandomValues) throw new Error('Secure randomness is unavailable');
@@ -588,16 +588,16 @@ function openPinSettings() {
       // Remove any legacy in-state fallback once the device-only credential is
       // definitely stored, so exports/sync cannot retain stale PIN material.
       if (state.settings?.pinHash) delete state.settings.pinHash;
-      persist(); pinUnlocked = true; close(); toast(custom ? 'PIN changed.' : 'Personal PIN set — the default no longer unlocks this device.'); render();
+      persist(); pinUnlocked = true; close(); toast(custom ? 'PIN changed.' : 'Personal PIN set - the default no longer unlocks this device.'); render();
     } catch (err) {
       status.textContent = 'PIN security is unavailable in this browser.';
     }
   };
-  // Biometric row — hidden until the platform-authenticator check resolves.
+  // Biometric row - hidden until the platform-authenticator check resolves.
   const bioRow = $('div', { style: 'display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);' });
   modal.append(
-    $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;' }, $('h2', { class: 'serif', style: 'font-size:28px;font-style:italic;font-weight:400;' }, 'Privacy lock'), $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
-    $('p', { class: 'serif', style: 'font-style:italic;font-size:16px;' }, custom ? 'Change or reset your PIN.' : 'The app locks on every device by default.'),
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;' }, $('h2', { class: 'serif', style: 'font-size:28px;font-weight:400;' }, 'Privacy lock'), $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
+    $('p', { class: 'serif', style: 'font-size:16px;' }, custom ? 'Change or reset your PIN.' : 'The app locks on every device by default.'),
     $('div', { style: 'display:flex;flex-direction:column;gap:12px;margin:20px 0;' }, pin, confirm),
     status,
     bioRow,
@@ -634,7 +634,7 @@ function openPinSettings() {
             registerBiometric().then(res => {
               if (!bg.isConnected) return;
               if (res.ok) { toast('Fingerprint unlock enabled.'); fill(); }
-              else if (res.reason === 'cancelled') { toast('Fingerprint not enabled — you can try again.'); }
+              else if (res.reason === 'cancelled') { toast('Fingerprint not enabled - you can try again.'); }
               else { toast('Fingerprint is not available on this device.'); }
             });
           }
@@ -707,7 +707,7 @@ function untombstoneIds(ids) {
   if (changed) settings.deletedEntryIds = [...set];
 }
 
-// Whose reset is newer? A reset is a deliberate "start over" — the newer
+// Whose reset is newer? A reset is a deliberate "start over" - the newer
 // reset wins wholesale and the other side's pre-reset data is discarded.
 function resetWinnerOver(cloudContent) {
   const localReset = state.localResetAt ? Date.parse(state.localResetAt) : NaN;
@@ -737,10 +737,10 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
     return 'error';
   }
   if (!r.content) {
-    // No cloud file yet — first sync. Keep local; a push creates the file.
+    // No cloud file yet - first sync. Keep local; a push creates the file.
     patchSyncSettings({ lastError: null, lastErrorAt: null });
     if (hasLocalDataToProtect()) {
-      if (!quiet) toast('First sync — pushing your data to the cloud.');
+      if (!quiet) toast('First sync - pushing your data to the cloud.');
       scheduleSyncPush();
     }
     notifySyncChange();
@@ -748,27 +748,27 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
   }
   if (!isUsableCloudContent(r.content)) {
     patchSyncSettings({ lastError: 'malformed cloud data', lastErrorAt: new Date().toISOString() });
-    if (!quiet) toast('Cloud data is malformed — local data was kept.');
+    if (!quiet) toast('Cloud data is malformed - local data was kept.');
     notifySyncChange();
     return 'error';
   }
   const winner = resetWinnerOver(r.content);
   if (winner === 'local') {
-    // This device reset more recently than the cloud — keep local and push it
+    // This device reset more recently than the cloud - keep local and push it
     // over the cloud (merging would resurrect the entries the reset cleared).
     patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
-    if (!quiet) toast('A reset happened on this device after the cloud copy — local data kept.');
+    if (!quiet) toast('A reset happened on this device after the cloud copy - local data kept.');
     scheduleSyncPush();
     notifySyncChange();
     return 'pushed';
   }
-  // 'tie' (identical reset marker) falls through to the merge below — both
+  // 'tie' (identical reset marker) falls through to the merge below - both
   // sides are post-reset, so unioning can only add genuinely new entries, and
   // skipping would silently hide them on this device.
   if (winner === 'cloud') {
     adoptState(r.content);
     patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
-    if (!quiet) toast('A reset happened on another device — this device now matches the cloud.');
+    if (!quiet) toast('A reset happened on another device - this device now matches the cloud.');
     notifySyncChange();
     render();
     return 'adopted';
@@ -782,7 +782,7 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
   if (!quiet) {
     if (diff > 0) toast(`Synced ${diff} new entr${diff === 1 ? 'y' : 'ies'} from another device.`);
     else if (diff < 0) toast(`Removed ${-diff} entr${diff === -1 ? 'y' : 'ies'} deleted on another device.`);
-    else if (boot && prevCount === 0) toast(state.entries.length ? `Welcome back — pulled ${state.entries.length} entr${state.entries.length === 1 ? 'y' : 'ies'} from the cloud.` : 'Cloud is empty — nothing to pull.');
+    else if (boot && prevCount === 0) toast(state.entries.length ? `Welcome back - pulled ${state.entries.length} entr${state.entries.length === 1 ? 'y' : 'ies'} from the cloud.` : 'Cloud is empty - nothing to pull.');
     else toast('In sync with the cloud.');
   }
   notifySyncChange();
@@ -895,7 +895,7 @@ async function doPushNow(message) {
       return;
     }
     // The cloud moved underneath us (409 sha conflict, or GitHub refused a
-    // sha-less write to an existing file) — pull, merge, and retry instead of
+    // sha-less write to an existing file) - pull, merge, and retry instead of
     // deadlocking or clobbering the other device's changes.
     if (r.reason === 'conflict' || r.reason === 'http') {
       syncInFlight = false;
@@ -939,7 +939,7 @@ async function resolveConflictAndPush() {
       return;
     }
     if (!r.content) {
-      // Cloud file vanished or was never created — push ours fresh.
+      // Cloud file vanished or was never created - push ours fresh.
       const push = await syncPush(cloudPayload(), { sha: null, message: 'cents: auto push' });
       if (push.ok) patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: push.sha, lastError: null, lastErrorAt: null });
       notifySyncChange();
@@ -954,13 +954,13 @@ async function resolveConflictAndPush() {
     if (winner === 'cloud') {
       adoptState(r.content);
       patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
-      toast('A reset happened on another device — this device now matches the cloud.');
+      toast('A reset happened on another device - this device now matches the cloud.');
       notifySyncChange();
       render();
       return;
     }
     if (winner === 'local') {
-      // This device reset more recently than the cloud — keep local and push
+      // This device reset more recently than the cloud - keep local and push
       // it over the cloud. Merging here would resurrect the entries the reset
       // cleared (the reset side has none, the union would keep the old cloud
       // entries), so never merge in this branch. A 'tie' (equal reset marker)
@@ -969,7 +969,7 @@ async function resolveConflictAndPush() {
       patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
       const push = await syncPush(cloudPayload(), { sha: r.sha, message: 'cents: auto push' });
       if (push.ok) patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: push.sha, lastError: null, lastErrorAt: null });
-      else scheduleSyncPush(); // retry any failure (conflict, http, network) — the guards keep it bounded
+      else scheduleSyncPush(); // retry any failure (conflict, http, network) - the guards keep it bounded
       notifySyncChange();
       return;
     }
@@ -988,12 +988,12 @@ async function resolveConflictAndPush() {
         scheduleSyncPush();
       } else {
         patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: push.sha, lastError: null, lastErrorAt: null });
-        toast(diff > 0 ? `Merged changes from another device (${diff} new entr${diff === 1 ? 'y' : 'ies'}).` : 'Merged changes from another device — nothing lost.');
+        toast(diff > 0 ? `Merged changes from another device (${diff} new entr${diff === 1 ? 'y' : 'ies'}).` : 'Merged changes from another device - nothing lost.');
         sessionSyncFailed = false;
       }
     } else if (push.reason === 'conflict' || push.reason === 'http') {
-      // Raced again — don't loop forever; the next poll/push reconciles.
-      patchSyncSettings({ lastError: 'conflict — will retry automatically', lastErrorAt: new Date().toISOString() });
+      // Raced again - don't loop forever; the next poll/push reconciles.
+      patchSyncSettings({ lastError: 'conflict - will retry automatically', lastErrorAt: new Date().toISOString() });
       scheduleSyncPush();
     } else {
       patchSyncSettings({ lastError: push.message || push.reason || 'error', lastErrorAt: new Date().toISOString() });
@@ -1051,7 +1051,7 @@ async function silentSyncPoll() {
   const s = getSyncSettings();
   if (!s.enabled || !s.endpoint || !s.password) return;
   if (syncInFlight || syncExclusive) return;
-  // Never rebuild the UI mid-typing — the next poll picks the change up.
+  // Never rebuild the UI mid-typing - the next poll picks the change up.
   if (isTypingInApp()) return;
   syncExclusive = true;
   try {
@@ -1078,7 +1078,7 @@ async function silentSyncPoll() {
       return;
     }
     // Only adopt when the cloud revision actually differs from what we last
-    // saw — merging an identical revision would still rebuild the UI.
+    // saw - merging an identical revision would still rebuild the UI.
     if (getSyncSettings().lastSha !== r.sha) {
       await applyReconcile(r, { quiet: true });
     } else {
@@ -1606,7 +1606,7 @@ const monthLabel = (key) => {
   return MONTH_FORMATTER.format(new Date(Date.UTC(y, m - 1, 1)));
 };
 const friendlyDate = (iso) => {
-  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '—';
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '-';
   return FRIENDLY_DATE_FORMATTER.format(new Date(iso + 'T00:00:00Z'));
 };
 
@@ -1779,7 +1779,7 @@ function computeGiftCardBalance(entries, methodId, asOfDate = today()) {
   return { balance, loaded, spent };
 }
 
-/** Gift card transaction history modal — shows every load, spend, and
+/** Gift card transaction history modal - shows every load, spend, and
  * reconciliation checkpoint for a single card with running balances. */
 function openGiftCardHistoryModal(methodId) {
   const cardName = methodShort(methodId);
@@ -1841,7 +1841,7 @@ function openGiftCardHistoryModal(methodId) {
 
   // Header
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;' },
-    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:24px;' }, `${cardName}`),
+    $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:24px;' }, `${cardName}`),
     $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
   ));
 
@@ -1864,7 +1864,7 @@ function openGiftCardHistoryModal(methodId) {
     return;
   }
 
-  // Timeline rows — newest first
+  // Timeline rows - newest first
   const list = $('div', { style: 'display:flex;flex-direction:column;gap:1px;' });
   const sortedTimeline = [...timeline].reverse();
 
@@ -1884,7 +1884,7 @@ function openGiftCardHistoryModal(methodId) {
         $('div', { style: 'display:flex;align-items:center;gap:10px;min-width:0;flex:1;' },
           $('span', { style: 'font-size:11px;color:var(--muted);white-space:nowrap;' }, friendlyDate(item.date)),
           $('div', { style: 'min-width:0;' },
-            $('div', { style: 'font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' }, item.details || '—'),
+            $('div', { style: 'font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' }, item.details || '-'),
             $('div', { class: 'display-num', style: `font-size:11px;color:${color};` }, `${sign}${fmt(item.entryAmount)}`),
           ),
         ),
@@ -1984,7 +1984,7 @@ function payRecurringOn(rec, dateStr) {
   state.entries.push(entry);
   state.entries.sort((a, b) => a.date.localeCompare(b.date));
   // Advance the schedule past the paid date so the same logical charge can
-  // never be paid twice — whether this is the pending occurrence or an early
+  // never be paid twice - whether this is the pending occurrence or an early
   // pre-pay from the upcoming strip. ISO dates compare correctly as strings.
   let guard = 0;
   while (rec.nextDate <= dateStr && guard++ < 12) {
@@ -1997,7 +1997,7 @@ function payRecurringOn(rec, dateStr) {
     rec.nextDate = oldDate;
     persist();
   }, `Paid ${rec.details}`, [entry]);
-  toast(`Paid: ${rec.details} — ${fmt(rec.amount)}`);
+  toast(`Paid: ${rec.details} - ${fmt(rec.amount)}`);
   render();
 }
 
@@ -2010,7 +2010,7 @@ function skipRecurring(rec, dateStr = rec.nextDate) {
   }
   persist();
   trackAction(() => { rec.nextDate = oldDate; persist(); }, `Restored "${rec.details}"`);
-  toast(`Skipped: ${rec.details} — next ${friendlyDate(rec.nextDate)}`);
+  toast(`Skipped: ${rec.details} - next ${friendlyDate(rec.nextDate)}`);
   render();
 }
 
@@ -2039,7 +2039,7 @@ function fillThursday(dateStr) {
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
     trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); tombstoneIds([eid]); persist(); }, `Tesco ${friendlyDate(dateStr)}`, [tescoEntry]);
-    toast(`Filled Tesco pay for ${friendlyDate(dateStr)} — ${fmt(defaultAmt)}`);
+    toast(`Filled Tesco pay for ${friendlyDate(dateStr)} - ${fmt(defaultAmt)}`);
     render();
   } else {
     openTescoFillModal(dateStr, []);
@@ -2064,7 +2064,7 @@ function autoFillAll(unpaidThursdays) {
       tombstoneIds(created);
       persist();
     }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`, createdEntries);
-    toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays — ${fmt(defaultAmt)} each`);
+    toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays - ${fmt(defaultAmt)} each`);
     render();
   } else if (unpaidThursdays.length === 0) {
     toast('All Thursdays are already filled.');
@@ -2086,7 +2086,7 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
   const amtInput = $('input', { type: 'text', inputmode: 'decimal', placeholder: '0.00', 'aria-label': 'Amount', autocomplete: 'off', onInput: (e) => data.amount = e.target.value });
 
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;' },
-    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:22px;' }, 'Tesco pay amount'),
+    $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:22px;' }, 'Tesco pay amount'),
     $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
   ));
   modal.appendChild($('div', { style: 'margin-bottom:20px;' },
@@ -2111,7 +2111,7 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
           state.entries = state.entries.filter(e => !created.includes(e.id));
           persist();
         }, `Filled Tesco pay ${friendlyDate(data.date)}`, createdEntries);
-        toast(`Filled Tesco pay for ${friendlyDate(data.date)} — ${fmt(amt)}`);
+        toast(`Filled Tesco pay for ${friendlyDate(data.date)} - ${fmt(amt)}`);
       } else {
         for (const d of unpaidThursdays) {
           const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' };
@@ -2125,7 +2125,7 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
           state.entries = state.entries.filter(e => !created.includes(e.id));
           persist();
         }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`, createdEntries);
-        toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays — ${fmt(amt)} each`);
+        toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays - ${fmt(amt)} each`);
       }
       close();
       render();
@@ -2151,7 +2151,7 @@ function trackAction(undoFn, label, journalEntries) {
 function triggerConfetti() {
   // The only caller (screenDashboard) already guards confetti to once per
   // month via window.__confettiMonth, so no extra guard is needed here.
-  const colors = ['#C2410C','#F59E0B','#10B981','#3B82F6','#EC4899','#8B5CF6'];
+  const colors = ['#157A4A','#35B877','#8FD3B3','#E3E3DC','#FFFFFF','#8C928A'];
   // Prefer canvas-confetti when it's loaded: layered bursts with physics.
   if (typeof window.confetti === 'function') {
     const base = { colors, zIndex: 9999, disableForReducedMotion: true, gravity: 0.9, decay: 0.93, scalar: 0.9 };
@@ -2226,9 +2226,9 @@ function openDuplicateConfirm(entry, dup, onConfirm) {
   const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); };
   const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
-  modal.appendChild($('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:24px;margin-bottom:8px;' }, 'Possible duplicate'));
+  modal.appendChild($('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:24px;margin-bottom:8px;' }, 'Possible duplicate'));
   modal.appendChild($('p', { class: 'muted', style: 'font-size:13px;line-height:1.5;margin-bottom:20px;' },
-    `You already have “${dup.details}” — ${fmt(dup.amount)} on ${friendlyDate(dup.date)}. Add this one anyway?`));
+    `You already have “${dup.details}” - ${fmt(dup.amount)} on ${friendlyDate(dup.date)}. Add this one anyway?`));
   modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' },
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
     $('button', { type: 'button', class: 'btn btn-primary', onClick: () => { close(); onConfirm(); } }, 'Add anyway'),
@@ -2355,7 +2355,7 @@ function parseNaturalLanguage(text) {
   else if (/\baldi\b/.test(lower)) method = 'AG';
   else if (/\baib\b|\bbank\b|current account/.test(lower)) method = 'AIB';
 
-  // Only unambiguous income signals — bare "pay" or "got" is far too common
+  // Only unambiguous income signals - bare "pay" or "got" is far too common
   // in expense phrasing ("pay the rent", "got petrol") to imply income.
   const isCredit = /\b(income|received|salary|paid into|got paid|paycheck|wage|refund|dividend)\b/.test(lower);
 
@@ -2364,7 +2364,7 @@ function parseNaturalLanguage(text) {
   // currency, dates, numbers, payment channels, verbs, articles). Phase 2
   // classifies the survivors: prepositions only survive mid-string (word on
   // both sides), duplicate words collapse, and content words are title-cased
-  // — so "Spent €18.50 at Tesco from Revolut yesterday" → "Tesco" while
+  // - so "Spent €18.50 at Tesco from Revolut yesterday" → "Tesco" while
   // "pint of Guinness" keeps its meaning.
   const details = cleanMagicDescription(raw, amountText);
   const guessed = parseReceiptLine(details);
@@ -2374,7 +2374,7 @@ function parseNaturalLanguage(text) {
 // ── Magic-entry description cleaner ──
 // Two-phase best-effort cleaner: strip provable value-noise first (amount,
 // currency, dates, ordinals, numbers, units, payment channels, verbs,
-// articles), then keep the meaningful words — prepositions only when they sit
+// articles), then keep the meaningful words - prepositions only when they sit
 // between two content words, no consecutive duplicates, title-cased.
 const MAGIC_STOP = new Set([
   'the', 'a', 'an', 'i', 'my', 'our', 'some', 'any', 'just', 'only',
@@ -2395,7 +2395,7 @@ const MAGIC_PREPS = new Set([
 const MAGIC_BRAND_START = new Set(['the', 'a', 'an', 'in', 'on']);
 // Connectors that join two words of a name ("Fish & Chips", "Bar and Grill").
 const MAGIC_CONNECTORS = new Set(['&', 'and']);
-const MAGIC_EDGE_PUNCT = /^[,.;:!?()\[\]"'\-—–]+|[,.;:!?()\[\]"'\-—–]+$/g;
+const MAGIC_EDGE_PUNCT = /^[,.;:!?()\[\]"'\-—-]+|[,.;:!?()\[\]"'\-—-]+$/g;
 // Prepositions and connectors stay lowercase mid-description ("Pint of Guinness").
 const MAGIC_LOWERCASE = new Set([...MAGIC_PREPS, 'and']);
 function isContentToken(t) {
@@ -2410,7 +2410,7 @@ function cleanMagicDescription(raw, amountText) {
     // Whole date phrases BEFORE standalone numbers, or "3 days ago" → "days ago".
     .replace(/\b(?:\d+\s+days?\s+ago|(?:last|this)\s+(?:night|morning|afternoon|evening|sunday|monday|tuesday|wednesday|thursday|friday|saturday)|today|tonight|yesterday|sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/ig, ' ')
     .replace(/\b\d+(?:st|nd|rd|th)\b/ig, ' ')                                  // ordinals
-    .replace(/\b\d+(?:[.,]\d{1,2})?\s*(?:kg|g|ml|litres?|l|pcs)\b/ig, ' ')  // measurement units ("2kg") — but NOT countable nouns like "3 pints", whose noun stays
+    .replace(/\b\d+(?:[.,]\d{1,2})?\s*(?:kg|g|ml|litres?|l|pcs)\b/ig, ' ')  // measurement units ("2kg") - but NOT countable nouns like "3 pints", whose noun stays
     .replace(/\b\d+(?:[.,]\d{1,2})?\b/g, ' ')                                  // remaining numbers
     .replace(/\b(?:x|×|@)\s*\d+(?:[.,]\d{1,2})?\b/ig, ' ')                    // "x2"
     .replace(/\b\d+(?:[.,]\d{1,2})?\s*[x×@]\b/ig, ' ')                        // "2x"
@@ -2419,7 +2419,7 @@ function cleanMagicDescription(raw, amountText) {
 
   const tokens = s.split(/\s+/).filter(Boolean);
   const kept = [];
-  // Still at the head of the description (no content word kept yet) — the only
+  // Still at the head of the description (no content word kept yet) - the only
   // place a brand-start "In"/"On"/"The" may legitimately appear.
   const atHead = () => !kept.some(isContentToken);
   for (let i = 0; i < tokens.length; i++) {
@@ -2429,7 +2429,7 @@ function cleanMagicDescription(raw, amountText) {
     // Connector: keep when it visibly joins two words ("Fish & Chips",
     // "Bar and Grill"), drop when it dangles ("Dinner &", "& Sons").
     // Checked before the symbol filter so "&" survives. The left neighbour
-    // must actually be the last KEPT word — a dropped stop word ("bought &
+    // must actually be the last KEPT word - a dropped stop word ("bought &
     // sold") must not let a leading "&" through.
     if (t && MAGIC_CONNECTORS.has(low)) {
       const left = tokens[i - 1]?.replace(MAGIC_EDGE_PUNCT, '');
@@ -2442,8 +2442,8 @@ function cleanMagicDescription(raw, amountText) {
 
     if (MAGIC_STOP.has(low)) {
       // Verbs and filler always drop. Articles keep their place only when they
-      // precede a capitalised proper noun — "The Point", even mid-description
-      // ("coffee at The Point") — never for a generic noun ("the rent" →
+      // precede a capitalised proper noun - "The Point", even mid-description
+      // ("coffee at The Point") - never for a generic noun ("the rent" →
       // "rent", because "rent" is lowercase).
       const next = nextContentToken(tokens, i);
       if (MAGIC_BRAND_START.has(low) && next && /[A-Z]/.test(next.charAt(0))) {
@@ -2454,7 +2454,7 @@ function cleanMagicDescription(raw, amountText) {
 
     if (MAGIC_PREPS.has(low)) {
       // Prepositions survive mid-string between two content words, or at the
-      // head of a proper-noun name ("In & Out") — but plain glue like
+      // head of a proper-noun name ("In & Out") - but plain glue like
       // "at Tesco" / "from Revolut" is dropped.
       const prevContent = kept.length > 0 && isContentToken(kept[kept.length - 1]);
       const next = nextContentToken(tokens, i);
@@ -2733,11 +2733,11 @@ function computeDataHealth(entries) {
   // Check for entries with no category / default
   const financialEntries = entries.filter(e => e.type !== 'note');
   const uncategorized = financialEntries.filter(e => isSpendingEntry(e) && e.category === 'misc').length;
-  if (uncategorized > financialEntries.length * 0.3) { score -= 15; issues.push(`${uncategorized} entries are "Misc" — try categorising them.`); }
+  if (uncategorized > financialEntries.length * 0.3) { score -= 15; issues.push(`${uncategorized} entries are "Misc" - try categorising them.`); }
   // Large amounts
   const avg = financialEntries.length ? financialEntries.reduce((s,e) => s + e.amount, 0) / financialEntries.length : 0;
   const outliers = financialEntries.filter(e => e.amount > avg * 5).length;
-  if (outliers > 0) { score -= 10; issues.push(`${outliers} entr${outliers===1?'y':'ies'} look unusually large.`); }
+  if (outliers > 0) { score -= 10; issues.push(`${outliers} entr${outliers===1?'y':'ies'} ${outliers===1?'looks':'look'} unusually large.`); }
   // Duplicates
   const duplicateCount = duplicateGroups(entries).reduce((sum, group) => sum + group.length - 1, 0);
   if (duplicateCount > 0) { score -= 10; issues.push(`${duplicateCount} possible duplicate${duplicateCount===1?'':'s'} found.`); }
@@ -2755,10 +2755,9 @@ function computeDataHealth(entries) {
 }
 
 // ---------- season detection ----------
+// Ledger uses a single emerald accent, so seasonal accent drift is retired.
 function setSeason() {
-  const m = new Date().getMonth();
-  const seasons = ['winter','winter','spring','spring','spring','summer','summer','summer','autumn','autumn','autumn','winter'];
-  document.documentElement.dataset.season = seasons[m];
+  return;
 }
 
 // ---------- router ----------
@@ -2813,13 +2812,13 @@ function renderHeader() {
   return $('header', { class: 'app-header', 'aria-label': 'App header' },
     $('div', { class: 'logo' },
       $('div', { class: 'mark' }, $('span', { class: 'mark-icon', 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 6.5A7 7 0 1 0 17 17.5"/><line x1="2.5" y1="8" x2="12" y2="8"/><line x1="2.5" y1="16" x2="12" y2="16"/></svg>' })),
-      $('a', { href: '#dashboard', class: 'logo-wordmark', style: 'font-family:"Instrument Serif",serif;font-style:italic;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
+      $('a', { href: '#dashboard', class: 'logo-wordmark', style: 'font-family:"Space Grotesk",sans-serif;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary', style: locked ? 'display:none;' : '' },
       ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : null }, titleFor(r))),
     ),
     $('div', { class: 'header-actions', style: locked ? 'display:none;' : '' },
-      $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Instrument Serif",serif;font-style:italic;font-size:14px;color:var(--muted);' }),      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
+      $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Space Grotesk",sans-serif;font-size:14px;color:var(--muted);' }),      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
          const wasDark = document.documentElement.dataset.theme === 'dark';
          toggleDarkMode();
          event.currentTarget.setAttribute('aria-pressed', String(!wasDark));
@@ -2866,12 +2865,12 @@ const MENU_ICONS = {
   download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
 };
 
-// Full stroke-icon set — Lucide-style 24px grid, currentColor, 1.9 stroke.
+// Full stroke-icon set - Lucide-style 24px grid, currentColor, 1.9 stroke.
 // Extends MENU_ICONS so menus, pills, buttons, toasts and headers share one
 // visual language (replaces the scattered emoji glyphs).
 const ICONS = {
   ...MENU_ICONS,
-  // Plain plus for tiny buttons — the menu's circled plus reads as a record
+  // Plain plus for tiny buttons - the menu's circled plus reads as a record
   // button at 12px.
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
@@ -3113,7 +3112,7 @@ function formView({ initial = null, onSubmit }) {
   };
   if (typeof data.amount === 'number') data.amount = String(data.amount);
 
-  // Type tabs — use role-based selectors, not firstChild/lastChild
+  // Type tabs - use role-based selectors, not firstChild/lastChild
   const tabs = $('div', { class: 'row', role: 'tablist', 'aria-label': 'Transaction type', style: `gap:${isNarrow() ? '10px' : '24px'};padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:32px;flex-wrap:wrap;` });
   const expenseTab = pillTab('Expense', 'expense', data.type === 'expense');
   const creditTab  = pillTab('Income', 'credit', data.type === 'credit');
@@ -3306,7 +3305,7 @@ function formView({ initial = null, onSubmit }) {
     }
     const amt = parseAmount(data.amount);
     if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); amountInput.focus(); return; }
-    if (amt > 100000) { toast('Amount looks too large — double check.'); amountInput.focus(); return; }
+    if (amt > 100000) { toast('Amount looks too large - double check.'); amountInput.focus(); return; }
     if (!isValidCheckpointDate(data.date)) { toast('Pick a valid date.'); dateInput.focus(); return; }
     if (!data.details.trim()) { toast('Add a description.'); detailsInput.focus(); return; }
     if (isTransfer()) {
@@ -3396,7 +3395,7 @@ function formView({ initial = null, onSubmit }) {
 }
 
 // ---------- dashboard ----------
-/** Pull from cloud and re-render — used by both the dashboard resync button and manual sync. */
+/** Pull from cloud and re-render - used by both the dashboard resync button and manual sync. */
 async function doResync() {
   const s = getSyncSettings();
   if (!s.enabled || !s.endpoint || !s.password) { toast('Sync is not configured.'); return; }
@@ -3411,8 +3410,8 @@ async function doResync() {
       return;
     }
     if (!r.content) {
-      if (hasLocalDataToProtect()) { toast('Cloud file is empty — local data was kept and will be pushed.'); scheduleSyncPush(); }
-      else toast('Cloud file is empty — nothing to pull.');
+      if (hasLocalDataToProtect()) { toast('Cloud file is empty - local data was kept and will be pushed.'); scheduleSyncPush(); }
+      else toast('Cloud file is empty - nothing to pull.');
       return;
     }
     await applyReconcile(r, {});
@@ -3453,7 +3452,7 @@ function screenDashboard() {
   const incomeSum = incomeOnly.reduce((s, e) => s + e.amount, 0);
   const pct = budget ? Math.min(100, (expenseSum / budget) * 100) : 0;
 
-  // Recent 5 — stable order: date desc, then id desc as tiebreaker
+  // Recent 5 - stable order: date desc, then id desc as tiebreaker
   const recent = [...state.entries]
     .filter(entry => entry.type !== 'note')
     .sort((a, b) => b.date.localeCompare(a.date) || (a.id < b.id ? 1 : -1))
@@ -3461,7 +3460,7 @@ function screenDashboard() {
 
   const screen = $('section', { class: 'page-section dashboard-section', 'aria-label': 'Dashboard' });
 
-  // Net worth sparkline card (if enough data) — points already computed above
+  // Net worth sparkline card (if enough data) - points already computed above
   if (points.length >= 2) {
     const last30 = points.slice(-30);
     const vals = last30.map(p => p.balance);
@@ -3489,7 +3488,7 @@ function screenDashboard() {
     ));
   }
 
-  // Resync button — only shown when sync is configured
+  // Resync button - only shown when sync is configured
   const syncS = getSyncSettings();
   const resyncBtn = (syncS.enabled && syncS.endpoint && syncS.password)
     ? $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:13px;gap:6px;', onClick: () => doResync() },
@@ -3498,7 +3497,7 @@ function screenDashboard() {
       )
     : null;
 
-  // Hero — the monthly total and balance count up from their previous values
+  // Hero - the monthly total and balance count up from their previous values
   const heroTotalEl = $('span', { class: 'serif' }, fmt(expenseSum));
   countUp(heroTotalEl, expenseSum, 'dash-total');
   const heroBalanceEl = $('span', { class: 'display-num', style: `font-size:13px;color:${runningBalance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(runningBalance));
@@ -3517,7 +3516,7 @@ function screenDashboard() {
     ),
     $('div', { class: 'dashboard-actions' },
       $('label', { class: 'eyebrow', for: 'budget-input' }, 'Budget'),
-      $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '—', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
+      $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '-', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
         e.target.style.borderColor = 'var(--line)';
         if (!commitBudget(e.target.value)) { e.target.value = String(budget || ''); toast('Enter a non-negative number.'); }
       }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
@@ -3529,24 +3528,24 @@ function screenDashboard() {
     ),
   ));
 
-  // Milestone chips — personality that rewards consistency.
+  // Milestone chips - personality that rewards consistency.
   const ms = computeMilestones();
   const chips = [];
   if (ms.entryCount > 0) chips.push($('span', { class: 'pill', title: 'Total entries logged' }, iconSpan('book', 'sm'), `${ms.entryCount} entr${ms.entryCount === 1 ? 'y' : 'ies'} logged`));
   if (ms.monthsUnderBudget >= 1) chips.push($('span', { class: 'pill', title: 'Months where spending stayed within budget' }, iconSpan('medal', 'sm'), `${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget`));
   if (chips.length) screen.appendChild($('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px;' }, ...chips));
 
-  // Morning digest — a glass briefing that answers “how is today looking?” in
+  // Morning digest - a glass briefing that answers “how is today looking?” in
   // one glance. Pure display; reuses computeRunway, computeMilestones and the
   // recurring engine.
   screen.appendChild(morningDigest());
 
-  // Cash-flow runway — the "am I okay?" answer.
+  // Cash-flow runway - the "am I okay?" answer.
   const runway = computeRunway(runningBalance);
   if (runway.dailyAvg > 0) {
     const tone = runway.balance <= 0 || (runway.daysToZero !== null && runway.daysToZero <= 30) ? 'var(--negative)' : 'var(--positive)';
     const message = runway.balance <= 0
-      ? 'Your balance is at or below zero — take a look at this month’s spending.'
+      ? 'Your balance is at or below zero - take a look at this month’s spending.'
       : runway.daysToZero !== null && runway.daysToZero <= 30
         ? `At your current pace, your balance reaches €0 in about ${Math.max(1, runway.daysToZero)} days.`
         : `At your current pace, you’ll have about ${fmt(runway.projectedEnd)} left at the start of next month.`;
@@ -3559,7 +3558,7 @@ function screenDashboard() {
         $('span', { class: 'pulse-status', style: `color:${tone};border-color:${tone};` }, runway.daysToZero !== null && runway.daysToZero <= 30 ? 'Watch out' : 'Comfortable'),
       ),
       $('div', { class: 'pulse-grid' },
-        stat('Runway', runway.daysToZero !== null ? `${runway.daysToZero} days` : '—'),
+        stat('Runway', runway.daysToZero !== null ? `${runway.daysToZero} days` : '-'),
         stat('Daily pace', fmt(runway.dailyAvg)),
         stat('Month-end projection', fmt(runway.projectedEnd)),
       ),
@@ -3605,7 +3604,7 @@ function screenDashboard() {
         })(),
       ),
       $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 20px;' },
-        $('div', { class: 'budget-bar-fill', style: `height:100%;width:${pct}%;background-image:${pct > 90 ? 'linear-gradient(90deg, var(--negative), #dc2626, var(--negative))' : 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))'};transition:width .5s cubic-bezier(0.2,0.8,0.2,1);border-radius:99px;box-shadow:0 0 12px ${pct > 90 ? 'rgba(185,28,28,0.2)' : 'var(--accent-glow)'};` }),
+        $('div', { class: 'budget-bar-fill', style: `height:100%;width:${pct}%;background:${pct > 90 ? 'var(--negative)' : 'var(--accent)'};transition:width .5s cubic-bezier(0.2,0.8,0.2,1);border-radius:99px;` }),
       ),
         // Confetti on last day of month if under budget (once per session)
         ...((() => {
@@ -3652,12 +3651,12 @@ function screenDashboard() {
       stat('Projected total', fmt(forecast.projected)),
       forecast.budget ? stat('Projected remaining', fmt(forecast.remaining)) : stat('Daily average', fmt(forecast.dailyAverage)),
     ),
-    forecast.previousDaily !== null && forecast.dailyAverage > 0 ? $('div', { class: 'serif', style: 'font-size:15px;font-style:italic;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);' },
+    forecast.previousDaily !== null && forecast.dailyAverage > 0 ? $('div', { class: 'serif', style: 'font-size:15px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);' },
       `You are spending ${fmt(Math.abs(forecast.previousDaily - forecast.dailyAverage))} ${forecast.dailyAverage <= forecast.previousDaily ? 'less' : 'more'} per day than last month.`,
     ) : null,
   ));
 
-  // Recurring transactions — always show card so "+ New" is accessible
+  // Recurring transactions - always show card so "+ New" is accessible
   const allRecurring = state.settings.recurring || [];
   const recurring = allRecurring.filter(r => r.nextDate <= key + '-31');
   const dueSoonCount = allRecurring.filter(r => {
@@ -3673,7 +3672,7 @@ function screenDashboard() {
       $('button', { type: 'button', style: 'font-size:11px;color:var(--accent);cursor:pointer;background:none;border:none;padding:0;', onClick: () => openNewRecurring() }, '+ New'),
     ),
     recurring.length === 0
-      ? $('div', { class: 'muted', style: 'font-size:13px;font-style:italic;' }, allRecurring.length ? 'No items due this month.' : 'No recurring items yet. Add your rent, subscriptions, or paydays.')
+      ? $('div', { class: 'muted', style: 'font-size:13px;' }, allRecurring.length ? 'No items due this month.' : 'No recurring items yet. Add your rent, subscriptions, or paydays.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
         ...recurring.map(r => {
           const isOverdue = r.nextDate <= today();
@@ -3708,7 +3707,7 @@ function screenDashboard() {
   );
   screen.appendChild(recCard);
 
-  // Upcoming strip — the next 30 days of scheduled recurring charges, each
+  // Upcoming strip - the next 30 days of scheduled recurring charges, each
   // payable one-tap without waiting for the due date.
   const upcoming = [];
   for (const r of allRecurring) for (const date of upcomingOccurrences(r)) upcoming.push({ rec: r, date });
@@ -3775,7 +3774,7 @@ function screenDashboard() {
           ...recent.flatMap(e => [
             $('span', { class: 'muted', style: 'font-size:12px;' }, friendlyDate(e.date)),
             $('div', null,
-              $('div', { style: 'font-weight:500;' }, e.details || '—'),
+              $('div', { style: 'font-weight:500;' }, e.details || '-'),
               $('div', { style: `font-size:11px;color:var(--muted);${isNarrow() ? 'display:none;' : ''}` }, `${categoryLabel(e.category)} · ${methodLabel(e.method)}`),
             ),
             $('span', { class: 'display-num', style: `text-align:right;font-size:${isNarrow() ? '13px' : '15px'};color:${e.type === 'credit' ? 'var(--positive)' : 'var(--negative)'}` }, (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
@@ -3835,7 +3834,7 @@ function screenDashboard() {
   );
   screen.appendChild(gcCard);
 
-  // Tesco pay — Thursdays tracker
+  // Tesco pay - Thursdays tracker
   const thursdays = thursdaysInMonth(now.getFullYear(), now.getMonth());
   // Look across ALL entries (not just this month) so Thursdays match regardless of when entered
   const incomeByDate = {};
@@ -3879,7 +3878,7 @@ function screenDashboard() {
               ),
               $('div', { style: 'display:flex;align-items:center;gap:8px;' },
                 $('span', { class: 'display-num', style: `font-size:14px;color:${paid ? 'var(--positive)' : 'var(--muted)'};` },
-                  paid ? `+${fmt(incomeByDate[d])}` : '—',
+                  paid ? `+${fmt(incomeByDate[d])}` : '-',
                 ),
                 canFill ? $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:3px 10px;font-size:10px;', onClick: () => fillThursday(d) }, 'Fill') : null,
               ),
@@ -3894,11 +3893,11 @@ function screenDashboard() {
 
 function catBarGradient(catId) {
   const map = {
-    gro: 'linear-gradient(90deg, #15803D, #22c55e)',
-    travel: 'linear-gradient(90deg, #1E40AF, #3B82F6)',
-    rent: 'linear-gradient(90deg, #7C3AED, #A78BFA)',
-    GC: 'linear-gradient(90deg, #C2410C, #F97316)',
-    misc: 'linear-gradient(90deg, #6B6B6B, #9CA3AF)',
+    gro: 'var(--accent)',
+    travel: 'color-mix(in srgb, var(--accent) 72%, var(--ink))',
+    rent: 'color-mix(in srgb, var(--accent) 50%, var(--bg))',
+    GC: 'color-mix(in srgb, var(--accent) 30%, var(--bg))',
+    misc: 'var(--muted)',
   };
   return map[catId] || 'var(--bar-soft)';
 }
@@ -3908,7 +3907,7 @@ function emptySVG(kind) {
   const icons = {
     receipt: '<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="8" y="4" width="24" height="32" rx="2" stroke="currentColor" stroke-width="1.5"/><line x1="14" y1="12" x2="26" y2="12" stroke="currentColor" stroke-width="1.2"/><line x1="14" y1="18" x2="22" y2="18" stroke="currentColor" stroke-width="1.2"/><line x1="14" y1="24" x2="24" y2="24" stroke="currentColor" stroke-width="1.2"/></svg>',
     chart: '<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="6" y="22" width="7" height="14" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="16" y="12" width="7" height="24" rx="1" stroke="currentColor" stroke-width="1.5"/><rect x="26" y="6" width="7" height="30" rx="1" stroke="currentColor" stroke-width="1.5"/></svg>',
-    coin: '<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="14" stroke="currentColor" stroke-width="1.5"/><circle cx="20" cy="20" r="10" stroke="currentColor" stroke-width="1.2"/><text x="20" y="24" text-anchor="middle" font-family="Instrument Serif,serif" font-style="italic" font-size="12" fill="currentColor">€</text></svg>',
+    coin: '<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="20" cy="20" r="14" stroke="currentColor" stroke-width="1.5"/><circle cx="20" cy="20" r="10" stroke="currentColor" stroke-width="1.2"/><text x="20" y="24" text-anchor="middle" font-family="Space Grotesk,sans-serif" font-size="12" fill="currentColor">€</text></svg>',
   };
   return icons[kind] || '';
 }
@@ -3923,7 +3922,7 @@ function emptyIcon(kind) {
 function emptyStateCard({ icon = 'receipt', title, blurb, actionLabel = null, actionHref = null }) {
   return $('div', { class: 'card empty-state', style: 'padding:48px 16px;text-align:center;' },
     emptyIcon(icon),
-    $('div', { class: 'serif', style: 'font-size:22px;font-style:italic;margin-bottom:6px;' }, title),
+    $('div', { class: 'serif', style: 'font-size:22px;margin-bottom:6px;' }, title),
     $('div', { class: 'muted', style: 'font-size:13px;margin:0 auto 18px;max-width:360px;line-height:1.5;' }, blurb),
     actionLabel && actionHref ? $('a', { href: actionHref, class: 'btn btn-primary' }, actionLabel) : null,
   );
@@ -3950,7 +3949,7 @@ function cashWidget() {
 
   let tipTimeout;
   const wrapper = $('span', { style: 'position:relative;display:inline-flex;align-items:center;gap:6px;cursor:pointer;' },
-    $('span', { style: 'font-family:"Instrument Serif",serif;font-style:italic;' }, 'Cash '),
+    $('span', { style: 'font-family:"Space Grotesk",sans-serif;' }, 'Cash '),
     $('span', { class: 'display-num', style: `font-size:16px;color:${total > 0 ? 'var(--accent)' : 'var(--muted)'};` }, fmt(total)),
   );
 
@@ -3988,7 +3987,7 @@ function cashWidget() {
     const hideTip = () => { tip.style.opacity = '0'; };
     wrapper.addEventListener('mouseenter', () => { clearTimeout(tipTimeout); showTip(); });
     wrapper.addEventListener('mouseleave', () => { tipTimeout = setTimeout(hideTip, 150); });
-    // Scrolling moves the widget away from under the cursor — never leave the
+    // Scrolling moves the widget away from under the cursor - never leave the
     // tip floating at a stale position. The handler is module-level so a
     // re-render removes the previous one instead of stacking duplicates.
     cashTipScrollHandler = () => { if (tip.style.opacity === '1') hideTip(); };
@@ -4067,7 +4066,7 @@ function openNewRecurring(existing = null) {
   }
 
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;' },
-    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:26px;' }, existing ? 'Edit recurring' : 'New recurring'),
+    $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:26px;' }, existing ? 'Edit recurring' : 'New recurring'),
     $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
   ));
   modal.appendChild(typeTabs);
@@ -4127,7 +4126,7 @@ function openNewRecurring(existing = null) {
           persist();
         }, `Removed recurring "${rec.details}"`);
         persist();
-        toast(`Recurring "${rec.details}" added — next: ${friendlyDate(rec.nextDate)}`);
+        toast(`Recurring "${rec.details}" added - next: ${friendlyDate(rec.nextDate)}`);
       }
       close();
       render();
@@ -4154,7 +4153,7 @@ function openCashEditor() {
   const rows = COINS.map(c => {
     const key = String(c.val);
     const countEl = $('span', { style: 'min-width:24px;text-align:center;font-weight:500;' }, String(coins[key]));
-    // Per-row subtotal must live in a node we can refresh — computing it once
+    // Per-row subtotal must live in a node we can refresh - computing it once
     // at render froze every row at €0.00 while only the total updated.
     const subEl = $('span', { class: 'muted', style: 'font-size:12px;width:55px;text-align:right;' }, fmt(coins[key] * c.val));
     const refresh = () => {
@@ -4176,7 +4175,7 @@ function openCashEditor() {
   });
 
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' },
-    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:26px;' }, 'Cash breakdown'),
+    $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:26px;' }, 'Cash breakdown'),
     $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
   ));
   modal.appendChild($('div', { style: 'display:flex;flex-direction:column;margin-bottom:12px;' }, ...rows));
@@ -4211,8 +4210,8 @@ function screenAdd() {
 
   if (state.entries.length === 0) {
     c.appendChild($('div', { class: 'card', style: 'max-width:540px;margin:0 auto 20px;padding:20px 16px;text-align:center;' },
-      $('div', { class: 'serif', style: 'font-size:19px;font-style:italic;' }, 'You’re starting fresh.'),
-      $('div', { class: 'muted', style: 'font-size:12px;margin-top:4px;' }, 'Every tracker begins with one entry. Add your first one below — the magic field understands plain English.'),
+      $('div', { class: 'serif', style: 'font-size:19px;' }, 'You’re starting fresh.'),
+      $('div', { class: 'muted', style: 'font-size:12px;margin-top:4px;' }, 'Every tracker begins with one entry. Add your first one below - the magic field understands plain English.'),
     ));
   }
 
@@ -4389,7 +4388,7 @@ function screenHistory() {
   c.appendChild(filterRow);
   c.appendChild(methodFilterRow);
 
-  // Bulk selection — checkboxes in the header and each row, plus a toolbar.
+  // Bulk selection - checkboxes in the header and each row, plus a toolbar.
   const selected = new Set();
   const bulkBar = $('div', { class: 'bulk-bar', style: 'display:none;margin-bottom:12px;padding:10px 16px;border:1px solid var(--accent);border-radius:var(--radius);background:var(--accent-soft);align-items:center;justify-content:space-between;gap:12px;' },
     $('span', { class: 'bulk-count', style: 'font-size:13px;font-weight:500;' }, ''),
@@ -4416,7 +4415,7 @@ function screenHistory() {
       for (const e of removed) { if (!seen.has(e.id)) { seen.add(e.id); affected.push(e); } }
     }
     if (!affected.length) {
-      toast('None of those entries can be deleted — they are protected by reconciliation.');
+      toast('None of those entries can be deleted - they are protected by reconciliation.');
       selected.clear(); syncBulkBar(); render();
       return;
     }
@@ -4431,7 +4430,7 @@ function screenHistory() {
       untombstoneIds(removedCopy.map(e => e.id));
       persist();
     }, `Restored ${removedCopy.length} deleted entr${removedCopy.length === 1 ? 'y' : 'ies'}`, removedCopy);
-    toast(protectedCount ? `Deleted ${removedCopy.length} (${protectedCount} kept — protected).` : `Deleted ${removedCopy.length} entr${removedCopy.length === 1 ? 'y' : 'ies'}.`);
+    toast(protectedCount ? `Deleted ${removedCopy.length} (${protectedCount} kept - protected).` : `Deleted ${removedCopy.length} entr${removedCopy.length === 1 ? 'y' : 'ies'}.`);
     selected.clear();
     render();
   }
@@ -4485,14 +4484,14 @@ function screenHistory() {
           syncBulkBar();
         } })),
         $('span', { class: 'muted history-date' }, friendlyDate(e.date)),          $('div', null,
-            $('div', { class: 'history-details' }, e.details || '—',
+            $('div', { class: 'history-details' }, e.details || '-',
               e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, class: 'history-audio' }) : null,
             isTransfer ? settledLabel : null,
           ),
           $('div', { class: 'history-category' }, categoryLabel(e.category)),
         ),
         $('span', { class: `display-num history-amount${isCredit ? ' is-credit' : ''}` }, e.type === 'note' ? 'Note' : (isCredit ? '+' : '') + fmt(e.amount)),
-        $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, e.type === 'note' ? '—' : fmt(rowBalance)),
+        $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, e.type === 'note' ? '-' : fmt(rowBalance)),
         $('span', null, $('span', { class: 'pill history-method' }, e.method)),
         $('span', { class: 'history-actions' },
           $('button', { type: 'button', class: 'history-action-btn', title: 'Edit or delete entry', 'aria-label': `Edit or delete ${e.details || 'entry'}`, onClick: ev => { ev.stopPropagation(); openEdit(e.id); } }, 'Manage'),
@@ -4708,12 +4707,12 @@ function screenInsights() {
 
   c.appendChild($('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px;margin-bottom:32px;' },
     statCard('Average / month', avg, 'ins-avg'),
-    statCard('Top method', topMethodEntry ? `${(methodShort(topMethodEntry[0]))} · ${fmt(topMethodEntry[1])}` : '—'),
+    statCard('Top method', topMethodEntry ? `${(methodShort(topMethodEntry[0]))} · ${fmt(topMethodEntry[1])}` : '-'),
     statCard('Entries', String(recent.filter(isSpendingEntry).length)),
     statCard('Categories active', String(new Set(recent.filter(isSpendingEntry).map(e => e.category)).size)),
   ));
 
-  // Calendar heatmap — current month
+  // Calendar heatmap - current month
   const now = new Date();
   const heatKey = monthKey(localDateKey(now));
   const heatEntries = entriesForMonth(heatKey).filter(isSpendingEntry);
@@ -4740,7 +4739,7 @@ function screenInsights() {
       tip ? $('div', { class: 'heat-tip' }, tip) : null,
       $('div', {
         class: 'heat-cell', 'data-tip': ttip || null, role: 'button', tabindex: '0',
-        'aria-label': `${friendlyDate(ds)}${val ? `, spent ${fmt(val)}` : ''} — view ${val ? 'these entries' : 'this day'} in history`,
+        'aria-label': `${friendlyDate(ds)}${val ? `, spent ${fmt(val)}` : ''} - view ${val ? 'these entries' : 'this day'} in history`,
         onClick: () => { location.hash = `history?month=${heatKey}&day=${ds}`; },
         onKeydown: (ev) => {
           if (ev.key === 'Enter' || ev.key === ' ') {
@@ -4792,7 +4791,7 @@ function screenInsights() {
     monthOverMonthChart(),
   ));
 
-  // Category mix over time — stacked areas, so the shape of spending is readable
+  // Category mix over time - stacked areas, so the shape of spending is readable
   // month to month without losing the category breakdown.
   const stacked = stackedAreaChart();
   if (stacked) {
@@ -4820,7 +4819,7 @@ function screenInsights() {
     const minValue = Math.min(0, ...values), maxValue = Math.max(1, ...values), range = maxValue - minValue || 1;
     const xAt = i => padX + (balanceHistory.points.length === 1 ? 0 : i * ((chartW - padX * 1.5) / (balanceHistory.points.length - 1)));
     const yAt = value => chartH - padY - ((value - minValue) / range) * (chartH - padY * 2);
-    const palette = ['var(--chart-line)', 'var(--positive)', '#8b5cf6'];
+    const palette = ['var(--chart-line)', 'var(--muted)', 'var(--ink)'];
     const lines = balanceHistory.methods.map((method, index) => {
       const d = balanceHistory.points.map((point, i) => `${i ? 'L' : 'M'} ${xAt(i)} ${yAt(point.balances[method.id])}`).join(' ');
       return $('path', { d, style: `fill:none;stroke:${palette[index]};stroke-width:2;stroke-linecap:round;stroke-linejoin:round;` });
@@ -4843,7 +4842,7 @@ function screenInsights() {
   const review = reviewForMonth(reviewKey);
   c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:12px;' }, `Monthly review · ${monthLabel(reviewKey)} · month to date`),
-    $('div', { style: 'display:flex;flex-direction:column;gap:8px;' }, ...review.lines.map(line => $('div', { class: 'serif', style: 'font-size:16px;font-style:italic;' }, line))),
+    $('div', { style: 'display:flex;flex-direction:column;gap:8px;' }, ...review.lines.map(line => $('div', { class: 'serif', style: 'font-size:16px;' }, line))),
   ));
 
   // Duplicate cleanup
@@ -4895,7 +4894,7 @@ function bar(label, value, max, isMax) {
       $('span', { class: 'display-num', style: 'font-size:14px;' }, fmt(value)),
     ),
     $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
-      $('div', { style: `height:100%;width:${(value/max)*100}%;background:${isMax ? 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))' : 'var(--bar-soft)'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
+      $('div', { style: `height:100%;width:${(value/max)*100}%;background:${isMax ? 'var(--accent)' : 'var(--bar-soft)'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
     ),
   );
 }
@@ -4951,7 +4950,7 @@ function barWithSpark(cat, val, max, isMax) {
       $('span', { class: 'display-num', style: 'font-size:14px;' }, fmt(val)),
     ),
     $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
-      $('div', { style: `height:100%;width:${(val / max) * 100}%;background:${isMax ? 'linear-gradient(90deg, var(--accent), #ea580c, var(--accent))' : 'var(--bar-soft)'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
+      $('div', { style: `height:100%;width:${(val / max) * 100}%;background:${isMax ? 'var(--accent)' : 'var(--bar-soft)'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
     ),
   );
 }
@@ -4959,7 +4958,7 @@ function barWithSpark(cat, val, max, isMax) {
 // ---------- donut chart ----------
 // SVG donut built from stroke-dasharray segments. Starts at 12 o'clock and
 // sweeps clockwise; the centre shows the total. Legend lists share per slice.
-const DONUT_PALETTE = ['var(--accent)', 'var(--positive)', '#8b5cf6', '#38bdf8', '#f59e0b', '#f472b6', '#a3e635', '#94a3b8'];
+const DONUT_PALETTE = ['var(--accent)', 'color-mix(in srgb, var(--accent) 82%, var(--bg))', 'color-mix(in srgb, var(--accent) 64%, var(--bg))', 'color-mix(in srgb, var(--accent) 48%, var(--bg))', 'color-mix(in srgb, var(--accent) 34%, var(--bg))', 'var(--muted)', 'color-mix(in srgb, var(--muted) 55%, var(--bg))', 'var(--line)'];
 function donutChart(rows) {
   const total = rows.reduce((s, [, v]) => s + v, 0);
   if (!total) return null;
@@ -5105,7 +5104,7 @@ function openYearInReview() {
   document.addEventListener('keydown', onEsc, true);
 
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;' },
-    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:28px;' }, `Your ${year} in review`),
+    $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:28px;' }, `Your ${year} in review`),
     $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close'),
   ));
 
@@ -5114,10 +5113,10 @@ function openYearInReview() {
     ['Total spent', fmt(totalSpent), 'var(--negative)'],
     ['Net', fmt(totalEarned - totalSpent), (totalEarned - totalSpent) >= 0 ? 'var(--positive)' : 'var(--negative)'],
     ['Entries logged', String(yearEntries.length), ''],
-    ['Top category', topCat ? `${categoryLabel(topCat[0])} · ${fmt(topCat[1])}` : '—', ''],
-    ['Best month', bestMonth ? `${monthLabel(bestMonth[0])} · ${fmt(bestMonth[1])}` : '—', ''],
-    ['Toughest month', worstMonth ? `${monthLabel(worstMonth[0])} · ${fmt(worstMonth[1])}` : '—', ''],
-    ['Busiest day', busiestDay ? `${friendlyDate(busiestDay[0])} — ${busiestDay[1].count} entries, ${fmt(busiestDay[1].total)}` : '—', ''],
+    ['Top category', topCat ? `${categoryLabel(topCat[0])} · ${fmt(topCat[1])}` : '-', ''],
+    ['Best month', bestMonth ? `${monthLabel(bestMonth[0])} · ${fmt(bestMonth[1])}` : '-', ''],
+    ['Toughest month', worstMonth ? `${monthLabel(worstMonth[0])} · ${fmt(worstMonth[1])}` : '-', ''],
+    ['Busiest day', busiestDay ? `${friendlyDate(busiestDay[0])} - ${busiestDay[1].count} entries, ${fmt(busiestDay[1].total)}` : '-', ''],
   ];
   for (const [label, value, color] of rows) {
     modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px;' },
@@ -5136,7 +5135,7 @@ function openYearInReview() {
 }
 
 // ---------- modal: transfer delete ----------
-/** Delete-only modal for transfer pairs — editing is not allowed. */
+/** Delete-only modal for transfer pairs - editing is not allowed. */
 function openTransferDelete(e) {
   const pair = state.entries.filter(x => x.transferId === e.transferId);
   const opener = document.activeElement;
@@ -5172,10 +5171,10 @@ function openTransferDelete(e) {
   document.addEventListener('keydown', onEsc, true);
 
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' },
-    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:26px;' }, 'Transfer pair'),
+    $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:26px;' }, 'Transfer pair'),
     $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
   ));
-  modal.appendChild($('p', { class: 'serif', style: 'font-style:italic;font-size:17px;margin:0 0 16px;' }, 'Transfers cannot be edited. Delete and recreate the pair.'));
+  modal.appendChild($('p', { class: 'serif', style: 'font-size:17px;margin:0 0 16px;' }, 'Transfers cannot be edited. Delete and recreate the pair.'));
 
   for (const p of pair) {
     modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;' },
@@ -5184,7 +5183,7 @@ function openTransferDelete(e) {
     ));
   }
 
-  modal.appendChild($('p', { class: 'serif', style: 'font-style:italic;font-size:15px;color:var(--negative);margin:16px 0 8px;' }, 'Delete this transfer pair? You can undo it from the toast.'));
+  modal.appendChild($('p', { class: 'serif', style: 'font-size:15px;color:var(--negative);margin:16px 0 8px;' }, 'Delete this transfer pair? You can undo it from the toast.'));
   modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;' },
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
     $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: () => {
@@ -5210,7 +5209,7 @@ function openEdit(id) {
   const e = state.entries.find(x => x.id === id);
   if (!e) return;
 
-  // Transfer entries can't be edited — show a delete-only modal
+  // Transfer entries can't be edited - show a delete-only modal
   if (e.transferId) {
     openTransferDelete(e);
     return;
@@ -5255,11 +5254,11 @@ function openEdit(id) {
   };
   document.addEventListener('keydown', onKey, true);
 
-  // Edit form (no delete button inside formView — we'll put it as a two-stage below)
+  // Edit form (no delete button inside formView - we'll put it as a two-stage below)
   let formNode;
   const formContainer = $('div');
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;' },
-    $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:26px;' }, 'Edit entry'),
+    $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:26px;' }, 'Edit entry'),
     $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
   ));
   formNode = formView({
@@ -5308,7 +5307,7 @@ function openEdit(id) {
     close();
   } }, 'Confirm delete');
   const deletePanel = $('div', { style: 'display:none;margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:var(--accent-soft);' },
-    $('p', { class: 'serif', style: 'font-style:italic;font-size:17px;margin:0 0 12px;color:var(--negative);' }, 'Delete this entry? You can undo it from the toast.'),
+    $('p', { class: 'serif', style: 'font-size:17px;margin:0 0 12px;color:var(--negative);' }, 'Delete this entry? You can undo it from the toast.'),
     $('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' }, cancelDeleteBtn, confirmDeleteBtn),
   );
   modal.appendChild($('div', { style: 'margin-top:24px;padding-top:24px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;' }, deleteStage1));
@@ -5357,17 +5356,17 @@ function openSyncSettings() {
     const status = syncStatus();
 
     modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;' },
-      $('h2', { style: 'font-family:"Instrument Serif",serif;font-style:italic;font-weight:400;font-size:28px;' }, 'Sync'),
+      $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:28px;' }, 'Sync'),
       $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
     ));
 
-    modal.appendChild($('p', { class: 'serif', style: 'font-style:italic;color:var(--ink);margin:0 0 8px;font-size:17px;' },
+    modal.appendChild($('p', { class: 'serif', style: 'color:var(--ink);margin:0 0 8px;font-size:17px;' },
       s.enabled
         ? (s.lastError ? 'Connection issue.' : status.label + '.')
         : 'Sync is off. Paste your password and save.',
     ));
     if (s.lastError) {
-      modal.appendChild($('p', { style: 'font-size:13px;color:var(--negative);margin:0 0 18px;font-family:"Instrument Serif",serif;font-style:italic;' }, 'Last error: ', s.lastError));
+      modal.appendChild($('p', { style: 'font-size:13px;color:var(--negative);margin:0 0 18px;font-family:"Space Grotesk",sans-serif;' }, 'Last error: ', s.lastError));
     }
 
     // Endpoint + password form
@@ -5457,12 +5456,12 @@ function openSyncSettings() {
       modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;padding-top:18px;border-top:1px solid var(--line);' }, pullBtn, pushBtn));
 
       if (s.lastSyncAt) {
-        modal.appendChild($('p', { class: 'serif', style: 'font-style:italic;color:var(--muted);font-size:15px;margin-top:14px;' },
+        modal.appendChild($('p', { class: 'serif', style: 'color:var(--muted);font-size:15px;margin-top:14px;' },
           `Last sync ${relativeTime(s.lastSyncAt)}.`,
         ));
       }
       if (s.repoLabel) {
-        modal.appendChild($('p', { class: 'muted', style: 'font-size:12px;margin-top:4px;font-family:"JetBrains Mono",Menlo,monospace;' }, 'Repo: ', s.repoLabel));
+        modal.appendChild($('p', { class: 'muted', style: 'font-size:12px;margin-top:4px;font-family:"IBM Plex Mono",Menlo,monospace;' }, 'Repo: ', s.repoLabel));
       }
 
       // One-tap onboarding for other devices: a link that configures sync
@@ -5470,7 +5469,7 @@ function openSyncSettings() {
       if (s.password) {
         const link = syncSetupLink();
         if (link) {
-          const linkInput = $('input', { type: 'text', readonly: true, value: link, 'aria-label': 'Sync setup link', style: 'font-size:11px;font-family:"JetBrains Mono",Menlo,monospace;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius);width:100%;min-width:0;color:var(--muted);background:var(--bg-deep);' });
+          const linkInput = $('input', { type: 'text', readonly: true, value: link, 'aria-label': 'Sync setup link', style: 'font-size:11px;font-family:"IBM Plex Mono",Menlo,monospace;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius);width:100%;min-width:0;color:var(--muted);background:var(--bg-deep);' });
           const copyBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 10px;font-size:11px;flex-shrink:0;', onClick: async () => {
             // Race the clipboard against a short timeout: a browser that
             // neither grants nor rejects the write (permission hang) must
@@ -5486,19 +5485,19 @@ function openSyncSettings() {
             } catch { copied = false; }
             linkInput.select();
             toast(copied
-              ? 'Setup link copied — open it on your other device.'
+              ? 'Setup link copied - open it on your other device.'
               : 'Copy the link above to use on your other device.');
           } }, 'Copy');
           modal.appendChild($('div', { style: 'margin-top:24px;padding-top:18px;border-top:1px solid var(--line);' },
             $('div', { class: 'eyebrow' }, 'Add another device'),
-            $('p', { class: 'muted', style: 'font-size:12px;margin:6px 0 10px;' }, 'Open this link on your other device and sync starts automatically — no password to type. Anyone with the link can read and write your synced data, so keep it private.'),
+            $('p', { class: 'muted', style: 'font-size:12px;margin:6px 0 10px;' }, 'Open this link on your other device and sync starts automatically - no password to type. Anyone with the link can read and write your synced data, so keep it private.'),
             $('div', { style: 'display:flex;gap:8px;align-items:center;' }, linkInput, copyBtn),
           ));
         }
       }
 
       modal.appendChild($('div', { style: 'margin-top:24px;padding-top:18px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;' },
-        $('span', { class: 'muted', style: 'font-size:12px;font-family:"Instrument Serif",serif;font-style:italic;' }, 'Disconnect to wipe sync settings from this device.'),
+        $('span', { class: 'muted', style: 'font-size:12px;font-family:"Space Grotesk",sans-serif;' }, 'Disconnect to wipe sync settings from this device.'),
         $('button', { type: 'button', class: 'btn btn-danger', onClick: () => {
           // Stop queued automatic pushes before removing credentials. A pending
           // timer must not revive a disconnected sync if the user reconnects
@@ -5542,7 +5541,7 @@ function morningDigest() {
   const runway = computeRunway(balance);
   const runwayLine = runway.dailyAvg > 0
     ? (runway.daysToZero != null && runway.daysToZero <= 3650 ? `≈ ${runway.daysToZero} days to €0` : `≈ ${fmt(runway.projectedEnd)} at month-end`)
-    : '—';
+    : '-';
 
   const digestStat = (label, value, note) => $('div', { class: 'digest-stat' },
     $('div', { class: 'digest-stat-label' }, label),
@@ -5554,14 +5553,14 @@ function morningDigest() {
     $('div', { class: 'row between', style: 'align-items:flex-start;margin-bottom:16px;' },
       $('div', null,
         $('div', { class: 'eyebrow' }, 'Morning digest'),
-        $('div', { class: 'serif', style: `font-size:${isNarrow() ? '22px' : '26px'};font-style:italic;margin-top:4px;display:flex;align-items:center;gap:8px;` }, greeting, iconSpan(hour < 5 ? 'coffee' : hour < 12 ? 'sun' : hour < 18 ? 'cloud-sun' : 'moon', 'greet-icon')),
+        $('div', { class: 'serif', style: `font-size:${isNarrow() ? '22px' : '26px'};margin-top:4px;display:flex;align-items:center;gap:8px;` }, greeting, iconSpan(hour < 5 ? 'coffee' : hour < 12 ? 'sun' : hour < 18 ? 'cloud-sun' : 'moon', 'greet-icon')),
       ),
       $('span', { class: 'digest-emoji', 'aria-hidden': 'true', innerHTML: ICONS.coffee }),
     ),
     $('div', { class: 'digest-grid' },
-      digestStat('Today', todaySummary.split(' · ')[0], todaySummary.split(' · ').slice(1).join(' · ') || '—'),
-      digestStat('Next due', next ? `${next.rec.details}` : '—', next ? (daysUntil(next.date) === 0 ? 'today' : `in ${daysUntil(next.date)}d · ${friendlyDate(next.date)}`) : 'no recurring items'),
-      digestStat('Runway', runway.dailyAvg > 0 ? runwayLine : '—', runway.dailyAvg > 0 ? `balance ${fmt(balance)}` : 'log spending to estimate'),
+      digestStat('Today', todaySummary.split(' · ')[0], todaySummary.split(' · ').slice(1).join(' · ') || '-'),
+      digestStat('Next due', next ? `${next.rec.details}` : '-', next ? (daysUntil(next.date) === 0 ? 'today' : `in ${daysUntil(next.date)}d · ${friendlyDate(next.date)}`) : 'no recurring items'),
+      digestStat('Runway', runway.dailyAvg > 0 ? runwayLine : '-', runway.dailyAvg > 0 ? `balance ${fmt(balance)}` : 'log spending to estimate'),
     ),
   );
 }
@@ -5596,7 +5595,7 @@ function toast(text, undoFn, undoLabel) {
 
 // Offer the persisted undo journal after a reload. Only the entries that are
 // still missing (not already restored or recreated) are re-added. The journal
-// is consumed as soon as the offer is shown — a dismissed toast (or another
+// is consumed as soon as the offer is shown - a dismissed toast (or another
 // reload) must never re-offer the same change.
 function offerPersistedUndo() {
   const journal = loadUndoJournal();
@@ -5618,7 +5617,7 @@ function offerPersistedUndo() {
     clearUndoJournal();
     render();
   }, 'Undo');
-  // One-shot: the offer is now shown, so clear the journal — clicking Undo
+  // One-shot: the offer is now shown, so clear the journal - clicking Undo
   // still works (the closure holds the entries), but the next reload won't
   // re-offer an already-seen change.
   clearUndoJournal();
@@ -5676,26 +5675,26 @@ function render() {
     var errText = String(e.stack || e.message || e).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     var isDark = document.documentElement.dataset.theme === 'dark';
     var c = {
-      bg: isDark ? '#171310' : '#FAF8F3',
-      card: isDark ? '#272219' : '#fff',
-      line: isDark ? '#373128' : '#e4e0d6',
-      ink: isDark ? '#ede6db' : '#1a1a1a',
-      muted: isDark ? '#a29a8b' : '#6d6457',
-      soft: isDark ? '#2f2219' : '#fff5f0',
-      softBorder: isDark ? '#4a3a2a' : '#f4d7c8',
-      kbdBg: isDark ? '#272219' : '#f4f0e7',
-      shadow: isDark ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.06)',
+      bg: isDark ? '#101210' : '#F5F5F2',
+      card: isDark ? '#171A17' : '#FFFFFF',
+      line: isDark ? '#272B26' : '#E3E3DC',
+      ink: isDark ? '#E8EBE5' : '#161712',
+      muted: isDark ? '#8C928A' : '#6E6E67',
+      soft: isDark ? '#1C2A20' : '#E9F2EC',
+      softBorder: isDark ? '#2E3D33' : '#BFD6C9',
+      kbdBg: isDark ? '#161916' : '#ECECE7',
+      shadow: isDark ? 'rgba(0,0,0,0.45)' : 'rgba(0,0,0,0.08)',
     };
     mount.innerHTML =
-      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;background:' + c.bg + ';font-family:Inter,system-ui,sans-serif;z-index:9999;">' +
+      '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;background:' + c.bg + ';font-family:&quot;Space Grotesk&quot;,system-ui,sans-serif;z-index:9999;">' +
         '<div style="max-width:560px;padding:32px 36px;border:1px solid ' + c.line + ';border-radius:16px;background:' + c.card + ';line-height:1.55;font-size:14px;box-shadow:0 8px 32px ' + c.shadow + ';">' +
-          '<div style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-size:22px;color:' + c.ink + ';">cents.</div>' +
-          '<h1 style="font-family:&quot;Instrument Serif&quot;,Georgia,serif;font-style:italic;font-weight:400;font-size:28px;margin:4px 0 8px;">Render crashed.</h1>' +
+          '<div style="font-family:&quot;Space Grotesk&quot;,system-ui,sans-serif;font-size:22px;color:' + c.ink + ';">cents.</div>' +
+          '<h1 style="font-family:&quot;Space Grotesk&quot;,system-ui,sans-serif;font-weight:600;font-size:28px;margin:4px 0 8px;">Render crashed.</h1>' +
           '<div style="margin:12px 0 16px;padding:10px 12px;background:' + c.soft + ';border:1px solid ' + c.softBorder + ';border-radius:8px;font-size:12px;">' +
-            '<span style="font-style:italic;color:' + c.muted + ';font-family:&quot;Instrument Serif&quot;,Georgia,serif;">Error</span>' +
+            '<span style="color:' + c.muted + ';font-family:&quot;Space Grotesk&quot;,system-ui,sans-serif;">Error</span>' +
             '<code style="display:block;margin-top:4px;font-size:11px;word-break:break-word;white-space:pre-wrap;line-height:1.4;">' + errText + '</code>' +
           '</div>' +
-          '<ol style="padding-left:22px;margin:12px 0 0;"><li>Copy the error above.</li><li>Hard refresh — <kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">Ctrl</kbd>+<kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">Shift</kbd>+<kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">R</kbd></li></ol>' +
+          '<ol style="padding-left:22px;margin:12px 0 0;"><li>Copy the error above.</li><li>Hard refresh - <kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">Ctrl</kbd>+<kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">Shift</kbd>+<kbd style="background:' + c.kbdBg + ';padding:1px 6px;border-radius:4px;border:1px solid ' + c.line + ';font-family:ui-monospace,monospace;font-size:12px;">R</kbd></li></ol>' +
         '</div>' +
       '</div>';
       // Also log so we can see it in DevTools
@@ -5710,7 +5709,7 @@ function _render() {
   const main = document.getElementById('app');
   if (!main) return;
   const focusedField = captureFocusedField();
-    // Init dark mode + season on first render — dark is the default
+    // Init dark mode + season on first render - dark is the default
   if (!document.documentElement.dataset.themeInit) {
     document.documentElement.dataset.themeInit = '1';
     try {
@@ -5743,7 +5742,7 @@ function _render() {
   }
   // A per-child rise animation on a huge subtree (the History table) forces
   // the browser to rasterize the whole thing into a composite layer on every
-  // navigation — keep the single cheap screenIn fade for heavy screens and
+  // navigation - keep the single cheap screenIn fade for heavy screens and
   // stagger only light ones, so navigation stays instant.
   if (shouldAnimateScreen && (screen.querySelector('.history-row') || screen.children.length > 12)) {
     screen.classList.remove('stagger');
@@ -5812,7 +5811,7 @@ function _render() {
   // or move the caret. Newly opened forms still manage their own initial focus.
   if (!shouldAnimateScreen) restoreFocusedField(focusedField);
 
-  // Sticky header — register the scroll listener once. The header is rebuilt on
+  // Sticky header - register the scroll listener once. The header is rebuilt on
   // every render, so the cached element is refreshed here on each render. The
   // handler is rAF-throttled and only touches the DOM when the state changes.
   if (!window.__stickyInit) {
@@ -5825,7 +5824,7 @@ function _render() {
       if (!hdr || !hdr.isConnected) return;
       // Idempotent: classList.toggle with a boolean is a DOM no-op when the
       // class already matches, so this still only touches the DOM on change.
-      // is-sticky is always ensured — the header is rebuilt on every render
+      // is-sticky is always ensured - the header is rebuilt on every render
       // and the fresh element never has it.
       if (!hdr.classList.contains('is-sticky')) hdr.classList.add('is-sticky');
       const now = window.scrollY;
@@ -5843,7 +5842,7 @@ function _render() {
       if (rafId === null) rafId = requestAnimationFrame(applySticky);
     }, { passive: true });
   }
-  // Refresh the cached element — the header is rebuilt on every render.
+  // Refresh the cached element - the header is rebuilt on every render.
   window.__stickyHdr = document.querySelector('.app-header');
 }
 
