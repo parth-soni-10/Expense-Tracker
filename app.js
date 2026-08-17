@@ -1320,10 +1320,10 @@ function categoryLabel(id) {
 
 const ACCOUNT_METHOD_IDS = ['AIB', 'Revolut', 'RS'];
 const GIFT_CARD_IDS = ['TG', 'LG', 'AG'];
-// Spending on these accounts never counts against the monthly budget: money
-// moved to Revolut Savings is saving, not consumption, and gift-card "spends"
-// are redemptions of money that was already loaded onto the card.
-const BUDGET_EXCLUDED_METHOD_IDS = ['RS', ...GIFT_CARD_IDS];
+// Revolut Savings is excluded from the monthly budget: moving money into (or
+// spending out of) savings is not "spending", so no transaction on this
+// account counts toward the month's spent/income/net figures.
+const BUDGET_EXCLUDED_METHOD_IDS = ['RS'];
 // Account groups: a parent "account" that aggregates several sub-accounts.
 // The parent holds no entries of its own; its balance is the sum of its members.
 const ACCOUNT_GROUPS = [
@@ -1796,15 +1796,19 @@ function catTotalsForEntries(entries) {
 function isSpendingEntry(entry) {
   return entry.type === 'expense' && !entry.transferId;
 }
-/** Spending that counts against the monthly budget (excludes savings + gift cards). */
+/** Spending that counts against the monthly budget (excludes savings). */
 function isBudgetSpendingEntry(entry) {
   return isSpendingEntry(entry) && !BUDGET_EXCLUDED_METHOD_IDS.includes(entry.method);
 }
 function isIncomeEntry(entry) {
   return entry.type === 'credit' && !entry.transferId;
 }
+/** Income that counts toward the month's figures (excludes savings). */
+function isBudgetIncomeEntry(entry) {
+  return isIncomeEntry(entry) && !BUDGET_EXCLUDED_METHOD_IDS.includes(entry.method);
+}
 function totalForMonth(key) {
-  return entriesForMonth(key).reduce((s, e) => s + (isSpendingEntry(e) ? e.amount : isIncomeEntry(e) ? -e.amount : 0), 0);
+  return entriesForMonth(key).reduce((s, e) => s + (isBudgetSpendingEntry(e) ? e.amount : isBudgetIncomeEntry(e) ? -e.amount : 0), 0);
 }
 function parseAmount(raw) {
   if (raw == null) return NaN;
@@ -3701,7 +3705,7 @@ function screenDashboard() {
   };
 
   const expensesOnly = monthEntries.filter(isBudgetSpendingEntry);
-  const incomeOnly = monthEntries.filter(isIncomeEntry);
+  const incomeOnly = monthEntries.filter(isBudgetIncomeEntry);
   const catTotals = {};
   for (const e of expensesOnly) {
     catTotals[e.category] = (catTotals[e.category] || 0) + e.amount;
@@ -5738,7 +5742,7 @@ function dashboardPulse(key, expenseSum, runningBalance) {
   const t = today();
   const todays = state.entries.filter(e => e.date === t && e.type !== 'note');
   const spentToday = todays.filter(isBudgetSpendingEntry).reduce((s, e) => s + e.amount, 0);
-  const earnedToday = todays.filter(isIncomeEntry).reduce((s, e) => s + e.amount, 0);
+  const earnedToday = todays.filter(isBudgetIncomeEntry).reduce((s, e) => s + e.amount, 0);
   const todaySummary = todays.length
     ? `${todays.length} entr${todays.length === 1 ? 'y' : 'ies'}${spentToday ? ' · −' + fmt(spentToday) : ''}${earnedToday ? ' · +' + fmt(earnedToday) : ''}`
     : 'nothing yet';

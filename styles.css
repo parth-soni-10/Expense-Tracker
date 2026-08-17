@@ -1194,7 +1194,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   display: flex; align-items: flex-start; justify-content: space-between;
   gap: 16px; margin-bottom: 20px;
 }
-.pulse-message { margin-top: 6px; font-size: 20px; line-height: 1.15; }
 .pulse-status {
   flex-shrink: 0;
   border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
@@ -1269,7 +1268,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 
 @media (max-width: 639px) {
   .pulse-heading { gap: 10px; }
-  .pulse-message { font-size: 18px; }
   .pulse-grid { gap: 12px; }
   .pulse-grid .display-num { font-size: 16px !important; }
   .insight-narrative-text { font-size: 19px; }
@@ -1698,9 +1696,6 @@ body.menu-open { overflow: hidden; }
 /* Links that carry an icon glyph sit neatly next to their label */
 .btn-link { display: inline-flex; align-items: center; gap: 5px; }
 .history-settled { display: inline-flex; align-items: center; gap: 3px; }
-
-/* Icon sizing */
-.greet-icon svg { width: 18px; height: 18px; }
 
 /* Keyboard focus everywhere else */
 button:focus-visible, a:focus-visible, select:focus-visible, [role='button']:focus-visible {
