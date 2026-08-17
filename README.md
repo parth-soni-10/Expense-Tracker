@@ -13,7 +13,7 @@ you act → state updated in memory → persisted to localStorage → (optionall
 - **State is one JSON document.** All entries, settings, balances, and bookkeeping live in a single validated state object (schema-versioned). Nothing is stored piecemeal.
 - **`localStorage` is the source of truth.** The app reads it on boot and writes on every change. Cloud sync is a *copy* of that document, not a database.
 - **Strict validation.** Every load runs the stored JSON through a validator — unknown fields are dropped, missing fields get defaults, bad entries are filtered. A hand-edited or older cloud file can never crash the app.
-- **Everything is undoable.** Most destructive actions capture an undo snapshot, and the few that need to survive a reload (delete, reset, some edits) are written to a small journal so you can undo even after closing the tab.
+- **Everything is undoable.** A persistent Undo button is always on screen while an action is reversible and reverts the most recent change. Most destructive actions capture an undo snapshot, and the few that need to survive a reload (delete, reset, some edits) are written to a small journal so you can undo even after closing the tab.
 
 ## Stack
 

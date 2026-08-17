@@ -734,6 +734,45 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   transition: background 0.2s;
 }
 .toast .toast-undo:hover { background: rgba(255,255,255,0.16); }
+
+/* ── Persistent undo button — always available while an action is reversible ── */
+.undo-fab {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 16px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  max-width: min(340px, calc(100vw - 32px));
+  transition: transform .12s var(--ease-out), box-shadow .2s, background .15s, border-color .15s;
+}
+.undo-fab:hover { transform: translateY(-1px); box-shadow: var(--shadow-xl); border-color: var(--muted); }
+.undo-fab:active { transform: scale(.96); }
+.undo-fab:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.undo-fab-label { white-space: nowrap; }
+.undo-fab-action {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-weight: 500;
+}
+@media (max-width: 639px) {
+  .undo-fab { right: 16px; bottom: calc(88px + env(safe-area-inset-bottom, 0px)); padding: 10px 14px; }
+  .undo-fab-action { display: none; }
+}
 @keyframes toastIn {
   from { transform: translateY(16px) scale(0.97); opacity: 0; }
   to   { transform: none; opacity: 1; }
@@ -1252,11 +1291,9 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   .pulse-status { display: inline-flex; margin-top: 12px; }
   .pulse-grid { gap: 8px; }
   .pulse-grid .eyebrow { letter-spacing: .08em; }
-  .balance-editor-help { display: none; }
   .add-flow-hint { display: none; }
 }
 @media (min-width: 400px) and (max-width: 639px) {
-  .balance-editor-help { white-space: normal; max-width: 180px; line-height: 1.25; }
   .add-flow-hint { display: none; }
 }
 

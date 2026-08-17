@@ -430,7 +430,7 @@ export function loadUndoJournal() {
     const raw = localStorage.getItem(UNDO_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.entries)) return null;
+    if (!parsed || (!Array.isArray(parsed.entries) && !Array.isArray(parsed.checkpoints))) return null;
     return parsed;
   } catch { return null; }
 }

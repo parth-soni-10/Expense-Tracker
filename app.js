@@ -425,27 +425,29 @@ function showPinLock() {
   // PIN-only, biometrics stay mobile.
   const input = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'PIN', 'aria-label': 'PIN', style: 'width:100%;text-align:center;letter-spacing:.35em;font-size:24px;' });
   const message = $('p', { class: 'muted', style: 'font-size:13px;text-align:center;min-height:20px;margin:12px 0;' }, 'Enter your PIN.');
-  const submit = async () => {
-    const value = String(input.value || '').trim();
-    if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { message.textContent = 'Use 4-20 letters or numbers.'; input.focus(); return; }
+  // Verify a candidate PIN against the stored credential. Returns true on match.
+  const verifyPin = async (value) => {
     const saved = getPinCredential();
-    let matches = false;
     try {
       if (saved.salt !== null) {
-        matches = (await hashPin(value, saved.salt)) === saved.hash;
+        return (await hashPin(value, saved.salt)) === saved.hash;
       } else if (globalThis.crypto?.subtle) {
         // Plain SHA-256 path (legacy hashes and the built-in default).
-        matches = (await hashPinPlain(value)) === saved.hash;
+        return (await hashPinPlain(value)) === saved.hash;
       } else {
         // No Web Crypto (plain-HTTP context): the built-in default credential
         // is casual protection, so verify it by direct comparison. Personal
         // salted hashes cannot be checked without Web Crypto.
-        matches = saved.isDefault && value === DEFAULT_PIN_PLAIN;
+        return saved.isDefault && value === DEFAULT_PIN_PLAIN;
       }
     } catch (err) {
-      matches = false;
+      return false;
     }
-    if (!matches) {
+  };
+  const submit = async () => {
+    const value = String(input.value || '').trim();
+    if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { message.textContent = 'Use 4-20 letters or numbers.'; input.focus(); return; }
+    if (!(await verifyPin(value))) {
       message.textContent = globalThis.crypto?.subtle
         ? 'That PIN is not correct.'
         : 'PIN verification needs a secure (HTTPS) connection on this device.';
@@ -511,6 +513,15 @@ function showPinLock() {
   pinOverlay = overlay;
   document.body.appendChild(overlay);
   input.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+  // Auto-unlock the moment the typed PIN matches the stored one, so the user
+  // never has to press Enter after the final character.
+  input.addEventListener('input', async () => {
+    const value = String(input.value || '').trim();
+    if (value.length < 4 || !/^[a-zA-Z0-9]+$/.test(value)) return;
+    if (await verifyPin(value)) {
+      if (pinOverlay && !pinUnlocked) completeUnlock();
+    }
+  });
   biometricSupported().then(ok => {
     if (!pinOverlay) return;
     if (!ok) {
@@ -1309,6 +1320,10 @@ function categoryLabel(id) {
 
 const ACCOUNT_METHOD_IDS = ['AIB', 'Revolut', 'RS'];
 const GIFT_CARD_IDS = ['TG', 'LG', 'AG'];
+// Spending on these accounts never counts against the monthly budget: money
+// moved to Revolut Savings is saving, not consumption, and gift-card "spends"
+// are redemptions of money that was already loaded onto the card.
+const BUDGET_EXCLUDED_METHOD_IDS = ['RS', ...GIFT_CARD_IDS];
 // Account groups: a parent "account" that aggregates several sub-accounts.
 // The parent holds no entries of its own; its balance is the sum of its members.
 const ACCOUNT_GROUPS = [
@@ -1544,12 +1559,14 @@ function saveBalanceCheckpoint(methodId, date, balance) {
   return true;
 }
 function removeBalanceCheckpoint(methodId, date) {
-  if (!BALANCE_METHOD_IDS.includes(methodId) || date === '1970-01-01') return false;
+  if (!BALANCE_METHOD_IDS.includes(methodId) || date === '1970-01-01') return null;
   const existing = state.settings.balanceCheckpoints?.[methodId];
-  if (!Array.isArray(existing) || !existing.some(point => point.date === date)) return false;
+  if (!Array.isArray(existing)) return null;
+  const removed = existing.find(point => point.date === date);
+  if (!removed) return null;
   state.settings.balanceCheckpoints[methodId] = existing.filter(point => point.date !== date);
   persist();
-  return true;
+  return removed;
 }
 function totalAccountBalanceAt(date = today(), checkpointsByMethod = null) {
   const entries = state.entries;
@@ -1594,15 +1611,19 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
         loadAmount.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); loadSave(); } if (ev.key === 'Escape') { editing = false; draw(); } });
         loadDate.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); loadSave(); } if (ev.key === 'Escape') { editing = false; draw(); } });
         row.append(
-          $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;flex:1;' },
-            $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
-            $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);' }, 'Load'),
-          ),
-          $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
-            $('span', { class: 'muted', style: 'font-size:10px;' }, `add a credit entry to top up this ${isGiftCard ? 'card' : 'account'}`),
-            loadAmount, loadDate,
-            $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: loadSave }, iconSpan('plus', 'sm'), 'Load'),
-            $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
+          $('div', { style: 'flex:1 1 100%;display:flex;flex-direction:column;gap:8px;min-width:0;' },
+            $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:6px 12px;flex-wrap:wrap;min-width:0;' },
+              $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' },
+                $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
+                $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);' }, 'Load'),
+              ),
+              $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
+                loadAmount, loadDate,
+                $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: loadSave }, iconSpan('plus', 'sm'), 'Load'),
+                $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
+              ),
+            ),
+            $('div', { class: 'muted balance-editor-help', style: 'font-size:10px;line-height:1.35;' }, `Adds a credit entry to top up this ${isGiftCard ? 'card' : 'account'}.`),
           ),
         );
         queueMicrotask(() => loadAmount.focus());
@@ -1629,16 +1650,20 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
       amount.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } if (ev.key === 'Escape') { editing = false; draw(); } });
       date.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } if (ev.key === 'Escape') { editing = false; draw(); } });
       row.append(
-        $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;flex:1;' },
-          $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
-          secondary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, secondary) : null,
-          isGiftCard ? $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);' }, 'Reconcile') : null,
-        ),
-        $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
-          $('span', { class: 'muted balance-editor-help', style: 'font-size:10px;' }, 'amount is authoritative when saved; later same-day edits and entries are applied'),
-          amount, date,
-          $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: save }, 'Save'),
-          $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
+        $('div', { style: 'flex:1 1 100%;display:flex;flex-direction:column;gap:8px;min-width:0;' },
+          $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:6px 12px;flex-wrap:wrap;min-width:0;' },
+            $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' },
+              $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
+              secondary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, secondary) : null,
+              isGiftCard ? $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);' }, 'Reconcile') : null,
+            ),
+            $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
+              amount, date,
+              $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: save }, 'Save'),
+              $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
+            ),
+          ),
+          $('div', { class: 'muted balance-editor-help', style: 'font-size:10px;line-height:1.35;' }, 'Amount is authoritative when saved. Later same-day edits and entries still apply.'),
         ),
       );
       queueMicrotask(() => amount.focus());
@@ -1666,7 +1691,15 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
         ) : editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, iconSpan('pencil', 'sm')) : null,
         editable && summary ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:10px;padding:3px 5px;color:var(--negative);', onClick: async () => {
           if (!(await swalConfirm({ title: 'Remove reconciliation?', text: `Remove the ${label} reconciliation from ${friendlyDate(summary.point.date)}?`, confirmButtonText: 'Remove', danger: true }))) return;
-          if (removeBalanceCheckpoint(methodId, summary.point.date)) {
+          const removed = removeBalanceCheckpoint(methodId, summary.point.date);
+          if (removed) {
+            trackAction(() => {
+              state.settings.balanceCheckpoints[methodId] = [
+                ...(state.settings.balanceCheckpoints?.[methodId] || []).filter(point => point.date !== removed.date),
+                removed,
+              ].sort((a, b) => a.date.localeCompare(b.date));
+              persist();
+            }, `Restored ${label} reconciliation`, null, [{ methodId, point: { ...removed } }]);
             toast(`${label} reconciliation removed.`);
             render();
           }
@@ -1762,6 +1795,10 @@ function catTotalsForEntries(entries) {
 }
 function isSpendingEntry(entry) {
   return entry.type === 'expense' && !entry.transferId;
+}
+/** Spending that counts against the monthly budget (excludes savings + gift cards). */
+function isBudgetSpendingEntry(entry) {
+  return isSpendingEntry(entry) && !BUDGET_EXCLUDED_METHOD_IDS.includes(entry.method);
 }
 function isIncomeEntry(entry) {
   return entry.type === 'credit' && !entry.transferId;
@@ -2273,16 +2310,99 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
 }
 
 // ---------- undo system ----------
-// trackAction stores a single-slot undo snapshot; the toast captures it at
-// creation time so a later action can't re-wire an earlier Undo button.
+// A single undo slot: `_lastAction` holds the live closure for the most recent
+// action, and the journal is its reload-safe serialisation. The toast captures
+// the slot at creation time so a later action can't re-wire an earlier Undo
+// button; the persistent undo button always reverts the latest action.
 let _lastAction = null;
-function trackAction(undoFn, label, journalEntries) {
+function trackAction(undoFn, label, journalEntries, journalCheckpoints) {
   _lastAction = { undo: undoFn, label };
-  // Persist a reload-safe journal for destructive actions so the undo is still
-  // offered after a reload (the closure itself cannot be serialised).
-  if (Array.isArray(journalEntries) && journalEntries.length) {
-    saveUndoJournal({ label, at: nowIso(), entries: journalEntries.map(e => ({ ...e })) });
+  const hasEntries = Array.isArray(journalEntries) && journalEntries.length;
+  const hasCheckpoints = Array.isArray(journalCheckpoints) && journalCheckpoints.length;
+  if (hasEntries || hasCheckpoints) {
+    saveUndoJournal({
+      label,
+      at: nowIso(),
+      entries: hasEntries ? journalEntries.map(e => ({ ...e })) : [],
+      checkpoints: hasCheckpoints ? journalCheckpoints.map(c => ({ methodId: c.methodId, point: { ...c.point } })) : [],
+    });
+  } else {
+    // A non-serialisable action supersedes any older reload-safe undo.
+    clearUndoJournal();
   }
+}
+
+// Entries/checkpoints from a journal that are still missing from live state.
+function missingJournalData(journal) {
+  const entries = Array.isArray(journal.entries) ? journal.entries : [];
+  const checkpoints = Array.isArray(journal.checkpoints) ? journal.checkpoints : [];
+  return {
+    entries: entries.filter(j => j && !state.entries.some(e => e.id === j.id)),
+    checkpoints: checkpoints.filter(c =>
+      c && c.methodId && c.point
+      && !(state.settings.balanceCheckpoints?.[c.methodId] || []).some(point => point.date === c.point.date)
+    ),
+  };
+}
+
+// Restore the entries/checkpoints captured in a reload-safe journal. Shared by
+// the boot offer and the persistent undo button. Returns true if anything was
+// actually re-added (false when the data already exists again).
+function restoreUndoJournal(journal) {
+  const missing = missingJournalData(journal);
+  if (missing.entries.length) {
+    state.entries.push(...missing.entries);
+    state.entries.sort((a, b) => a.date.localeCompare(b.date));
+    untombstoneIds(missing.entries.map(e => e.id));
+  }
+  for (const c of missing.checkpoints) {
+    state.settings.balanceCheckpoints[c.methodId] = [
+      ...(state.settings.balanceCheckpoints[c.methodId] || []).filter(point => point.date !== c.point.date),
+      c.point,
+    ].sort((a, b) => a.date.localeCompare(b.date));
+  }
+  if (missing.entries.length || missing.checkpoints.length) persist();
+  return !!(missing.entries.length || missing.checkpoints.length);
+}
+
+// The most recent undoable action: the live in-memory slot first, then the
+// reload-safe journal (so undo still works after a reload).
+function lastUndoDescriptor() {
+  if (_lastAction) return _lastAction;
+  const journal = loadUndoJournal();
+  if (!journal || !(journal.entries?.length || journal.checkpoints?.length)) return null;
+  const missing = missingJournalData(journal);
+  if (!missing.entries.length && !missing.checkpoints.length) { clearUndoJournal(); return null; }
+  return { label: journal.label || 'that change', undo: () => { restoreUndoJournal(journal); } };
+}
+
+// Revert the most recent action and clear the single undo slot.
+function performUndo() {
+  const action = lastUndoDescriptor();
+  if (!action) return;
+  action.undo();
+  if (_lastAction === action) _lastAction = null;
+  clearUndoJournal();
+  toast(`Undone: ${action.label}`);
+  render();
+}
+
+// Persistent undo control, rendered on every screen while an action is
+// reversible. Hidden entirely when there is nothing to undo.
+function renderUndoFab() {
+  const action = lastUndoDescriptor();
+  if (!action) return null;
+  return $('button', {
+    type: 'button',
+    class: 'undo-fab',
+    title: `Undo: ${action.label}`,
+    'aria-label': `Undo last action: ${action.label}`,
+    onClick: performUndo,
+  },
+    iconSpan('undo', '', 'color:var(--accent)'),
+    $('span', { class: 'undo-fab-label' }, 'Undo'),
+    $('span', { class: 'undo-fab-action', 'aria-hidden': 'true' }, action.label),
+  );
 }
 
 // ---------- confetti ----------
@@ -2685,14 +2805,14 @@ function accountBalanceHistory() {
 function spendingForecast(key = monthKey(today())) {
   const now = new Date();
   const current = entriesForMonth(key);
-  const expenses = current.filter(isSpendingEntry);
+  const expenses = current.filter(isBudgetSpendingEntry);
   const spent = expenses.reduce((sum, e) => sum + e.amount, 0);
   const elapsed = key === monthKey(today()) ? now.getDate() : daysInMonth(key);
   const totalDays = daysInMonth(key);
   const dailyAverage = elapsed > 0 ? spent / elapsed : 0;
   const projected = spent + dailyAverage * Math.max(0, totalDays - elapsed);
   const budget = +state.settings.monthlyBudget || 0;
-  const previous = entriesForMonth(previousMonthKey(key)).filter(isSpendingEntry);
+  const previous = entriesForMonth(previousMonthKey(key)).filter(isBudgetSpendingEntry);
   const previousDaily = previous.length ? previous.reduce((sum, e) => sum + e.amount, 0) / daysInMonth(previousMonthKey(key)) : null;
   return { spent, projected, budget, remaining: budget - projected, dailyAverage, previousDaily, elapsed, totalDays };
 }
@@ -2715,9 +2835,9 @@ function accountStatus(methodId) {
 }
 
 function monthComparison(key = monthKey(today())) {
-  const current = entriesForMonth(key).filter(isSpendingEntry).reduce((sum, entry) => sum + entry.amount, 0);
+  const current = entriesForMonth(key).filter(isBudgetSpendingEntry).reduce((sum, entry) => sum + entry.amount, 0);
   const previousKey = previousMonthKey(key);
-  const previous = entriesForMonth(previousKey).filter(isSpendingEntry).reduce((sum, entry) => sum + entry.amount, 0);
+  const previous = entriesForMonth(previousKey).filter(isBudgetSpendingEntry).reduce((sum, entry) => sum + entry.amount, 0);
   const difference = current - previous;
   const percent = previous > 0 ? Math.round((difference / previous) * 100) : null;
   return { current, previous, previousKey, difference, percent };
@@ -2739,7 +2859,7 @@ function computeMilestones() {
   let monthsUnderBudget = 0;
   if (budget > 0) {
     for (const key of new Set(state.entries.map(e => monthKey(e.date)))) {
-      const spent = entriesForMonth(key).filter(isSpendingEntry).reduce((s, e) => s + e.amount, 0);
+      const spent = entriesForMonth(key).filter(isBudgetSpendingEntry).reduce((s, e) => s + e.amount, 0);
       if (spent > 0 && spent <= budget) monthsUnderBudget++;
     }
   }
@@ -3014,6 +3134,7 @@ const ICONS = {
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
   clipboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>',
+  undo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/></svg>',
   book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>',
   medal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="6"/><path d="M15.477 12.89 17 22l-5-3-5 3 1.523-9.11"/></svg>',
   alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4M12 17h.01"/></svg>',
@@ -3579,7 +3700,7 @@ function screenDashboard() {
     return true;
   };
 
-  const expensesOnly = monthEntries.filter(isSpendingEntry);
+  const expensesOnly = monthEntries.filter(isBudgetSpendingEntry);
   const incomeOnly = monthEntries.filter(isIncomeEntry);
   const catTotals = {};
   for (const e of expensesOnly) {
@@ -5274,7 +5395,7 @@ function openTransferDelete(e) {
     ));
   }
 
-  modal.appendChild($('p', { class: 'serif', style: 'font-size:15px;color:var(--negative);margin:16px 0 8px;' }, 'Delete this transfer pair? You can undo it from the toast.'));
+  modal.appendChild($('p', { class: 'serif', style: 'font-size:15px;color:var(--negative);margin:16px 0 8px;' }, 'Delete this transfer pair? You can undo it with the Undo button.'));
   modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;' },
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
     $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: () => {
@@ -5393,12 +5514,12 @@ function openEdit(id) {
         untombstoneIds(removed.map(e => e.id));
         persist();
       }, e.transferId ? 'Restored transfer pair' : `Restored ${e.details}`, removed);
-      toast(e.transferId ? 'Transfer pair deleted.' : 'Deleted. You can undo it from the toast.');
+      toast(e.transferId ? 'Transfer pair deleted.' : 'Deleted. Undo it any time with the Undo button.');
     }
     close();
   } }, 'Confirm delete');
   const deletePanel = $('div', { style: 'display:none;margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:var(--accent-soft);' },
-    $('p', { class: 'serif', style: 'font-size:17px;margin:0 0 12px;color:var(--negative);' }, 'Delete this entry? You can undo it from the toast.'),
+    $('p', { class: 'serif', style: 'font-size:17px;margin:0 0 12px;color:var(--negative);' }, 'Delete this entry? You can undo it with the Undo button.'),
     $('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' }, cancelDeleteBtn, confirmDeleteBtn),
   );
   modal.appendChild($('div', { style: 'margin-top:24px;padding-top:24px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;' }, deleteStage1));
@@ -5616,7 +5737,7 @@ function openSyncSettings() {
 function dashboardPulse(key, expenseSum, runningBalance) {
   const t = today();
   const todays = state.entries.filter(e => e.date === t && e.type !== 'note');
-  const spentToday = todays.filter(isSpendingEntry).reduce((s, e) => s + e.amount, 0);
+  const spentToday = todays.filter(isBudgetSpendingEntry).reduce((s, e) => s + e.amount, 0);
   const earnedToday = todays.filter(isIncomeEntry).reduce((s, e) => s + e.amount, 0);
   const todaySummary = todays.length
     ? `${todays.length} entr${todays.length === 1 ? 'y' : 'ies'}${spentToday ? ' · −' + fmt(spentToday) : ''}${earnedToday ? ' · +' + fmt(earnedToday) : ''}`
@@ -5712,34 +5833,26 @@ function toast(text, undoFn, undoLabel) {
   setTimeout(() => t.remove(), 2200);
 }
 
-// Offer the persisted undo journal after a reload. Only the entries that are
-// still missing (not already restored or recreated) are re-added. The journal
-// is consumed as soon as the offer is shown - a dismissed toast (or another
-// reload) must never re-offer the same change.
+// Offer the persisted undo journal after a reload. The toast is transient, but
+// the journal is kept until it is actually undone (or superseded) so the
+// persistent Undo button keeps offering it after the toast expires.
 function offerPersistedUndo() {
   const journal = loadUndoJournal();
-  if (!journal || !Array.isArray(journal.entries) || !journal.entries.length) return;
-  const missing = journal.entries.filter(j => j && !state.entries.some(e => e.id === j.id));
-  if (!missing.length) {
-    // Nothing left to restore (the entries still exist, e.g. a load that was
+  if (!journal || !(journal.entries?.length || journal.checkpoints?.length)) return;
+  const missing = missingJournalData(journal);
+  if (!missing.entries.length && !missing.checkpoints.length) {
+    // Nothing left to restore (the data still exists, e.g. a load that was
     // never undone, or an already-restored delete). Drop the stale journal
     // silently so the offer stops appearing on every reload.
     clearUndoJournal();
     return;
   }
   toast(`You can undo “${journal.label || 'that change'}” from before your last reload.`, () => {
-    state.entries.push(...missing);
-    state.entries.sort((a, b) => a.date.localeCompare(b.date));
-    untombstoneIds(missing.map(e => e.id));
-    persist();
-    toast(`Undone: ${journal.label}`);
+    restoreUndoJournal(journal);
+    toast(`Undone: ${journal.label || 'that change'}`);
     clearUndoJournal();
     render();
   }, 'Undo');
-  // One-shot: the offer is now shown, so clear the journal - clicking Undo
-  // still works (the closure holds the entries), but the next reload won't
-  // re-offer an already-seen change.
-  clearUndoJournal();
 }
 
 // ---------- render scheduling ----------
@@ -5930,6 +6043,10 @@ function _render() {
       $('button', { type: 'button', class: 'footer-action', onClick: () => window.scrollTo({ top: 0, behavior: 'smooth' }) }, iconSpan('arrow-up', 'sm'), 'Top'),
     ),
   ));
+
+  // Persistent undo button (fixed position; hidden when nothing is reversible).
+  const undoFab = renderUndoFab();
+  if (undoFab) main.appendChild(undoFab);
 
   // Route changes should land at the top of the page; only same-route
   // re-renders restore the user's scroll position.
