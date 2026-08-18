@@ -287,6 +287,17 @@ function normalizeCoins(raw) {
     .map(([key, value]) => [key, Number(value)]));
 }
 
+/** Per-category budget targets: {categoryId: amount}. Unknown category ids
+ *  (deleted custom categories) are dropped; amounts are clamped like the
+ *  monthly budget. */
+function normalizeCategoryBudgets(raw, validIds) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const allowed = new Set(validIds);
+  return Object.fromEntries(Object.entries(raw)
+    .filter(([key, value]) => allowed.has(key) && Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 1_000_000)
+    .map(([key, value]) => [key, Math.round(Number(value) * 100) / 100]));
+}
+
 function defaultState() {
   return {
     entries: [],
@@ -362,6 +373,7 @@ export function validateState(s) {
     customCategories,
     recurring: normalizeRecurring(safeSettings.recurring, customCategories.map(category => category.id)),
     coins: normalizeCoins(safeSettings.coins),
+    categoryBudgets: normalizeCategoryBudgets(rawSettings.categoryBudgets, CATEGORIES_OK),
   };
   out.schemaVersion = 2;
   return out;

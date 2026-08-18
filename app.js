@@ -1278,13 +1278,21 @@ function renderSyncIndicator() {
   const s = getSyncSettings();
   if (!s.enabled) { node.style.display = 'none'; return; }
   node.style.display = '';
-  const status = syncStatus();
+  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
   node.innerHTML = '';
-  const cls = 'sync-icon' + (_syncActive ? ' spinning' : '') + (status.state === 'ok' ? ' success' : '');
+  const status = syncStatus();
+  const cls = 'sync-icon' + (_syncActive ? ' spinning' : '') + (offline ? ' offline' : status.state === 'ok' ? ' success' : '');
   node.append($('span', { class: cls, 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path class="icon-sync-cloud" d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/><polyline class="icon-sync-arrows" points="17 6 19 4 21 6"/><line class="icon-sync-arrows" x1="19" y1="4" x2="19" y2="10"/><polyline class="icon-sync-check" points="20 6 9 17 4 12"/></svg>' }));
-  const label = status.state === 'ok' ? status.label.replace(/^Synced /, 'synced ') : status.label;
+  const label = offline
+    ? 'Offline · saved locally'
+    : (status.state === 'ok' ? status.label.replace(/^Synced /, 'synced ') : status.label);
   node.append($('span', null, label));
 }
+
+// Re-render the indicator and surface a one-time notice on connectivity
+// changes, so the "saved locally, will sync later" promise is explicit.
+window.addEventListener('online', () => { notifySyncChange(); toast('Back online - changes will sync.'); });
+window.addEventListener('offline', () => { notifySyncChange(); toast('Offline - changes stay saved locally until you reconnect.'); });
 
 subscribeSync(renderSyncIndicator);
 
@@ -1679,23 +1687,48 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
       // ---- Reconcile mode ----
       const amount = $('input', { type: 'text', inputmode: 'decimal', value: actualBalance().toFixed(2), 'aria-label': `${label} actual balance`, autocomplete: 'off', style: `width:${isNarrow() ? '86px' : '104px'};padding:6px 8px;border:1px solid var(--accent);border-radius:var(--radius);text-align:right;font-size:12px;` });
       const date = $('input', { type: 'date', value: today(), max: today(), 'aria-label': `${label} reconciliation date`, style: `width:${isNarrow() ? '124px' : '138px'};padding:6px 8px;border:1px solid var(--line);border-radius:var(--radius);font-size:12px;` });
+      const help = $('div', { class: 'muted balance-editor-help', style: 'font-size:10px;line-height:1.35;' }, 'Amount is authoritative when saved. Later same-day edits and entries still apply.');
       const refreshAmountForDate = () => {
         const existing = userCheckpointFor(methodId, date.value);
         amount.value = (existing?.date === date.value ? existing.balance : bookBalanceAt(methodId, date.value)).toFixed(2);
       };
-      date.addEventListener('change', refreshAmountForDate);
-      const save = () => {
+      function save() {
         const rawAmount = String(amount.value || '').trim();
         const next = rawAmount.startsWith('-') ? -parseAmount(rawAmount.slice(1)) : parseAmount(rawAmount);
         if (!Number.isFinite(next) || next < -1000000 || next > 1000000) { toast('Enter a valid actual balance.'); amount.focus(); return; }
         if (!isValidCheckpointDate(date.value) || date.value > today()) { toast('Choose today or an earlier reconciliation date.'); date.focus(); return; }
+        const prevPoints = (getBalanceCheckpoints()[methodId] || []).map(p => ({ ...p }));
         if (!saveBalanceCheckpoint(methodId, date.value, next)) { toast('Could not save that reconciliation.'); return; }
+        // Reconcile is undoable like every other write: undo restores the
+        // checkpoints exactly as they were before this save.
+        trackAction(() => {
+          state.settings.balanceCheckpoints[methodId] = prevPoints;
+          clearBalanceCaches();
+          persist();
+        }, `${label} reconciliation`);
         editing = false;
         toast(`${label} reconciled at ${fmt(next)}.`);
         render();
+      }
+      const saveBtn = $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: save }, 'Save');
+      // One-tap confirm: while the amount still matches the book balance, the
+      // single primary action is "Confirm (€X)" - recording it marks the
+      // account reconciled without any editing.
+      const syncConfirmLabel = () => {
+        const raw = String(amount.value || '').trim();
+        const val = raw.startsWith('-') ? -parseAmount(raw.slice(1)) : parseAmount(raw);
+        const book = bookBalanceAt(methodId, date.value);
+        const unchanged = Number.isFinite(val) && Math.abs(val - book) < 0.005;
+        saveBtn.textContent = unchanged ? `Confirm (${fmt(book)})` : 'Save';
+        help.textContent = unchanged
+          ? 'Matches the book balance - one tap confirms the reconciliation.'
+          : 'Amount is authoritative when saved. Later same-day edits and entries still apply.';
       };
+      date.addEventListener('change', () => { refreshAmountForDate(); syncConfirmLabel(); });
+      amount.addEventListener('input', syncConfirmLabel);
       amount.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } if (ev.key === 'Escape') { editing = false; draw(); } });
       date.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); save(); } if (ev.key === 'Escape') { editing = false; draw(); } });
+      syncConfirmLabel();
       row.append(
         $('div', { style: 'flex:1 1 100%;display:flex;flex-direction:column;gap:8px;min-width:0;' },
           $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:6px 12px;flex-wrap:wrap;min-width:0;' },
@@ -1705,12 +1738,11 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
               isGiftCard ? $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);' }, 'Reconcile') : null,
             ),
             $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
-              amount, date,
-              $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: save }, 'Save'),
+              amount, date, saveBtn,
               $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
             ),
           ),
-          $('div', { class: 'muted balance-editor-help', style: 'font-size:10px;line-height:1.35;' }, 'Amount is authoritative when saved. Later same-day edits and entries still apply.'),
+          help,
         ),
       );
       queueMicrotask(() => amount.focus());
@@ -1729,7 +1761,9 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
       $('div', { class: 'balance-editor-controls', style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;min-width:0;' },
         $('div', { style: 'text-align:right;' },
           $('div', { class: 'display-num', style: `font-size:14px;color:${balance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(balance)),
-          summary && Math.abs(difference) >= 0.01 ? $('div', { class: 'muted', style: 'font-size:10px;' }, `${difference >= 0 ? '+' : ''}${fmt(difference)} vs book`) : null,
+          summary && Math.abs(difference) >= 0.01
+            ? $('div', { style: 'margin-top:2px;' }, $('span', { class: `signed-chip ${difference >= 0 ? 'is-positive' : 'is-negative'}`, style: 'font-size:10px;font-weight:700;padding:2px 9px;' }, `${difference >= 0 ? '+' : ''}${fmt(difference)} vs book`))
+            : null,
         ),
         editable && (isGiftCard || canLoad) ? $('span', { style: 'display:flex;gap:4px;align-items:center;' },
           $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'load'; editing = true; draw(); }, 'aria-label': `Load ${label}` }, iconSpan('plus', 'sm'), 'Load'),
@@ -3162,7 +3196,6 @@ const MENU_ICONS = {
   clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14.5"/></svg>',
   chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/></svg>',
   wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12"/><path d="M20 7v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7"/><rect x="16" y="11" width="4" height="5" rx="1"/></svg>',
-  ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z"/></svg>',
   appearance: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>',
   cloud: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>',
@@ -3194,16 +3227,11 @@ const ICONS = {
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
   'arrow-up': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
   'arrow-right': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>',
-  'arrow-down': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>',
   'chevron-left': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>',
   'chevron-right': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>',
   'check-circle': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>',
   circle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="10"/></svg>',
   sparkle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3Z"/></svg>',
-  coffee: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h1a4 4 0 1 1 0 8h-1"/><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z"/><line x1="6" y1="2" x2="6" y2="4"/><line x1="10" y1="2" x2="10" y2="4"/><line x1="14" y1="2" x2="14" y2="4"/></svg>',
-  sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>',
-  'cloud-sun': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="M20 12h2"/><path d="m19.07 4.93-1.41 1.41"/><path d="M15.947 12.65a4 4 0 0 0-5.925-4.128"/><path d="M13 22H7a5 5 0 1 1 4.9-6H13a3 3 0 0 1 0 6Z"/></svg>',
-  moon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
 };
 
 /** Return the SVG markup for a named icon ('' when unknown). */
@@ -3762,6 +3790,9 @@ function screenDashboard() {
   const expenseSum = expensesOnly.reduce((s, e) => s + e.amount, 0);
   const incomeSum = incomeOnly.reduce((s, e) => s + e.amount, 0);
   const pct = budget ? Math.min(100, (expenseSum / budget) * 100) : 0;
+  // Top-overspend nudge: when a single category dominates the month's spend,
+  // surface it as a constraint rather than just a bar on the chart.
+  const topShare = expenseSum > 0 && cats.length ? Math.round((cats[0][1] / expenseSum) * 100) : 0;
 
   // Recent 5 - stable order: date desc, then id desc as tiebreaker
   const recent = [...state.entries]
@@ -3875,20 +3906,12 @@ function screenDashboard() {
           }
           return [];
         })()),
-      $('div', { style: `display:grid;grid-template-columns:repeat(auto-fill,minmax(${isNarrow() ? '90px' : '130px'},1fr));gap:${isNarrow() ? '12px' : '24px'};padding-top:20px;border-top:1px solid var(--line);` },
-        stat('Net', fmt(totalForMonth(key))),
-        stat('Spent', fmt(expenseSum), 'var(--negative)'),
-        stat('Income', fmt(incomeSum), 'var(--positive)'),
-        stat('Balance', fmt(runningBalance)),
-        stat('Avg / day', fmt(expenseSum / Math.max(now.getDate(), 1)), 'var(--negative)'),
-        stat('Month elapsed', Math.round((now.getDate() / new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()) * 100) + '%'),
-        ...(budget && expenseSum > 0 ? [stat('Burn rate', (() => {
-          const daysLeft = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate();
-          const dailyAvg = expenseSum / Math.max(now.getDate(), 1);
-          const projected = expenseSum + dailyAvg * daysLeft;
-          const pctProj = Math.round((projected / budget) * 100);
-          return pctProj > 100 ? $('span', { style: 'display:inline-flex;align-items:center;gap:5px;' }, iconSpan('alert', 'md'), `${pctProj}%`) : `${pctProj}%`;
-        })())] : []),
+      // The Pulse block already carries Spent/Projected/Remaining/Avg-day/Burn;
+      // keep only what it doesn't, as one compact line instead of a stat grid.
+      $('div', { style: `display:flex;flex-wrap:wrap;gap:4px 20px;padding-top:14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);` },
+        $('span', null, 'Income ', $('span', { style: 'color:var(--positive);font-weight:600;' }, fmt(incomeSum))),
+        $('span', null, 'Net ', $('span', { style: 'color:var(--ink);' }, fmt(totalForMonth(key)))),
+        $('span', null, 'Month elapsed ', $('span', { style: 'color:var(--ink);' }, Math.round((now.getDate() / new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()) * 100) + '%')),
       ),
     ));
   }
@@ -3900,6 +3923,9 @@ function screenDashboard() {
     const d = daysUntil(r.nextDate);
     return d >= 0 && d <= 7;
   }).length;
+  // Compact "due this week" strip: everything due within 7 days (including
+  // overdue) as one-tap mark-paid chips, each undoable.
+  const dueThisWeek = allRecurring.filter(r => daysUntil(r.nextDate) <= 7);
   const recCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('div', { style: 'display:flex;align-items:center;gap:10px;' },
@@ -3911,6 +3937,18 @@ function screenDashboard() {
         $('button', { type: 'button', style: 'font-size:11px;color:var(--accent);cursor:pointer;background:none;border:none;padding:0;', onClick: () => openNewRecurring() }, '+ New'),
       ),
     ),
+    dueThisWeek.length > 0 ? $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;' },
+      ...dueThisWeek.slice(0, 5).map(r => {
+        const d = daysUntil(r.nextDate);
+        const overdue = d < 0;
+        const label = overdue ? 'overdue' : d === 0 ? 'today' : `in ${d}d`;
+        return $('button', { type: 'button', class: 'pill', title: `Mark "${r.details}" as paid`, 'aria-label': `Mark ${r.details} as paid (${label})`, style: `border-color:${overdue ? 'var(--negative)' : 'var(--accent)'};color:${overdue ? 'var(--negative)' : 'var(--accent)'};font-size:10px;cursor:pointer;background:transparent;`, onClick: () => paidRecurring(r) },
+          iconSpan('check-circle', 'sm'),
+          `${r.details} · ${label}`,
+        );
+      }),
+      dueThisWeek.length > 5 ? $('span', { class: 'muted', style: 'font-size:10px;align-self:center;' }, `+${dueThisWeek.length - 5} more`) : null,
+    ) : null,
     recurring.length === 0
       ? $('div', { class: 'muted', style: 'font-size:13px;' }, allRecurring.length ? 'No items due this month. See all in Manage all.' : 'No recurring items yet. Add your rent, subscriptions, or paydays.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
@@ -3983,23 +4021,89 @@ function screenDashboard() {
     grid.style.gridTemplateColumns = 'minmax(0, 2fr) minmax(0, 3fr)';
   }
 
+  // Per-category budget targets: optional monthly caps per category, edited
+  // inline in this card. When a target is set, the bar fills toward the target
+  // (turning red when over) instead of toward the top category.
+  const catTargets = state.settings.categoryBudgets || (state.settings.categoryBudgets = {});
+  const overBudgetCat = cats
+    .map(([cat, val]) => ({ cat, val, target: +catTargets[cat] || 0 }))
+    .filter(c => c.target > 0 && c.val > c.target)
+    .sort((a, b) => (b.val - b.target) - (a.val - a.target))[0];
+  const catCallout = overBudgetCat
+    ? $('div', { style: 'display:flex;align-items:center;gap:7px;font-size:12px;margin-bottom:14px;color:var(--negative);' },
+        iconSpan('alert', 'sm'),
+        $('span', null, `${categoryLabel(overBudgetCat.cat)} is ${fmt(overBudgetCat.val - overBudgetCat.target)} over its ${fmt(overBudgetCat.target)} target.`),
+      )
+    : (topShare >= 50 && Object.keys(catTargets).length === 0
+        ? $('div', { style: 'display:flex;align-items:center;gap:7px;font-size:12px;margin-bottom:14px;color:var(--negative);' },
+            iconSpan('alert', 'sm'),
+            $('span', null, `${categoryLabel(cats[0][0])} is ${topShare}% of this month's spend.`),
+          )
+        : null);
+  const catRow = (cat, val) => {
+    const target = +catTargets[cat] || 0;
+    const over = target > 0 && val > target;
+    const rightEl = $('div', { style: 'display:flex;align-items:center;gap:8px;' });
+    const barEl = $('div', { style: 'height:100%;border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);' });
+    const paintBar = () => {
+      barEl.style.width = (target > 0 ? Math.min(100, (val / target) * 100) : cats[0][1] > 0 ? (val / cats[0][1]) * 100 : 0) + '%';
+      barEl.style.background = over ? 'var(--negative)' : catBarGradient(cat);
+    };
+    const startEdit = () => {
+      const input = $('input', { type: 'text', inputmode: 'decimal', value: target ? String(target) : '', 'aria-label': `Monthly target for ${categoryLabel(cat)}`, autocomplete: 'off', style: 'width:62px;border:1px solid var(--accent);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:3px 8px;font-size:12px;text-align:right;' });
+      const commit = raw => {
+        const v = parseAmount(raw);
+        if (!Number.isFinite(v) || v < 0) { toast('Enter a non-negative number.'); paintDisplay(); return; }
+        if (v === 0) delete catTargets[cat]; else catTargets[cat] = Math.min(Math.round(v * 100) / 100, 1_000_000);
+        persist();
+        toast(v === 0 ? `Target cleared for ${categoryLabel(cat)}.` : `Target set for ${categoryLabel(cat)}.`);
+        render();
+      };
+      input.onkeydown = e => {
+        if (e.key === 'Enter') input.blur();
+        else if (e.key === 'Escape') { input.onblur = null; paintDisplay(); }
+      };
+      input.onblur = () => commit(input.value);
+      rightEl.replaceChildren(
+        input,
+        target > 0 ? $('button', { type: 'button', title: 'Clear this category\'s target', style: 'border:none;background:none;color:var(--negative);font-size:10px;cursor:pointer;padding:0;', onMouseDown: (e) => { e.preventDefault(); input.onblur = null; delete catTargets[cat]; persist(); toast(`Target cleared for ${categoryLabel(cat)}.`); render(); } }, 'Clear') : null,
+      );
+      input.focus();
+      input.select();
+    };
+    const paintDisplay = () => {
+      rightEl.replaceChildren(
+        $('span', { class: 'tnum' }, fmt(val)),
+        target > 0
+          ? $('button', { type: 'button', title: 'Edit this category\'s monthly target', 'aria-label': `Edit target for ${categoryLabel(cat)}`, style: `border:1px solid ${over ? 'var(--negative)' : 'var(--line)'};border-radius:99px;background:transparent;color:${over ? 'var(--negative)' : 'var(--muted)'};font-size:10px;padding:2px 8px;cursor:pointer;`, onClick: startEdit },
+              `${Math.round((val / target) * 100)}% of ${fmt(target)}`,
+            )
+          : $('button', { type: 'button', title: 'Set a monthly target for this category', 'aria-label': `Set target for ${categoryLabel(cat)}`, style: 'border:1px dashed var(--line);border-radius:99px;background:transparent;color:var(--muted);font-size:10px;padding:2px 8px;cursor:pointer;', onClick: startEdit },
+              '+ target',
+            ),
+      );
+      paintBar();
+    };
+    paintDisplay();
+    return $('div', null,
+      $('div', { class: 'row between', style: 'font-size:13px;margin-bottom:6px;' },
+        $('span', { style: 'font-weight:500;' }, categoryLabel(cat)),
+        rightEl,
+      ),
+      $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' }, barEl),
+    );
+  };
+
   const catCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('span', { class: 'eyebrow' }, 'By category'),
       $('span', { class: 'muted', style: 'font-size:11px;' }, 'this month'),
     ),
+    catCallout,
     cats.length === 0
       ? $('div', { class: 'empty' }, emptyIcon('receipt'), ' Nothing logged yet.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:14px;' },
-          ...cats.map(([cat, val]) => $('div', null,
-            $('div', { class: 'row between', style: 'font-size:13px;margin-bottom:6px;' },
-              $('span', { style: 'font-weight:500;' }, categoryLabel(cat)),
-              $('span', { class: 'tnum' }, fmt(val)),
-            ),
-            $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
-              $('div', { style: `height:100%;width:${(val / cats[0][1]) * 100}%;background:${catBarGradient(cat)};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
-            ),
-          )),
+          ...cats.map(([cat, val]) => catRow(cat, val)),
         ),
   );
 
@@ -4535,7 +4639,6 @@ function screenAdd() {
       $('h1', { class: 'page-title' }, 'New entry'),
       $('p', { class: 'muted page-lede' }, 'Start with the amount. The rest takes seconds.'),
     ),
-    $('span', { class: 'pill add-flow-hint' }, '⌘ / Ctrl + N'),
   ));
 
   if (state.entries.length === 0) {
@@ -4549,19 +4652,46 @@ function screenAdd() {
   // a gentle on-ramp hint when empty, the parser's guidance when it can't find
   // an amount, and the fully resolved entry the moment it can.
   const magicPreview = $('div', { class: 'muted', style: 'font-size:12px;min-height:18px;margin-bottom:10px;' });
+  // Live detection chips - each part of the grammar lights up the moment the
+  // parser resolves it, so the input teaches itself as you type.
+  const detectRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;' });
+  const detectParts = ['Amount', 'Category', 'Account', 'Date'].map(name => {
+    const el = $('span', { class: 'magic-detect-chip', 'aria-hidden': 'true', style: 'display:inline-flex;align-items:center;gap:5px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted);transition:border-color .15s,color .15s,background .15s;' }, name);
+    detectRow.append(el);
+    return { name, el };
+  });
+  const syncDetectChips = (parsed) => {
+    const ok = {
+      Amount: !!(parsed && Number.isFinite(parsed.amount) && parsed.amount > 0),
+      Category: !!(parsed && parsed.category),
+      Account: !!(parsed && parsed.method),
+      Date: !!(parsed && parsed.date),
+    };
+    for (const d of detectParts) {
+      const good = ok[d.name];
+      d.el.style.color = good ? 'var(--accent)' : 'var(--muted)';
+      d.el.style.borderColor = good ? 'var(--accent)' : 'var(--line)';
+      d.el.style.background = good ? 'var(--accent-soft)' : 'transparent';
+      d.el.innerHTML = '';
+      d.el.append(good ? iconSpan('check-circle', 'sm') : $('span', { 'aria-hidden': 'true', style: 'font-size:9px;line-height:1;' }, '·'), $('span', {}, ' ' + d.name));
+    }
+  };
   const renderMagicPreview = (text) => {
     const parsed = parseNaturalLanguage(text);
     if (!String(text || '').trim()) {
       magicPreview.textContent = 'Start with an amount - the preview fills in as you type.';
       magicPreview.style.color = '';
+      syncDetectChips(null);
       return;
     }
     if (parsed?.error) {
       magicPreview.textContent = parsed.error;
       magicPreview.style.color = 'var(--negative)';
+      syncDetectChips(null);
       return;
     }
     magicPreview.style.color = '';
+    syncDetectChips(parsed);
     magicPreview.textContent = parsed ? `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}` : '';
   };
   const magicInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => renderMagicPreview(e.target.value) });
@@ -4611,6 +4741,7 @@ function screenAdd() {
     $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:10px;' }, 'Describe it naturally, check the preview, then add it.'),
     magicChips,
     magicInput,
+    detectRow,
     magicPreview,
     $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' }, voiceInputBtn, $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: addMagic }, 'Add entry')),
   ));
@@ -4749,8 +4880,10 @@ function screenHistory() {
   const selected = new Set();
   const bulkBar = $('div', { class: 'bulk-bar', style: 'display:none;margin-bottom:12px;padding:10px 16px;border:1px solid var(--accent);border-radius:var(--radius);background:var(--accent-soft);align-items:center;justify-content:space-between;gap:12px;' },
     $('span', { class: 'bulk-count', style: 'font-size:13px;font-weight:500;' }, ''),
-    $('div', { style: 'display:flex;gap:8px;' },
+    $('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' },
       $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: () => { selected.clear(); syncBulkBar(); tableWrap.querySelectorAll('input[data-bulk]').forEach(cb => cb.checked = false); } }, 'Clear'),
+      $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: bulkChangeCategory }, 'Category'),
+      $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: bulkChangeMethod }, 'Account'),
       $('button', { type: 'button', class: 'btn btn-danger', style: 'padding:6px 12px;font-size:12px;', onClick: bulkDeleteSelected }, 'Delete selected'),
     ),
   );
@@ -4790,6 +4923,65 @@ function screenHistory() {
     toast(protectedCount ? `Deleted ${removedCopy.length} (${protectedCount} kept - protected).` : `Deleted ${removedCopy.length} entr${removedCopy.length === 1 ? 'y' : 'ies'}.`);
     selected.clear();
     render();
+  }
+
+  function bulkChangeCategory() {
+    const ids = [...selected];
+    if (!ids.length) return;
+    openBulkPickerModal({
+      title: `Category for ${ids.length} entr${ids.length === 1 ? 'y' : 'ies'}`,
+      options: allCategories().map(c => ({ id: c.id, label: c.label })),
+      onPick: (value) => applyBulkField(ids, 'category', value),
+    });
+  }
+  function bulkChangeMethod() {
+    const ids = [...selected];
+    if (!ids.length) return;
+    openBulkPickerModal({
+      title: `Account for ${ids.length} entr${ids.length === 1 ? 'y' : 'ies'}`,
+      options: METHODS.map(m => ({ id: m.id, label: m.label })),
+      onPick: (value) => applyBulkField(ids, 'method', value),
+    });
+  }
+  function applyBulkField(ids, field, value) {
+    const idSet = new Set(ids);
+    const before = state.entries.filter(e => idSet.has(e.id)).map(e => ({ ...e }));
+    // Transfer legs share a pair id - changing one leg's account would split
+    // the transfer, so those are skipped for account moves.
+    const applicable = field === 'method' ? before.filter(e => !e.transferId) : before;
+    if (!applicable.length) { toast('None of those entries can be changed that way.'); selected.clear(); syncBulkBar(); render(); return; }
+    const changed = new Set(applicable.map(e => e.id));
+    for (const e of state.entries) if (changed.has(e.id)) e[field] = value;
+    persist();
+    const verb = field === 'category' ? 'Categorised' : 'Moved';
+    trackAction(() => {
+      for (const prev of before) {
+        const cur = state.entries.find(e => e.id === prev.id);
+        if (cur) cur[field] = prev[field];
+      }
+      persist();
+    }, `${verb} ${applicable.length} entr${applicable.length === 1 ? 'y' : 'ies'}`, applicable);
+    toast(`${verb} ${applicable.length} entr${applicable.length === 1 ? 'y' : 'ies'}.`);
+    selected.clear();
+    render();
+  }
+  function openBulkPickerModal({ title, options, onPick }) {
+    const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
+    const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title, tabindex: '-1', style: 'max-width:400px;' });
+    const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); };
+    const onEsc = ev => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+    document.addEventListener('keydown', onEsc, true);
+    bg.appendChild(modal);
+    document.body.appendChild(bg);
+    modal.append(
+      $('h2', { class: 'serif', style: 'font-size:20px;margin:0 0 4px;' }, title),
+      $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:16px;' }, 'Applies to every selected entry - undoable.'),
+      $('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;' },
+        ...options.map(o => $('button', { type: 'button', class: 'pill pill-cat', 'data-active': 'false', onClick: () => { onPick(o.id); close(); } }, o.label)),
+      ),
+      $('div', { style: 'display:flex;justify-content:flex-end;margin-top:16px;' }, $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel')),
+    );
+    queueMicrotask(() => modal.focus());
   }
 
   const tableWrap = $('div', { class: 'card', style: 'overflow-x:auto;padding:0;' });
@@ -5014,13 +5206,33 @@ function screenInsights() {
 
   c.appendChild($('div', { class: 'page-title-row' },
     $('h1', { class: 'page-title' }, 'Where it goes.'),
-    $('div', { style: 'display:flex;align-items:center;gap:8px;' },
+    $('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' },
       fromInput,
       $('span', { class: 'muted', style: 'font-size:13px;display:inline-flex;' }, iconSpan('arrow-right', 'sm')),
       toInput,
       (fromParam || toParam) ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:12px;', onClick: () => { location.hash = 'insights'; } }, 'Reset') : null,
     ),
   ));
+
+  // Quick range presets so the two date pickers aren't the only way in.
+  const lastMonthStart = new Date(); lastMonthStart.setDate(1); lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
+  const lastMonthKey = `${lastMonthStart.getFullYear()}-${String(lastMonthStart.getMonth() + 1).padStart(2, '0')}`;
+  const lastMonthDays = new Date(lastMonthStart.getFullYear(), lastMonthStart.getMonth() + 1, 0).getDate();
+  const presetRanges = [
+    { label: 'This month', from: monthKey(today()) + '-01', to: today() },
+    { label: 'Last month', from: lastMonthKey + '-01', to: `${lastMonthKey}-${String(lastMonthDays).padStart(2, '0')}` },
+    { label: 'Last 90 days', from: offsetDateKey(today(), -89), to: today() },
+    { label: 'Year to date', from: `${new Date().getFullYear()}-01-01`, to: today() },
+  ];
+  const presetRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:20px;' },
+    $('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;' }, 'Range'),
+    ...presetRanges.map(p => $('button', {
+      type: 'button', class: 'pill pill-cat', 'data-active': fromDate === p.from && toDate === p.to ? 'true' : 'false',
+      'aria-pressed': fromDate === p.from && toDate === p.to ? 'true' : 'false',
+      onClick: () => { params.set('from', p.from); params.set('to', p.to); location.hash = 'insights?' + params.toString(); },
+    }, p.label)),
+  );
+  c.appendChild(presetRow);
 
   const months = {};
   for (const e of recent.filter(isSpendingEntry)) {
@@ -5069,22 +5281,24 @@ function screenInsights() {
     statCard('Categories active', String(new Set(recent.filter(isSpendingEntry).map(e => e.category)).size)),
   ));
 
-  // Calendar heatmap - current month
+  // Calendar heatmap - follows the selected range's end month, so it never
+  // contradicts the date range the rest of the screen honours.
   const now = new Date();
-  const heatKey = monthKey(localDateKey(now));
+  const heatKey = monthKey(toDate);
   const heatEntries = entriesForMonth(heatKey).filter(isSpendingEntry);
   const heatByDay = {};
   for (const e of heatEntries) heatByDay[e.date] = (heatByDay[e.date] || 0) + e.amount;
   const maxDay = Math.max(1, ...Object.values(heatByDay));
-  const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const firstDow = new Date(now.getFullYear(), now.getMonth(), 1).getDay(); // 0=Sun
+  const [hy, hm] = heatKey.split('-').map(Number);
+  const lastDay = new Date(hy, hm, 0).getDate();
+  const firstDow = new Date(hy, hm - 1, 1).getDay(); // 0=Sun
   // Mon-start: shift Sun→6, Mon→0 … Sat→5
   const monAdjusted = (firstDow + 6) % 7;
   
   const heatCells = [];
   for (let i = 0; i < monAdjusted; i++) heatCells.push($('div')); // empty leading cells
   for (let d = 1; d <= lastDay; d++) {
-    const ds = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const ds = `${hy}-${String(hm).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const val = heatByDay[ds] || 0;
     const intensity = maxDay > 0 ? val / maxDay : 0;
     const color = intensity === 0 ? 'var(--line)' : heatColor(
@@ -5896,6 +6110,13 @@ function dashboardPulse(key, expenseSum, runningBalance) {
   const runway = computeRunway(runningBalance);
   const forecast = spendingForecast(key);
   const comparison = monthComparison(key);
+  // Safe to spend today: what's left of the budget divided by the days left
+  // in the month. The one number that changes daily behaviour.
+  const monthBudget = +state.settings.monthlyBudget || 0;
+  const nowP = new Date();
+  const daysLeftInMonth = Math.max(1, new Date(nowP.getFullYear(), nowP.getMonth() + 1, 0).getDate() - nowP.getDate() + 1);
+  const remainingBudget = Math.max(0, monthBudget - expenseSum);
+  const safeToday = monthBudget ? remainingBudget / daysLeftInMonth : null;
 
   // One headline: the single most important number, plus a plain sentence.
   let headline, caption, message, tone, status;
@@ -5938,6 +6159,14 @@ function dashboardPulse(key, expenseSum, runningBalance) {
       stat('Spent', fmt(forecast.spent), 'var(--negative)'),
       stat('Projected', fmt(forecast.projected), 'var(--negative)'),
       forecast.budget ? stat('Remaining', fmt(forecast.remaining)) : stat('Balance', fmt(runningBalance)),
+      monthBudget ? stat('Safe today', fmt(safeToday), remainingBudget <= 0 ? 'var(--negative)' : '') : null,
+      stat('Avg / day', fmt(expenseSum / Math.max(nowP.getDate(), 1)), 'var(--negative)'),
+      monthBudget && expenseSum > 0 ? stat('Burn rate', (() => {
+        const daysLeft = new Date(nowP.getFullYear(), nowP.getMonth() + 1, 0).getDate() - nowP.getDate();
+        const projected = expenseSum + (expenseSum / Math.max(nowP.getDate(), 1)) * daysLeft;
+        const pctProj = Math.round((projected / monthBudget) * 100);
+        return pctProj > 100 ? $('span', { style: 'display:inline-flex;align-items:center;gap:5px;' }, iconSpan('alert', 'md'), `${pctProj}%`) : `${pctProj}%`;
+      })()) : null,
     ),
     $('div', { style: 'display:flex;flex-wrap:wrap;gap:4px 20px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);' },
       $('span', null, 'Today ', $('span', { style: 'color:var(--ink);' }, todaySummary)),

@@ -112,6 +112,9 @@ export function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresh
     recurring: unionById(older.recurring, newer.recurring),
     balanceCheckpoints: mergeCheckpoints(localSettings.balanceCheckpoints, cloudSettings.balanceCheckpoints),
     coins: mergeCoins(localSettings.coins, cloudSettings.coins),
+    // categoryBudgets: per-key LWW — a target set on either side survives, and
+    // the fresher side wins a clash for the same category.
+    categoryBudgets: { ...(older.categoryBudgets || {}), ...(newer.categoryBudgets || {}) },
     deletedEntryIds,
   };
 }

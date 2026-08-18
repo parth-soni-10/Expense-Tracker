@@ -23,6 +23,10 @@ export const METHODS = [
 export const SEED_SETTINGS = {
   monthlyBudget: 1100,
   currency: '€',
+  // Per-category monthly targets, keyed by category id. Optional: a category
+  // without a target is simply not constrained. Spending over a target turns
+  // the category's bar and callout red.
+  categoryBudgets: {},
   // Historical balance checkpoints. Each account is keyed to an array of
   // { date, balance } records, where balance is the end-of-day actual balance.
   balanceCheckpoints: {},

@@ -55,9 +55,7 @@
      `background: var(--gradient)` surface renders flat) */
   --gradient: #157A4A;
 
-  /* Glass tokens neutralized - Ledger surfaces are solid */
-  --glass-blur: 0px;
-  --glass-sat: 1;
+  /* Ledger surfaces are solid - no glass blur tokens */
   --glass-highlight: rgba(255, 255, 255, 0);
   --card-glass: #FFFFFF;
 
@@ -171,8 +169,10 @@ body {
     radial-gradient(ellipse 60% 70% at -10% 90%, rgba(245, 158, 11, 0.04), transparent 55%),
     radial-gradient(ellipse 80% 60% at 85% 100%, var(--accent-glow), transparent 55%);
 }
-/* Drifting Haikei blobs — two blurred gradient orbs that slowly travel.
-   transform-only animation on a fixed layer: compositor-cheap. */
+/* Ambient gradient orbs — static. The old drift animation was the app's only
+   always-on compositor cost: two 40-46vmax layers animated on a 46s/58s loop
+   meant two full-screen layers composited every frame, forever, even while
+   typing in a form. Stopped in place, the glow is identical with zero cost. */
 body::before, body::after {
   content: '';
   position: fixed;
@@ -180,33 +180,21 @@ body::before, body::after {
   pointer-events: none;
   border-radius: 50%;
   opacity: 0.5;
-  will-change: transform;
 }
 body::before {
   width: 46vmax; height: 46vmax;
   top: -12vmax; left: -10vmax;
   background: radial-gradient(circle at 35% 35%, var(--accent-glow), transparent 62%);
-  animation: blobDriftA 46s ease-in-out infinite alternate;
 }
 body::after {
   width: 40vmax; height: 40vmax;
   bottom: -14vmax; right: -8vmax;
   background: radial-gradient(circle at 60% 60%, color-mix(in srgb, var(--accent-2) 12%, transparent), transparent 62%);
-  animation: blobDriftB 58s ease-in-out infinite alternate;
-}
-@keyframes blobDriftA {
-  from { transform: translate(0, 0) rotate(0deg) scale(1); }
-  to   { transform: translate(9vmax, 7vmax) rotate(28deg) scale(1.18); }
-}
-@keyframes blobDriftB {
-  from { transform: translate(0, 0) rotate(0deg) scale(1); }
-  to   { transform: translate(-8vmax, -6vmax) rotate(-24deg) scale(1.14); }
 }
 /* Note: background-attachment: fixed is deliberately NOT used on the body.
    It forces Chrome to re-rasterize the large radial gradients on every scroll
    frame, which is the classic "laggy scroll" culprit. The gradients scroll
-   with the page (tiled + cached) and the two fixed blob layers above keep the
-   pinned Haikei feel at compositor cost. */
+   with the page (tiled + cached). */
 
 h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
 a { color: inherit; text-decoration: none; }
@@ -666,18 +654,17 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .modal-bg {
   position: fixed; inset: 0; background: rgba(16, 18, 16, 0.5);
   display: grid; place-items: center; padding: 20px; z-index: 50;
-  /* Static 6px blur behind an open modal is composited once and cached (the
-     page is locked); the old 10px never re-rendered cheaply on mobile GPUs. */
-  -webkit-backdrop-filter: blur(6px) saturate(1.1);
-  backdrop-filter: blur(6px) saturate(1.1);
+  /* No backdrop-filter: the dark scrim alone gives the focus, and a full-screen
+     blur behind a near-opaque card re-samples on every keystroke/scroll — the
+     exact jank we removed from the menu. The page is locked while open, so
+     nothing is lost visually. */
   animation: fadeIn 0.18s ease-out;
 }
 .modal {
-  /* No backdrop-filter here: modals scroll internally (edit forms, history,
-     sync settings) and a blurred card would re-sample the page behind on
-     every scroll frame. A near-opaque surface reads identically. */
+  /* Fully opaque: a translucent card (color-mix 96%) made every input keystroke
+     re-rasterize the blurred backdrop behind it. Solid reads identical and
+     repaints stay cheap and localized. */
   background: var(--card);
-  background: color-mix(in srgb, var(--card) 96%, transparent);
   border: 1px solid transparent;
   background-clip: padding-box;
   border-radius: var(--radius-xl);
@@ -712,16 +699,16 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   z-index: 60; display: flex; flex-direction: column; gap: 8px; align-items: center;
 }
 .toast {
+  /* Solid ink pill: no backdrop-filter and no translucency. The last blur in
+     the app lived here and still forced a backdrop snapshot on every repaint
+     even at blur(0px). */
   background: var(--ink);
-  background: color-mix(in srgb, var(--ink) 88%, transparent);
   color: var(--bg);
   padding: 13px 22px; border-radius: 999px;
   font-family: 'Space Grotesk', system-ui, sans-serif;  font-size: 16px;
   animation: toastIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
   display: flex; align-items: center; gap: 14px;
   box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.15);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
-  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
   transition: transform 0.2s;
 }
 .toast:hover { transform: translateY(-2px); box-shadow: var(--shadow-xl); }
@@ -821,12 +808,10 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 @media (min-width: 640px) {
   .app-header.is-sticky {
     position: sticky; top: 0; z-index: 40;
-    /* Near-opaque instead of backdrop blur: a full-width sticky bar re-blurs
-       the moving content behind it on EVERY scroll frame, which is heavy on
-       lower-end GPUs. 92% opacity reads as the same frosted glass. The plain
-       background line is the fallback for browsers without color-mix. */
+    /* Fully opaque instead of backdrop blur or translucency: content scrolling
+       under a translucent sticky bar re-composites on every frame. Solid reads
+       the same and scroll stays a cheap, isolated repaint. */
     background: var(--bg);
-    background: color-mix(in srgb, var(--bg) 92%, transparent);
     padding-top: 10px; padding-bottom: 16px;
     margin-bottom: 32px;
     border-bottom-color: transparent;
@@ -942,10 +927,9 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   .bottom-tab-bar {
     display: flex;
     position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 40;
-    /* Near-opaque like the sticky header — no per-frame backdrop blur.
-       The plain background line is the fallback for browsers without color-mix. */
+    /* Fully opaque like the sticky header — no translucency over the content
+       scrolling behind this fixed dock. */
     background: var(--bg);
-    background: color-mix(in srgb, var(--bg) 92%, transparent);
     border: 1px solid var(--line);
     border-radius: 22px;
     box-shadow: var(--shadow-lg), inset 0 1px 0 var(--glass-highlight);
@@ -1073,6 +1057,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .sync-icon.success .icon-sync-check { opacity: 1; transform: scale(1); }
 .sync-icon.success .icon-sync-cloud,
 .sync-icon.success .icon-sync-arrows { opacity: 0; }
+.sync-icon.offline { opacity: 0.55; }
 
 /* ── Logo mark: enhanced morph on hover ── */
 .mark-icon {
@@ -1205,7 +1190,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 }
 .pulse-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 16px; padding-top: 16px; border-top: 1px solid var(--line);
 }
 .pulse-footnote { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; }
@@ -1249,7 +1234,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 
 /* ── Add and insights page rhythm ── */
 .add-flow-heading .page-lede { margin: 8px 0 0; font-size: 13px; }
-.add-flow-hint { white-space: nowrap; }
 .insight-narrative {
   position: relative;
   overflow: hidden;
@@ -1275,6 +1259,10 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   .balance-editor-row { align-items: flex-start !important; }
   .balance-editor-edit-controls { justify-content: flex-end; }
   .balance-editor-edit-controls input[type="date"] { max-width: 124px; }
+  /* Comfortable tap targets for the small Load/Reconcile/Clear row buttons */
+  .balance-editor-controls .btn-link { padding: 8px 10px; font-size: 12px; }
+  /* The due-this-week strip chips trigger a money action - keep them tappable */
+  button[aria-label^="Mark "] { padding: 8px 12px; font-size: 11px; }
 }
 @media (max-width: 479px) {
   .balance-editor-row { display: block !important; }
@@ -1289,10 +1277,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   .pulse-status { display: inline-flex; margin-top: 12px; }
   .pulse-grid { gap: 8px; }
   .pulse-grid .eyebrow { letter-spacing: .08em; }
-  .add-flow-hint { display: none; }
-}
-@media (min-width: 400px) and (max-width: 639px) {
-  .add-flow-hint { display: none; }
 }
 
 /* ── Micro-interactions ── */
@@ -1328,8 +1312,9 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
 .swal-popup {
   --swal2-background: var(--card);
   --swal2-color: var(--ink);
+  /* Solid: a translucent confirm re-samples its backdrop on every button
+     hover/repaint. Near-opaque reads identically. */
   background: var(--card);
-  background: color-mix(in srgb, var(--card) 96%, transparent);
   border: 1px solid transparent;
   background-clip: padding-box;
   border-radius: var(--radius-xl);
@@ -1365,7 +1350,6 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
 /* ── Tippy.js ── */
 .tippy-box[data-theme~='cents'] {
   background: var(--card);
-  background: color-mix(in srgb, var(--card) 96%, transparent);
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -1385,7 +1369,6 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
 /* ── Flatpickr ── */
 .flatpickr-calendar {
   background: var(--card);
-  background: color-mix(in srgb, var(--card) 96%, transparent);
   border: 1px solid var(--line);
   border-radius: 16px;
   box-shadow: var(--shadow-xl);

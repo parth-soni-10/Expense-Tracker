@@ -166,6 +166,14 @@ function validIncomingSettings(settings) {
       if (!VALID_COIN_KEYS.has(key) || !Number.isInteger(Number(value)) || Number(value) < 0 || Number(value) > MAX_AMOUNT) return false;
     }
   }
+  if (settings.categoryBudgets != null) {
+    if (typeof settings.categoryBudgets !== 'object' || Array.isArray(settings.categoryBudgets)) return false;
+    for (const [categoryId, value] of Object.entries(settings.categoryBudgets)) {
+      if (!allowedCategoryIds.has(categoryId)) return false;
+      const amount = Number(value);
+      if (!Number.isFinite(amount) || amount < 0 || amount > MAX_AMOUNT || Math.round(amount * 100) / 100 !== amount) return false;
+    }
+  }
   return true;
 }
 
