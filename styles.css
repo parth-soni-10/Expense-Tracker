@@ -1472,20 +1472,18 @@ body.menu-open { overflow: hidden; }
   position: fixed; inset: 0; z-index: 55;
   display: flex; justify-content: flex-end;
   background: transparent;
-  /* Static blur only — animating backdrop-filter re-blurred the whole
-     viewport on every open/close frame. Body scroll is locked behind the
-     menu, so this is composited once and cached. */
-  -webkit-backdrop-filter: blur(6px) saturate(1.1);
-  backdrop-filter: blur(6px) saturate(1.1);
+  /* No backdrop-filter: the dim scrim (::before) provides the focus. Hovering
+     a row repaints inside the panel, and re-sampling a full-screen blur on
+     every hover frame was the source of the menu's lag on most GPUs. */
 }
 .menu-backdrop::before {
   content: '';
   position: absolute; inset: 0;
   background: rgba(16, 18, 16, 0.45);
   pointer-events: none;
-  animation: menuBackdropIn 0.18s ease-out;
+  animation: menuBackdropIn 0.15s ease-out;
 }
-.menu-backdrop.closing::before { animation: menuBackdropOut 0.18s ease-in forwards; }
+.menu-backdrop.closing::before { animation: menuBackdropOut 0.15s ease-in forwards; }
 @keyframes menuBackdropIn  { from { opacity: 0; } to { opacity: 1; } }
 @keyframes menuBackdropOut { to   { opacity: 0; } }
 
@@ -1497,17 +1495,18 @@ body.menu-open { overflow: hidden; }
   height: min(700px, calc(100vh - 80px));
   height: min(700px, calc(100dvh - 80px));
   background: var(--card);
-  background: color-mix(in srgb, var(--card) 96%, transparent);
   border-left: 1px solid var(--line);
   box-shadow: var(--shadow-xl), inset 0 1px 0 var(--glass-highlight);
   display: flex; flex-direction: column;
-  animation: menuPanelIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: menuPanelIn 0.16s cubic-bezier(0.22, 1, 0.36, 1);
   overflow: hidden;
-  will-change: transform, opacity;
+  /* No will-change here: transform/opacity animations composite on their own,
+     and leaving will-change on the open panel forced a large permanent
+     compositor layer that re-rasterized on every hover repaint (desktop). */
 }
-.menu-panel.closing { animation: menuPanelOut 0.2s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
-@keyframes menuPanelIn  { from { transform: translateX(40px); opacity: 0; } to { transform: none; opacity: 1; } }
-@keyframes menuPanelOut { to   { transform: translateX(40px); opacity: 0; } }
+.menu-panel.closing { animation: menuPanelOut 0.15s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
+@keyframes menuPanelIn  { from { transform: translateX(28px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes menuPanelOut { to   { transform: translateX(28px); opacity: 0; } }
 
 .menu-track { position: relative; flex: 1; overflow: hidden; }
 
@@ -1517,15 +1516,17 @@ body.menu-open { overflow: hidden; }
   background: transparent;
   overflow-y: auto;
 }
-.menu-level.in-right, .menu-level.in-left, .menu-level.out-left, .menu-level.out-right { will-change: transform, opacity; }
-.menu-level.in-right { animation: levelInRight 0.22s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.menu-level.in-left  { animation: levelInLeft  0.22s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.menu-level.out-left { animation: levelOutLeft 0.2s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
-.menu-level.out-right{ animation: levelOutRight 0.2s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
-@keyframes levelInRight  { from { transform: translateX(48px); opacity: 0; } to { transform: none; opacity: 1; } }
-@keyframes levelInLeft   { from { transform: translateX(-48px); opacity: 0; } to { transform: none; opacity: 1; } }
-@keyframes levelOutLeft  { to   { transform: translateX(-40px); opacity: 0; } }
-@keyframes levelOutRight { to   { transform: translateX(40px); opacity: 0; } }
+/* The drill animations composite via transform/opacity; a persistent
+   will-change on the level kept a nested layer alive and made row hover
+   repaints re-rasterize the whole level instead of the one hovered row. */
+.menu-level.in-right { animation: levelInRight 0.16s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.menu-level.in-left  { animation: levelInLeft  0.16s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.menu-level.out-left { animation: levelOutLeft 0.15s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
+.menu-level.out-right{ animation: levelOutRight 0.15s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
+@keyframes levelInRight  { from { transform: translateX(28px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes levelInLeft   { from { transform: translateX(-28px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes levelOutLeft  { to   { transform: translateX(-24px); opacity: 0; } }
+@keyframes levelOutRight { to   { transform: translateX(24px); opacity: 0; } }
 
 .menu-head {
   display: flex; align-items: center; gap: 10px;
@@ -1559,25 +1560,29 @@ body.menu-open { overflow: hidden; }
   font: inherit; font-size: 14px; font-weight: 500;
   text-align: left; cursor: pointer;
   text-decoration: none;
-  transition: background 0.15s, color 0.15s, transform 0.12s var(--ease-out);
+  transition: background-color 0.12s var(--ease-out), color 0.12s var(--ease-out), transform 0.1s var(--ease-out);
 }
 .menu-level:not(.shown) .menu-row { opacity: 0; }
-.menu-level.shown .menu-row { animation: menuRowIn 0.22s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.menu-level.shown .menu-row:nth-child(1) { animation-delay: 0.01s; }
-.menu-level.shown .menu-row:nth-child(2) { animation-delay: 0.02s; }
-.menu-level.shown .menu-row:nth-child(3) { animation-delay: 0.03s; }
-.menu-level.shown .menu-row:nth-child(4) { animation-delay: 0.04s; }
-.menu-level.shown .menu-row:nth-child(5) { animation-delay: 0.05s; }
-.menu-level.shown .menu-row:nth-child(6) { animation-delay: 0.06s; }
-.menu-level.shown .menu-row:nth-child(7) { animation-delay: 0.07s; }
-.menu-level.shown .menu-row:nth-child(8) { animation-delay: 0.08s; }
+.menu-level.shown .menu-row { animation: menuRowIn 0.16s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.menu-level.shown .menu-row:nth-child(1) { animation-delay: 0.02s; }
+.menu-level.shown .menu-row:nth-child(2) { animation-delay: 0.035s; }
+.menu-level.shown .menu-row:nth-child(3) { animation-delay: 0.05s; }
+.menu-level.shown .menu-row:nth-child(4) { animation-delay: 0.065s; }
+.menu-level.shown .menu-row:nth-child(5) { animation-delay: 0.08s; }
+.menu-level.shown .menu-row:nth-child(6) { animation-delay: 0.095s; }
+.menu-level.shown .menu-row:nth-child(7) { animation-delay: 0.11s; }
+.menu-level.shown .menu-row:nth-child(8) { animation-delay: 0.125s; }
 @keyframes menuRowIn {
-  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: none; }
 }
 .menu-row:hover { background: var(--bg-deep); }
 .menu-row:active { transform: scale(0.985); }
-.menu-row.active { color: var(--accent); }
+.menu-row.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--hairline-a);
+}
 .menu-row.danger { color: var(--negative); }
 .menu-row.danger .menu-row-icon { color: var(--negative); }
 
@@ -1586,21 +1591,24 @@ body.menu-open { overflow: hidden; }
   display: grid; place-items: center;
   border-radius: 11px;
   background: var(--bg-deep); color: var(--muted);
-  transition: transform 0.15s var(--ease-out), background 0.15s, color 0.15s, box-shadow 0.15s;
+  /* transform + colors only: no box-shadow or rotation, so hover stays
+     paint-cheap even over the blurred backdrop (the old rotate(-4deg) +
+     glow-ring transition read as lag on slower GPUs). */
+  transition: transform 0.12s var(--ease-out), background-color 0.12s var(--ease-out), color 0.12s var(--ease-out);
 }
 .menu-row-icon svg { width: 16px; height: 16px; }
-.menu-row:hover .menu-row-icon { background: var(--accent-soft); color: var(--accent); transform: scale(1.06) rotate(-4deg); box-shadow: var(--shadow-glow); }
-.menu-row.active .menu-row-icon { background: var(--accent-soft); color: var(--accent); }
+.menu-row:hover .menu-row-icon { background: var(--accent-soft); color: var(--accent); transform: scale(1.07); }
+.menu-row.active .menu-row-icon { background: transparent; color: var(--accent); }
 
 .menu-row-label { flex: 1; min-width: 0; }
 .menu-row-check { color: var(--accent); display: grid; place-items: center; }
 .menu-row-check svg { width: 15px; height: 15px; }
 .menu-row-chevron {
   color: var(--muted); display: grid; place-items: center;
-  transition: transform 0.15s var(--ease-out), color 0.15s;
+  transition: transform 0.12s var(--ease-out), color 0.12s var(--ease-out);
 }
 .menu-row-chevron svg { width: 15px; height: 15px; }
-.menu-row:hover .menu-row-chevron { transform: translateX(3px); color: var(--accent); }
+.menu-row:hover .menu-row-chevron { transform: translateX(2px); color: var(--accent); }
 
 .menu-sep { height: 1px; background: var(--line); margin: 10px 6px; }
 
@@ -1622,8 +1630,6 @@ body.menu-open { overflow: hidden; }
 @media (max-width: 639px) {
   .menu-backdrop {
     justify-content: stretch; align-items: flex-end;
-    -webkit-backdrop-filter: blur(4px) saturate(1.1);
-    backdrop-filter: blur(4px) saturate(1.1);
   }
   .menu-panel {
     width: 100%;

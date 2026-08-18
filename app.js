@@ -3206,12 +3206,12 @@ function buildMenuLevel(id) {
   const list = $('div', { class: 'menu-list' });
   if (id === 'root') {
     const route = currentRoute();
-    ROUTES.forEach(r => list.append($('a', { href: `#${r}`, class: 'menu-row' + (r === route ? ' active' : ''), onClick: closeAppMenu },
+    ROUTES.forEach(r => list.append($('a', { href: `#${r}`, class: 'menu-row' + (r === route ? ' active' : ''), 'aria-current': r === route ? 'page' : null, onClick: closeAppMenu },
       $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', balances: 'wallet', insights: 'chart' }[r]] }),
       $('span', { class: 'menu-row-label' }, titleFor(r)),
-      r === route ? $('span', { class: 'menu-row-check', 'aria-hidden': 'true', innerHTML: MENU_ICONS.check }) : null,
     )));
     list.append($('div', { class: 'menu-sep' }));
+    list.append(menuRowEl({ icon: 'clock', label: 'Recurring & bills', onClick: () => { closeAppMenu(); openRecurringManager(); } }));
     if (canInstallApp()) {
       list.append(menuRowEl({ icon: 'download', label: 'Install app', onClick: () => { closeAppMenu(); promptInstall(); } }));
     }
@@ -3270,7 +3270,7 @@ function openAppMenu() {
   if (trigger) trigger.setAttribute('aria-expanded', 'true');
   menuDrill('root');
   document.addEventListener('keydown', onMenuKey, true);
-  queueMicrotask(() => { const first = panel.querySelector('.menu-row, .menu-back'); if (first) first.focus({ preventScroll: true }); });
+  queueMicrotask(() => { const target = panel.querySelector('.menu-row.active') || panel.querySelector('.menu-row, .menu-back'); if (target) target.focus({ preventScroll: true }); });
 }
 
 function closeAppMenu() {
@@ -3858,10 +3858,13 @@ function screenDashboard() {
         $('span', { class: 'eyebrow' }, `Recurring · ${allRecurring.length}`),
         dueSoonCount > 0 ? $('span', { class: 'pill', style: 'border-color:var(--accent);color:var(--accent);font-size:10px;' }, `⏰ ${dueSoonCount} due soon`) : null,
       ),
-      $('button', { type: 'button', style: 'font-size:11px;color:var(--accent);cursor:pointer;background:none;border:none;padding:0;', onClick: () => openNewRecurring() }, '+ New'),
+      $('div', { style: 'display:flex;align-items:center;gap:12px;' },
+        allRecurring.length > 0 ? $('button', { type: 'button', style: 'font-size:11px;color:var(--muted);cursor:pointer;background:none;border:none;padding:0;text-decoration:underline;text-underline-offset:2px;', onClick: () => openRecurringManager() }, 'Manage all') : null,
+        $('button', { type: 'button', style: 'font-size:11px;color:var(--accent);cursor:pointer;background:none;border:none;padding:0;', onClick: () => openNewRecurring() }, '+ New'),
+      ),
     ),
     recurring.length === 0
-      ? $('div', { class: 'muted', style: 'font-size:13px;' }, allRecurring.length ? 'No items due this month.' : 'No recurring items yet. Add your rent, subscriptions, or paydays.')
+      ? $('div', { class: 'muted', style: 'font-size:13px;' }, allRecurring.length ? 'No items due this month. See all in Manage all.' : 'No recurring items yet. Add your rent, subscriptions, or paydays.')
       : $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
         ...recurring.map(r => {
           const isOverdue = r.nextDate <= today();
@@ -4188,8 +4191,98 @@ function cashWidget() {
   return wrapper;
 }
 
+// ---------- modal: manage all recurring ----------
+// The dashboard card only lists rules whose next occurrence falls within the
+// current month; this modal lists every rule regardless of when it is next
+// due, sorted by next occurrence, with edit/remove/new in one place.
+function openRecurringManager() {
+  const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Manage recurring transactions', tabindex: '-1', style: 'max-width:560px;display:flex;flex-direction:column;max-height:88vh;' });
+  // Re-render the list whenever any nested editor modal closes, so edits/adds
+  // made through the manager are reflected immediately.
+  const refreshManager = () => refresh();
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+
+  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onEsc, true);
+
+  const listEl = $('div', { style: 'overflow-y:auto;flex:1;min-height:0;margin:0 -4px;padding:0 4px;' });
+  const emptyState = () => $('div', { class: 'muted', style: 'font-size:13px;padding:24px 4px;text-align:center;' },
+    'No recurring transactions yet. Add rent, subscriptions, or paydays.',
+  );
+
+  const freqLabel = (r) => r.frequency === 'weekly' ? 'Weekly' : `Monthly · ${r.dayOfMonth}${ordinal(r.dayOfMonth)}`;
+  const rowFor = (r) => {
+    const d = daysUntil(r.nextDate);
+    const overdue = d < 0;
+    const dueSoon = !overdue && d <= 7;
+    return $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background-color:color-mix(in srgb, var(--card) 92%, transparent);' },
+      $('div', { style: 'display:flex;align-items:center;gap:4px;min-width:0;flex:1;' },
+        $('span', { style: `display:inline-block;width:7px;height:7px;border-radius:50%;background:${overdue ? 'var(--negative)' : dueSoon ? 'var(--accent)' : 'var(--muted)'};flex-shrink:0;` }),
+        $('div', { style: 'min-width:0;flex:1;' },
+          $('div', { style: 'font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, r.details),
+          $('div', { class: 'muted', style: 'font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' },
+            `${r.method} · ${freqLabel(r)} · next ${friendlyDate(r.nextDate)}${overdue ? ` (${Math.abs(d)}d overdue)` : d === 0 ? ' (today)' : dueSoon ? ` (in ${d}d)` : ''}`,
+          ),
+        ),
+      ),
+      $('div', { style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;' },
+        $('span', { class: 'display-num', style: `font-size:13px;color:${r.type === 'credit' ? 'var(--positive)' : 'var(--negative)'};` }, (r.type === 'credit' ? '+' : '') + fmt(r.amount)),
+        $('button', { type: 'button', 'aria-label': `Edit ${r.details}`, title: 'Edit', style: 'width:28px;height:28px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;', onClick: (ev) => { ev.stopPropagation(); openNewRecurring(r, refreshManager); } }, iconSpan('pencil', 'sm')),
+        $('button', { type: 'button', 'aria-label': `Remove ${r.details}`, title: 'Remove', style: 'width:28px;height:28px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:15px;line-height:1;', onClick: (ev) => {
+          ev.stopPropagation();
+          const removed = state.settings.recurring.filter(x => x.id === r.id);
+          state.settings.recurring = state.settings.recurring.filter(x => x.id !== r.id);
+          trackAction(() => { state.settings.recurring.push(...removed); persist(); }, `Restored recurring "${r.details}"`);
+          persist(); toast(`Removed recurring "${r.details}".`);
+          refresh();
+        } }, '×'),
+      ),
+    );
+  };
+
+  const refresh = () => {
+    const list = [...(state.settings.recurring || [])].sort((a, b) => a.nextDate.localeCompare(b.nextDate));
+    listEl.textContent = '';
+    if (list.length === 0) listEl.appendChild(emptyState());
+    else for (const r of list) listEl.appendChild(rowFor(r));
+    countEl.textContent = String(list.length);
+    // Keep the persistent undo button in sync on the page beneath the modal
+    // (remove/edit here update the undo slot without a full re-render).
+    const fabHost = document.querySelector('main');
+    const oldFab = fabHost ? fabHost.querySelector('.undo-fab') : null;
+    const newFab = renderUndoFab();
+    if (newFab) { if (oldFab) oldFab.replaceWith(newFab); else if (fabHost) fabHost.appendChild(newFab); }
+    else if (oldFab) oldFab.remove();
+  };
+
+  const countEl = $('span', { class: 'pill', style: 'border-color:transparent;font-size:10px;flex-shrink:0;' });
+
+  modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-shrink:0;' },
+    $('div', { style: 'display:flex;align-items:center;gap:10px;' },
+      $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:26px;' }, 'Recurring'),
+      countEl,
+    ),
+    $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
+  ));
+  modal.appendChild(listEl);
+  modal.appendChild($('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line);flex-shrink:0;' },
+    $('button', { type: 'button', class: 'btn btn-primary', onClick: () => { openNewRecurring(null, refreshManager); } }, '+ New recurring'),
+  ));
+
+  refresh();
+  queueMicrotask(() => modal.focus());
+}
+
+function ordinal(n) {
+  const s = ['th', 'st', 'nd', 'rd'], v = n % 100;
+  return s[(v - 20) % 10] || s[v] || s[0];
+}
+
 // ---------- modal: new recurring ----------
-function openNewRecurring(existing = null) {
+function openNewRecurring(existing = null, onClosed = null) {
   const data = existing
     ? { type: existing.type, details: existing.details, amount: String(existing.amount), method: existing.method, category: existing.category, frequency: existing.frequency, dayOfMonth: existing.dayOfMonth, note: existing.note || '' }
     : { type: 'expense', details: '', amount: '', method: 'AIB', category: 'gro', frequency: 'monthly', dayOfMonth: 1, note: '' };
@@ -4199,7 +4292,7 @@ function openNewRecurring(existing = null) {
   bg.appendChild(modal);
   document.body.appendChild(bg);
 
-  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); };
+  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); if (onClosed) onClosed(); };
   const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
@@ -5834,7 +5927,9 @@ function toast(text, undoFn, undoLabel) {
   const t = $('div', { class: 'toast', role: 'status', 'aria-live': 'polite' }, ...children);
   host.appendChild(t);
   while (host.children.length > MAX_TOASTS) host.firstElementChild.remove();
-  setTimeout(() => t.remove(), 2200);
+  // Toasts carrying an Undo button stay long enough to read and act on;
+  // plain notifications dismiss quickly.
+  setTimeout(() => t.remove(), runUndo ? 5000 : 2200);
 }
 
 // Offer the persisted undo journal after a reload. The toast is transient, but
