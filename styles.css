@@ -1495,6 +1495,9 @@ body.menu-open { overflow: hidden; }
   height: min(700px, calc(100vh - 80px));
   height: min(700px, calc(100dvh - 80px));
   background: var(--card);
+  /* Keep the panel a positioned child so it paints above the backdrop's
+     ::before scrim; otherwise the scrim dims the whole white panel grey. */
+  position: relative;
   border-left: 1px solid var(--line);
   box-shadow: var(--shadow-xl), inset 0 1px 0 var(--glass-highlight);
   display: flex; flex-direction: column;
@@ -1505,8 +1508,10 @@ body.menu-open { overflow: hidden; }
      compositor layer that re-rasterized on every hover repaint (desktop). */
 }
 .menu-panel.closing { animation: menuPanelOut 0.15s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
-@keyframes menuPanelIn  { from { transform: translateX(28px); opacity: 0; } to { transform: none; opacity: 1; } }
-@keyframes menuPanelOut { to   { transform: translateX(28px); opacity: 0; } }
+/* Slide only (no opacity): fading the panel would show the dark scrim through
+   it and read as the menu turning grey. It stays opaque white the whole way. */
+@keyframes menuPanelIn  { from { transform: translateX(28px); } to { transform: none; } }
+@keyframes menuPanelOut { to   { transform: translateX(28px); } }
 
 .menu-track { position: relative; flex: 1; overflow: hidden; }
 
@@ -1576,7 +1581,10 @@ body.menu-open { overflow: hidden; }
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: none; }
 }
-.menu-row:hover { background: var(--bg-deep); }
+/* Rows stay white on hover and click; a soft shadow gives each row a subtle
+   lift, and the icon chip + chevron carry the emerald hover cue. The old
+   grey fill made the whole menu read as "going grey" on press. */
+.menu-row:hover { box-shadow: var(--shadow-md); }
 .menu-row:active { transform: scale(0.985); }
 .menu-row.active {
   color: var(--accent);
@@ -1640,8 +1648,8 @@ body.menu-open { overflow: hidden; }
     animation-name: menuSheetIn;
   }
   .menu-panel.closing { animation-name: menuSheetOut; }
-  @keyframes menuSheetIn  { from { transform: translateY(44px); opacity: 0; } to { transform: none; opacity: 1; } }
-  @keyframes menuSheetOut { to   { transform: translateY(44px); opacity: 0; } }
+  @keyframes menuSheetIn  { from { transform: translateY(44px); } to { transform: none; } }
+  @keyframes menuSheetOut { to   { transform: translateY(44px); } }
 }
 
 /* ============================================================

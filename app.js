@@ -1591,39 +1591,86 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
     if (editing) {
       // ---- Load money mode (top-up credit entry) ----
       if (editMode === 'load') {
-        const loadAmount = $('input', { type: 'text', inputmode: 'decimal', value: '', placeholder: '0.00', 'aria-label': `${label} load amount`, autocomplete: 'off', style: `width:${isNarrow() ? '86px' : '104px'};padding:6px 8px;border:1px solid var(--accent);border-radius:var(--radius);text-align:right;font-size:12px;` });
+        let loadDirection = 'in'; // 'in' = load/top-up, 'out' = withdraw/spend
+        const outLabel = isGiftCard ? 'Spend' : 'Withdraw';
+        const loadAmount = $('input', { type: 'text', inputmode: 'decimal', value: '', placeholder: '0.00', 'aria-label': `${label} load amount`, autocomplete: 'off', style: `width:${isNarrow() ? '86px' : '104px'};padding:6px 8px;border:1px solid var(--accent);border-radius:var(--radius);text-align:right;font-size:12px;transition:border-color .15s,color .15s;` });
         const loadDate = $('input', { type: 'date', value: today(), max: today(), 'aria-label': `${label} load date`, style: `width:${isNarrow() ? '124px' : '138px'};padding:6px 8px;border:1px solid var(--line);border-radius:var(--radius);font-size:12px;` });
-        const loadSave = () => {
-          const amt = parseAmount(loadAmount.value);
+        // Explicit direction toggle so money-out isn't hidden behind a leading '-'.
+        const dirIn = $('button', { type: 'button', class: 'pill', role: 'tab', 'aria-selected': 'true', 'aria-label': `Load onto ${label}`, style: 'height:24px;padding:0 10px;font-size:10px;border-radius:6px;cursor:pointer;', onClick: () => { loadDirection = 'in'; syncDirection(); } }, 'Load');
+        const dirOut = $('button', { type: 'button', class: 'pill', role: 'tab', 'aria-selected': 'false', 'aria-label': `${outLabel} from ${label}`, style: 'height:24px;padding:0 10px;font-size:10px;border-radius:6px;cursor:pointer;', onClick: () => { loadDirection = 'out'; syncDirection(); } }, outLabel);
+        const saveBtn = $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: loadSave }, iconSpan('plus', 'sm'), 'Load');
+        function loadSave() {
+          const raw = String(loadAmount.value).trim();
+          const isDebit = loadDirection === 'out';
+          const amt = parseAmount(raw);
           if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); loadAmount.focus(); return; }
           if (!isValidCheckpointDate(loadDate.value) || loadDate.value > today()) { toast('Choose today or an earlier date.'); loadDate.focus(); return; }
           const eid = uid();
           const cardName = methodShort(methodId);
-          const loadEntry = { id: eid, createdAt: nowIso(), date: loadDate.value, type: 'credit', category: 'misc', details: `${cardName} load`, amount: amt, method: methodId, note: '' };
+          // Direction is carried by `type`, and amounts stay positive.
+          const kind = isDebit ? (isGiftCard ? 'spend' : 'withdrawal') : 'load';
+          const loadEntry = {
+            id: eid, createdAt: nowIso(), date: loadDate.value,
+            type: isDebit ? 'expense' : 'credit', category: 'misc',
+            details: `${cardName} ${kind}`, amount: amt, method: methodId, note: ''
+          };
           state.entries.push(loadEntry);
           state.entries.sort((a, b) => a.date.localeCompare(b.date));
           persist();
-          trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); tombstoneIds([eid]); persist(); }, `${cardName} load ${fmt(amt)}`, [loadEntry]);
+          trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); tombstoneIds([eid]); persist(); }, `${cardName} ${kind} ${fmt(amt)}`, [loadEntry]);
           editing = false;
-          toast(`Loaded ${fmt(amt)} onto ${cardName}.`);
+          toast(isDebit ? `Removed ${fmt(amt)} from ${cardName}.` : `Loaded ${fmt(amt)} onto ${cardName}.`);
           render();
+        }
+        // Keep pills, field color, and the action button in sync with the
+        // chosen direction.
+        function syncDirection() {
+          const out = loadDirection === 'out';
+          dirIn.setAttribute('aria-selected', out ? 'false' : 'true');
+          dirIn.style.background = out ? 'transparent' : 'var(--accent-soft)';
+          dirIn.style.color = out ? 'var(--muted)' : 'var(--accent)';
+          dirIn.style.borderColor = out ? 'var(--line)' : 'transparent';
+          dirOut.setAttribute('aria-selected', out ? 'true' : 'false');
+          dirOut.style.background = out ? 'color-mix(in srgb, var(--negative) 9%, transparent)' : 'transparent';
+          dirOut.style.color = out ? 'var(--negative)' : 'var(--muted)';
+          dirOut.style.borderColor = out ? 'transparent' : 'var(--line)';
+          loadAmount.style.borderColor = out ? 'var(--negative)' : 'var(--accent)';
+          loadAmount.style.color = out ? 'var(--negative)' : 'var(--ink)';
+          // The action button matches the input: solid red when money is going
+          // out, back to the emerald primary when loading in.
+          saveBtn.style.background = out ? 'var(--negative)' : '';
+          saveBtn.style.color = out ? '#FFFFFF' : '';
+          saveBtn.style.boxShadow = out ? '0 10px 34px -10px rgba(185,28,28,0.4)' : '';
+          saveBtn.innerHTML = '';
+          saveBtn.append(iconSpan(out ? 'minus' : 'plus', 'sm'), $('span', {}, out ? outLabel : 'Load'));
+        }
+        // A leading '-' remains a shorthand for money-out: flip the toggle and
+        // strip the sign so the field keeps a clean positive amount.
+        const syncLoadSign = () => {
+          const raw = String(loadAmount.value);
+          if (raw.startsWith('-')) {
+            loadDirection = 'out';
+            loadAmount.value = raw.replace(/^-+/, '');
+          }
+          syncDirection();
         };
+        loadAmount.addEventListener('input', syncLoadSign);
         loadAmount.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); loadSave(); } if (ev.key === 'Escape') { editing = false; draw(); } });
         loadDate.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); loadSave(); } if (ev.key === 'Escape') { editing = false; draw(); } });
+        syncDirection();
         row.append(
           $('div', { style: 'flex:1 1 100%;display:flex;flex-direction:column;gap:8px;min-width:0;' },
             $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:6px 12px;flex-wrap:wrap;min-width:0;' },
-              $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' },
+              $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap;' },
                 $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
-                $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);' }, 'Load'),
+                $('div', { role: 'tablist', 'aria-label': 'Money direction', style: 'display:inline-flex;align-items:center;gap:4px;' }, dirIn, dirOut),
               ),
               $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
-                loadAmount, loadDate,
-                $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:5px 9px;font-size:11px;', onClick: loadSave }, iconSpan('plus', 'sm'), 'Load'),
+                loadAmount, loadDate, saveBtn,
                 $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 8px;font-size:11px;', onClick: () => { editing = false; draw(); } }, 'Cancel'),
               ),
             ),
-            $('div', { class: 'muted balance-editor-help', style: 'font-size:10px;line-height:1.35;' }, `Adds a credit entry to top up this ${isGiftCard ? 'card' : 'account'}.`),
+            $('div', { class: 'muted balance-editor-help', style: 'font-size:10px;line-height:1.35;' }, isGiftCard ? 'Tops up this card, or records spend against it.' : 'Adds money to this account, or withdraws from it.'),
           ),
         );
         queueMicrotask(() => loadAmount.focus());
@@ -3135,6 +3182,7 @@ const ICONS = {
   // Plain plus for tiny buttons - the menu's circled plus reads as a record
   // button at 12px.
   plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+  minus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"/></svg>',
   pencil: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>',
   clipboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>',
   refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>',
