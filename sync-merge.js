@@ -22,7 +22,7 @@
    ============================================================ */
 
 /** Latest mutation time of an entry as a number (0 when unknown). */
-export function entryVersion(entry) {
+function entryVersion(entry) {
   if (!entry) return 0;
   const updated = entry.updatedAt ? Date.parse(entry.updatedAt) : NaN;
   if (Number.isFinite(updated)) return updated;
@@ -47,7 +47,7 @@ function unionIds(a = [], b = []) {
 }
 
 /** Union entries by id; per-id LWW by version; tombstoned ids are dropped. */
-export function mergeEntries(localEntries, cloudEntries, deletedIds) {
+function mergeEntries(localEntries, cloudEntries, deletedIds) {
   const byId = new Map();
   for (const entry of localEntries || []) byId.set(entry.id, entry);
   for (const entry of cloudEntries || []) {
@@ -102,7 +102,7 @@ function mergeCheckpoints(a = {}, b = {}) {
 }
 
 /** Merge settings. Scalars from the newer side; collections unioned. */
-export function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresher) {
+function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresher) {
   const older = cloudFresher ? localSettings : cloudSettings;
   const newer = cloudFresher ? cloudSettings : localSettings;
   const deletedEntryIds = unionIds(localSettings.deletedEntryIds, cloudSettings.deletedEntryIds);

@@ -1902,15 +1902,27 @@ function catTotalsForEntries(entries) {
   }
   return totals;
 }
+/** Manual Load/Withdraw balance adjustments move money between tracked
+ *  balances rather than representing real spending or income. The balance
+ *  editor records them with a deterministic "<method> load|withdrawal|spend"
+ *  description, so both new and legacy entries are recognised without a
+ *  schema change. */
+function isBalanceAdjustmentEntry(entry) {
+  if (!entry || typeof entry.details !== 'string') return false;
+  const short = methodShort(entry.method);
+  return entry.details === `${short} load`
+    || entry.details === `${short} withdrawal`
+    || entry.details === `${short} spend`;
+}
 function isSpendingEntry(entry) {
-  return entry.type === 'expense' && !entry.transferId;
+  return entry.type === 'expense' && !entry.transferId && !isBalanceAdjustmentEntry(entry);
 }
 /** Spending that counts against the monthly budget (excludes savings). */
 function isBudgetSpendingEntry(entry) {
   return isSpendingEntry(entry) && !BUDGET_EXCLUDED_METHOD_IDS.includes(entry.method);
 }
 function isIncomeEntry(entry) {
-  return entry.type === 'credit' && !entry.transferId;
+  return entry.type === 'credit' && !entry.transferId && !isBalanceAdjustmentEntry(entry);
 }
 /** Income that counts toward the month's figures (excludes savings). */
 function isBudgetIncomeEntry(entry) {
@@ -4398,20 +4410,21 @@ function openRecurringManager() {
     const d = daysUntil(r.nextDate);
     const overdue = d < 0;
     const dueSoon = !overdue && d <= 7;
-    return $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background-color:color-mix(in srgb, var(--card) 92%, transparent);' },
-      $('div', { style: 'display:flex;align-items:center;gap:4px;min-width:0;flex:1;' },
-        $('span', { style: `display:inline-block;width:7px;height:7px;border-radius:50%;background:${overdue ? 'var(--negative)' : dueSoon ? 'var(--accent)' : 'var(--muted)'};flex-shrink:0;` }),
+    const narrow = isNarrow();
+    return $('div', { style: `display:flex;flex-direction:${narrow ? 'column' : 'row'};align-items:${narrow ? 'stretch' : 'center'};justify-content:space-between;gap:${narrow ? '12px' : '10px'};padding:${narrow ? '14px' : '12px 14px'};border:1px solid var(--line);border-radius:10px;margin-bottom:${narrow ? '10px' : '8px'};background-color:color-mix(in srgb, var(--card) 92%, transparent);` },
+      $('div', { style: `display:flex;align-items:${narrow ? 'flex-start' : 'center'};gap:${narrow ? '8px' : '4px'};min-width:0;flex:1;` },
+        $('span', { style: `display:inline-block;width:7px;height:7px;border-radius:50%;background:${overdue ? 'var(--negative)' : dueSoon ? 'var(--accent)' : 'var(--muted)'};flex-shrink:0;margin-top:${narrow ? '6px' : '0'};` }),
         $('div', { style: 'min-width:0;flex:1;' },
-          $('div', { style: 'font-weight:500;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, r.details),
-          $('div', { class: 'muted', style: 'font-size:11px;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' },
+          $('div', { style: `font-weight:500;font-size:${narrow ? '14px' : '13px'};line-height:1.35;${narrow ? '' : 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'}` }, r.details),
+          $('div', { class: 'muted', style: `font-size:11px;margin-top:${narrow ? '4px' : '2px'};line-height:1.45;${narrow ? '' : 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'}` },
             `${r.method} · ${freqLabel(r)} · next ${friendlyDate(r.nextDate)}${overdue ? ` (${Math.abs(d)}d overdue)` : d === 0 ? ' (today)' : dueSoon ? ` (in ${d}d)` : ''}`,
           ),
         ),
       ),
-      $('div', { style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;' },
-        $('span', { class: 'display-num', style: `font-size:13px;color:${r.type === 'credit' ? 'var(--positive)' : 'var(--negative)'};` }, (r.type === 'credit' ? '+' : '') + fmt(r.amount)),
-        $('button', { type: 'button', 'aria-label': `Edit ${r.details}`, title: 'Edit', style: 'width:28px;height:28px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;', onClick: (ev) => { ev.stopPropagation(); openNewRecurring(r, refreshManager); } }, iconSpan('pencil', 'sm')),
-        $('button', { type: 'button', 'aria-label': `Remove ${r.details}`, title: 'Remove', style: 'width:28px;height:28px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:15px;line-height:1;', onClick: (ev) => {
+      $('div', { style: `display:flex;align-items:center;gap:8px;flex-shrink:0;${narrow ? 'padding-left:15px;' : ''}` },
+        $('span', { class: 'display-num', style: `font-size:${narrow ? '15px' : '13px'};color:${r.type === 'credit' ? 'var(--positive)' : 'var(--negative)'};${narrow ? 'flex:1 1 auto;text-align:left;' : ''}` }, (r.type === 'credit' ? '+' : '') + fmt(r.amount)),
+        $('button', { type: 'button', 'aria-label': `Edit ${r.details}`, title: 'Edit', style: `width:${narrow ? '34px' : '28px'};height:${narrow ? '34px' : '28px'};border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;`, onClick: (ev) => { ev.stopPropagation(); openNewRecurring(r, refreshManager); } }, iconSpan('pencil', 'sm')),
+        $('button', { type: 'button', 'aria-label': `Remove ${r.details}`, title: 'Remove', style: `width:${narrow ? '34px' : '28px'};height:${narrow ? '34px' : '28px'};border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;justify-content:center;font-size:${narrow ? '17px' : '15px'};line-height:1;flex-shrink:0;`, onClick: (ev) => {
           ev.stopPropagation();
           const removed = state.settings.recurring.filter(x => x.id === r.id);
           state.settings.recurring = state.settings.recurring.filter(x => x.id !== r.id);

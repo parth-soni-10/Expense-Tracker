@@ -87,8 +87,7 @@ The app uses ES modules, so `index.html` can't be opened via `file://`. From the
 
 ```bash
 ./serve.sh        # bash / Git Bash / macOS / Linux   (port 8080)
-serve.bat         # Windows native cmd                (port 8080)
-python -m http.server 8080
+python -m http.server 8080   # or on any OS without the script
 ```
 
 Then open `http://localhost:8080`. Everything works locally except cloud sync, which needs the deployed Netlify Function.
