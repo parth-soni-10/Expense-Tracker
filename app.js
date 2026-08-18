@@ -1582,6 +1582,34 @@ function totalAccountBalanceAt(date = today(), checkpointsByMethod = null) {
   return ACCOUNT_METHOD_IDS.reduce((sum, id) => sum + balanceAtForEntries(entries, id, date, checkpoints), 0);
 }
 
+/** Reconcile every balance method to its current value in one tap, as a
+ *  single undoable batch. Snapshot the prior checkpoints so Undo restores all
+ *  of them exactly as they were. */
+function reconcileAll() {
+  const date = today();
+  const prev = JSON.parse(JSON.stringify(getBalanceCheckpoints()));
+  state.settings.balanceCheckpoints = state.settings.balanceCheckpoints || {};
+  for (const id of BALANCE_METHOD_IDS) {
+    const balance = balanceAt(id, date);
+    const existing = Array.isArray(state.settings.balanceCheckpoints[id])
+      ? state.settings.balanceCheckpoints[id].filter(point => point.date !== date)
+      : [];
+    state.settings.balanceCheckpoints[id] = [
+      ...existing,
+      { date, at: nowIso(), balance: Math.round(balance * 100) / 100 },
+    ].sort((a, b) => a.date.localeCompare(b.date));
+  }
+  clearBalanceCaches();
+  persist();
+  trackAction(() => {
+    state.settings.balanceCheckpoints = prev;
+    clearBalanceCaches();
+    persist();
+  }, 'Reconcile all balances');
+  toast(`Reconciled ${BALANCE_METHOD_IDS.length} balances to their current values.`);
+  render();
+}
+
 function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', editable = false, canLoad = false, indent = false } = {}) {
   const row = $('div', { class: 'balance-editor-row', style: `display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;${indent ? `padding-left:${isNarrow() ? '26px' : '32px'};` : ''}border-bottom:1px solid var(--line);font-size:13px;` });
   let editing = false;
@@ -5112,6 +5140,7 @@ function screenBalances() {
     $('h1', { class: 'page-title' }, 'Balances'),
     $('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;justify-content:flex-end;' },
       $('a', { href: '#history', class: 'btn btn-ghost', style: 'padding:8px 14px;font-size:12px;' }, 'Transaction history'),
+      $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:8px 14px;font-size:12px;', onClick: reconcileAll }, 'Reconcile all'),
     ),
   ));
 
