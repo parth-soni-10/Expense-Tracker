@@ -1495,7 +1495,7 @@ function supportingTotalsDelta(entry, methodId, targetDate, checkpoint) {
     && (entry.date > checkpoint.date || changedAfterCheckpoint);
   const totals = { loaded: 0, spent: 0 };
   const add = (version, sign) => {
-    if (!version || version.method !== methodId) return;
+    if (!version || version.method !== methodId || isBalanceAdjustmentEntry(version)) return;
     const amount = Number(version.amount) || 0;
     if (version.type === 'credit' || version.category === 'GC') totals.loaded += sign * amount;
     else if (version.type === 'expense') totals.spent += sign * amount;
@@ -2065,7 +2065,7 @@ function computeGiftCardBalance(entries, methodId, asOfDate = today()) {
   let spent = 0;
   if (!checkpoint) {
     for (const entry of entries) {
-      if (entry.method !== methodId || entry.date > asOfDate || entry.type === 'note') continue;
+      if (entry.method !== methodId || entry.date > asOfDate || entry.type === 'note' || isBalanceAdjustmentEntry(entry)) continue;
       if (entry.type === 'credit' || entry.category === 'GC') loaded += entry.amount;
       else if (entry.type === 'expense') spent += entry.amount;
     }
@@ -2330,7 +2330,7 @@ function upcomingOccurrences(rec, horizonDays = 30) {
 
 // ---------- Tesco pay helpers ----------
 function fillThursday(dateStr) {
-  const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG');
+  const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG' && !isBalanceAdjustmentEntry(e));
   const defaultAmt = lastTesco ? lastTesco.amount : 0;
   if (defaultAmt > 0) {
     const eid = uid();
@@ -2347,7 +2347,7 @@ function fillThursday(dateStr) {
 }
 
 function autoFillAll(unpaidThursdays) {
-  const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG');
+  const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG' && !isBalanceAdjustmentEntry(e));
   const defaultAmt = lastTesco ? lastTesco.amount : 0;
   if (defaultAmt > 0 && unpaidThursdays.length > 0) {
     const created = [];
@@ -4222,7 +4222,7 @@ function screenDashboard() {
   const thursdays = thursdaysInMonth(now.getFullYear(), now.getMonth());
   // Look across ALL entries (not just this month) so Thursdays match regardless of when entered
   const incomeByDate = {};
-  for (const e of state.entries.filter(x => x.type === 'credit')) { incomeByDate[e.date] = (incomeByDate[e.date] || 0) + e.amount; }
+  for (const e of state.entries.filter(x => isIncomeEntry(x))) { incomeByDate[e.date] = (incomeByDate[e.date] || 0) + e.amount; }
   // Build local today string the same way thursdaysInMonth does (no UTC shift)
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const unpaidThursdays = thursdays.filter(d => !incomeByDate[d] && d <= todayStr);
