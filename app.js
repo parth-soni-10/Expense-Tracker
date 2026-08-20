@@ -3910,6 +3910,25 @@ function screenDashboard() {
     ),
   ));
 
+  // Gift-card low-balance notice - when a Tesco/Lidl card's current balance
+  // drops below €5 it shows here on the home screen with a tap-through to the
+  // Balances screen to top it up.
+  const lowGiftCards = ['TG', 'LG']
+    .map(id => ({ id, label: methodShort(id), balance: computeGiftCardBalance(state.entries, id).balance }))
+    .filter(card => card.balance < 5);
+  if (lowGiftCards.length) {
+    screen.appendChild($('div', { class: 'card', role: 'alert', style: `padding:${isNarrow() ? '14px 16px' : '16px'};margin-bottom:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid color-mix(in srgb, var(--negative) 35%, transparent);background:color-mix(in srgb, var(--negative) 8%, transparent);` },
+      iconSpan('alert', 'md'),
+      $('div', { style: 'flex:1;min-width:0;' },
+        $('div', { style: 'font-weight:600;font-size:13px;' }, 'Gift card running low'),
+        $('div', { class: 'muted', style: 'font-size:12px;margin-top:2px;' },
+          lowGiftCards.map(card => `${card.label} has ${fmt(card.balance)} left`).join(' · '),
+        ),
+      ),
+      $('a', { href: '#balances', class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;flex-shrink:0;' }, 'Top up'),
+    ));
+  }
+
   // Milestone chips - personality that rewards consistency.
   const ms = computeMilestones();
   const chips = [];
