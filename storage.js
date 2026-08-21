@@ -393,7 +393,12 @@ export function loadState() {
     const raw = localStorage.getItem(KEY);
     if (!raw) return defaultState();
     const parsed = JSON.parse(raw);
-    return validateState(parsed);
+    const validated = validateState(parsed);
+    // Self-heal: when validation changes the stored data (e.g. duplicate
+    // recurring entries collapsed, legacy fields normalized) write the clean
+    // copy back immediately, so the next reload reads tidy storage too.
+    if (JSON.stringify(validated) !== raw) saveState(validated);
+    return validated;
   } catch {
     return defaultState();
   }
