@@ -62,12 +62,41 @@ function mergeEntries(localEntries, cloudEntries, deletedIds) {
   return out;
 }
 
-/** Union id-keyed lists (customCategories, recurring); `newer` wins a clash. */
+/** Union id-keyed lists (customCategories); `newer` wins a clash. */
 function unionById(older = [], newer = []) {
   const map = new Map();
   for (const item of older) if (item && item.id) map.set(item.id, item);
   for (const item of newer) if (item && item.id) map.set(item.id, item);
   return [...map.values()];
+}
+
+/** Content fingerprint for a recurring entry - two entries with every editor
+ *  field equal are the same charge even when their ids differ (each save gets
+ *  a fresh id, so id-union alone lets duplicates survive sync forever). */
+function recurringFingerprint(item) {
+  if (!item || typeof item !== 'object') return '';
+  const day = Number.isInteger(Number(item.dayOfMonth)) ? Math.min(31, Math.max(1, Number(item.dayOfMonth))) : 1;
+  const amount = Number.isFinite(Number(item.amount)) ? Number(item.amount).toFixed(2) : '';
+  return [item.type, String(item.details || '').trim().toLowerCase(), amount, item.method, item.category, item.frequency, day].join('|');
+}
+
+/** Recurring merge: union by id (newer side wins a clash), then collapse
+ *  content-identical duplicates so the same charge added on two devices (or
+ *  twice on one) never appears twice. The surviving entry keeps whichever id
+ *  the union picked; the client-side validateState re-checks on adoption. */
+function mergeRecurring(older = [], newer = []) {
+  const map = new Map();
+  for (const item of older || []) if (item && item.id) map.set(item.id, item);
+  for (const item of newer || []) if (item && item.id) map.set(item.id, item);
+  const out = [];
+  const seen = new Set();
+  for (const item of map.values()) {
+    const fingerprint = recurringFingerprint(item);
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    out.push(item);
+  }
+  return out;
 }
 
 /** coins: {denomination: count} — additive per-denomination counts, so union
@@ -109,7 +138,7 @@ function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresher) {
   return {
     ...newer,
     customCategories: unionById(older.customCategories, newer.customCategories),
-    recurring: unionById(older.recurring, newer.recurring),
+    recurring: mergeRecurring(older.recurring, newer.recurring),
     balanceCheckpoints: mergeCheckpoints(localSettings.balanceCheckpoints, cloudSettings.balanceCheckpoints),
     coins: mergeCoins(localSettings.coins, cloudSettings.coins),
     // categoryBudgets: per-key LWW — a target set on either side survives, and

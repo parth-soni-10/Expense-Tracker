@@ -255,6 +255,11 @@ function normalizeTransferGroups(entries) {
 function normalizeRecurring(raw, customCategoryIds) {
   if (!Array.isArray(raw)) return [];
   const allowedCategories = new Set([...BASE_CATEGORIES, ...customCategoryIds]);
+  // Collapse content-identical entries: the recurring editor gives every
+  // save a fresh id, so the same charge created twice (double-tap, or on two
+  // synced devices) would otherwise survive as permanent duplicates. Two
+  // entries are "the same charge" when every editor field matches.
+  const seen = new Set();
   return raw.reduce((out, item) => {
     if (!item || typeof item !== 'object') return out;
     const amount = Number(item.amount);
@@ -263,10 +268,14 @@ function normalizeRecurring(raw, customCategoryIds) {
       || !METHODS_OK.has(item.method) || !allowedCategories.has(item.category)
       || !isValidCheckpointDate(item.nextDate) || !Number.isFinite(amount) || amount <= 0 || amount > 1_000_000
       || !['weekly', 'monthly'].includes(item.frequency)) return out;
+    const details = typeof item.details === 'string' ? item.details.trim().slice(0, 240) : '';
+    const fingerprint = [item.type, details.toLowerCase(), +amount.toFixed(2), item.method, item.category, item.frequency, Number.isInteger(day) ? Math.min(31, Math.max(1, day)) : 1].join('|');
+    if (seen.has(fingerprint)) return out;
+    seen.add(fingerprint);
     out.push({
       id: item.id,
       type: item.type,
-      details: typeof item.details === 'string' ? item.details.trim().slice(0, 240) : '',
+      details,
       amount: +amount.toFixed(2),
       method: item.method,
       category: item.category,
