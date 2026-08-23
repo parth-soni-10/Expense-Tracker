@@ -713,11 +713,20 @@ function lockApp() {
   showPinLock();
 }
 
+// Only the topmost modal may respond to Escape. Stacked modals (e.g. the
+// recurring manager opening the new-recurring editor on top of it) each
+// register a document-level capture listener, so without this guard one
+// Escape would close every modal at once.
+function isTopModal(bg) {
+  const bgs = document.querySelectorAll('.modal-bg');
+  return bgs.length > 0 && bgs[bgs.length - 1] === bg;
+}
+
 function openPinSettings() {
   const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
   const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Privacy lock settings', tabindex: '-1', style: 'max-width:420px;' });
   const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); };
-  const onKey = ev => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const onKey = ev => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onKey, true);
   bg.appendChild(modal); document.body.appendChild(bg);
   const custom = hasCustomPin();
@@ -1809,7 +1818,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
                 removed,
               ].sort((a, b) => a.date.localeCompare(b.date));
               persist();
-            }, `Restored ${label} reconciliation`, null, [{ methodId, point: { ...removed } }]);
+            }, `Removed ${label} reconciliation`, null, [{ methodId, point: { ...removed } }]);
             toast(`${label} reconciliation removed.`);
             render();
           }
@@ -2135,7 +2144,7 @@ function openGiftCardHistoryModal(methodId) {
   const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
   const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': `${cardName} history`, tabindex: '-1', style: `max-width:${isNarrowView ? '100%' : '540px'};max-height:85vh;overflow-y:auto;` });
   const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); };
-  const onKey = ev => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const onKey = ev => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onKey, true);
   bg.appendChild(modal);
   document.body.appendChild(bg);
@@ -2319,7 +2328,7 @@ function skipRecurring(rec, dateStr = rec.nextDate) {
     rec.nextDate = advanceRecurringDate(rec.nextDate, rec.frequency, rec.dayOfMonth);
   }
   persist();
-  trackAction(() => { rec.nextDate = oldDate; persist(); }, `Restored "${rec.details}"`);
+  trackAction(() => { rec.nextDate = oldDate; persist(); }, `Skipped ${rec.details}`);
   toast(`Skipped: ${rec.details} - next ${friendlyDate(rec.nextDate)}`);
   render();
 }
@@ -2390,7 +2399,7 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
   bg.appendChild(modal);
   document.body.appendChild(bg);
   const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
   const amtInput = $('input', { type: 'text', inputmode: 'decimal', placeholder: '0.00', 'aria-label': 'Amount', autocomplete: 'off', onInput: (e) => data.amount = e.target.value });
@@ -2617,7 +2626,7 @@ function openDuplicateConfirm(entry, dup, onConfirm) {
   bg.appendChild(modal);
   document.body.appendChild(bg);
   const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
   modal.appendChild($('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:24px;margin-bottom:8px;' }, 'Possible duplicate'));
   modal.appendChild($('p', { class: 'muted', style: 'font-size:13px;line-height:1.5;margin-bottom:20px;' },
@@ -3077,7 +3086,7 @@ async function removeDuplicateEntry(id) {
   state.entries = state.entries.filter(e => !removedIds.has(e.id));
   tombstoneIds([...removedIds]);
   persist();
-  trackAction(() => { state.entries.push(...removed); state.entries.sort((a, b) => a.date.localeCompare(b.date)); untombstoneIds(removed.map(e => e.id)); persist(); }, `Restored ${target.details}`, removed);
+  trackAction(() => { state.entries.push(...removed); state.entries.sort((a, b) => a.date.localeCompare(b.date)); untombstoneIds(removed.map(e => e.id)); persist(); }, `Deleted ${target.details}`, removed);
   toast(target.transferId ? 'Duplicate transfer pair deleted.' : 'Duplicate deleted.');
   render();
 }
@@ -3392,7 +3401,7 @@ function openAppMenu() {
   backdrop.append(panel);
   document.body.appendChild(backdrop);
   appMenu = { backdrop, panel, track, stack: [] };
-  document.body.classList.add('menu-open');
+  document.documentElement.classList.add('menu-open');
   if (trigger) trigger.setAttribute('aria-expanded', 'true');
   menuDrill('root');
   document.addEventListener('keydown', onMenuKey, true);
@@ -3404,7 +3413,7 @@ function closeAppMenu() {
   const { backdrop, panel } = appMenu;
   appMenu = null;
   document.removeEventListener('keydown', onMenuKey, true);
-  document.body.classList.remove('menu-open');
+  document.documentElement.classList.remove('menu-open');
   const trigger = document.querySelector('.menu-trigger');
   if (trigger) trigger.setAttribute('aria-expanded', 'false');
   backdrop.classList.add('closing');
@@ -3493,7 +3502,7 @@ function menuRefreshLevel(id) {
 
 
 // ---------- shared form ----------
-function formView({ initial = null, onSubmit }) {
+function formView({ initial = null, onSubmit, onCancel }) {
   const isEdit = !!initial;
   const data = initial ? { ...initial } : {
     type: 'expense', date: today(), details: '', amount: '',
@@ -3766,7 +3775,7 @@ function formView({ initial = null, onSubmit }) {
       $('label', { class: 'eyebrow', for: 'f-note' }, 'Note'), Object.assign(noteInput, { id: 'f-note' }),
     ),
     $('div', { style: 'display:flex;gap:12px;justify-content:flex-end;padding-top:24px;border-top:1px solid var(--line);' },
-      $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => location.hash = '#dashboard' }, 'Cancel'),
+      $('button', { type: 'button', class: 'btn btn-ghost', onClick: onCancel || (() => location.hash = '#dashboard') }, 'Cancel'),
       $('button', { type: 'button', class: 'btn btn-primary', onClick: (ev) => {
         const icon = ev.currentTarget.querySelector('.btn-save-icon');
         if (icon) { icon.classList.add('saved'); setTimeout(() => { if (icon) icon.classList.remove('saved'); }, 800); }
@@ -4047,7 +4056,7 @@ function screenDashboard() {
               $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0;flex-shrink:0;', onClick: () => {
                 const removed = state.settings.recurring.filter(x => x.id === r.id);
                 state.settings.recurring = state.settings.recurring.filter(x => x.id !== r.id);
-                trackAction(() => { state.settings.recurring.push(...removed); persist(); }, `Restored recurring "${r.details}"`);
+                trackAction(() => { state.settings.recurring.push(...removed); persist(); }, `Removed recurring "${r.details}"`);
                 persist(); toast(`Removed recurring "${r.details}".`); render();
               }, title: 'Remove recurring' }, '×'),
               $('span', { style: `display:inline-block;width:7px;height:7px;border-radius:50%;background:${isOverdue ? 'var(--negative)' : isDueSoon ? 'var(--accent)' : 'var(--muted)'};flex-shrink:0;box-shadow:${isDueSoon ? '0 0 0 3px var(--accent-glow)' : 'none'};` }),
@@ -4456,7 +4465,7 @@ function openRecurringManager() {
   document.body.appendChild(bg);
 
   const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
   const listEl = $('div', { style: 'overflow-y:auto;flex:1;min-height:0;margin:0 -4px;padding:0 4px;' });
@@ -4487,7 +4496,7 @@ function openRecurringManager() {
           ev.stopPropagation();
           const removed = state.settings.recurring.filter(x => x.id === r.id);
           state.settings.recurring = state.settings.recurring.filter(x => x.id !== r.id);
-          trackAction(() => { state.settings.recurring.push(...removed); persist(); }, `Restored recurring "${r.details}"`);
+          trackAction(() => { state.settings.recurring.push(...removed); persist(); }, `Removed recurring "${r.details}"`);
           persist(); toast(`Removed recurring "${r.details}".`);
           refresh();
         } }, '×'),
@@ -4545,7 +4554,7 @@ function openNewRecurring(existing = null, onClosed = null) {
   document.body.appendChild(bg);
 
   const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); if (onClosed) onClosed(); };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
   const typeTabs = $('div', { style: 'display:flex;gap:0;margin-bottom:20px;border:1px solid var(--line);border-radius:8px;overflow:hidden;' });
@@ -4650,7 +4659,7 @@ function openNewRecurring(existing = null, onClosed = null) {
         trackAction(() => {
           state.settings.recurring = state.settings.recurring.map(r => r.id === existing.id ? prev : r);
           persist();
-        }, `Reverted edits to "${prev.details}"`);
+        }, `Edited recurring "${rec.details}"`);
         persist();
         toast(`Recurring "${rec.details}" updated.`);
       } else {
@@ -4680,7 +4689,7 @@ function openCashEditor() {
   document.body.appendChild(bg);
 
   const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
   const totalEl = $('span', { class: 'display-num', style: 'font-size:22px;' }, fmt(computeCashTotal(coins)));
@@ -4743,7 +4752,7 @@ function openVoucherEditor() {
   document.body.appendChild(bg);
 
   const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
   const input = $('input', { type: 'text', inputmode: 'decimal', value: amount ? amount.toFixed(2) : '', 'aria-label': 'Voucher amount in euros', autocomplete: 'off', style: 'width:110px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;font-family:inherit;font-size:16px;text-align:center;outline:none;padding:8px 10px;transition:border-color .15s;', onFocus: (e) => e.target.select(), onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } });
@@ -5078,7 +5087,7 @@ function screenHistory() {
       state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       untombstoneIds(removedCopy.map(e => e.id));
       persist();
-    }, `Restored ${removedCopy.length} deleted entr${removedCopy.length === 1 ? 'y' : 'ies'}`, removedCopy);
+    }, `Deleted ${removedCopy.length} entr${removedCopy.length === 1 ? 'y' : 'ies'}`, removedCopy);
     toast(protectedCount ? `Deleted ${removedCopy.length} (${protectedCount} kept - protected).` : `Deleted ${removedCopy.length} entr${removedCopy.length === 1 ? 'y' : 'ies'}.`);
     selected.clear();
     render();
@@ -5831,7 +5840,7 @@ function openYearInReview() {
   bg.appendChild(modal);
   document.body.appendChild(bg);
   const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;' },
@@ -5860,7 +5869,23 @@ function openYearInReview() {
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Close'),
     $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
       const text = rows.map(([l,v]) => `${l}: ${v}`).join('\n');
-      navigator.clipboard?.writeText(text).then(() => toast('Copied to clipboard!'), () => toast('Could not copy.'));
+      const doCopy = () => {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch { ok = false; }
+        ta.remove();
+        toast(ok ? 'Copied to clipboard!' : 'Could not copy.');
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(() => toast('Copied to clipboard!'), doCopy);
+      } else {
+        doCopy();
+      }
     } }, 'Copy summary'),
   ));
 }
@@ -5898,7 +5923,7 @@ function openTransferDelete(e) {
     if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(restore);
     else setTimeout(restore, 0);
   };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' },
@@ -5925,7 +5950,7 @@ function openTransferDelete(e) {
           state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
           untombstoneIds(removed.map(e => e.id));
           persist();
-        }, 'Restored transfer pair', removed);
+        }, 'Deleted transfer pair', removed);
         toast('Transfer pair deleted.');
       }
       close();
@@ -5972,7 +5997,7 @@ function openEdit(id) {
   };
 
   const onKey = (ev) => {
-    if (ev.key === 'Escape') { ev.preventDefault(); close(); return; }
+    if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); return; }
     if (ev.key === 'Tab') {
       const focusables = Array.from(modal.querySelectorAll('input, select, button, [tabindex]:not([tabindex="-1"])'))
         .filter(el => !el.disabled && el.offsetParent !== null);
@@ -5994,6 +6019,7 @@ function openEdit(id) {
   ));
   formNode = formView({
     initial: e,
+    onCancel: close,
     onSubmit: (entryOrEntries) => {
       const entries = Array.isArray(entryOrEntries) ? entryOrEntries : [entryOrEntries];
       // Editing an ordinary entry may turn it into a transfer. Replace the
@@ -6032,7 +6058,7 @@ function openEdit(id) {
         state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
         untombstoneIds(removed.map(e => e.id));
         persist();
-      }, e.transferId ? 'Restored transfer pair' : `Restored ${e.details}`, removed);
+      }, e.transferId ? 'Deleted transfer pair' : `Deleted ${e.details}`, removed);
       toast(e.transferId ? 'Transfer pair deleted.' : 'Deleted. Undo it any time with the Undo button.');
     }
     close();
@@ -6068,7 +6094,7 @@ function openSyncSettings() {
     if (opener && typeof opener.focus === 'function') opener.focus();
   };
   const onKey = (ev) => {
-    if (ev.key === 'Escape') { ev.preventDefault(); close(); return; }
+    if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); return; }
     if (ev.key === 'Tab') {
       const focusables = Array.from(modal.querySelectorAll('input, select, button, [tabindex]:not([tabindex="-1"])'))
         .filter(el => !el.disabled && el.offsetParent !== null);
@@ -6500,9 +6526,12 @@ function _render() {
   const locked = hasPinLock() && !pinUnlocked;
   const scrollY = window.scrollY;
   main.innerHTML = '';
-  main.toggleAttribute('aria-hidden', locked);
+  // inert (not aria-hidden): if focus ever lands inside the locked mount the
+  // browser would otherwise warn about hiding a focused element, and inert
+  // additionally blocks programmatic focus from re-entering it.
+  main.toggleAttribute('inert', locked);
   if (locked) return;
-  main.removeAttribute('aria-hidden');
+  main.removeAttribute('inert');
   main.appendChild(renderHeader());
 
   const route = currentRoute();
@@ -6576,7 +6605,14 @@ function _render() {
         toast('All entries cleared.');
         this.textContent = 'Reset';
       } }, 'Reset'),
-      $('button', { type: 'button', class: 'footer-action', onClick: () => window.scrollTo({ top: 0, behavior: 'smooth' }) }, iconSpan('arrow-up', 'sm'), 'Top'),
+      $('button', { type: 'button', class: 'footer-action', onClick: () => {
+        const startY = window.scrollY;
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        // Some embedded webviews have smooth scrolling disabled and silently
+        // ignore the options form of scrollTo; jump instantly when nothing
+        // started moving.
+        setTimeout(() => { if (window.scrollY === startY && startY > 0) window.scrollTo(0, 0); }, 80);
+      } }, iconSpan('arrow-up', 'sm'), 'Top'),
     ),
   ));
 
@@ -6696,6 +6732,19 @@ window.addEventListener('appinstalled', () => {
 });
 
 window.addEventListener('DOMContentLoaded', () => {
+  // Lock background scroll while any modal (or the pin-lock/onboarding
+  // overlay) is open. Each overlay appends a .modal-bg to <body> and removes
+  // it on close, so one observer keeps the class in sync without per-modal
+  // bookkeeping. SweetAlert2 confirm dialogs (.swal2-container) are covered
+  // too - its own body.swal2-shown rule hits the same overflow-propagation
+  // trap. The class goes on <html>, not <body>: body already has
+  // overflow-x: hidden, which stops its overflow from propagating to the
+  // viewport, so a body-level lock never takes effect (mirrors the menu).
+  new MutationObserver(() => {
+    const open = !!document.body.querySelector('.modal-bg')
+      || !!document.body.querySelector('.swal2-container');
+    document.documentElement.classList.toggle('modal-open', open);
+  }).observe(document.body, { childList: true });
   initCardSpotlight();
   // First-run setup replaces the default-PIN lock on a fresh install; every
   // later visit boots to the privacy lock as before. Cloud sync and the

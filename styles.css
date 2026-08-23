@@ -1449,7 +1449,11 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
 .menu-trigger[aria-expanded="true"] .icon-burger { opacity: 0; transform: rotate(90deg) scale(0.5); }
 .menu-trigger[aria-expanded="true"] .icon-close { opacity: 1; transform: rotate(0deg) scale(1); }
 
-body.menu-open { overflow: hidden; }
+/* Overflow locks live on <html>, not <body>: body already sets
+   overflow-x: hidden, which stops its overflow propagating to the viewport,
+   so body-level locks never take effect. */
+html.menu-open { overflow: hidden; }
+html.modal-open { overflow: hidden; }
 
 .menu-backdrop {
   position: fixed; inset: 0; z-index: 55;
