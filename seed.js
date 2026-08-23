@@ -23,6 +23,8 @@ export const METHODS = [
 export const SEED_SETTINGS = {
   monthlyBudget: 1100,
   currency: '€',
+  // Euro amount of Tesco paper vouchers on hand - never part of any balance.
+  tescoVouchers: 0,
   // Per-category monthly targets, keyed by category id. Optional: a category
   // without a target is simply not constrained. Spending over a target turns
   // the category's bar and callout red.

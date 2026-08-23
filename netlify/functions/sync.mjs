@@ -166,6 +166,11 @@ function validIncomingSettings(settings) {
       if (!VALID_COIN_KEYS.has(key) || !Number.isInteger(Number(value)) || Number(value) < 0 || Number(value) > MAX_AMOUNT) return false;
     }
   }
+  if (settings.tescoVouchers != null) {
+    const vouchers = Number(settings.tescoVouchers);
+    if (!Number.isFinite(vouchers) || vouchers < 0 || vouchers > MAX_AMOUNT
+      || Math.round(vouchers * 100) / 100 !== vouchers) return false;
+  }
   if (settings.categoryBudgets != null) {
     if (typeof settings.categoryBudgets !== 'object' || Array.isArray(settings.categoryBudgets)) return false;
     for (const [categoryId, value] of Object.entries(settings.categoryBudgets)) {

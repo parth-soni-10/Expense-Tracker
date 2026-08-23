@@ -47,7 +47,7 @@ you act → state updated in memory → persisted to localStorage → (optionall
 Everything hangs off one state object:
 
 - **`entries`** — the transactions. Each entry records `date`, `type` (expense / credit), `category`, `details`, `amount`, `method`, plus `createdAt` / `updatedAt` timestamps used for conflict resolution.
-- **`settings`** — monthly budget, currency, custom categories, recurring rules, balance checkpoints (bank & gift-card balances by date), and a coin/cash drawer breakdown.
+- **`settings`** — monthly budget, currency, custom categories, recurring rules, balance checkpoints (bank & gift-card balances by date), a coin/cash drawer breakdown, and a Tesco paper voucher count.
 - **`schemaVersion`** — lets the app migrate old saved data forward instead of breaking.
 
 ## Screens & features
@@ -60,6 +60,7 @@ Everything hangs off one state object:
 - **Security lock** — every device boots locked. The site-wide default PIN is `100901` until you set a personal PIN in **Privacy & security** settings. On **mobile browsers**, the lock screen also offers **fingerprint / Face ID** unlock via the Web Authentication API — the credential is stored per-device and the OS does the verification, so it never leaves the device. Desktop and the PIN path are unchanged.
 - **Recurring transactions** — weekly/monthly rules with a `nextDate` that advances as occurrences are logged or skipped (skips are undoable).
 - **Cash drawer** — a coin breakdown (counts × denominations) that computes the total cash on hand.
+- **Tesco paper vouchers** — the euro amount of paper vouchers on hand (dashboard widget + editor, like coins). It never affects any balance; going above €5 shows a toast and a persistent dashboard notice.
 - **Extras** — dark mode, JSON export/import, and a full device reset.
 
 ## Sync & merging

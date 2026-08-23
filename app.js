@@ -823,7 +823,8 @@ function hasLocalDataToProtect() {
     || Object.values(checkpoints).some(points => Array.isArray(points) && points.length > 0)
     || (Array.isArray(settings.recurring) && settings.recurring.length > 0)
     || (Array.isArray(settings.customCategories) && settings.customCategories.length > 0)
-    || Object.values(settings.coins || {}).some(count => Number(count) > 0);
+    || Object.values(settings.coins || {}).some(count => Number(count) > 0)
+    || Number(settings.tescoVouchers || 0) > 0;
 }
 
 // ---------- merge-based reconciliation ----------
@@ -2216,6 +2217,15 @@ function computeCashTotal(coins) {
   let total = 0;
   for (const c of COINS) total += (coins[String(c.val)] || 0) * c.val;
   return Math.round(total * 100) / 100;
+}
+
+// ---------- Tesco paper vouchers ----------
+// The euro amount of Tesco paper vouchers on hand. Deliberately kept out of
+// every balance — it is a reminder of value held as paper, not money.
+const VOUCHER_NOTICE_AT = 5;
+function voucherAmount() {
+  const n = Number(state.settings.tescoVouchers);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0;
 }
 
 // ---------- recurring transactions ----------
@@ -3894,6 +3904,7 @@ function screenDashboard() {
       $('p', { class: 'dashboard-context', style: `font-size:${isNarrow() ? '13px' : '15px'};gap:${isNarrow() ? '10px' : '18px'};` },
         $('span', null, 'Balance '), $('span', { class: `signed-chip ${runningBalance >= 0 ? 'is-positive' : 'is-negative'}` }, heroBalanceEl),
         cashWidget(),
+        voucherWidget(),
       ),
     ),
     $('div', { class: 'dashboard-actions' },
@@ -3926,6 +3937,21 @@ function screenDashboard() {
         ),
       ),
       $('a', { href: '#balances', class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;flex-shrink:0;' }, 'Top up'),
+    ));
+  }
+
+  // Tesco paper vouchers notice - when the amount sits above the threshold it
+  // stays visible on the home screen (plus the one-time toast when it crossed
+  // in the editor). Purely informational: vouchers never touch the balance.
+  const voucherTally = voucherAmount();
+  if (voucherTally > VOUCHER_NOTICE_AT) {
+    screen.appendChild($('div', { class: 'card', role: 'alert', style: `padding:${isNarrow() ? '14px 16px' : '16px'};margin-bottom:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid color-mix(in srgb, var(--accent) 40%, transparent);background:color-mix(in srgb, var(--accent) 8%, transparent);` },
+      iconSpan('alert', 'md'),
+      $('div', { style: 'flex:1;min-width:0;' },
+        $('div', { style: 'font-weight:600;font-size:13px;' }, 'Tesco paper vouchers piling up'),
+        $('div', { class: 'muted', style: 'font-size:12px;margin-top:2px;' }, `You have ${fmt(voucherTally)} of vouchers - that's above the ${fmt(VOUCHER_NOTICE_AT)} limit.`),
+      ),
+      $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;flex-shrink:0;', onClick: () => openVoucherEditor() }, 'Update'),
     ));
   }
 
@@ -4402,6 +4428,20 @@ function cashWidget() {
   return wrapper;
 }
 
+/** Tesco paper vouchers widget - the euro amount on hand next to Cash. Click
+ *  to edit. It never feeds into any balance; over the notice threshold it
+ *  turns red and a persistent alert card appears on the dashboard. */
+function voucherWidget() {
+  const amount = voucherAmount();
+  const over = amount > VOUCHER_NOTICE_AT;
+  const wrapper = $('span', { style: 'position:relative;display:inline-flex;align-items:center;gap:6px;cursor:pointer;', title: 'Tesco paper vouchers - click to edit' },
+    $('span', { style: 'font-family:"Space Grotesk",sans-serif;' }, 'Vouchers '),
+    $('span', { class: 'display-num', style: `font-size:16px;color:${over ? 'var(--negative)' : 'var(--muted)'};` }, fmt(amount)),
+  );
+  wrapper.addEventListener('click', () => openVoucherEditor());
+  return wrapper;
+}
+
 // ---------- modal: manage all recurring ----------
 // The dashboard card only lists rules whose next occurrence falls within the
 // current month; this modal lists every rule regardless of when it is next
@@ -4688,6 +4728,65 @@ function openCashEditor() {
   ));
 
   queueMicrotask(() => modal.querySelector('button')?.focus());
+}
+
+// ---------- modal: Tesco paper vouchers ----------
+// An amount editor (editable input + ±€1 steppers - paper vouchers carry a
+// euro value). Saving never touches any balance; the only side effect is a
+// toast when the amount crosses above VOUCHER_NOTICE_AT.
+function openVoucherEditor() {
+  let amount = voucherAmount();
+
+  const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Tesco paper vouchers', tabindex: '-1', style: 'max-width:420px;' });
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+
+  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onEsc, true);
+
+  const input = $('input', { type: 'text', inputmode: 'decimal', value: amount ? amount.toFixed(2) : '', 'aria-label': 'Voucher amount in euros', autocomplete: 'off', style: 'width:110px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;font-family:inherit;font-size:16px;text-align:center;outline:none;padding:8px 10px;transition:border-color .15s;', onFocus: (e) => e.target.select(), onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } });
+  const warnEl = $('div', { style: 'font-size:12px;color:var(--negative);text-align:center;', hidden: amount <= VOUCHER_NOTICE_AT }, `You have ${fmt(amount)} of vouchers - that's above the ${fmt(VOUCHER_NOTICE_AT)} limit.`);
+  const refresh = () => {
+    warnEl.hidden = amount <= VOUCHER_NOTICE_AT;
+    warnEl.textContent = `You have ${fmt(amount)} of vouchers - that's above the ${fmt(VOUCHER_NOTICE_AT)} limit.`;
+  };
+  const step = (delta) => {
+    const prev = amount;
+    amount = Math.max(0, Math.round((amount + delta) * 100) / 100);
+    input.value = amount ? amount.toFixed(2) : '';
+    refresh();
+    // Notify the moment the amount crosses above the threshold.
+    if (prev <= VOUCHER_NOTICE_AT && amount > VOUCHER_NOTICE_AT) {
+      toast(`Heads up: you now have ${fmt(amount)} of Tesco paper vouchers.`);
+    }
+  };
+  const decr = $('button', { type: 'button', style: 'width:36px;height:36px;border:1px solid var(--line);border-radius:8px;background:transparent;cursor:pointer;font-size:16px;display:inline-flex;align-items:center;justify-content:center;', 'aria-label': 'Less voucher value', onClick: () => step(-1) }, '−');
+  const incr = $('button', { type: 'button', style: 'width:36px;height:36px;border:1px solid var(--line);border-radius:8px;background:transparent;cursor:pointer;font-size:16px;display:inline-flex;align-items:center;justify-content:center;', 'aria-label': 'More voucher value', onClick: () => step(1) }, '+');
+
+  modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' },
+    $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:26px;' }, 'Tesco paper vouchers'),
+    $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
+  ));
+  modal.appendChild($('div', { style: 'display:flex;flex-direction:column;gap:10px;margin-bottom:12px;' },
+    $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, 'Total euro value of paper vouchers on hand. This is only a reminder - it never affects your balance.'),
+    $('div', { style: 'display:flex;align-items:center;justify-content:center;gap:14px;padding:16px 0;' }, decr, input, incr),
+    warnEl,
+  ));
+  modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:18px;' },
+    $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+    $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
+      const parsed = Math.round(Number(input.value) * 100) / 100;
+      if (!Number.isFinite(parsed) || parsed < 0) { toast('Enter a non-negative amount.'); return; }
+      state.settings.tescoVouchers = parsed;
+      persist();
+      toast('Tesco voucher amount saved.');
+      close();
+    } }, 'Save'),
+  ));
+
+  queueMicrotask(() => input.focus());
 }
 
 // ---------- screens: add ----------

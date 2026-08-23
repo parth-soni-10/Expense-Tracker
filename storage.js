@@ -296,6 +296,12 @@ function normalizeCoins(raw) {
     .map(([key, value]) => [key, Number(value)]));
 }
 
+/** Tesco paper vouchers: the euro amount on hand, 0..1M with 2dp. */
+function normalizeVoucherAmount(raw) {
+  const n = Math.round(Number(raw) * 100) / 100;
+  return Number.isFinite(n) && n >= 0 && n <= 1_000_000 ? n : 0;
+}
+
 /** Per-category budget targets: {categoryId: amount}. Unknown category ids
  *  (deleted custom categories) are dropped; amounts are clamped like the
  *  monthly budget. */
@@ -382,6 +388,7 @@ export function validateState(s) {
     customCategories,
     recurring: normalizeRecurring(safeSettings.recurring, customCategories.map(category => category.id)),
     coins: normalizeCoins(safeSettings.coins),
+    tescoVouchers: normalizeVoucherAmount(safeSettings.tescoVouchers),
     categoryBudgets: normalizeCategoryBudgets(rawSettings.categoryBudgets, CATEGORIES_OK),
   };
   out.schemaVersion = 2;

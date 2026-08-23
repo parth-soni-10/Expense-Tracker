@@ -141,6 +141,9 @@ function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresher) {
     recurring: mergeRecurring(older.recurring, newer.recurring),
     balanceCheckpoints: mergeCheckpoints(localSettings.balanceCheckpoints, cloudSettings.balanceCheckpoints),
     coins: mergeCoins(localSettings.coins, cloudSettings.coins),
+    // tescoVouchers: an amount like coins - keep the max so one device's
+    // voucher value is never silently dropped by the other's older copy.
+    tescoVouchers: Math.max(Number(localSettings.tescoVouchers) || 0, Number(cloudSettings.tescoVouchers) || 0),
     // categoryBudgets: per-key LWW — a target set on either side survives, and
     // the fresher side wins a clash for the same category.
     categoryBudgets: { ...(older.categoryBudgets || {}), ...(newer.categoryBudgets || {}) },
