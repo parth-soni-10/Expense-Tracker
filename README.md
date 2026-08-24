@@ -2,6 +2,22 @@
 
 A minimal, aesthetic single-page expense tracker. No build step, no framework — just `index.html`, a handful of ES modules, and hand-written CSS. All your data lives in the browser's `localStorage` and, once cloud sync is enabled, in a single JSON file inside a **private GitHub repo you control** — copied there automatically by a tiny Netlify Function.
 
+## Screenshots
+
+The dashboard in **light** and **dark** mode, on desktop and mobile.
+
+**Desktop:**
+
+| Light | Dark |
+| --- | --- |
+| ![cents. dashboard on desktop (light)](screenshots/dashboard-desktop.png) | ![cents. dashboard on desktop (dark)](screenshots/dashboard-desktop-dark.png) |
+
+**Mobile:**
+
+| Light | Dark |
+| --- | --- |
+| ![cents. dashboard on mobile (light)](screenshots/dashboard-mobile.png) | ![cents. dashboard on mobile (dark)](screenshots/dashboard-mobile-dark.png) |
+
 ## How it works
 
 The app is a classic SPA: `app.js` owns the UI and routing, `storage.js` owns the data, and the two talk through a small, validated state object. Every change flows one way:
@@ -36,6 +52,7 @@ you act → state updated in memory → persisted to localStorage → (optionall
 ├── storage.js                localStorage CRUD, strict validation, JSON I/O
 ├── seed.js                   structural defaults (categories, methods, settings)
 ├── fonts/                    self-hosted Space Grotesk + IBM Plex Mono woff2
+├── screenshots/              README screenshots (light + dark, desktop + mobile)
 ├── netlify.toml              static hosting + SPA fallback
 └── netlify/
     └── functions/
