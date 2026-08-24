@@ -9,7 +9,7 @@
     })();
   </script>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="cents. - a calm, precise personal expense tracker. Track spending, budgets, balances and recurring bills." />
   <meta name="theme-color" content="#101210" />
@@ -54,6 +54,15 @@
   <!-- Fonts are self-hosted in /fonts (see the @font-face rules in styles.css)
        so the app makes no third-party connection on load. -->
   <link rel="stylesheet" href="styles.css">
+
+  <!-- Critical-path preloads: kick off the big module download and the main
+       UI font in parallel with the render-blocking stylesheet instead of
+       waiting for the parser to reach the bottom of the body. app.js uses
+       modulepreload (not preload) so its fetch matches the module script's
+       credentials mode — a plain preload would be orphaned and downloaded
+       twice. -->
+  <link rel="modulepreload" href="app.js" />
+  <link rel="preload" href="fonts/space-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin />
 
   <!-- ============================================================
        Self-diagnostic — runs BEFORE the module script.
@@ -194,11 +203,66 @@
     <div style="padding:32px;font-family:'Space Grotesk',system-ui,sans-serif;">This app needs JavaScript enabled to run.</div>
   </noscript>
   <div id="app"></div>
+  <!-- Instant splash: paints the cents. mark with zero network requests while
+       the 370 KB module downloads, so a cold mobile open never stares at a
+       blank screen. Removed as soon as the app's first render lands (or the
+       boot-fail panel appears, or after a hard backstop). -->
+  <div id="splash" aria-hidden="true">
+    <div class="splash-mark">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+        <path d="M23 8.5a9.3 9.3 0 1 0 0 15" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" />
+        <path d="M3.5 10.5h12M3.5 21.5h12" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" />
+      </svg>
+    </div>
+    <div class="splash-name">cents.</div>
+    <style>
+      #splash { position: fixed; inset: 0; z-index: 45; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #101210; color: #35B877; }
+      #splash .splash-mark { width: 46px; height: 46px; animation: splash-pulse 1.6s ease-in-out infinite; }
+      #splash .splash-mark svg { width: 100%; height: 100%; display: block; }
+      #splash .splash-name { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 15px; letter-spacing: 0.02em; color: #E8EBE5; }
+      @keyframes splash-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+      [data-theme="light"] #splash { background: #F5F5F2; color: #157A4A; }
+      [data-theme="light"] #splash .splash-name { color: #161712; }
+      @media (prefers-reduced-motion: reduce) { #splash .splash-mark { animation: none; } }
+    </style>
+  </div>
+  <script>
+    // Remove the splash the moment the app is in control: app.js sets
+    // window.__centsBooted in its DOMContentLoaded handler (the lock and
+    // onboarding overlays mount on <body>, not #app, so 'mount has children'
+    // alone can't signal readiness). The boot-fail panel and a hard backstop
+    // guarantee it can never trap the user.
+    (function () {
+      var splash = document.getElementById('splash');
+      if (!splash) return;
+      var mount = document.getElementById('app');
+      var bootFail = document.getElementById('boot-fail');
+      var removed = false;
+      function hide() {
+        if (removed) return;
+        removed = true;
+        splash.style.transition = 'opacity 0.25s ease';
+        splash.style.opacity = '0';
+        setTimeout(function () { if (splash.parentNode) splash.parentNode.removeChild(splash); }, 260);
+      }
+      function check() {
+        if (removed) return;
+        if (window.__centsBooted) return hide();
+        if (mount && mount.children.length > 0) return hide();
+        if (bootFail && !bootFail.hidden) return hide();
+        setTimeout(check, 120);
+      }
+      check();
+      setTimeout(hide, 10000);
+    })();
+  </script>
   <div id="boot-fail" hidden></div>
-  <!-- Only SweetAlert2 (confirm dialogs) is loaded eagerly — every other
-       vendored library is fetched lazily on first use from app.js, so the
-       initial load stays light. All integrations degrade gracefully. -->
-  <script defer src="vendor/sweetalert2.min.js"></script>
+  <!-- No vendor script is loaded eagerly. Every library — SweetAlert2
+       included — is fetched lazily on first use from app.js (swalConfirm
+       waits for the 49 KB script, falling back to native confirm() only if
+       the download itself fails), so the boot critical path is just
+       styles.css + app.js and the module's tiny static imports. All
+       integrations degrade gracefully. -->
   <script type="module" src="app.js"></script>
 </body>
 </html>

@@ -10,10 +10,9 @@ import { mergeStates } from './sync-merge.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
-// load or is missing, the app falls back to its native behaviour. Only
-// SweetAlert2 (confirm dialogs, used by every destructive action) is loaded
-// eagerly; the rest are fetched lazily on first use so the initial load
-// stays light.
+// load or is missing, the app falls back to its native behaviour. All of
+// them — SweetAlert2 included — are fetched lazily on first use so the
+// boot critical path stays light (just styles.css + this module).
 const _fpInstances = new Set();    // flatpickr instances
 const _tippyInstances = new Set(); // tippy.js instances
 const _sortables = new Set();      // sortablejs instances
@@ -68,10 +67,21 @@ function libCleanup() {
 }
 
 // Themed confirm() replacement. Resolves true/false; falls back to the native
-// synchronous confirm() when SweetAlert2 is unavailable.
-function swalConfirm({ title, text, confirmButtonText = 'Yes', cancelButtonText = 'Cancel', danger = false } = {}) {
-  if (typeof Swal === 'undefined') return Promise.resolve(window.confirm(text || title));
-  return Swal.fire({
+// synchronous confirm() only if SweetAlert2 genuinely fails to load.
+// SweetAlert2 is lazy-loaded off the boot path: the first destructive action
+// may beat the 49 KB script's download, so this waits for it (a few hundred
+// ms cold, instant once the service worker has it cached) rather than showing
+// a jarring native dialog for that one call.
+async function swalConfirm({ title, text, confirmButtonText = 'Yes', cancelButtonText = 'Cancel', danger = false } = {}) {
+  if (typeof Swal === 'undefined') {
+    try {
+      await loadVendor('swal2', { js: 'vendor/sweetalert2.min.js' });
+    } catch (e) {
+      return window.confirm(text || title);
+    }
+    if (typeof Swal === 'undefined') return window.confirm(text || title);
+  }
+  const result = await Swal.fire({
     title,
     text: text || undefined,
     showCancelButton: true,
@@ -85,7 +95,8 @@ function swalConfirm({ title, text, confirmButtonText = 'Yes', cancelButtonText 
       confirmButton: 'swal-confirm' + (danger ? ' swal-danger' : ''),
       cancelButton: 'swal-cancel',
     },
-  }).then(result => result.isConfirmed);
+  });
+  return result.isConfirmed;
 }
 
 // Themed date picker. Falls back to the native <input type="date">. The
@@ -1400,6 +1411,94 @@ function liveSortedIndex() {
 let balanceForEntryCacheState = null;
 const balanceForEntryCache = new Map();
 
+// One-pass running balance per method for the book-balance path. Rows before
+// (or without) a reconciliation checkpoint anchor to the book baseline, and
+// each row's "after this entry" balance is just the cumulative delta sum up to
+// that row. Computing that as a single O(n) pass per state (instead of the
+// O(n) per-row walk balanceForEntry used to do) is what keeps the History
+// screen fast once an account grows past a few hundred entries — the per-row
+// walk made the whole screen quadratic.
+let runningBalanceState = null;
+let runningBalanceMap = null; // Map: entryId -> balance after this entry (book path)
+
+function liveRunningBalances() {
+  if (runningBalanceState === state.entries && runningBalanceMap) return runningBalanceMap;
+  runningBalanceState = state.entries;
+  const checkpoints = getBalanceCheckpoints();
+  const map = new Map();
+  const totals = new Map(); // methodId -> running total, seeded with the book baseline
+  const ordered = liveSortedEntries();
+  for (const entry of ordered) {
+    if (entry.type === 'note' || !BALANCE_METHOD_IDS.includes(entry.method)) continue;
+    const methodId = entry.method;
+    if (!totals.has(methodId)) {
+      const baseline = checkpoints[methodId]?.find(p => p.date === '1970-01-01')?.balance || 0;
+      totals.set(methodId, baseline);
+    }
+    totals.set(methodId, totals.get(methodId) + balanceDelta(entry, methodId));
+    map.set(entry.id, totals.get(methodId));
+  }
+  runningBalanceMap = map;
+  return map;
+}
+
+// Per-checkpoint running balance pass. Rows at/after a reconciliation
+// checkpoint anchor to checkpoint.balance plus post-checkpoint activity; the
+// per-candidate terms (changedAfterCheckpoint, oldIncluded) depend only on the
+// candidate and the checkpoint, not on the row, so one O(n) walk per
+// (method, checkpoint) replaces the old per-row O(n) loop that made History
+// quadratic whenever a month had many rows after a reconcile.
+//
+// Two quirks of the original per-row loop are preserved exactly: (1) the
+// current-activity sum is capped at the row's own index (candidates sort by
+// date, so the loop's extra date cap is implied), and (2) the oldIncluded
+// subtraction is applied to EVERY row, even ones before the mutated entry's
+// index - so it is a constant per (method, checkpoint) subtracted from every
+// row, computed in a separate pass.
+let cpRunCacheState = null;
+const cpRunCache = new Map(); // `${method}|${checkpointDate}` -> Map(entryId -> balance)
+
+function checkpointRunningBalances(methodId, checkpoint) {
+  const key = methodId + '|' + checkpoint.date;
+  if (cpRunCacheState === state) {
+    const hit = cpRunCache.get(key);
+    if (hit) return hit;
+  } else {
+    cpRunCacheState = state;
+    cpRunCache.clear();
+  }
+  const cpTime = checkpoint.at
+    ? Date.parse(checkpoint.at)
+    : Date.parse(`${checkpoint.date}T23:59:59.999Z`);
+  const ordered = liveSortedEntries();
+  // Pass 1: the constant historical-effect subtraction applied to every row.
+  let oldTotal = 0;
+  for (const candidate of ordered) {
+    const mutationTime = entryMutationTime(candidate);
+    if (Number.isFinite(mutationTime) && mutationTime > cpTime) {
+      const historical = entryVersionAt(candidate, cpTime);
+      const historicalCreated = historical?.createdAt ? Date.parse(historical.createdAt) : NaN;
+      if (Number.isFinite(historicalCreated) && historicalCreated <= cpTime
+        && versionIncludedAtCheckpoint(historical, checkpoint.date, cpTime)) {
+        oldTotal += balanceDelta(historical, methodId);
+      }
+    }
+  }
+  // Pass 2: running current-activity sum, indexed by candidate position.
+  const map = new Map();
+  let run = checkpoint.balance;
+  for (const candidate of ordered) {
+    const mutationTime = entryMutationTime(candidate);
+    const changedAfterCheckpoint = Number.isFinite(mutationTime) && mutationTime > cpTime;
+    if (candidate.date > checkpoint.date || changedAfterCheckpoint) {
+      run += balanceDelta(candidate, methodId);
+    }
+    if (candidate.method === methodId) map.set(candidate.id, run - oldTotal);
+  }
+  cpRunCache.set(key, map);
+  return map;
+}
+
 function clearBalanceCaches() {
   balanceCheckpointCacheState = null;
   balanceCheckpointCache = null;
@@ -1411,6 +1510,10 @@ function clearBalanceCaches() {
   liveSortedIndexCache = null;
   balanceForEntryCacheState = null;
   balanceForEntryCache.clear();
+  runningBalanceState = null;
+  runningBalanceMap = null;
+  cpRunCacheState = null;
+  cpRunCache.clear();
   categoryCacheState = null;
   categoryCacheCustoms = null;
   categoryCacheLength = -1;
@@ -1985,13 +2088,18 @@ function computeBalance(asOfDate = today(), checkpointsByMethod = null) {
   const sorted = [...entries]
     .filter(e => e.date <= asOfDate && ACCOUNT_METHOD_IDS.includes(e.method))
     .sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : 1));
+  // The dashboard sparkline only reads the last 30 points, and each distinct
+  // date costs an O(n) totalAccountBalanceAt walk, so computing every
+  // historical date made the whole screen quadratic as the account grew.
+  // Walk the sorted list once, collect the 30 most recent distinct dates, and
+  // compute balances only for those - identical output, O(n) total.
   const points = [];
-  const dateCache = {};
-  for (const e of sorted) {
+  for (let index = sorted.length - 1; index >= 0 && points.length < 30; index--) {
+    const e = sorted[index];
     if (points.at(-1)?.date === e.date) continue;
-    const reconciled = dateCache[e.date] ?? (dateCache[e.date] = totalAccountBalanceAt(e.date, checkpointsByMethod));
-    points.push({ date: e.date, balance: reconciled });
+    points.push({ date: e.date, balance: totalAccountBalanceAt(e.date, checkpointsByMethod) });
   }
+  points.reverse();
   return { balance: totalAccountBalanceAt(asOfDate, checkpointsByMethod), points };
 }
 
@@ -2016,6 +2124,22 @@ function balanceForEntry(entry, entries = state.entries, checkpointsByMethod = n
   // When walking live state (the History path), reuse the memoized sort and a
   // Map lookup instead of sorting the full dataset once per row.
   const usingLiveState = entries === state.entries && !checkpointsByMethod;
+  if (useBookBalance && usingLiveState) {
+    // Fast path: the precomputed one-pass running balance covers every row
+    // before any reconciliation checkpoint. Equivalent to the cumulative
+    // book-balance sum below, but O(1) per row instead of O(n).
+    const running = liveRunningBalances();
+    const value = running.get(entry.id);
+    if (value !== undefined) return value;
+  }
+  if (!useBookBalance && usingLiveState) {
+    // Fast path: rows at/after a reconciliation checkpoint read from the
+    // one-pass per-checkpoint running balance instead of re-walking the whole
+    // dataset once per row.
+    const cpMap = checkpointRunningBalances(entry.method, checkpoint);
+    const value = cpMap.get(entry.id);
+    if (value !== undefined) return value;
+  }
   const ordered = usingLiveState
     ? liveSortedEntries()
     : [...entries].sort((a, b) => a.date.localeCompare(b.date)
@@ -6732,6 +6856,10 @@ window.addEventListener('appinstalled', () => {
 });
 
 window.addEventListener('DOMContentLoaded', () => {
+  // Tell the inline boot splash to step aside the moment the app is in
+  // control - the lock/onboarding overlays mount on <body>, not #app, so
+  // "mount has children" can't be the signal. Set before anything renders.
+  window.__centsBooted = true;
   // Lock background scroll while any modal (or the pin-lock/onboarding
   // overlay) is open. Each overlay appends a .modal-bg to <body> and removes
   // it on close, so one observer keeps the class in sync without per-modal

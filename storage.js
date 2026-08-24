@@ -115,7 +115,11 @@ function validateEntry(e) {
     if (!valid) historyValid = false;
     previousMutationTime = mutationTime;
     return valid ? { at, createdAt, date, type, category, amount, method } : null;
-  }) : [];
+  }).filter(Boolean) : [];
+  // An invalid history point maps to null above; it must never reach the
+  // array. Reading .at off a trailing null would throw, and loadState's catch
+  // would then reset the ENTIRE stored state to defaults - one malformed
+  // point (import, older client, sync merge) silently wiping the user's data.
   const latestHistoryTime = normalizedHistory.length
     ? Date.parse(normalizedHistory[normalizedHistory.length - 1].at)
     : NaN;
