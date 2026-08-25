@@ -1,123 +1,78 @@
-# cents. — personal expense tracker
+# cents. — a calm personal expense tracker
 
-A minimal, aesthetic single-page expense tracker. No build step, no framework — just `index.html`, a handful of ES modules, and hand-written CSS. All your data lives in the browser's `localStorage` and, once cloud sync is enabled, in a single JSON file inside a **private GitHub repo you control** — copied there automatically by a tiny Netlify Function.
+**cents.** is a clean, fast expense tracker that runs entirely in your browser — no app store, no account, no data uploaded anywhere (unless you turn on sync). You log what you spend, set a monthly budget, and the app shows you exactly where you stand: how much you've spent, what's safe to spend today, and where the money goes.
 
-## Screenshots
+![cents. dashboard](screenshots/dashboard-desktop.png)
 
-The dashboard in **light** and **dark** mode, on desktop and mobile.
+## What it looks like
 
-**Desktop:**
+Light and dark mode, on desktop and mobile.
 
-| Light | Dark |
+| Desktop · light | Desktop · dark |
 | --- | --- |
-| ![cents. dashboard on desktop (light)](screenshots/dashboard-desktop.png) | ![cents. dashboard on desktop (dark)](screenshots/dashboard-desktop-dark.png) |
+| ![Desktop dashboard, light theme](screenshots/dashboard-desktop.png) | ![Desktop dashboard, dark theme](screenshots/dashboard-desktop-dark.png) |
 
-**Mobile:**
-
-| Light | Dark |
+| Mobile · light | Mobile · dark |
 | --- | --- |
-| ![cents. dashboard on mobile (light)](screenshots/dashboard-mobile.png) | ![cents. dashboard on mobile (dark)](screenshots/dashboard-mobile-dark.png) |
+| ![Mobile dashboard, light theme](screenshots/dashboard-mobile.png) | ![Mobile dashboard, dark theme](screenshots/dashboard-mobile-dark.png) |
 
-## How it works
+## What you can do
 
-The app is a classic SPA: `app.js` owns the UI and routing, `storage.js` owns the data, and the two talk through a small, validated state object. Every change flows one way:
+- **Log expenses your way** — type plain English like `lidl groceries 4.47 revolut` and the app figures out the amount, category, payment method, and date for you. Review it, tweak it, save it.
+- **Keep a budget** — set a monthly target and see your spend at a glance: remaining, projected, and a "safe to spend today" number.
+- **Know your balances** — track bank accounts (AIB, Revolut) and gift cards (Tesco, Lidl, Aldi), reconcile them against real statements, and top up a card without faking a transaction.
+- **Never miss a bill** — add recurring items (rent, subscriptions, paydays) and see what's due next, with one-tap marking.
+- **Undo anything** — every action can be undone, even after a reload.
+- **Keep it private** — the app boots locked (default PIN `100901`); on your phone you can unlock with fingerprint or Face ID instead.
 
-```
-you act → state updated in memory → persisted to localStorage → (optionally) pushed to your GitHub file
-```
+## Getting started
 
-- **State is one JSON document.** All entries, settings, balances, and bookkeeping live in a single validated state object (schema-versioned). Nothing is stored piecemeal.
-- **`localStorage` is the source of truth.** The app reads it on boot and writes on every change. Cloud sync is a *copy* of that document, not a database.
-- **Strict validation.** Every load runs the stored JSON through a validator — unknown fields are dropped, missing fields get defaults, bad entries are filtered. A hand-edited or older cloud file can never crash the app.
-- **Everything is undoable.** A persistent Undo button is always on screen while an action is reversible and reverts the most recent change. Most destructive actions capture an undo snapshot, and the few that need to survive a reload (delete, reset, some edits) are written to a small journal so you can undo even after closing the tab.
+1. **Open the app** — run it locally (see below) or open your deployed version.
+2. **Unlock** — the default PIN is `100901`. Set your own in **☰ → Privacy & security**.
+3. **Set your budget** — the monthly budget box is right on the dashboard.
+4. **Log something** — hit **Add** and type something like `coffee 3.50`.
 
-## Stack
+That's it. Everything is saved to your browser automatically.
 
-- Plain `index.html` + small ES modules — **no build step**
-- Vanilla JS (no framework), hand-written CSS in `styles.css`
-- `localStorage` for primary storage
-- Optional **GitHub sync** via a Netlify Function (Node, ~140 lines)
-- Self-hosted fonts in `fonts/` (Space Grotesk + IBM Plex Mono, latin subset) - no third-party requests; system fonts are the fallback while woff2 loads
+## Privacy & sync
 
-## Files
+- **By default, everything stays on your device.** Your data lives in your browser's local storage. Nothing is sent anywhere.
+- **Optional cloud sync** — if you want the same data on your phone and laptop, sync keeps a copy of your data in a **private GitHub repo you control**. The app talks to your repo through a small Netlify function; your GitHub token never touches the browser. Set it up in **☰ → Cloud sync**.
+- **Your data is yours** — you can export everything as a JSON file (☰ → Data) at any time.
 
-```
-.
-├── index.html                shell, fonts, loads app.js
-├── styles.css                monochrome + emerald palette + components
-├── app.js                    hash router, screens, modals, undo, PIN & biometric lock
-├── sync-merge.js             pure cloud-reconciliation merge logic (union + LWW)
-├── sync.js                   client-side GitHub-sync primitives
-├── settings.js               sync configuration in localStorage
-├── storage.js                localStorage CRUD, strict validation, JSON I/O
-├── seed.js                   structural defaults (categories, methods, settings)
-├── fonts/                    self-hosted Space Grotesk + IBM Plex Mono woff2
-├── screenshots/              README screenshots (light + dark, desktop + mobile)
-├── netlify.toml              static hosting + SPA fallback
-└── netlify/
-    └── functions/
-        ├── sync.mjs          the GitHub proxy (GET/PUT endpoint, app-password gated, throttled)
-        ├── setup-token.mjs   mints/ redeems single-use, expiring setup-link tokens (no password in URLs)
-        └── lib/              shared auth + token helpers + durable store (Blobs with in-memory fallback)
-```
+## Running it yourself
 
-## The data model
-
-Everything hangs off one state object:
-
-- **`entries`** — the transactions. Each entry records `date`, `type` (expense / credit), `category`, `details`, `amount`, `method`, plus `createdAt` / `updatedAt` timestamps used for conflict resolution.
-- **`settings`** — monthly budget, currency, custom categories, recurring rules, balance checkpoints (bank & gift-card balances by date), a coin/cash drawer breakdown, and a Tesco paper voucher count.
-- **`schemaVersion`** — lets the app migrate old saved data forward instead of breaking.
-
-## Screens & features
-
-- **Dashboard** (`#dashboard`, default) — current month hero: income, spending, net; budget bar; category breakdown; recent entries with inline budget editing; a live sync-status indicator.
-- **Add — "Magic entry"** (`#add`) — instead of a form-first flow, you type a plain-language description ("lidl groceries 4.47 revolut") and the app parses it: amount, date, category, payment method, and description are auto-detected and cleaned up before the entry is saved. You can review and tweak any field before committing.
-- **History** (`#history`) — month picker + category filters, a calendar/heatmap overview, and clickable rows that open the edit modal.
-- **Insights** (`#insights`) — 90-day analytics: averages, top method, category bars, payment mix, and a spending heatmap.
-- **Balances** (`#balances`) — reconciliation editor for banks (AIB, Revolut, Revolut Savings) and gift cards (Tesco, Lidl, Aldi). Record an end-of-day actual balance for a date and the app shows the delta vs. the book balance; a **+Load** button tops up any account or card with a dated credit entry. Transaction records are never modified — checkpoints are stored separately.
-- **Security lock** — every device boots locked. The site-wide default PIN is `100901` until you set a personal PIN in **Privacy & security** settings. On **mobile browsers**, the lock screen also offers **fingerprint / Face ID** unlock via the Web Authentication API — the credential is stored per-device and the OS does the verification, so it never leaves the device. Desktop and the PIN path are unchanged.
-- **Recurring transactions** — weekly/monthly rules with a `nextDate` that advances as occurrences are logged or skipped (skips are undoable).
-- **Cash drawer** — a coin breakdown (counts × denominations) that computes the total cash on hand.
-- **Tesco paper vouchers** — the euro amount of paper vouchers on hand (dashboard widget + editor, like coins). It never affects any balance; going above €5 shows a toast and a persistent dashboard notice.
-- **Extras** — dark mode, JSON export/import, and a full device reset.
-
-## Sync & merging
-
-Cloud sync keeps your single JSON document in a private GitHub repo through the Netlify Function. The browser talks only to your function; the GitHub token lives only in the function's environment. The sync client is a straightforward loop:
-
-- **Push** — after you stop typing (~1.5s), the app pushes your local state to the cloud file.
-- **Pull** — the app merges the cloud state into local on boot, when you switch back to the tab, and on a 30s background poll, so two open devices converge within about half a minute.
-- **Merge, never replace** — the merge logic in `sync-merge.js` reconciles the two states rather than overwriting one with the other:
-  - **Entries** are unioned by id; the newest version of a conflicting entry wins.
-  - **Deletions** become tombstones, so a deleted entry can't resurrect from another device's older copy (undo still restores it).
-  - **Settings** scalars (budget, currency) come from the newer side; custom categories, recurring rules, and balance checkpoints are unioned.
-  - **Resets** are treated as a deliberate "start over" — the newer reset wins.
-- **Conflicts** — if the cloud file changed since the last read (GitHub returns a 409 on the guarded write), the app automatically pulls, merges, and pushes the merged result. No data is lost, and you never have to resolve conflicts by hand.
-- Disconnecting sync wipes the app password and endpoint from that device only; the cloud file stays until you delete it from GitHub.
-
-## Privacy
-
-- Without sync: 100% local — `localStorage` keyed `expense-tracker:v1`. Nothing is ever sent anywhere.
-- With sync: a copy lives in your private GitHub repo, written through the function using an app password you choose. The app password is stored in the browser (same risk profile as saving any password in a browser) and the GitHub token never leaves the Netlify Function's environment.
-
-## Running it locally
-
-The app uses ES modules, so `index.html` can't be opened via `file://`. From the project root:
+The app needs a tiny local web server (browsers block the file directly):
 
 ```bash
-./serve.sh        # bash / Git Bash / macOS / Linux   (port 8080)
-python -m http.server 8080   # or on any OS without the script
+./serve.sh              # then open http://localhost:8080
+# or, on any OS:
+python -m http.server 8080
 ```
 
-Then open `http://localhost:8080`. Everything works locally except cloud sync, which needs the deployed Netlify Function.
+Everything works locally except cloud sync, which needs the deployed Netlify function.
 
-## Editing the data shape
+## For developers
 
-- **Categories?** `CATEGORIES` in `seed.js` *and* `CATEGORIES_OK` in `storage.js`
-- **Methods?** `METHODS` in `seed.js` *and* `METHODS_OK` in `storage.js`
-- **Default budget?** `SEED_SETTINGS.monthlyBudget` in `seed.js`
-- **Reset everything on this device?** Use the "Reset" link in the footer, or in DevTools: `__cents.state = resetToBlank(); __cents.render();`
+A single-page app — **no build step, no framework, no dependencies to install**. Just HTML, ES modules, and hand-written CSS.
+
+```
+index.html         shell + boot scripts
+app.js             the whole UI: routing, screens, modals, undo, lock
+styles.css         design system (monochrome + emerald)
+storage.js         data: load/save/validate, undo journal
+settings.js        device settings (sync, PIN, biometrics)
+sync.js            cloud-sync client
+sync-merge.js      merge logic for syncing two devices
+seed.js            defaults: categories, methods, settings
+netlify/           serverless functions (GitHub sync proxy, setup links)
+sw.js              service worker (offline support)
+```
+
+- **Data model** — one JSON document: `entries` (transactions), `settings` (budget, categories, balances), `schemaVersion`. Validated on every load; a hand-edited file can never crash the app.
+- **Sync** — union merge (entries by id, newest wins; deletions become tombstones; conflicts auto-resolve). See `CLAUDE.md` for the full conventions and security invariants.
+- **Changing categories or methods?** Edit `CATEGORIES`/`METHODS` in `seed.js` *and* the matching `*_OK` sets in `storage.js`.
+- **Testing** — no test framework; verify with `node --check` per file and manual testing in the browser.
 
 ## License
 
