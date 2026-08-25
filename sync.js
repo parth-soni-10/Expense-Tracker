@@ -119,6 +119,92 @@ export async function syncTestConnection(endpoint, password) {
   return { ok: true };
 }
 
+/** Derive the sibling setup-token function URL from the sync endpoint.
+ *  Works for the same-origin default (/.netlify/functions/sync →
+ *  /.netlify/functions/setup-token) and for custom endpoints that follow
+ *  the same Netlify function layout. Returns null when the endpoint has no
+ *  path segment to replace. */
+function setupTokenEndpoint(endpoint) {
+  if (typeof endpoint !== 'string' || !endpoint) return null;
+  const m = /^(.*\/)[^/]+$/.exec(endpoint);
+  return m ? `${m[1]}setup-token` : null;
+}
+
+/** Ask the Netlify proxy to mint a signed, expiring setup token. The link
+ *  that goes into the URL contains this token — never the raw password. */
+export async function syncIssueSetupToken() {
+  const s = getSyncSettings();
+  if (!s.endpoint || !s.password) return { ok: false, reason: 'not_configured' };
+  const url = setupTokenEndpoint(s.endpoint);
+  if (!url) return { ok: false, reason: 'invalid_endpoint' };
+  let resp;
+  try {
+    resp = await withTimeout(fetch(url, {
+      method: 'POST',
+      headers: { 'X-Cents-Password': s.password, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      cache: 'no-store',
+    }), TIMEOUT_MS);
+  } catch (e) {
+    return { ok: false, reason: 'network', message: e?.message || 'fetch failed' };
+  }
+  if (!resp.ok) {
+    let msg = '';
+    try { msg = (await resp.json()).error || ''; } catch {}
+    return { ok: false, reason: 'http', status: resp.status, message: msg || 'HTTP ' + resp.status };
+  }
+  let body;
+  try { body = await resp.json(); }
+  catch { return { ok: false, reason: 'http', message: 'invalid JSON from proxy' }; }
+  if (!body || typeof body.token !== 'string' || body.token.length < 20 || body.token.length > 4000) {
+    return { ok: false, reason: 'http', message: 'malformed setup token response' };
+  }
+  return { ok: true, token: body.token, expiresInDays: body.expiresInDays || null };
+}
+
+/** Redeem a setup token for the real app password, over TLS. The endpoint
+ *  used is the one the LINK pointed at (endpointOverride), because on the
+ *  receiving device sync is not configured yet. */
+export async function syncExchangeSetupToken(token, endpointOverride = null) {
+  const s = getSyncSettings();
+  const endpoint = endpointOverride || s.endpoint || '/.netlify/functions/sync';
+  const url = setupTokenEndpoint(endpoint);
+  if (!url) return { ok: false, reason: 'invalid_endpoint' };
+  let resp;
+  try {
+    resp = await withTimeout(fetch(url, {
+      method: 'POST',
+      headers: { 'X-Cents-Setup-Token': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      cache: 'no-store',
+    }), TIMEOUT_MS);
+  } catch (e) {
+    return { ok: false, reason: 'network', message: e?.message || 'fetch failed' };
+  }
+  if (resp.status === 410) {
+    let serverErr = '';
+    try { serverErr = (await resp.json()).error || ''; } catch {}
+    return { ok: false, reason: 'expired', status: 410, message: serverErr || 'setup token expired' };
+  }
+  if (resp.status === 401) {
+    let serverErr = '';
+    try { serverErr = (await resp.json()).error || ''; } catch {}
+    return { ok: false, reason: 'auth', status: 401, message: serverErr || 'setup token rejected' };
+  }
+  if (!resp.ok) {
+    let msg = '';
+    try { msg = (await resp.json()).error || ''; } catch {}
+    return { ok: false, reason: 'http', status: resp.status, message: msg || 'HTTP ' + resp.status };
+  }
+  let body;
+  try { body = await resp.json(); }
+  catch { return { ok: false, reason: 'http', message: 'invalid JSON from proxy' }; }
+  if (!body || typeof body.password !== 'string' || !body.password) {
+    return { ok: false, reason: 'http', message: 'malformed setup token response' };
+  }
+  return { ok: true, password: body.password };
+}
+
 /** Status string used by the header indicator. Pure function over settings. */
 export function syncStatus() {
   const s = getSyncSettings();

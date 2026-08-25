@@ -11,7 +11,7 @@
  * Network-first: every request tries the network and only falls back to a
  * cached copy when offline. It never serves stale content while online.
  */
-const CACHE = 'cents-v1';
+const CACHE = 'cents-v2';
 const SHELL = [
   '/',
   '/index.html',
@@ -51,12 +51,14 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  // Only same-origin responses are cached. Cross-origin requests — notably
+  // the sync endpoint GET, whose response contains the user's synced expense
+  // data — are passed through and never written to the cache.
+  const isSameOrigin = new URL(e.request.url).origin === self.location.origin;
   e.respondWith(
     fetch(e.request)
       .then((res) => {
-        // Cache anything fetched while online so a later offline session
-        // still works.
-        if (res && res.ok) {
+        if (res && res.ok && isSameOrigin) {
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
         }

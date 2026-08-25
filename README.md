@@ -56,7 +56,9 @@ you act → state updated in memory → persisted to localStorage → (optionall
 ├── netlify.toml              static hosting + SPA fallback
 └── netlify/
     └── functions/
-        └── sync.mjs          the GitHub proxy (one PUT/GET endpoint, app-password gated)
+        ├── sync.mjs          the GitHub proxy (GET/PUT endpoint, app-password gated, throttled)
+        ├── setup-token.mjs   mints/ redeems single-use, expiring setup-link tokens (no password in URLs)
+        └── lib/              shared auth + token helpers + durable store (Blobs with in-memory fallback)
 ```
 
 ## The data model

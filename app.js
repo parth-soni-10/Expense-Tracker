@@ -5,7 +5,7 @@
 import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal } from './storage.js';
 import { CATEGORIES, METHODS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential } from './settings.js';
-import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync } from './sync.js';
+import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
@@ -240,6 +240,9 @@ let pinOverlay = null;
 // (it sits above the toast layer), so the message is queued and shown the
 // moment the device is unlocked.
 let pendingSetupLinkToast = null;
+// A parsed but not-yet-confirmed sync setup link (see applySetupLinkIfPresent).
+// Stashed at boot, applied only after the user confirms post-unlock.
+let pendingSetupLink = null;
 let syncBootStarted = false;
 let lastRenderedRoute = null;
 let renderFrame = null;
@@ -251,7 +254,24 @@ function startInitSync() {
   startSyncPolling();
 }
 
+// Personal PINs are stored as PBKDF2-SHA256 (310k iterations) with a per-
+// device random salt. The salt still lives next to the hash in device storage
+// (the lock is casual-access protection), but the work factor makes offline
+// cracking of a leaked hash impractical instead of instant.
+const PBKDF2_ITERATIONS = 310_000;
 async function hashPin(pin, salt = '') {
+  if (!globalThis.crypto?.subtle) throw new Error('Web Crypto is unavailable');
+  const keyMaterial = await globalThis.crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(String(pin)), 'PBKDF2', false, ['deriveBits']);
+  const bits = await globalThis.crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: new TextEncoder().encode(String(salt === null ? '' : salt)), iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+    keyMaterial, 256);
+  return Array.from(new Uint8Array(bits)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Legacy salted SHA-256 derivation, kept only to verify hashes written before
+// the PBKDF2 upgrade. A successful legacy check re-saves with PBKDF2.
+async function hashPinLegacy(pin, salt = '') {
   if (!globalThis.crypto?.subtle) throw new Error('Web Crypto is unavailable');
   const bytes = new TextEncoder().encode(`${salt === null ? '' : salt}:${String(pin)}`);
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes);
@@ -425,6 +445,7 @@ function completeUnlock() {
     toast(pendingSetupLinkToast);
     pendingSetupLinkToast = null;
   }
+  if (pendingSetupLink) queueMicrotask(confirmPendingSetupLink);
 }
 
 function showPinLock() {
@@ -441,7 +462,19 @@ function showPinLock() {
     const saved = getPinCredential();
     try {
       if (saved.salt !== null) {
-        return (await hashPin(value, saved.salt)) === saved.hash;
+        if (saved.kdf === 'pbkdf2') {
+          return (await hashPin(value, saved.salt)) === saved.hash;
+        }
+        // Legacy salted SHA-256 (pre-upgrade). Verify, then silently upgrade
+        // the stored credential to PBKDF2 with a fresh salt.
+        const legacyOk = (await hashPinLegacy(value, saved.salt)) === saved.hash;
+        if (legacyOk) {
+          try {
+            const freshSalt = globalThis.crypto.randomUUID?.() || Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
+            setPrivacyPin(await hashPin(value, freshSalt), freshSalt, 'pbkdf2');
+          } catch (err) { /* keep the legacy credential; verification still succeeds */ }
+        }
+        return legacyOk;
       } else if (globalThis.crypto?.subtle) {
         // Plain SHA-256 path (legacy hashes and the built-in default).
         return (await hashPinPlain(value)) === saved.hash;
@@ -640,6 +673,8 @@ function showOnboarding() {
     render();
     startInitSync();
     toast('cents. is ready. Add an expense any time.');
+    if (pendingSetupLinkToast) { toast(pendingSetupLinkToast); pendingSetupLinkToast = null; }
+    if (pendingSetupLink) queueMicrotask(confirmPendingSetupLink);
   };
   const skip = () => { if (step === 2) finish(); else advance(); };
 
@@ -661,7 +696,7 @@ function showOnboarding() {
         try {
           if (!globalThis.crypto?.getRandomValues) throw new Error('no crypto');
           const salt = globalThis.crypto.randomUUID?.() || Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
-          if (!setPrivacyPin(await hashPin(value, salt), salt)) { subEl.textContent = 'Could not save the PIN on this device.'; return; }
+          if (!setPrivacyPin(await hashPin(value, salt), salt, 'pbkdf2')) { subEl.textContent = 'Could not save the PIN on this device.'; return; }
           if (state.settings?.pinHash) delete state.settings.pinHash;
           advance();
         } catch {
@@ -752,7 +787,7 @@ function openPinSettings() {
     try {
       if (!globalThis.crypto?.getRandomValues) throw new Error('Secure randomness is unavailable');
       const salt = globalThis.crypto.randomUUID?.() || Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
-      const saved = setPrivacyPin(await hashPin(value, salt), salt);
+      const saved = setPrivacyPin(await hashPin(value, salt), salt, 'pbkdf2');
       if (!saved) { status.textContent = 'Could not save the PIN on this device.'; return; }
       // Remove any legacy in-state fallback once the device-only credential is
       // definitely stored, so exports/sync cannot retain stale PIN material.
@@ -961,57 +996,119 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
 }
 
 // ---------- sync setup links ----------
-// A new device can adopt sync without typing the app password: open a link
-// like ?centsSync=<password> (or <endpoint>|<password> for non-default
-// proxies) and this handler configures + enables sync automatically, then
-// strips the credential from the URL bar. The password only gates the Netlify
-// proxy; the GitHub PAT never leaves the server.
-function syncSetupPayload() {
-  const s = getSyncSettings();
-  if (!s.password) return null;
-  const isDefaultEndpoint = !s.endpoint || s.endpoint === '/.netlify/functions/sync';
-  return encodeURIComponent(isDefaultEndpoint ? s.password : `${s.endpoint}|${s.password}`);
+// A new device can adopt sync without typing the app password. The link
+// carries a signed, expiring setup TOKEN minted by the Netlify proxy — never
+// the raw password — so the credential does not land in access logs, browser
+// history, or any intermediary. The handler below only STASHES the parsed
+// link at boot; nothing is applied until the user confirms after unlock, and
+// the endpoint is whitelisted to this site's own function path (or the
+// endpoint this device already trusts), so a crafted link cannot redirect the
+// user's data to a stranger's server.
+function parseSetupLink(raw) {
+  const decoded = decodeURIComponent(raw);
+  let endpoint = null;
+  let secret = decoded;
+  // endpoint|secret is only meaningful when the part before the pipe looks
+  // like a real endpoint; otherwise the whole string is the secret, so a
+  // secret that itself contains '|' round-trips unharmed.
+  const separator = decoded.indexOf('|');
+  if (separator >= 0) {
+    const possibleEndpoint = decoded.slice(0, separator);
+    const looksLikeEndpoint = possibleEndpoint === ''
+      || /^\/(?!\/)/.test(possibleEndpoint)
+      || /^https:\/\//i.test(possibleEndpoint)
+      || /^http:\/\/localhost(?::\d+)?(?:\/|$)/i.test(possibleEndpoint);
+    if (looksLikeEndpoint) {
+      endpoint = possibleEndpoint || null;
+      secret = decoded.slice(separator + 1);
+    }
+  }
+  if (!secret) return { error: 'invalid' };
+  // New-style links carry an encrypted token with a fixed structure:
+  // t2.<16-char iv>.<ciphertext>.<22-char tag> (base64url segments). The
+  // exact segment lengths make it effectively impossible for a real password
+  // to be mistaken for a token. Legacy 't1.' tokens can no longer be redeemed
+  // (the HMAC format is gone), so they fall through to the password shape.
+  // Legacy links carrying a raw password still work, but must be ≥ 8 chars.
+  const isToken = /^t2\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{22}$/.test(secret);
+  if (!isToken && !/^[\x21-\x7E]{8,}$/.test(secret)) return { error: 'invalid' };
+  return { endpoint, secret, isToken };
 }
-function syncSetupLink() {
-  const payload = syncSetupPayload();
-  if (!payload) return null;
-  return `${location.origin}${location.pathname}?centsSync=${payload}`;
-}
+
 function applySetupLinkIfPresent() {
   const raw = new URLSearchParams(location.search).get('centsSync');
   if (!raw) return;
-  const decoded = decodeURIComponent(raw);
-  const current = getSyncSettings();
-  let endpoint = current.endpoint;
-  let password = decoded;
-  // endpoint|password is only meaningful when the part before the pipe looks
-  // like a real endpoint; otherwise the whole string is the password, so a
-  // password that itself contains '|' round-trips unharmed.
-  const separator = decoded.indexOf('|');
-  const possibleEndpoint = separator >= 0 ? decoded.slice(0, separator) : '';
-  const looksLikeEndpoint = possibleEndpoint === ''
-    || /^\/(?!\/)/.test(possibleEndpoint)
-    || /^https:\/\//i.test(possibleEndpoint)
-    || /^http:\/\/localhost(?::\d+)?(?:\/|$)/i.test(possibleEndpoint);
-  if (separator >= 0 && looksLikeEndpoint) {
-    endpoint = possibleEndpoint || endpoint;
-    password = decoded.slice(separator + 1);
-  }
-  const safeEndpoint = endpoint === ''
-    || /^\/(?!\/)/.test(endpoint)
-    || /^https:\/\//i.test(endpoint)
-    || /^http:\/\/localhost(?::\d+)?(?:\/|$)/i.test(endpoint);
   // Never leave a credential (or a garbage link) sitting in the address bar.
   try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
-  if (!password || !safeEndpoint) {
+  const current = getSyncSettings();
+  const parsed = parseSetupLink(raw);
+  if (parsed.error) {
     pendingSetupLinkToast = 'That sync link is not valid.';
     return;
   }
-  patchSyncSettings({ endpoint, password, enabled: true, lastError: null, lastErrorAt: null });
+  let endpoint = parsed.endpoint;
+  if (endpoint === null || endpoint === '') endpoint = current.endpoint || '/.netlify/functions/sync';
+  // Whitelist: only this site's own function path, or the endpoint this
+  // device already trusts, may be adopted from a link. An arbitrary foreign
+  // endpoint in a link is the exfiltration vector and is rejected outright.
+  const isOwnSite = /^\/(?!\/)/.test(endpoint);
+  const matchesCurrent = !!current.endpoint && endpoint === current.endpoint;
+  if (!isOwnSite && !matchesCurrent) {
+    pendingSetupLinkToast = 'That sync link points to a different server and was ignored.';
+    return;
+  }
+  pendingSetupLink = { endpoint, secret: parsed.secret, isToken: parsed.isToken };
+}
+
+// Ask the user before applying a stashed setup link. Runs after unlock (or
+// after onboarding) so the confirm dialog is interactive. Tokens are redeemed
+// for the real password over TLS here; the raw password never appears in a URL.
+async function confirmPendingSetupLink() {
+  const pending = pendingSetupLink;
+  if (!pending) return;
+  pendingSetupLink = null;
+  const endpointLabel = pending.endpoint === '/.netlify/functions/sync'
+    ? 'this site'
+    : pending.endpoint;
+  let secret = pending.secret;
+  if (pending.isToken) {
+    const r = await syncExchangeSetupToken(pending.secret, pending.endpoint);
+    if (!r.ok) {
+      if (r.reason === 'expired') {
+        toast('That sync link has expired or already been used - generate a new one from Sync settings.');
+        return;
+      }
+      if (r.reason === 'auth' && /^[\x21-\x7E]{8,}$/.test(pending.secret)) {
+        // The server says the secret is not a valid token — most likely a
+        // password that merely looked token-shaped (or a dead legacy link).
+        // If it also matches the password shape, treat it as a password
+        // rather than failing; the confirm dialog still gates it.
+        secret = pending.secret;
+      } else {
+        toast('That sync link could not be redeemed' + (r.message ? `: ${r.message}` : '') + '. Open it again when you are online.');
+        return;
+      }
+    } else {
+      secret = r.password;
+    }
+  }
+  const ok = await swalConfirm({
+    title: 'Enable cloud sync?',
+    text: `This link configures sync to ${endpointLabel}. Anyone with the link can read and write your synced data. Allow it?`,
+    confirmButtonText: 'Enable',
+    cancelButtonText: 'Cancel',
+  });
+  if (!ok) { toast('Sync link ignored.'); return; }
+  patchSyncSettings({ endpoint: pending.endpoint, password: secret, enabled: true, lastError: null, lastErrorAt: null });
   pendingSetupLinkToast = 'Cloud sync configured from link.';
   notifySyncChange();
-  // Sync itself begins after unlock (startInitSync in showPinLock), so a
-  // locked device still pulls the cloud copy as soon as it's opened.
+  // Boot's startInitSync already ran with the pre-link settings; kick the
+  // reconciliation loop so data flows both ways now that sync is enabled.
+  startSyncPolling();
+  silentSyncPoll();
+  toast(pendingSetupLinkToast);
+  pendingSetupLinkToast = null;
+  render();
 }
 
 // ---------- sync scheduler ----------
@@ -6258,6 +6355,13 @@ function openSyncSettings() {
     const saveBtn = $('button', { type: 'button', class: 'btn btn-primary', onClick: async () => {
       const newEndpoint = (endpointInput.value || '').trim();
       const newPassword = passwordInput.value || '';
+      // Refuse weak passwords up front: the same credential gates the cloud
+      // copy, and the proxy no longer accepts short ones.
+      if (newPassword && newPassword.length < 8) {
+        toast('The app password must be at least 8 characters.');
+        queueMicrotask(() => modal.querySelector('#sync-password')?.focus());
+        return;
+      }
       saveBtn.disabled = true;
       saveBtnLabel.textContent = 'Testing…';
       const r = await syncTestConnection(newEndpoint, newPassword);
@@ -6346,35 +6450,55 @@ function openSyncSettings() {
       }
 
       // One-tap onboarding for other devices: a link that configures sync
-      // without typing the password.
+      // without typing the password. The link carries a signed, expiring
+      // setup token minted on demand by the Netlify proxy — never the raw
+      // password — so nothing secret sits in the address bar or access logs.
       if (s.password) {
-        const link = syncSetupLink();
-        if (link) {
-          const linkInput = $('input', { type: 'text', readonly: true, value: link, 'aria-label': 'Sync setup link', style: 'font-size:11px;font-family:"IBM Plex Mono",Menlo,monospace;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius);width:100%;min-width:0;color:var(--muted);background:var(--bg-deep);' });
-          const copyBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 10px;font-size:11px;flex-shrink:0;', onClick: async () => {
-            // Race the clipboard against a short timeout: a browser that
-            // neither grants nor rejects the write (permission hang) must
-            // still produce feedback, with the link pre-selected so a manual
-            // copy is one tap away either way.
-            let copied = false;
-            try {
-              await Promise.race([
-                navigator.clipboard.writeText(link),
-                new Promise((_, reject) => setTimeout(() => reject(new Error('clipboard timeout')), 900)),
-              ]);
-              copied = true;
-            } catch { copied = false; }
-            linkInput.select();
-            toast(copied
-              ? 'Setup link copied - open it on your other device.'
-              : 'Copy the link above to use on your other device.');
-          } }, 'Copy');
-          modal.appendChild($('div', { style: 'margin-top:24px;padding-top:18px;border-top:1px solid var(--line);' },
-            $('div', { class: 'eyebrow' }, 'Add another device'),
-            $('p', { class: 'muted', style: 'font-size:12px;margin:6px 0 10px;' }, 'Open this link on your other device and sync starts automatically - no password to type. Anyone with the link can read and write your synced data, so keep it private.'),
-            $('div', { style: 'display:flex;gap:8px;align-items:center;' }, linkInput, copyBtn),
-          ));
-        }
+        const linkInput = $('input', { type: 'text', readonly: true, value: '', placeholder: 'Tap Copy to generate a link', 'aria-label': 'Sync setup link', style: 'font-size:11px;font-family:"IBM Plex Mono",Menlo,monospace;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius);width:100%;min-width:0;color:var(--muted);background:var(--bg-deep);' });
+        const copyBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 10px;font-size:11px;flex-shrink:0;', onClick: async () => {
+          if (copyBtn.disabled) return;
+          copyBtn.disabled = true;
+          const originalLabel = copyBtn.textContent;
+          copyBtn.textContent = 'Generating…';
+          let link = null;
+          try {
+            const r = await syncIssueSetupToken();
+            if (r.ok) {
+              const isDefaultEndpoint = !s.endpoint || s.endpoint === '/.netlify/functions/sync';
+              // The token from the proxy already carries its own 't2.' prefix.
+              const payload = isDefaultEndpoint ? r.token : `${s.endpoint}|${r.token}`;
+              link = `${location.origin}${location.pathname}?centsSync=${encodeURIComponent(payload)}`;
+            } else {
+              toast('Could not create a setup link' + (r.message ? `: ${r.message}` : '') + '.');
+            }
+          } finally {
+            copyBtn.disabled = false;
+            copyBtn.textContent = originalLabel;
+          }
+          if (!link) return;
+          linkInput.value = link;
+          // Race the clipboard against a short timeout: a browser that
+          // neither grants nor rejects the write (permission hang) must
+          // still produce feedback, with the link pre-selected so a manual
+          // copy is one tap away either way.
+          let copied = false;
+          try {
+            await Promise.race([
+              navigator.clipboard.writeText(link),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('clipboard timeout')), 900)),
+            ]);
+            copied = true;
+          } catch { copied = false; }
+          linkInput.select();
+          toast(copied
+            ? 'Setup link copied - open it on your other device. It works once and expires after 30 days.'
+            : 'Copy the link above to use on your other device.');
+        } }, 'Copy');
+        modal.appendChild($('div', { style: 'margin-top:24px;padding-top:18px;border-top:1px solid var(--line);' },
+          $('div', { class: 'eyebrow' }, 'Add another device'),
+          $('p', { class: 'muted', style: 'font-size:12px;margin:6px 0 10px;' }, 'Open this link on your other device and sync starts automatically - no password to type. Each link works once, so generate a fresh one per device. Anyone with an unused link can read and write your synced data, so keep it private. Links expire after 30 days.'),
+          $('div', { style: 'display:flex;gap:8px;align-items:center;' }, linkInput, copyBtn),
+        ));
       }
 
       modal.appendChild($('div', { style: 'margin-top:24px;padding-top:18px;border-top:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;' },

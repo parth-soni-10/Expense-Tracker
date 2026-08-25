@@ -76,30 +76,36 @@ export function clearSyncSettings() {
 
 // Device-only privacy credentials. These are deliberately separate from the
 // synced expense state so a PIN hash cannot be exported or pushed to GitHub.
+// kdf marks how the hash was derived: 'pbkdf2' (current) vs null (legacy
+// single-round SHA-256). Absence of the field means legacy.
 export function getPrivacyPin() {
   try {
     const raw = localStorage.getItem(PRIVACY_KEY);
-    if (!raw) return { salt: null, hash: null };
+    if (!raw) return { salt: null, hash: null, kdf: null };
     const parsed = JSON.parse(raw);
     return {
       salt: typeof parsed.salt === 'string' ? parsed.salt : null,
       hash: typeof parsed.hash === 'string' && /^[a-f0-9]{64}$/i.test(parsed.hash) ? parsed.hash.toLowerCase() : null,
+      kdf: parsed.kdf === 'pbkdf2' ? 'pbkdf2' : null,
     };
   } catch {
-    return { salt: null, hash: null };
+    return { salt: null, hash: null, kdf: null };
   }
 }
 
-export function setPrivacyPin(hash, salt = null) {
+export function setPrivacyPin(hash, salt = null, kdf = null) {
   if (typeof hash !== 'string' || !/^[a-f0-9]{64}$/i.test(hash)
-    || (salt !== null && typeof salt !== 'string')) return false;
+    || (salt !== null && typeof salt !== 'string')
+    || (kdf !== null && kdf !== 'pbkdf2')) return false;
   try {
-    localStorage.setItem(PRIVACY_KEY, JSON.stringify({ hash: hash.toLowerCase(), salt }));
+    const next = { hash: hash.toLowerCase(), salt };
+    if (kdf === 'pbkdf2') next.kdf = 'pbkdf2';
+    localStorage.setItem(PRIVACY_KEY, JSON.stringify(next));
     // Do not report success until the credential can be read back. This keeps
     // legacy state.pinHash as a safe fallback when storage is unavailable or
     // silently refuses writes (private browsing/quota failures).
     const saved = getPrivacyPin();
-    return saved.hash === hash.toLowerCase() && saved.salt === salt;
+    return saved.hash === hash.toLowerCase() && saved.salt === salt && saved.kdf === kdf;
   } catch (e) {
     console.warn('Failed to save privacy settings:', e);
     return false;

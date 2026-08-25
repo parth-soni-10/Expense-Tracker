@@ -13,20 +13,37 @@
      REPO_BRANCH     default "main"
      REPO_FILE       default "data.json"
      APP_PASSWORD    any string the client sends in X-Cents-Password
+                     (must be at least 8 characters)
+
+   Auth hardening:
+     * APP_PASSWORD is compared in constant time.
+     * Failed attempts are throttled per client IP (in-memory,
+       best-effort — resets on cold start) and each failure sleeps
+       500ms to slow brute force.
+     * CORS reflects the request Origin (with Vary) instead of
+       granting every origin — cross-origin clients still work,
+       but the blanket '*' is gone.
    ============================================================ */
 
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'Content-Type, X-Cents-Password',
-  'Access-Control-Allow-Methods': 'GET, PUT, OPTIONS',
-  'Access-Control-Max-Age': '86400',
-};
+import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
 
-const ok = (body, status = 200) => new Response(
+function corsHeaders(request) {
+  const origin = request.headers.get('origin');
+  const cors = {
+    'Access-Control-Allow-Headers': 'Content-Type, X-Cents-Password, X-Cents-Setup-Token',
+    'Access-Control-Allow-Methods': 'GET, PUT, POST, OPTIONS',
+    'Access-Control-Max-Age': '86400',
+    'Cache-Control': 'no-store',
+  };
+  if (origin) { cors['Access-Control-Allow-Origin'] = origin; cors['Vary'] = 'Origin'; }
+  return cors;
+}
+
+const ok = (body, status = 200, cors = {}) => new Response(
   typeof body === 'string' ? body : JSON.stringify(body),
-  { status, headers: { 'Content-Type': 'application/json', ...CORS } },
+  { status, headers: { 'Content-Type': 'application/json', ...cors } },
 );
-const err = (msg, status = 400) => ok({ error: msg, code: status }, status);
+const err = (msg, status = 400, cors = {}) => ok({ error: msg, code: status }, status, cors);
 
 const GH_API = 'https://api.github.com';
 // Netlify's hard cap for synchronous function request payloads is 6 MB, so
@@ -41,6 +58,9 @@ const BASE_CATEGORIES = new Set(['gro', 'travel', 'misc', 'rent', 'GC']);
 const BALANCE_METHODS = ['AIB', 'Revolut', 'RS', 'TG', 'LG', 'AG'];
 const VALID_COIN_KEYS = new Set(['50', '20', '10', '5', '2', '1', '0.5', '0.2', '0.1', '0.05']);
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+// In-memory sliding-window throttle: 15 failed auth attempts per IP per 5 min.
+const failureThrottle = createFailureThrottle({ windowMs: 5 * 60 * 1000, max: 15 });
 
 function validLegacyBalanceMap(value) {
   if (value == null) return true;
@@ -260,14 +280,6 @@ function cfg() {
   };
 }
 
-function authenticate(request) {
-  const expected = process.env.APP_PASSWORD;
-  if (!expected) return { ok: false, msg: 'APP_PASSWORD env var not set on the function' };
-  const got = request.headers.get('x-cents-password') || '';
-  if (got !== expected) return { ok: false, msg: 'Bad app password' };
-  return { ok: true };
-}
-
 function decodeBase64(b64) {
   return Buffer.from(b64, 'base64').toString('utf8');
 }
@@ -276,22 +288,45 @@ function encodeBase64(s) {
 }
 
 export default async (request, _context) => {
-  if (request.method === 'OPTIONS') return ok({}, 200);
+  const cors = corsHeaders(request);
+  if (request.method === 'OPTIONS') return ok({}, 200, cors);
 
-  const auth = authenticate(request);
-  if (!auth.ok) return err(auth.msg, 401);
+  const expected = process.env.APP_PASSWORD;
+  if (!expected) return err('APP_PASSWORD env var not set on the function', 500, cors);
+  if (expected.length < 8) {
+    return err('APP_PASSWORD must be at least 8 characters - set a stronger password in Netlify env', 500, cors);
+  }
+
+  const throttle = failureThrottle.check(request);
+  if (!throttle.ok) {
+    return new Response(JSON.stringify({ error: 'Too many failed attempts - retry later', code: 429 }),
+      {
+        status: 429,
+        headers: {
+          'Content-Type': 'application/json',
+          'Retry-After': String(throttle.retryAfterSeconds),
+          ...cors,
+        },
+      });
+  }
+  const got = request.headers.get('x-cents-password') || '';
+  if (!safeEqual(got, expected)) {
+    throttle.record();
+    await new Promise(r => setTimeout(r, 500)); // slow brute force
+    return err('Bad app password', 401, cors);
+  }
 
   const { owner, repo, branch, file } = cfg();
-  if (!owner || !repo) return err('REPO_OWNER / REPO_NAME env vars not set on the function', 500);
+  if (!owner || !repo) return err('REPO_OWNER / REPO_NAME env vars not set on the function', 500, cors);
 
   try {
     // ---------- READ ----------
     if (request.method === 'GET') {
       const r = await ghFetch(`/repos/${owner}/${repo}/contents/${encodeURIComponent(file)}?ref=${encodeURIComponent(branch)}`);
-      if (r.status === 404) return ok({ content: null, sha: null, branch });
+      if (r.status === 404) return ok({ content: null, sha: null, branch }, 200, cors);
       if (!r.ok) {
         const text = await r.text();
-        return err(`GitHub read failed: ${r.status} ${text.slice(0, 240)}`, r.status);
+        return err(`GitHub read failed: ${r.status} ${text.slice(0, 240)}`, r.status, cors);
       }
       const j = await r.json();
       const text = decodeBase64(j.content || '');
@@ -315,37 +350,37 @@ export default async (request, _context) => {
         lastModifiedAt: j.updated_at || j.commit?.author?.date || parsed?.lastLocalChangeAt || null,
         commitSha: j.commit?.sha || null,
         path: j.path || file,
-      });
+      }, 200, cors);
     }
 
     // ---------- WRITE ----------
     if (request.method === 'PUT') {
       const rawBody = await request.text();
       if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY_BYTES) {
-        return err('Request body is too large', 413);
+        return err('Request body is too large', 413, cors);
       }
       let body;
       try { body = JSON.parse(rawBody || '{}'); }
-      catch { return err('Body is not valid JSON', 400); }
+      catch { return err('Body is not valid JSON', 400, cors); }
 
       if (!body || typeof body !== 'object' || Array.isArray(body)) {
-        return err('Request body must be an object', 400);
+        return err('Request body must be an object', 400, cors);
       }
       const incoming = body.content;
       if (!validIncomingState(incoming)) {
-        return err('Body.content contains invalid or excessive expense data', 400);
+        return err('Body.content contains invalid or excessive expense data', 400, cors);
       }
 
       const sha = body.sha == null || body.sha === '' ? null : body.sha;
       if (sha !== null && (typeof sha !== 'string' || sha.length > 200 || /[\r\n]/.test(sha))) {
-        return err('Body.sha is invalid', 400);
+        return err('Body.sha is invalid', 400, cors);
       }
       const msg    = typeof body.message === 'string' && body.message.trim()
                        ? body.message.trim().slice(0, 200)
                        : 'cents: update expenses';
       const branchParam = body.branch == null || body.branch === '' ? branch : body.branch;
       if (typeof branchParam !== 'string' || branchParam.length > 200 || !/^[A-Za-z0-9._/-]+$/.test(branchParam)) {
-        return err('Body.branch is invalid', 400);
+        return err('Body.branch is invalid', 400, cors);
       }
       const encoded = encodeBase64(JSON.stringify(incoming, null, 2));
 
@@ -358,11 +393,11 @@ export default async (request, _context) => {
       );
 
       if (r.status === 409) {
-        return ok({ conflict: true, status: r.status }, 200);
+        return ok({ conflict: true, status: r.status }, 200, cors);
       }
       if (!r.ok) {
         const text = await r.text();
-        return err(`GitHub write failed: ${r.status} ${text.slice(0, 240)}`, r.status);
+        return err(`GitHub write failed: ${r.status} ${text.slice(0, 240)}`, r.status, cors);
       }
 
       const j = await r.json();
@@ -371,11 +406,11 @@ export default async (request, _context) => {
         commit: j.commit?.sha || null,
         branch: branchParam,
         lastModifiedAt: j.commit?.author?.date || j.content?.updated_at || null,
-      });
+      }, 200, cors);
     }
 
-    return err('Method not allowed', 405);
+    return err('Method not allowed', 405, cors);
   } catch (e) {
-    return err(e?.message || 'Internal error', 500);
+    return err(e?.message || 'Internal error', 500, cors);
   }
 };
