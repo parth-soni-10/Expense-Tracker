@@ -2870,13 +2870,17 @@ function parseReceiptLine(line) {
   if (m1) { amt = parseAmount(m1[1]); desc = m1[2]; }
   else if (m2) { amt = parseAmount(m2[2]); desc = m2[1]; }
   else { desc = s; }
-  // Guess category from keywords
+  // Guess category from keywords. "gift.?card|voucher" is checked FIRST so that
+  // a "Tesco/Lidl/Aldi gift card" reads as a gift-card purchase (GC) rather than
+  // groceries - the store name otherwise masks the gift-card keyword. That
+  // matters: for a gift-card method, a GC-category load raises the card's
+  // balance, while a plain grocery expense would be counted as spending.
   let cat = 'misc';
   const d = desc.toLowerCase();
-  if (/grocer|tesco|lidl|aldi|supervalu|dunnes|spar|centra|m&s|marks|supermarket|shop|market/i.test(d)) cat = 'gro';
+  if (/gift.?card|voucher/i.test(d)) cat = 'GC';
+  else if (/grocer|tesco|lidl|aldi|supervalu|dunnes|spar|centra|m&s|marks|supermarket|shop|market/i.test(d)) cat = 'gro';
   else if (/bus|train|luas|dart|leap|taxi|uber|petrol|diesel|fuel|parking|toll|flight|ferry/i.test(d)) cat = 'travel';
   else if (/rent|lease|mortgage|deposit|landlord/i.test(d)) cat = 'rent';
-  else if (/gift.?card|voucher/i.test(d)) cat = 'GC';
   return { details: desc || s, amount: amt || 0, category: cat };
 }
 
