@@ -139,6 +139,7 @@ function validateEntry(e) {
   // Preserve transfer metadata if present
   if (typeof e.transferId === 'string' && e.transferId.length <= 200) base.transferId = e.transferId;
   if (typeof e.settled === 'boolean') base.settled = e.settled;
+  if (typeof e.budgetExcluded === 'boolean') base.budgetExcluded = e.budgetExcluded;
   return base;
 }
 

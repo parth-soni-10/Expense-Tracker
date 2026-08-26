@@ -2128,15 +2128,18 @@ function isSpendingEntry(entry) {
   return entry.type === 'expense' && !entry.transferId && !isBalanceAdjustmentEntry(entry);
 }
 /** Spending that counts against the monthly budget (excludes savings). */
+function isBudgetExcluded(entry) {
+  return entry?.budgetExcluded === true;
+}
 function isBudgetSpendingEntry(entry) {
-  return isSpendingEntry(entry) && !BUDGET_EXCLUDED_METHOD_IDS.includes(entry.method);
+  return isSpendingEntry(entry) && !isBudgetExcluded(entry) && !BUDGET_EXCLUDED_METHOD_IDS.includes(entry.method);
 }
 function isIncomeEntry(entry) {
   return entry.type === 'credit' && !entry.transferId && !isBalanceAdjustmentEntry(entry);
 }
 /** Income that counts toward the month's figures (excludes savings). */
 function isBudgetIncomeEntry(entry) {
-  return isIncomeEntry(entry) && !BUDGET_EXCLUDED_METHOD_IDS.includes(entry.method);
+  return isIncomeEntry(entry) && !isBudgetExcluded(entry) && !BUDGET_EXCLUDED_METHOD_IDS.includes(entry.method);
 }
 function totalForMonth(key) {
   return entriesForMonth(key).reduce((s, e) => s + (isBudgetSpendingEntry(e) ? e.amount : isBudgetIncomeEntry(e) ? -e.amount : 0), 0);
@@ -5496,6 +5499,15 @@ function screenHistory() {
         $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, e.type === 'note' ? '-' : fmt(rowBalance)),
         $('span', { class: 'history-method-wrap' }, $('span', { class: 'pill history-method' }, e.method)),
         $('span', { class: 'history-actions' },
+          e.type !== 'note' && !isTransfer ? $('button', { type: 'button', class: 'history-action-btn', title: e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', 'aria-label': e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', onClick: ev => {
+            ev.stopPropagation();
+            const previous = e.budgetExcluded === true;
+            e.budgetExcluded = !previous;
+            persist();
+            trackAction(() => { e.budgetExcluded = previous; persist(); }, previous ? 'Included entry in budget' : 'Excluded entry from budget');
+            toast(previous ? 'Included in budget calculations.' : 'Excluded from budget calculations.');
+            render();
+          } }, e.budgetExcluded ? 'Include budget' : 'Exclude budget') : null,
           $('button', { type: 'button', class: 'history-action-btn', title: 'Edit or delete entry', 'aria-label': `Edit or delete ${e.details || 'entry'}`, onClick: ev => { ev.stopPropagation(); openEdit(e.id); } }, 'Manage'),
         ),
       );
