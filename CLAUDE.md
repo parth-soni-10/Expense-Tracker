@@ -34,7 +34,7 @@ sync-merge.js     mergeStates() — union of local + cloud state
 seed.js           category/method/settings defaults (edit here for forward-compat)
 index.html        boot scripts (theme, SW, diagnostics) — 5 inline scripts, CSP-hashed
 styles.css        design system (CSS variables: --ink, --line, --radius, emerald accent)
-sw.js             service worker (network-first, same-origin cache only, cache 'cents-v2')
+sw.js             service worker (network-first, same-origin cache only, cache 'cents-v3')
 netlify.toml      headers incl. CSP with script hashes; function routes
 netlify/functions/  sync.mjs (GitHub proxy), setup-token.mjs, lib/{auth,tokens,store}.mjs
 vendor/ fonts/ icons/ screenshots/   static assets

@@ -4153,36 +4153,53 @@ function screenDashboard() {
 
   // Gift-card low-balance notice - when a Tesco/Lidl card's current balance
   // drops below €5 it shows here on the home screen with a tap-through to the
-  // Balances screen to top it up.
+  // Balances screen to top it up. Swipe it away on touch like a phone
+  // notification; it re-arms once the card is topped back up.
   const lowGiftCards = ['TG', 'LG']
-    .map(id => ({ id, label: methodShort(id), balance: computeGiftCardBalance(state.entries, id).balance }))
-    .filter(card => card.balance < 5);
-  if (lowGiftCards.length) {
-    screen.appendChild($('div', { class: 'card', role: 'alert', style: `padding:${isNarrow() ? '14px 16px' : '16px'};margin-bottom:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid color-mix(in srgb, var(--negative) 35%, transparent);background:color-mix(in srgb, var(--negative) 8%, transparent);` },
+    .map(id => ({ id, label: methodShort(id), balance: computeGiftCardBalance(state.entries, id).balance }));
+  for (const card of lowGiftCards) {
+    if (card.balance >= 5) setAlertDismissed(`gift-low:${card.id}`, false);
+  }
+  const lowGiftVisible = lowGiftCards.filter(card => card.balance < 5 && !alertDismissed(`gift-low:${card.id}`));
+  if (lowGiftVisible.length) {
+    const giftCard = $('div', { class: 'card', role: 'alert', style: `padding:${isNarrow() ? '14px 16px' : '16px'};margin-bottom:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid color-mix(in srgb, var(--negative) 35%, transparent);background:color-mix(in srgb, var(--negative) 8%, transparent);` },
       iconSpan('alert', 'md'),
       $('div', { style: 'flex:1;min-width:0;' },
         $('div', { style: 'font-weight:600;font-size:13px;' }, 'Gift card running low'),
         $('div', { class: 'muted', style: 'font-size:12px;margin-top:2px;' },
-          lowGiftCards.map(card => `${card.label} has ${fmt(card.balance)} left`).join(' · '),
+          lowGiftVisible.map(card => `${card.label} has ${fmt(card.balance)} left`).join(' · '),
         ),
       ),
       $('a', { href: '#balances', class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;flex-shrink:0;' }, 'Top up'),
-    ));
+    );
+    screen.appendChild(giftCard);
+    attachSwipeDismiss(giftCard, () => {
+      const ids = lowGiftVisible.map(c => `gift-low:${c.id}`);
+      ids.forEach(id => setAlertDismissed(id, true));
+      toast('Notification dismissed', () => { ids.forEach(id => setAlertDismissed(id, false)); render(); }, 'Undo');
+    });
   }
 
   // Tesco paper vouchers notice - when the amount sits above the threshold it
   // stays visible on the home screen (plus the one-time toast when it crossed
   // in the editor). Purely informational: vouchers never touch the balance.
+  // Swipeable like the gift-card notice; re-arms once the tally drops.
   const voucherTally = voucherAmount();
-  if (voucherTally > VOUCHER_NOTICE_AT) {
-    screen.appendChild($('div', { class: 'card', role: 'alert', style: `padding:${isNarrow() ? '14px 16px' : '16px'};margin-bottom:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid color-mix(in srgb, var(--accent) 40%, transparent);background:color-mix(in srgb, var(--accent) 8%, transparent);` },
+  if (voucherTally <= VOUCHER_NOTICE_AT) setAlertDismissed('voucher-notice', false);
+  if (voucherTally > VOUCHER_NOTICE_AT && !alertDismissed('voucher-notice')) {
+    const voucherCard = $('div', { class: 'card', role: 'alert', style: `padding:${isNarrow() ? '14px 16px' : '16px'};margin-bottom:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid color-mix(in srgb, var(--accent) 40%, transparent);background:color-mix(in srgb, var(--accent) 8%, transparent);` },
       iconSpan('alert', 'md'),
       $('div', { style: 'flex:1;min-width:0;' },
         $('div', { style: 'font-weight:600;font-size:13px;' }, 'Tesco paper vouchers piling up'),
         $('div', { class: 'muted', style: 'font-size:12px;margin-top:2px;' }, `You have ${fmt(voucherTally)} of vouchers - that's above the ${fmt(VOUCHER_NOTICE_AT)} limit.`),
       ),
       $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;flex-shrink:0;', onClick: () => openVoucherEditor() }, 'Update'),
-    ));
+    );
+    screen.appendChild(voucherCard);
+    attachSwipeDismiss(voucherCard, () => {
+      setAlertDismissed('voucher-notice', true);
+      toast('Notification dismissed', () => { setAlertDismissed('voucher-notice', false); render(); }, 'Undo');
+    });
   }
 
   // Milestone chips - personality that rewards consistency.
@@ -6641,6 +6658,96 @@ function toast(text, undoFn, undoLabel) {
   // Toasts carrying an Undo button stay long enough to read and act on;
   // plain notifications dismiss quickly.
   setTimeout(() => t.remove(), runUndo ? 5000 : 2200);
+}
+
+// ── Swipe-to-dismiss (Android-style) ─────────────────────────────────────────
+// Any home-screen notification card can be swiped away horizontally. The page
+// keeps vertical scrolling (touch-action: pan-y); only a horizontal drag moves
+// the card. A drag past ~a third of the card's width animates it off-screen and
+// fires onDismiss once; anything less springs back. Taps on the card's own
+// links/buttons still work - only a real dismissal suppresses the click it
+// would otherwise trigger.
+function attachSwipeDismiss(el, onDismiss) {
+  el.style.touchAction = 'pan-y';
+  let startX = 0, startY = 0, dx = 0, dragging = false, dismissed = false, activePointerId = null;
+  const threshold = () => Math.max(90, el.offsetWidth * 0.32);
+  const setX = (x, animate) => {
+    el.style.transition = animate ? 'transform .3s cubic-bezier(0.2,0.8,0.2,1), opacity .3s ease' : 'none';
+    el.style.transform = `translateX(${x}px)`;
+    el.style.opacity = String(Math.max(0, 1 - Math.abs(x) / (el.offsetWidth * 1.3)));
+  };
+  const springBack = () => {
+    setX(0, true);
+    setTimeout(() => { el.style.opacity = ''; dx = 0; dragging = false; }, 300);
+  };
+  const resetInline = () => {
+    el.style.transition = 'none';
+    el.style.transform = '';
+    el.style.opacity = '';
+    dx = 0; dragging = false;
+  };
+  const cleanup = () => {
+    activePointerId = null;
+    window.removeEventListener('pointermove', onMove, true);
+    window.removeEventListener('pointerup', release, true);
+    window.removeEventListener('pointercancel', cancel, true);
+  };
+  const cancel = () => { resetInline(); cleanup(); };
+  const onMove = e => {
+    if (e.pointerId !== activePointerId) return;
+    const curX = e.clientX - startX, curY = e.clientY - startY;
+    if (!dragging) {
+      // Not a horizontal drag yet - let taps and vertical scroll through.
+      if (Math.abs(curX) < 6 || Math.abs(curY) > Math.abs(curX)) return;
+      dragging = true;
+    }
+    dx = curX;
+    setX(dx, false);
+  };
+  const release = () => {
+    if (!dragging) { cleanup(); return; }
+    dragging = false;
+    if (Math.abs(dx) > threshold()) {
+      dismissed = true;
+      setX((el.offsetWidth + 60) * (dx >= 0 ? 1 : -1), true);
+      setTimeout(() => { if (el.parentNode) el.remove(); onDismiss(); }, 280);
+    } else {
+      springBack();
+    }
+    cleanup();
+  };
+  el.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (activePointerId !== null) return;
+    activePointerId = e.pointerId;
+    startX = e.clientX; startY = e.clientY; dx = 0; dragging = false; dismissed = false;
+    // Track on window during the drag: the finger can leave the card, and this
+    // keeps working even when the browser hasn't granted implicit capture.
+    window.addEventListener('pointermove', onMove, true);
+    window.addEventListener('pointerup', release, true);
+    window.addEventListener('pointercancel', cancel, true);
+  });
+  // A real swipe ending on the card's link/button must not activate it.
+  el.addEventListener('click', e => {
+    if (dismissed) { e.preventDefault(); e.stopPropagation(); }
+  }, true);
+}
+
+// Notification dismissals are device-local (like a phone's notification shade)
+// and never sync. An alert stays dismissed while its condition holds and
+// re-arms automatically once the condition clears, so a genuinely new event
+// notifies again.
+const ALERT_DISMISS_KEY = 'cents-dismissed-alerts';
+function readAlertDismissals() {
+  try { return JSON.parse(localStorage.getItem(ALERT_DISMISS_KEY)) || {}; } catch { return {}; }
+}
+function alertDismissed(id) {
+  return !!readAlertDismissals()[id];
+}
+function setAlertDismissed(id, dismissed) {
+  const map = readAlertDismissals();
+  if (dismissed) map[id] = true; else delete map[id];
+  try { localStorage.setItem(ALERT_DISMISS_KEY, JSON.stringify(map)); } catch {}
 }
 
 // Offer the persisted undo journal after a reload. The toast is transient, but

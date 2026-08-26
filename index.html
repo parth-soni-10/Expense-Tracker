@@ -208,22 +208,39 @@
        blank screen. Removed as soon as the app's first render lands (or the
        boot-fail panel appears, or after a hard backstop). -->
   <div id="splash" aria-hidden="true">
+    <!-- Draw-on: the ledger mark writes itself once on startup — the C sweeps
+         around, the two balance lines draw in left-to-right, then the wordmark
+         settles beneath. Plays one shot and holds (the splash is removed the
+         moment the app boots). Reduced-motion users get the finished mark. -->
     <div class="splash-mark">
       <svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
-        <path d="M23 8.5a9.3 9.3 0 1 0 0 15" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" />
-        <path d="M3.5 10.5h12M3.5 21.5h12" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" />
+        <path class="c"  pathLength="1" d="M23 8.5a9.3 9.3 0 1 0 0 15" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" />
+        <path class="l1" pathLength="1" d="M3.5 10.5h12" stroke="var(--splash-line)" stroke-width="2.6" stroke-linecap="round" />
+        <path class="l2" pathLength="1" d="M3.5 21.5h12" stroke="var(--splash-line)" stroke-width="2.6" stroke-linecap="round" />
       </svg>
     </div>
-    <div class="splash-name">cents.</div>
+    <div class="splash-name">cents<span class="splash-dot">.</span></div>
     <style>
-      #splash { position: fixed; inset: 0; z-index: 45; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: #101210; color: #35B877; }
-      #splash .splash-mark { width: 46px; height: 46px; animation: splash-pulse 1.6s ease-in-out infinite; }
+      #splash { --splash-line: #E8EBE5; position: fixed; inset: 0; z-index: 45; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: #101210; color: #35B877; }
+      #splash .splash-mark { width: 52px; height: 52px; }
       #splash .splash-mark svg { width: 100%; height: 100%; display: block; }
-      #splash .splash-name { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 15px; letter-spacing: 0.02em; color: #E8EBE5; }
-      @keyframes splash-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
-      [data-theme="light"] #splash { background: #F5F5F2; color: #157A4A; }
+      #splash .splash-mark path { fill: none; stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; }
+      #splash .splash-mark .c   { animation: splash-draw-c  .7s cubic-bezier(0.3, 0.7, 0.4, 1) forwards; }
+      #splash .splash-mark .l1  { animation: splash-draw-l1 .28s cubic-bezier(0.3, 0.7, 0.4, 1) .7s forwards; }
+      #splash .splash-mark .l2  { animation: splash-draw-l2 .28s cubic-bezier(0.3, 0.7, 0.4, 1) .84s forwards; }
+      #splash .splash-name { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 15px; letter-spacing: 0.02em; color: #E8EBE5; opacity: 0; animation: splash-name-in .45s ease .98s forwards; }
+      #splash .splash-dot { color: #35B877; }
+      @keyframes splash-draw-c  { to { stroke-dashoffset: 0; } }
+      @keyframes splash-draw-l1 { to { stroke-dashoffset: 0; } }
+      @keyframes splash-draw-l2 { to { stroke-dashoffset: 0; } }
+      @keyframes splash-name-in { to { opacity: 1; } }
+      [data-theme="light"] #splash { --splash-line: #161712; background: #F5F5F2; color: #157A4A; }
       [data-theme="light"] #splash .splash-name { color: #161712; }
-      @media (prefers-reduced-motion: reduce) { #splash .splash-mark { animation: none; } }
+      [data-theme="light"] #splash .splash-dot { color: #157A4A; }
+      @media (prefers-reduced-motion: reduce) {
+        #splash .splash-mark path { stroke-dashoffset: 0; animation: none; }
+        #splash .splash-name { opacity: 1; animation: none; }
+      }
     </style>
   </div>
   <script>
