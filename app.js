@@ -2974,13 +2974,30 @@ function parseNaturalLanguage(text) {
   if (!Number.isFinite(amount) || amount <= 0) return { error: 'Include an amount, for example €18.50.' };
 
   // ---- Method ----
-  let method = 'AIB';
-  if (/\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+(?:account|pot|fund)\b/.test(lower)) method = 'RS';
-  else if (/\brevolut\b/.test(lower)) method = 'Revolut';
-  else if (/\btesco\b/.test(lower)) method = 'TG';
-  else if (/\blidl\b/.test(lower)) method = 'LG';
-  else if (/\baldi\b/.test(lower)) method = 'AG';
-  else if (/\baib\b|\bbank\b|current account/.test(lower)) method = 'AIB';
+  // A gift-card purchase can name the card's brand AND the payment method used
+  // to fund it ("bought a Tesco giftcard worth 24 euros using Revolut"). In that
+  // case the money moves from the payment method into the card - a transfer,
+  // so the payment account is debited AND the card balance is loaded. When no
+  // separate payment method is named, fall back to a single method.
+  const detectBrand = () => {
+    if (/\btesco\b/.test(lower)) return 'TG';
+    if (/\blidl\b/.test(lower)) return 'LG';
+    if (/\baldi\b/.test(lower)) return 'AG';
+    return null;
+  };
+  const detectSource = () => {
+    if (/\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+(?:account|pot|fund)\b/.test(lower)) return 'RS';
+    if (/\brevolut\b/.test(lower)) return 'Revolut';
+    if (/\baib\b|\bbank\b|current account/.test(lower)) return 'AIB';
+    return null;
+  };
+  const brand = detectBrand();
+  const source = detectSource();
+  // Only a genuine gift-card/voucher purchase should become a transfer into the
+  // card - a plain "at Tesco from Revolut" expense must stay a single entry.
+  const isGiftCardPurchase = /gift.?card|voucher/i.test(lower);
+  const isTransferToCard = isGiftCardPurchase && !!brand && !!source && source !== brand;
+  let method = source || brand || 'AIB';
 
   // Only unambiguous income signals - bare "pay" or "got" is far too common
   // in expense phrasing ("pay the rent", "got petrol") to imply income.
@@ -2995,6 +3012,12 @@ function parseNaturalLanguage(text) {
   // "pint of Guinness" keeps its meaning.
   const details = cleanMagicDescription(raw, amountText);
   const guessed = parseReceiptLine(details);
+  if (isTransferToCard) {
+    // Move the value from the payment account into the gift card. `method` is
+    // kept (the card) so the preview/chips render; addMagic uses `transfer`
+    // to build the two-leg transfer pair.
+    return { date, type: 'transfer', transfer: { from: source, to: brand }, amount, details, category: 'GC', method: brand };
+  }
   return { date, type: isCredit ? 'credit' : 'expense', amount, details, category: isCredit ? 'misc' : guessed.category, method };
 }
 
@@ -5102,7 +5125,11 @@ function screenAdd() {
     }
     magicPreview.style.color = '';
     syncDetectChips(parsed);
-    magicPreview.textContent = parsed ? `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}` : '';
+    magicPreview.textContent = parsed
+      ? (parsed.type === 'transfer'
+        ? `Transfer · ${methodShort(parsed.transfer.from)} → ${methodShort(parsed.transfer.to)} · ${fmt(parsed.amount)} · ${parsed.details} · ${friendlyDate(parsed.date)}`
+        : `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}`)
+      : '';
   };
   const magicInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => renderMagicPreview(e.target.value) });
   const magicExamples = [
@@ -5120,6 +5147,17 @@ function screenAdd() {
   const addMagic = () => {
     const parsed = parseNaturalLanguage(magicInput.value);
     if (!parsed || parsed.error) { toast(parsed?.error || 'Describe an entry first.'); magicInput.focus(); return; }
+    if (parsed.type === 'transfer') {
+      // Funding a gift card with a payment account is a two-leg transfer: the
+      // payment account is debited and the card is credited, sharing one id.
+      const pairId = uid();
+      const fromEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'expense', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.from, note: 'Created with natural-language input', transferId: pairId, settled: false };
+      const toEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'credit', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.to, note: 'Created with natural-language input', transferId: pairId, settled: false };
+      state.entries.push(fromEntry, toEntry);
+      state.entries.sort((a, b) => a.date.localeCompare(b.date));
+      persist(); toast('Gift card loaded - transfer created from your description.'); location.hash = '#dashboard';
+      return;
+    }
     const entry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: parsed.type, category: parsed.category, details: parsed.details, amount: parsed.amount, method: parsed.method, note: 'Created with natural-language input' };
     const dup = findPotentialDuplicate(entry);
     if (dup) {
