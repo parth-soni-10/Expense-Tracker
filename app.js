@@ -2980,13 +2980,13 @@ function parseNaturalLanguage(text) {
   // so the payment account is debited AND the card balance is loaded. When no
   // separate payment method is named, fall back to a single method.
   const detectBrand = () => {
-    if (/\btesco\b/.test(lower)) return 'TG';
-    if (/\blidl\b/.test(lower)) return 'LG';
-    if (/\baldi\b/.test(lower)) return 'AG';
+    if (/\b(?:tesco|tesco'?s)\b/.test(lower)) return 'TG';
+    if (/\b(?:lidl|lidl'?s)\b/.test(lower)) return 'LG';
+    if (/\b(?:aldi|aldi'?s)\b/.test(lower)) return 'AG';
     return null;
   };
   const detectSource = () => {
-    if (/\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+(?:account|pot|fund)\b/.test(lower)) return 'RS';
+    if (/\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+(?:account|pot|fund)\b|\bfrom\s+savings\b/.test(lower)) return 'RS';
     if (/\brevolut\b/.test(lower)) return 'Revolut';
     if (/\baib\b|\bbank\b|current account/.test(lower)) return 'AIB';
     return null;
@@ -2995,7 +2995,12 @@ function parseNaturalLanguage(text) {
   const source = detectSource();
   // Only a genuine gift-card/voucher purchase should become a transfer into the
   // card - a plain "at Tesco from Revolut" expense must stay a single entry.
-  const isGiftCardPurchase = /gift.?card|\bgc\b|voucher/i.test(lower);
+  // Accept natural ways of describing a card top-up: users may say "gift card",
+  // "GC", "voucher", "put money on Tesco", or "top up Tesco".
+  const isGiftCardPurchase = /gift.?card|\bgc\b|voucher|(?:put|add|load|top\s*up|topped\s*up|loaded)\s+(?:money\s+)?(?:on|to|into)\s+(?:my\s+)?(?:tesco|lidl|aldi)\b/i.test(lower)
+    || /\b(?:top\s*up|top\s+up|add|load|put)\s+(?:my\s+)?(?:tesco|lidl|aldi)\b/i.test(lower)
+    || /(?:tesco|lidl|aldi)\b.{0,24}\b(?:gift.?card|\bgc\b|voucher)\b/i.test(lower)
+    || /\b(?:tesco|lidl|aldi)(?:'s)?\s+(?:card|voucher)\b/i.test(lower);
   const isTransferToCard = isGiftCardPurchase && !!brand && !!source && source !== brand;
   let method = source || brand || 'AIB';
 
