@@ -276,9 +276,16 @@
       function hide() {
         if (removed) return;
         removed = true;
-        splash.style.transition = 'opacity 0.25s ease';
+        // Choreographed handoff: the splash lingers a beat, then dissolves
+        // (fade + a barely-there scale-up) to reveal the lock screen beneath,
+        // instead of a hard cut. Reduced-motion users get a quick plain fade.
+        var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var dur = reduce ? 0.15 : 0.5;
+        var ease = reduce ? 'ease' : 'cubic-bezier(0.4, 0, 0.2, 1)';
+        splash.style.transition = 'opacity ' + dur + 's ' + ease + ', transform ' + dur + 's ' + ease;
         splash.style.opacity = '0';
-        setTimeout(function () { if (splash.parentNode) splash.parentNode.removeChild(splash); }, 260);
+        splash.style.transform = 'scale(1.02)';
+        setTimeout(function () { if (splash.parentNode) splash.parentNode.removeChild(splash); }, Math.round(dur * 1000) + 40);
       }
       function check() {
         if (removed) return;
