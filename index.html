@@ -226,22 +226,31 @@
       #splash { --splash-line: #E8EBE5; position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: #101210; color: #35B877; }
       #splash .splash-mark { width: 52px; height: 52px; }
       #splash .splash-mark svg { width: 100%; height: 100%; display: block; }
-      #splash .splash-mark path { fill: none; stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; }
-      #splash .splash-mark .c   { animation: splash-draw-c  .7s cubic-bezier(0.3, 0.7, 0.4, 1) forwards; }
-      #splash .splash-mark .l1  { animation: splash-draw-l1 .28s cubic-bezier(0.3, 0.7, 0.4, 1) .7s forwards; }
-      #splash .splash-mark .l2  { animation: splash-draw-l2 .28s cubic-bezier(0.3, 0.7, 0.4, 1) .84s forwards; }
-      #splash .splash-name { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 15px; letter-spacing: 0.02em; color: #E8EBE5; opacity: 0; animation: splash-name-in .45s ease .98s forwards; }
+      #splash .splash-mark path { fill: none; stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 0; }
+      #splash .splash-mark .c   { animation: splash-draw-c  .7s cubic-bezier(0.3, 0.7, 0.4, 1) .04s forwards; }
+      #splash .splash-mark .l1  { animation: splash-draw-l1 .28s cubic-bezier(0.3, 0.7, 0.4, 1) .74s forwards; }
+      #splash .splash-mark .l2  { animation: splash-draw-l2 .28s cubic-bezier(0.3, 0.7, 0.4, 1) .88s forwards; }
+      #splash .splash-name { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 15px; letter-spacing: 0.02em; color: #E8EBE5; opacity: 1; animation: splash-name-in .45s ease 1.02s forwards; }
       #splash .splash-dot { color: #35B877; }
-      @keyframes splash-draw-c  { to { stroke-dashoffset: 0; } }
-      @keyframes splash-draw-l1 { to { stroke-dashoffset: 0; } }
-      @keyframes splash-draw-l2 { to { stroke-dashoffset: 0; } }
-      @keyframes splash-name-in { to { opacity: 1; } }
+      /* The finished mark is the DEFAULT state so the logo is always visible,
+         even on machines that throttle or skip CSS animations (energy saver /
+         background tabs) without reporting prefers-reduced-motion. The draw-on
+         is layered on top: only motion-preferring users start hidden, so a
+         stalled animation can never leave a blank splash. */
+      @keyframes splash-draw-c  { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+      @keyframes splash-draw-l1 { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+      @keyframes splash-draw-l2 { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+      @keyframes splash-name-in { from { opacity: 0; } to { opacity: 1; } }
       [data-theme="light"] #splash { --splash-line: #161712; background: #F5F5F2; color: #157A4A; }
       [data-theme="light"] #splash .splash-name { color: #161712; }
       [data-theme="light"] #splash .splash-dot { color: #157A4A; }
+      @media (prefers-reduced-motion: no-preference) {
+        #splash .splash-mark path { stroke-dashoffset: 1; }
+        #splash .splash-name { opacity: 0; animation-delay: 1.02s; }
+      }
       @media (prefers-reduced-motion: reduce) {
-        #splash .splash-mark path { stroke-dashoffset: 0; animation: none; }
-        #splash .splash-name { opacity: 1; animation: none; }
+        #splash .splash-mark .c, #splash .splash-mark .l1, #splash .splash-mark .l2 { animation: none; }
+        #splash .splash-name { animation: none; }
       }
     </style>
   </div>
@@ -263,15 +272,27 @@
       // element to animate; its animationend marks the end of the sequence.
       // Reduced-motion users get no animation (the finished mark is shown
       // statically), so they're done immediately. A safety timeout covers any
-      // browser that never fires animationend.
+      // browser that never fires animationend. Independent of all of that, a
+      // minimum on-screen floor guarantees the mark is always perceivable
+      // even on a warm PWA launch that boots in a couple hundred ms.
       var logoDone = false;
       var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var MIN_VISIBLE = 1300; // the shortest time the mark is guaranteed on screen
+      var shownAt = Date.now();
       if (reduceMotion) {
         logoDone = true;
       } else {
         var name = splash.querySelector('.splash-name');
         if (name) name.addEventListener('animationend', function () { logoDone = true; }, { once: true });
         setTimeout(function () { logoDone = true; }, 1900);
+      }
+      // Warm launches (an installed PWA with a cached shell) boot in a few
+      // hundred ms and can strip the splash before the mark is ever perceived.
+      // Enforce a floor on how long the logo stays up, independent of boot
+      // speed or whether animations actually fire on the target device.
+      function readyAfterMinimum() {
+        var min = reduceMotion ? 600 : MIN_VISIBLE;
+        return Date.now() - shownAt >= min;
       }
       function hide() {
         if (removed) return;
@@ -290,8 +311,9 @@
       function check() {
         if (removed) return;
         if (bootFail && !bootFail.hidden) return hide();
-        if (window.__centsBooted && logoDone) return hide();
-        if (mount && mount.children.length > 0 && logoDone) return hide();
+        // Both the app must be booted AND the logo finished AND the mark must
+        // have been visible for at least the minimum floor.
+        if (readyAfterMinimum() && ((window.__centsBooted && logoDone) || (mount && mount.children.length > 0 && logoDone))) return hide();
         setTimeout(check, 120);
       }
       check();
