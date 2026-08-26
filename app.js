@@ -2995,7 +2995,7 @@ function parseNaturalLanguage(text) {
   const source = detectSource();
   // Only a genuine gift-card/voucher purchase should become a transfer into the
   // card - a plain "at Tesco from Revolut" expense must stay a single entry.
-  const isGiftCardPurchase = /gift.?card|voucher/i.test(lower);
+  const isGiftCardPurchase = /gift.?card|\bgc\b|voucher/i.test(lower);
   const isTransferToCard = isGiftCardPurchase && !!brand && !!source && source !== brand;
   let method = source || brand || 'AIB';
 
