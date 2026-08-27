@@ -2129,6 +2129,7 @@ function isSpendingEntry(entry) {
 }
 /** Spending that counts against the monthly budget (excludes savings). */
 function isBudgetExcluded(entry) {
+  // Explicit per-transaction override; legacy entries remain included.
   return entry?.budgetExcluded === true;
 }
 function isBudgetSpendingEntry(entry) {
