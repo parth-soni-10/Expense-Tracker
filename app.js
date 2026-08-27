@@ -5500,7 +5500,7 @@ function screenHistory() {
         $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, e.type === 'note' ? '-' : fmt(rowBalance)),
         $('span', { class: 'history-method-wrap' }, $('span', { class: 'pill history-method' }, e.method)),
         $('span', { class: 'history-actions' },
-          e.type !== 'note' && !isTransfer ? $('button', { type: 'button', class: 'history-action-btn', title: e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', 'aria-label': e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', onClick: ev => {
+          e.type !== 'note' && !isTransfer ? $('button', { type: 'button', class: 'history-action-btn budget-toggle-btn', title: e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', 'aria-label': e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', onClick: ev => {
             ev.stopPropagation();
             const previous = e.budgetExcluded === true;
             e.budgetExcluded = !previous;
