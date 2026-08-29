@@ -3413,12 +3413,6 @@ function computeDataHealth(entries) {
   return { score: Math.max(0, score), issues };
 }
 
-// ---------- season detection ----------
-// Ledger uses a single emerald accent, so seasonal accent drift is retired.
-function setSeason() {
-  return;
-}
-
 // ---------- router ----------
 const ROUTES = ['dashboard', 'add', 'history', 'balances', 'insights'];
 const isNarrow = () => typeof window !== 'undefined' && window.innerWidth < 640;
@@ -6933,7 +6927,6 @@ function _render() {
       const saved = localStorage.getItem('cents-theme');
       document.documentElement.dataset.theme = saved === 'light' ? '' : 'dark';
     } catch(e) {}
-    setSeason();
   }
   // Keep the app mount completely empty while locked. The PIN overlay is
   // deliberately mounted before the first render, so a refresh never paints
@@ -7151,6 +7144,26 @@ window.addEventListener('DOMContentLoaded', () => {
   // control - the lock/onboarding overlays mount on <body>, not #app, so
   // "mount has children" can't be the signal. Set before anything renders.
   window.__centsBooted = true;
+  // A redeploy swaps the served index.html; the service worker notices the
+  // changed document and asks any open, controlled tab to reload so it leaves
+  // the old build behind without waiting for a manual refresh. This fires at
+  // most once per build (the worker dedupes on the document body), and it's
+  // skipped while the user is mid-typing or has an overlay open to avoid
+  // discarding in-progress work.
+  if ('serviceWorker' in navigator && navigator.serviceWorker.addEventListener) {
+    try {
+      navigator.serviceWorker.addEventListener('message', (ev) => {
+        try {
+          if (ev.data && ev.data.type === 'centsNewBuild') {
+            const busy = typeof isTypingInApp === 'function' && isTypingInApp()
+              || !!(document.activeElement && /input|textarea|select/i.test(document.activeElement.tagName))
+              || !!document.body.querySelector('.modal-bg');
+            if (!busy && !document.hidden) location.reload();
+          }
+        } catch (e) {}
+      });
+    } catch (e) {}
+  }
   // Lock background scroll while any modal (or the pin-lock/onboarding
   // overlay) is open. Each overlay appends a .modal-bg to <body> and removes
   // it on close, so one observer keeps the class in sync without per-modal

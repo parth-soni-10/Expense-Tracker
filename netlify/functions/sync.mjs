@@ -326,7 +326,8 @@ export default async (request, _context) => {
       if (r.status === 404) return ok({ content: null, sha: null, branch }, 200, cors);
       if (!r.ok) {
         const text = await r.text();
-        return err(`GitHub read failed: ${r.status} ${text.slice(0, 240)}`, r.status, cors);
+        console.error('cents sync: github read failed', r.status, text.slice(0, 400));
+        return err('Reading the cloud copy failed', r.status, cors);
       }
       const j = await r.json();
       const text = decodeBase64(j.content || '');
@@ -397,7 +398,8 @@ export default async (request, _context) => {
       }
       if (!r.ok) {
         const text = await r.text();
-        return err(`GitHub write failed: ${r.status} ${text.slice(0, 240)}`, r.status, cors);
+        console.error('cents sync: github write failed', r.status, text.slice(0, 400));
+        return err('Saving to the cloud failed', r.status, cors);
       }
 
       const j = await r.json();
@@ -411,6 +413,9 @@ export default async (request, _context) => {
 
     return err('Method not allowed', 405, cors);
   } catch (e) {
-    return err(e?.message || 'Internal error', 500, cors);
+    // Never echo internals to the client — log the real cause server-side so
+    // it stays diagnosable without leaking GitHub/error detail to the caller.
+    console.error('cents sync: unexpected error', e?.message || e);
+    return err('Unexpected sync error', 500, cors);
   }
 };

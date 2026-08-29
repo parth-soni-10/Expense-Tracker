@@ -81,8 +81,26 @@ export default async (request, _context) => {
 
   if (token) {
     // Redeem path: a valid UNUSED token proves the holder was given the link.
+    // The same per-IP failure throttle guards this path (mirroring the issue
+    // path) so a flood of junk/invalid token attempts can't hammer redemption.
+    const throttle = failureThrottle.check(request);
+    if (!throttle.ok) {
+      return new Response(JSON.stringify({ error: 'Too many failed attempts - retry later', code: 429 }),
+        {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': String(throttle.retryAfterSeconds),
+            ...cors,
+          },
+        });
+    }
     const redeemed = redeemSetupToken(secret, token);
     if (!redeemed.ok) {
+      // Tokens can't be forged without GITHUB_TOKEN, so a failure here means
+      // junk or an expired/unknown link. Throttle + sleep to absorb the noise.
+      throttle.record();
+      await new Promise(r => setTimeout(r, 500));
       // 410 (Gone) for a genuinely expired link; 401 for anything invalid.
       // The distinction lets the client avoid treating an expired real token
       // as a password-shaped secret.
