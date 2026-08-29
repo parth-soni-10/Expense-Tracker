@@ -53,3 +53,8 @@ serve.sh          local static server
 - Both functions: constant-time password compare (`lib/auth.mjs`), per-IP failure throttle, `APP_PASSWORD` ≥ 8 chars.
 - `sw.js` caches same-origin GETs only — never cache sync-endpoint responses.
 - No `eval`, no `innerHTML` with interpolated user data, no `dangerouslySetInnerHTML` equivalents.
+
+## Icons
+- All icons are hand-rolled inline SVGs ("Lucide-style") in `ICONS` / `MENU_ICONS` in `app.js`; render them via `iconSVG(name)`, `iconSpan(name, cls)`, or `tabIconSVG(route)`.
+- Both navs now show route icons: the desktop top nav (`renderHeader` → `.nav-link`, from this session) and the mobile bottom-tab bar (`tabIconSVG`). Route→icon map: dashboard=`home`, add=`plus`, history=`clock`, balances=`wallet`, insights=`chart`. When adding a nav item, give both surfaces an icon.
+- Icon SVGs inherit `currentColor`; sizing lives in `styles.css` (`.icon svg` and `.nav-link-icon svg`).

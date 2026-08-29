@@ -676,8 +676,6 @@ function showOnboarding() {
     if (pendingSetupLinkToast) { toast(pendingSetupLinkToast); pendingSetupLinkToast = null; }
     if (pendingSetupLink) queueMicrotask(confirmPendingSetupLink);
   };
-  const skip = () => { if (step === 2) finish(); else advance(); };
-
   const draw = () => {
     setDots();
     if (step === 0) {
@@ -3338,14 +3336,6 @@ function spendingForecast(key = monthKey(today())) {
   const previous = entriesForMonth(previousMonthKey(key)).filter(isBudgetSpendingEntry);
   const previousDaily = previous.length ? previous.reduce((sum, e) => sum + e.amount, 0) / daysInMonth(previousMonthKey(key)) : null;
   return { spent, projected, budget, remaining: budget - projected, dailyAverage, previousDaily, elapsed, totalDays };
-}
-
-function relativeDayLabel(iso) {
-  if (iso === today()) return 'Today';
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  if (iso === localDateKey(d)) return 'Yesterday';
-  return friendlyDate(iso);
 }
 
 function accountStatus(methodId) {

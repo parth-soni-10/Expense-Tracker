@@ -1758,7 +1758,7 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 }
 .btn-primary::after { display: none; }
 .btn-primary:hover { transform: none; box-shadow: none; }
-[data-theme="dark"] .btn-primary { color: #ffffff; }
+[data-theme="dark"] .btn-primary { color: #101210; }
 .pill-cat[data-active="true"] { color: #ffffff; }
 [data-theme="dark"] .pill-cat[data-active="true"] { color: #ffffff; }
 
