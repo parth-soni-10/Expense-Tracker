@@ -18,6 +18,7 @@ export const METHODS = [
   { id: 'TG',      label: 'TG · Tesco' },
   { id: 'LG',      label: 'LG · Lidl' },
   { id: 'AG',      label: 'AG · Aldi' },
+  { id: 'Cash',    label: 'Cash on hand' },
 ];
 
 export const SEED_SETTINGS = {
@@ -25,6 +26,12 @@ export const SEED_SETTINGS = {
   currency: '€',
   // Euro amount of Tesco paper vouchers on hand - never part of any balance.
   tescoVouchers: 0,
+  // Cash-on-hand ledger: `cashBase` is the starting cash balance and cash
+  // entries (method 'Cash') move it each save. `coins` holds the physical
+  // denomination breakdown; `coinsManual` is false once a cash entry has auto-
+  // redistributed the breakdown to the fewest-coin combination of the balance.
+  cashBase: 0,
+  coinsManual: true,
   // Per-category monthly targets, keyed by category id. Optional: a category
   // without a target is simply not constrained. Spending over a target turns
   // the category's bar and callout red.

@@ -852,6 +852,10 @@ function openPinSettings() {
 function persist() {
   // Track the last local edit before writing so conflict detection survives reloads.
   state.lastLocalChangeAt = new Date().toISOString();
+  // If cash entries auto-follow the balance, recompute the coin breakdown so
+  // the home cash widget reflects cash payments - runs before saveState so the
+  // fresh coins are persisted with this same revision.
+  ensureCashCoins();
   clearBalanceCaches();
   syncRevision++;
   saveState(state);
@@ -2453,6 +2457,75 @@ function computeCashTotal(coins) {
   return Math.round(total * 100) / 100;
 }
 
+/** Fewest-piece coin breakdown of a euro amount across the known denominations
+ *  (largest first). Used to auto-redistribute the coin counter whenever a cash
+ *  entry moves the balance - the "calculator" that recombines denominations.
+ *  Only non-zero denominations are emitted so a derived breakdown never
+ *  clutters storage with zero-count keys. */
+function coinsForAmount(rawTotal) {
+  const out = {};
+  let remaining = Math.max(0, Math.round((Number(rawTotal) || 0) * 100) / 100);
+  for (const c of COINS) {
+    if (remaining <= 0) break;
+    const valCents = Math.round(c.val * 100);
+    const budgetCents = Math.round(remaining * 100);
+    if (budgetCents < valCents) continue;
+    const count = Math.floor(budgetCents / valCents);
+    if (count > 0) out[String(c.val)] = count;
+    remaining = Math.round((remaining - count * c.val) * 100) / 100;
+  }
+  return out;
+}
+
+/** Euro held in the current physical coin counter. */
+function cashTotalFromCoins() {
+  return computeCashTotal({ ...COINS_DEFAULT, ...(state.settings.coins || {}) });
+}
+
+/** Net euro move to cash from every cash-tagged entry (credit adds, expense
+ *  subtracts) - the running ledger on top of the reconciled base. */
+function sumCashDeltas() {
+  let sum = 0;
+  for (const e of state.entries) {
+    if (e.type === 'note' || e.method !== 'Cash' || e.type === 'transfer') continue;
+    sum += e.type === 'credit' ? e.amount : -e.amount;
+  }
+  return sum;
+}
+
+/** Current cash on hand.
+ *  - While the coin counter is operator-maintained (`coinsManual` true - the
+ *    user counted their coins), the balance IS the coin total.
+ *  - After cash entries start auto-following (`coinsManual` false), the balance
+ *    is the anchored `cashBase` plus the running cash-entry delta, and the coins
+ *    are re-derived to the fewest-coin breakdown of that balance. */
+function cashBalance() {
+  if (state.settings.coinsManual !== false) return cashTotalFromCoins();
+  const base = Number.isFinite(+state.settings.cashBase) ? Number(state.settings.cashBase) : cashTotalFromCoins();
+  return Math.round((base + sumCashDeltas()) * 100) / 100;
+}
+
+/** Keep the coin-counter denominations in step with the cash balance. Runs on
+ *  every persist. It only rewrites while coins follow entries (`coinsManual`
+ *  is false), and leaves the user's exact counts alone while they are
+ *  operator-maintained. */
+function ensureCashCoins() {
+  if (state.settings.coinsManual !== false) return;
+  const derived = coinsForAmount(cashBalance());
+  if (JSON.stringify(derived) !== JSON.stringify(state.settings.coins || {})) {
+    state.settings.coins = derived;
+  }
+}
+
+/** A new cash entry exists: hand the coin counter over to the calculator so it
+ *  follows the cash balance. Anchors `cashBase` to the counted cash first so a
+ *  first cash payment subtracts from what is actually in hand. */
+function cashAutoFollow() {
+  if (state.settings.coinsManual === false) return;
+  state.settings.cashBase = Math.round((cashTotalFromCoins() - sumCashDeltas()) * 100) / 100;
+  state.settings.coinsManual = false;
+}
+
 // ---------- Tesco paper vouchers ----------
 // The euro amount of Tesco paper vouchers on hand. Deliberately kept out of
 // every balance — it is a reminder of value held as paper, not money.
@@ -2534,6 +2607,7 @@ function payRecurringOn(rec, dateStr) {
   while (rec.nextDate <= dateStr && guard++ < 12) {
     rec.nextDate = advanceRecurringDate(rec.nextDate, rec.frequency, rec.dayOfMonth);
   }
+  if (entry.method === 'Cash') cashAutoFollow();
   persist();
   trackAction(() => {
     state.entries = state.entries.filter(e => e.id !== entry.id);
@@ -2993,6 +3067,7 @@ function parseNaturalLanguage(text) {
     if (/\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+(?:account|pot|fund)\b|\bfrom\s+savings\b/.test(lower)) return 'RS';
     if (/\brevolut\b/.test(lower)) return 'Revolut';
     if (/\baib\b|\bbank\b|current account/.test(lower)) return 'AIB';
+    if (/\bcash\b|notes|wallet|pocket/.test(lower)) return 'Cash';
     return null;
   };
   const brand = detectBrand();
@@ -3026,6 +3101,17 @@ function parseNaturalLanguage(text) {
     // kept (the card) so the preview/chips render; addMagic uses `transfer`
     // to build the two-leg transfer pair.
     return { date, type: 'transfer', transfer: { from: source, to: brand }, amount, details, category: 'GC', method: brand };
+  }
+  // Mixed payment: “10 cash 14 revolut” etc. - two or more payment methods each
+  // next to their own amount. The slices become grouped single-method legs, and
+  // the group total is the sum of the slices.
+  const splices = tryParseSplitSlices(lower);
+  if (splices && splices.length >= 2) {
+    const splitTotal = Math.round(splices.reduce((sum, s) => sum + s.amount, 0) * 100) / 100;
+    return {
+      date, type: isCredit ? 'credit' : 'expense', amount: splitTotal, details,
+      category: isCredit ? 'misc' : guessed.category, method: splices[0].method, split: splices,
+    };
   }
   return { date, type: isCredit ? 'credit' : 'expense', amount, details, category: isCredit ? 'misc' : guessed.category, method };
 }
@@ -3073,7 +3159,7 @@ function cleanMagicDescription(raw, amountText) {
     .replace(/\b\d+(?:[.,]\d{1,2})?\b/g, ' ')                                  // remaining numbers
     .replace(/\b(?:x|×|@)\s*\d+(?:[.,]\d{1,2})?\b/ig, ' ')                    // "x2"
     .replace(/\b\d+(?:[.,]\d{1,2})?\s*[x×@]\b/ig, ' ')                        // "2x"
-    .replace(/\b(aib|revolut(?: savings)?|\brs\b|bank|current account)\b/ig, ' ') // payment channels
+    .replace(/\b(aib|revolut(?: savings)?|\brs\b|bank|current account|cash|notes|wallet|pocket)\b/ig, ' ') // payment channels
     .replace(/[()\[\]"']+/g, ' ');                                             // brackets/quotes
 
   const tokens = s.split(/\s+/).filter(Boolean);
@@ -3140,6 +3226,42 @@ function cleanMagicDescription(raw, amountText) {
     return w.charAt(0).toUpperCase() + w.slice(1);
   }).join(' ');
 }
+/** Best-effort split-payment detector: finds every payment-method keyword with
+ *  an amount immediately before/after it. Returns sampled slices (method +
+ *  amount) when two or more distinct methods are found - a strong signal the
+ *  line is a mixed payment rather than a single-method entry. */
+function tryParseSplitSlices(lower) {
+  const rules = [
+    { re: /\b(?:cash|notes|wallet)\b/g, method: 'Cash' },
+    { re: /\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+account\b|\bfrom\s+savings\b/g, method: 'RS' },
+    { re: /\brevolut\b/g, method: 'Revolut' },
+    { re: /\baib\b|\bbank\b|\bcurrent\s+account\b/g, method: 'AIB' },
+  ];
+  const found = [];
+  for (const rule of rules) {
+    const rx = new RegExp(rule.re.source, rule.re.flags);
+    let m;
+    while ((m = rx.exec(lower)) !== null) {
+      const before = lower.slice(Math.max(0, m.index - 60), m.index);
+      const after = lower.slice(m.index + m[0].length, m.index + m[0].length + 60);
+      // Amount immediately before (allowing a currency symbol) is the stronger
+      // signal - “10 cash” → cash:10. Otherwise take an amount right after.
+      const numBefore = /(\d+(?:[.,]\d{1,2})?)\s*$/.exec(before.replace(/[€£$]/g, ' '));
+      const numAfter = /^\s*[€£$]?\s*(\d+(?:[.,]\d{1,2})?)\b/.exec(after);
+      const raw = numBefore ? numBefore[1] : (numAfter ? numAfter[1] : null);
+      if (raw == null) { rx.lastIndex = m.index + m[0].length; continue; }
+      const amt = parseAmount(raw);
+      if (Number.isFinite(amt) && amt > 0) found.push({ method: rule.method, amount: amt });
+      rx.lastIndex = m.index + m[0].length;
+    }
+  }
+  // One slice per method (first mention wins), requires at least two methods.
+  const byMethod = new Map();
+  for (const slice of found) if (!byMethod.has(slice.method)) byMethod.set(slice.method, slice);
+  const slices = [...byMethod.values()];
+  return slices.length >= 2 ? slices : null;
+}
+
 function nextContentToken(tokens, from) {
   for (let j = from + 1; j < tokens.length; j++) {
     const nt = tokens[j].replace(MAGIC_EDGE_PUNCT, '');
@@ -3783,6 +3905,7 @@ function formView({ initial = null, onSubmit, onCancel }) {
         t.style.borderColor = isActive ? 'transparent' : 'var(--line)';
       });
       rebuildMethodOpts();
+      syncSplit();
       const noteMode = data.type === 'note';
       if (noteMode) data.note = '';
       amountSection.style.display = noteMode ? 'none' : '';
@@ -3822,7 +3945,49 @@ function formView({ initial = null, onSubmit, onCancel }) {
     if (!ids.includes(data.method)) { data.method = ids[0]; }
   }
   rebuildMethodOpts();
-  methodSection.append(methodLabelEl, methodSel);
+
+  // Split-payment creation: pay one total across several methods. When active,
+  // the single Method select is replaced by a list of (method, amount) rows.
+  let splitOn = false;
+  const splitRows = [];
+  const SLICE_METHODS = METHODS.map(m => m.id);
+  const splitToggle = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;margin-top:8px;', onClick: () => {
+    splitOn = !splitOn;
+    if (splitOn && splitRows.length === 0) {
+      splitRows.push({ method: data.method || 'AIB', amount: String(data.amount || '') });
+      splitRows.push({ method: (data.method === 'Cash' || data.method === 'AIB') ? 'Revolut' : 'Cash', amount: '' });
+      redrawSplit();
+    }
+    syncSplit();
+    if (splitOn) splitWrap.querySelector('input')?.focus();
+  } }, 'Split across methods');
+  const splitWrap = $('div', { style: 'display:none;margin-top:8px;' });
+  function redrawSplit() {
+    splitWrap.innerHTML = '';
+    splitRows.forEach((r, i) => {
+      const sel = $('select', { 'aria-label': 'Split method' });
+      appendMethodOptions(sel, SLICE_METHODS, r.method);
+      sel.value = r.method;
+      sel.onchange = () => { r.method = sel.value; };
+      const amt = $('input', { type: 'text', inputmode: 'decimal', value: r.amount, 'aria-label': 'Slice amount', placeholder: 'slice €', autocomplete: 'off', style: 'width:106px;text-align:right;' });
+      amt.oninput = () => { r.amount = amt.value; };
+      const rm = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;', 'aria-label': 'Remove slice', onClick: () => { if (splitRows.length > 1) { splitRows.splice(i, 1); redrawSplit(); } } }, '×');
+      splitWrap.appendChild($('div', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:8px;' }, sel, amt, splitRows.length > 1 ? rm : $('span', {})));
+    });
+    const add = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;', onClick: () => { splitRows.push({ method: 'Cash', amount: '' }); redrawSplit(); } }, '+ Add slice');
+    splitWrap.appendChild($('div', { style: 'text-align:right;' }, add));
+  }
+  function syncSplit() {
+    const noteMode = data.type === 'note';
+    const transferMode = data.type === 'transfer';
+    if (noteMode || transferMode) splitOn = false;
+    const active = splitOn && !noteMode && !transferMode;
+    splitWrap.style.display = active ? 'block' : 'none';
+    methodSel.style.display = splitOn ? 'none' : '';
+    splitToggle.style.display = (noteMode || transferMode) ? 'none' : '';
+    splitToggle.textContent = splitOn && splitRows.length >= 2 ? 'Use a single method' : 'Split across methods';
+  }
+  methodSection.append(methodLabelEl, methodSel, splitToggle, splitWrap);
 
   // Transfer From / To dropdowns
   const transferFromSel = $('select', { 'aria-label': 'From account', onChange: (e) => data.transferFrom = e.target.value });
@@ -3964,7 +4129,25 @@ function formView({ initial = null, onSubmit, onCancel }) {
       const base = { createdAt: nowIso(), date: data.date, amount: amt, details: data.details.trim(), note: data.note?.trim() || '', category: 'misc', transferId: pairId, settled: false };
       const fromEntry = { ...base, id: uid(), type: 'expense', method: data.transferFrom };
       const toEntry   = { ...base, id: uid(), type: 'credit',  method: data.transferTo };
+      if (data.transferFrom === 'Cash' || data.transferTo === 'Cash') cashAutoFollow();
       onSubmit([fromEntry, toEntry]);
+      return;
+    }
+    if (splitOn && splitRows.length >= 2) {
+      const slices = splitRows.map(r => ({ method: r.method, amount: parseAmount(r.amount) }));
+      if (slices.some(s => !Number.isFinite(s.amount) || s.amount <= 0)) { toast('Enter a positive slice amount for every split line.'); return; }
+      const sum = Math.round(slices.reduce((a, s) => a + s.amount, 0) * 100) / 100;
+      if (Math.abs(sum - amt) > 0.001) { toast(`Slices total ${fmt(sum)} but the entry amount is ${fmt(amt)} - make them match.`); return; }
+      const splitId = uid();
+      const createdAt = nowIso();
+      const category = data.type === 'credit' ? 'misc' : data.category;
+      const legs = slices.map(s => ({
+        id: uid(), createdAt, date: data.date, type: data.type, category,
+        details: data.details.trim(), amount: s.amount, method: s.method,
+        note: data.note?.trim() || '', splitId,
+      }));
+      if (legs.some(l => l.method === 'Cash')) cashAutoFollow();
+      onSubmit(legs);
       return;
     }
     if (initial && Array.isArray(initial.mutationHistory) && initial.mutationHistory.length >= MAX_MUTATION_HISTORY) {
@@ -4997,7 +5180,13 @@ function openCashEditor() {
   modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:18px;' },
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
     $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
+      const total = computeCashTotal(coins);
       state.settings.coins = { ...coins };
+      // Reconcile: pin the stored cash base so the home cash balance equals the
+      // freshly counted coins, and stop auto-redistributing until the next cash
+      // payment (which hands the calculator back control).
+      state.settings.cashBase = Math.round((total - sumCashDeltas()) * 100) / 100;
+      state.settings.coinsManual = true;
       persist();
       toast('Cash counts saved.');
       close();
@@ -5131,15 +5320,18 @@ function screenAdd() {
     magicPreview.textContent = parsed
       ? (parsed.type === 'transfer'
         ? `Transfer · ${methodShort(parsed.transfer.from)} → ${methodShort(parsed.transfer.to)} · ${fmt(parsed.amount)} · ${parsed.details} · ${friendlyDate(parsed.date)}`
-        : `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}`)
+        : (parsed.split && parsed.split.length >= 2
+          ? `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · split ${parsed.split.map(s => `${fmt(s.amount)} ${methodShort(s.method)}`).join(' + ')} · ${friendlyDate(parsed.date)}`
+          : `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}`))
       : '';
   };
   const magicInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => renderMagicPreview(e.target.value) });
   const magicExamples = [
-    { label: 'coffee 3.50', hint: 'an expense' },
-    { label: 'rent 850', hint: 'a bill' },
-    { label: 'payday 1450', hint: 'income' },
+    { label: 'coffee 3.50 cash', hint: 'paid in cash' },
+    { label: 'groceries 24: 10 cash, 14 revolut', hint: 'split payment' },
+    { label: 'rent 850 from AIB', hint: 'a bill from an account' },
   ];
+
   const magicChips = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;' },
     ...magicExamples.map(ex => $('button', { type: 'button', class: 'magic-chip', 'aria-label': `Example: ${ex.label} (${ex.hint})`, onClick: () => {
       magicInput.value = ex.label;
@@ -5158,10 +5350,28 @@ function screenAdd() {
       const toEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'credit', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.to, note: 'Created with natural-language input', transferId: pairId, settled: false };
       state.entries.push(fromEntry, toEntry);
       state.entries.sort((a, b) => a.date.localeCompare(b.date));
+      if (parsed.transfer.from === 'Cash' || parsed.transfer.to === 'Cash') cashAutoFollow();
       persist(); toast('Gift card loaded - transfer created from your description.'); location.hash = '#dashboard';
       return;
     }
+    if (parsed.split && parsed.split.length >= 2) {
+      // Mixing payment methods produces grouped single-method legs sharing a
+      // splitId; they render as one row in history and budget sums them once.
+      const group = { id: uid(), createdAt: nowIso() };
+      const splitId = uid();
+      const legs = parsed.split.map(s => ({
+        id: uid(), createdAt: group.createdAt, date: parsed.date, type: parsed.type,
+        category: parsed.category, details: parsed.details, amount: s.amount,
+        method: s.method, note: 'Created with natural-language input', splitId,
+      }));
+      state.entries.push(...legs);
+      state.entries.sort((a, b) => a.date.localeCompare(b.date));
+      if (legs.some(l => l.method === 'Cash')) cashAutoFollow();
+      persist(); toast('Split payment created from your description.'); location.hash = '#dashboard';
+      return;
+    }
     const entry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: parsed.type, category: parsed.category, details: parsed.details, amount: parsed.amount, method: parsed.method, note: 'Created with natural-language input' };
+    if (parsed.method === 'Cash') cashAutoFollow();
     const dup = findPotentialDuplicate(entry);
     if (dup) {
       openDuplicateConfirm(entry, dup, () => {
@@ -5454,15 +5664,41 @@ function screenHistory() {
       $('span'),
     ));
 
-    let previousVisibleDate = null;
+    // Split-payment legs sharing a splitId render as one grouped row so a mixed
+    // payment reads as a single transaction instead of N duplicate-looking rows.
+    const splitCounts = new Map();
+    for (const e of visible) if (e.splitId) splitCounts.set(e.splitId, (splitCounts.get(e.splitId) || 0) + 1);
+    const splitGroups = new Map();
+    const display = [];
     for (const e of visible) {
-      if (e.date !== previousVisibleDate) {
-        previousVisibleDate = e.date;
-        tableWrap.appendChild($('div', { class: 'history-day-header', role: 'row' },
-          $('span', { role: 'rowheader', class: 'eyebrow' }, relativeDayLabel(e.date)),
-        ));
-      }
+      const key = e.splitId && splitCounts.get(e.splitId) > 1 ? e.splitId : null;
+      if (!key) { display.push({ type: 'e', e }); continue; }
+      if (!splitGroups.has(key)) { splitGroups.set(key, []); display.push({ type: 'g', id: key, first: e }); }
+      splitGroups.get(key).push(e);
+    }
+
+    let previousVisibleDate = null;
+    for (const item of display) {
+      const isGroup = item.type === 'g';
+      const legs = isGroup ? splitGroups.get(item.id) : [item.e];
+      const e = legs[0];
+      const isNote = e.type === 'note';
+      const isCredit = e.type === 'credit';
       const isTransfer = !!e.transferId;
+      const totalAmount = isGroup ? Math.round(legs.reduce((sum, l) => sum + l.amount, 0) * 100) / 100 : e.amount;
+      const methodBreakdown = isGroup
+        ? legs.map(l => `${fmt(l.amount)} ${methodShort(l.method)}`).join(' · ')
+        : methodShort(e.method);
+      const rowBalance = cachedBalanceForEntry(legs[0]);
+      const rowType = isNote ? 'note-row' : isCredit ? 'income-row' : 'expense-row';
+      const openRow = () => {
+        if (isGroup) {
+          const grp = state.entries.filter(x => x.splitId === item.id);
+          if (grp.length >= 2) openSplitEditor(grp); else openEdit(legs[0].id);
+        } else openEdit(e.id);
+      };
+      const selectAll = isGroup ? legs.map(l => l.id) : [e.id];
+      const budgetAppliedTo = isGroup ? legs : [e];
       const settledLabel = isTransfer
         ? $('span', { class: `history-settled${e.settled ? ' is-settled' : ''}`, onClick: (ev) => {
             ev.stopPropagation();
@@ -5475,12 +5711,9 @@ function screenHistory() {
             iconSpan(e.settled ? 'check-circle' : 'circle', 'sm'),
             e.settled ? ' settled' : ' unsettled')
         : null;
-      const rowBalance = cachedBalanceForEntry(e);
-      const rowType = e.type === 'note' ? 'note-row' : e.type === 'credit' ? 'income-row' : 'expense-row';
-      const isCredit = e.type === 'credit';
-      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': e.id, 'aria-label': `Edit entry ${e.details} on ${friendlyDate(e.date)}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openEdit(e.id); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openEdit(e.id); } } },
-        $('span', { role: 'cell', class: 'history-cell-check' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selected.has(e.id) ? true : null, 'aria-label': `Select ${e.details || 'entry'}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
-          if (ev.target.checked) selected.add(e.id); else selected.delete(e.id);
+      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${e.details || ''} on ${friendlyDate(e.date)}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
+        $('span', { role: 'cell', class: 'history-cell-check' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selectAll.every(id => selected.has(id)) ? true : null, 'aria-label': `Select ${e.details || 'entry'}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
+          for (const id of selectAll) { if (ev.target.checked) selected.add(id); else selected.delete(id); }
           syncBulkBar();
         } })),
         $('span', { class: 'muted history-date' }, friendlyDate(e.date)),          $('div', { class: 'history-details-wrap' },
@@ -5490,20 +5723,20 @@ function screenHistory() {
           ),
           $('div', { class: 'history-category' }, categoryLabel(e.category)),
         ),
-        $('span', { class: `display-num history-amount${isCredit ? ' is-credit' : ''}` }, e.type === 'note' ? 'Note' : (isCredit ? '+' : '') + fmt(e.amount)),
-        $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, e.type === 'note' ? '-' : fmt(rowBalance)),
-        $('span', { class: 'history-method-wrap' }, $('span', { class: 'pill history-method' }, e.method)),
+        $('span', { class: `display-num history-amount${isCredit ? ' is-credit' : ''}` }, isNote ? 'Note' : (isCredit ? '+' : '') + fmt(totalAmount)),
+        $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, isNote ? '-' : fmt(rowBalance)),
+        $('span', { class: 'history-method-wrap' }, $('span', { class: 'pill history-method' }, isGroup ? methodBreakdown : e.method)),
         $('span', { class: 'history-actions' },
-          e.type !== 'note' && !isTransfer ? $('button', { type: 'button', class: 'history-action-btn budget-toggle-btn', title: e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', 'aria-label': e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', onClick: ev => {
+          !isNote && !isTransfer ? $('button', { type: 'button', class: 'history-action-btn budget-toggle-btn', title: e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', 'aria-label': 'Toggle budget inclusion', onClick: ev => {
             ev.stopPropagation();
             const previous = e.budgetExcluded === true;
-            e.budgetExcluded = !previous;
+            for (const leg of budgetAppliedTo) leg.budgetExcluded = !previous;
             persist();
-            trackAction(() => { e.budgetExcluded = previous; persist(); }, previous ? 'Included entry in budget' : 'Excluded entry from budget');
+            trackAction(() => { for (const leg of budgetAppliedTo) leg.budgetExcluded = previous; persist(); }, previous ? 'Included entry in budget' : 'Excluded entry from budget');
             toast(previous ? 'Included in budget calculations.' : 'Excluded from budget calculations.');
             render();
           } }, e.budgetExcluded ? 'Include budget' : 'Exclude budget') : null,
-          $('button', { type: 'button', class: 'history-action-btn', title: 'Edit or delete entry', 'aria-label': `Edit or delete ${e.details || 'entry'}`, onClick: ev => { ev.stopPropagation(); openEdit(e.id); } }, 'Manage'),
+          $('button', { type: 'button', class: 'history-action-btn', title: isGroup ? 'Edit or delete split payment' : 'Edit or delete entry', 'aria-label': (isGroup ? 'Edit or delete split' : `Edit or delete ${e.details || 'entry'}`), onClick: ev => { ev.stopPropagation(); openRow(); } }, 'Manage'),
         ),
       );
 
@@ -6257,6 +6490,12 @@ function openEdit(id) {
   const e = state.entries.find(x => x.id === id);
   if (!e) return;
 
+  // Split-payment legs are edited together as one group.
+  if (e.splitId) {
+    const grp = state.entries.filter(x => x.splitId === e.splitId);
+    if (grp.length >= 2) { openSplitEditor(grp); return; }
+  }
+
   // Transfer entries can't be edited - show a delete-only modal
   if (e.transferId) {
     openTransferDelete(e);
@@ -6369,6 +6608,131 @@ function openEdit(id) {
       || modal.querySelector('input, select, button');
     if (first) first.focus();
   });
+}
+
+// ---------- modal: split payment editor ----------
+// Edit every single-method leg of a split as one group. Adding/removing slices
+// rebuilds the group; every mutation keeps single method per leg so balances,
+// history and undo behave like ordinary entries.
+function openSplitEditor(legs) {
+  const splitId = legs[0].splitId;
+  const type = legs[0].type || 'expense';
+  const isCredit = type === 'credit';
+  const allMethodIds = METHODS.map(m => m.id);
+  let rows = legs.map(l => ({ id: l.id, method: l.method, amount: String(l.amount) }));
+
+  const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Split payment', tabindex: '-1', style: 'max-width:480px;' });
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+
+  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
+  const onEsc = ev => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onEsc, true);
+
+  const detailsInput = $('input', { type: 'text', value: legs[0].details || '', 'aria-label': 'Description', autocomplete: 'off', style: 'width:100%;' });
+  const dateInput = $('input', { type: 'date', value: legs[0].date, 'aria-label': 'Date', style: 'width:100%;' });
+  wireFlatpickr(dateInput, { defaultDate: legs[0].date });
+
+  const totalEl = $('span', { class: 'display-num', style: 'font-size:22px;' }, '');
+  const listWrap = $('div', { style: 'margin-top:10px;display:flex;flex-direction:column;gap:8px;' });
+  function updateTotal() {
+    let t = 0;
+    for (const r of rows) { const a = parseAmount(r.amount); if (Number.isFinite(a) && a > 0) t += a; }
+    totalEl.textContent = fmt(Math.round(t * 100) / 100);
+  }
+  function redraw() {
+    listWrap.innerHTML = '';
+    rows.forEach((r) => {
+      const sel = $('select', { 'aria-label': 'Split method', onchange: () => { r.method = sel.value; } });
+      appendMethodOptions(sel, allMethodIds, r.method);
+      sel.value = r.method;
+      const amt = $('input', { type: 'text', inputmode: 'decimal', value: r.amount, 'aria-label': 'Slice amount', autocomplete: 'off', style: 'width:110px;text-align:right;', oninput: (ev) => { r.amount = ev.target.value; updateTotal(); } });
+      const rm = $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 9px;font-size:11px;', onClick: () => { if (rows.length <= 1) return; rows = rows.filter(x => x !== r); redraw(); updateTotal(); } }, 'Remove');
+      listWrap.appendChild($('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' }, sel, amt, rows.length > 1 ? rm : null));
+    });
+  }
+  redraw();
+
+  modal.append(
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;' },
+      $('div', null,
+        $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:24px;margin:0;' }, isCredit ? 'Split income' : 'Split payment'),
+        $('div', { class: 'muted', style: 'font-size:11px;' }, 'Pay across several methods at once. Undoable.'),
+      ),
+      $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
+    ),
+    $('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px;' },
+      $('div', null, $('label', { class: 'eyebrow', for: 'fs-details' }, 'Description'), Object.assign(detailsInput, { id: 'fs-details' })),
+      $('div', null, $('label', { class: 'eyebrow', for: 'fs-date' }, 'Date'), Object.assign(dateInput, { id: 'fs-date' })),
+    ),
+    $('label', { class: 'eyebrow', style: 'display:block;margin-top:16px;' }, 'Split'),
+    listWrap,
+    $('div', null, $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => { rows.push({ method: rows.some(r => r.method === 'AIB') ? 'Cash' : 'AIB', amount: '' }); redraw(); } }, '+ Add slice')),
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);' }, $('span', { class: 'eyebrow' }, 'Total'), totalEl),
+    $('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:16px;' },
+      $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+      $('button', { type: 'button', class: 'btn btn-primary', onClick: save }, 'Save changes'),
+    ),
+  );
+
+  function save() {
+    const parsed = rows.map(r => ({ ...r, amount: parseAmount(r.amount) }));
+    if (parsed.some(r => !Number.isFinite(r.amount) || r.amount <= 0)) { toast('Enter a positive slice amount for every slice.'); return; }
+    if (!isValidCheckpointDate(dateInput.value)) { toast('Pick a valid date.'); return; }
+    const details = detailsInput.value.trim();
+    if (!details) { toast('Add a description.'); detailsInput.focus(); return; }
+    const before = state.entries.filter(x => x.splitId === splitId).map(x => ({ ...x }));
+    const createdAt = legs[0].createdAt || nowIso();
+    const note = legs[0].note || '';
+    const category = legs[0].category || 'misc';
+    const newIds = new Set(parsed.map(r => r.id));
+    const newLegs = parsed.map(r => {
+      const existing = state.entries.find(x => x.id === r.id && x.splitId === splitId);
+      if (existing) return { ...existing, method: r.method, amount: Math.round(r.amount * 100) / 100, details, date: dateInput.value };
+      return { id: uid(), createdAt, date: dateInput.value, type, category, details, amount: Math.round(r.amount * 100) / 100, method: r.method, note, splitId };
+    });
+    state.entries = state.entries
+      .filter(x => !(x.splitId === splitId && (newIds.has(x.id))))
+      .concat(newLegs);
+    state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    if (newLegs.some(l => l.method === 'Cash')) cashAutoFollow();
+    persist();
+    trackAction(() => {
+      state.entries = state.entries.filter(x => x.splitId !== splitId).concat(before);
+      state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      persist();
+    }, 'Edited split payment', newLegs);
+    toast('Split payment updated.');
+    close();
+  }
+
+  // Two-stage delete of the whole group
+  const delStage1 = $('button', { type: 'button', class: 'btn btn-danger', onClick: () => { delPanel.style.display = ''; delStage1.style.display = 'none'; confirmDel.focus(); } }, 'Delete split');
+  const cancelDel = $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => { delPanel.style.display = 'none'; delStage1.style.display = ''; delStage1.focus(); } }, 'Cancel');
+  const confirmDel = $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: () => {
+    const removed = state.entries.filter(x => x.splitId === splitId).map(x => ({ ...x }));
+    state.entries = state.entries.filter(x => x.splitId !== splitId);
+    tombstoneIds(removed.map(x => x.id));
+    persist();
+    trackAction(() => {
+      state.entries.push(...removed);
+      state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      untombstoneIds(removed.map(x => x.id));
+      persist();
+    }, 'Deleted split payment', removed);
+    toast('Split payment deleted.');
+    close();
+  } }, 'Confirm delete');
+  const delPanel = $('div', { style: 'display:none;margin-top:24px;padding:20px;border:1px solid var(--line);border-radius:var(--radius);background:var(--accent-soft);' },
+    $('p', { class: 'serif', style: 'font-size:16px;margin:0 0 12px;color:var(--negative);' }, 'Delete this split payment? You can undo it.'),
+    $('div', { style: 'display:flex;gap:8px;justify-content:flex-end;' }, cancelDel, confirmDel),
+  );
+  modal.appendChild($('div', { style: 'margin-top:24px;padding-top:24px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;' }, delStage1));
+  modal.appendChild(delPanel);
+
+  updateTotal();
+  queueMicrotask(() => modal.querySelector('input, select')?.focus());
 }
 
 // ---------- modal: sync settings ----------

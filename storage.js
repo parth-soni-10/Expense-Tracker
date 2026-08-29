@@ -15,7 +15,7 @@ export const uid = () =>
 
 const BASE_CATEGORIES = ['gro', 'travel', 'misc', 'rent', 'GC'];
 const CATEGORIES_OK = new Set(BASE_CATEGORIES);
-const METHODS_OK    = new Set(['AIB','Revolut','RS','TG','LG','AG']);
+const METHODS_OK    = new Set(['AIB','Revolut','RS','TG','LG','AG','Cash']);
 const TYPES_OK      = new Set(['expense', 'credit', 'transfer', 'note']);
 // Recurring transfers need two linked legs and are not represented by the
 // recurring editor. Keeping only single-leg recurring financial entries avoids
@@ -140,6 +140,8 @@ function validateEntry(e) {
   if (typeof e.transferId === 'string' && e.transferId.length <= 200) base.transferId = e.transferId;
   if (typeof e.settled === 'boolean') base.settled = e.settled;
   if (typeof e.budgetExcluded === 'boolean') base.budgetExcluded = e.budgetExcluded;
+  // Split-payment group marker - several single-method legs rendered as one row.
+  if (typeof e.splitId === 'string' && e.splitId.length <= 200) base.splitId = e.splitId;
   return base;
 }
 
