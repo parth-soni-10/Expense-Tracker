@@ -430,6 +430,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
    Header
    ============================================================ */
 .nav-link {
+  display: inline-flex; align-items: center; gap: 8px;
   font-size: 14px; color: var(--muted);
   padding: 9px 16px;
   border-radius: 999px;
@@ -439,6 +440,8 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   position: relative;
   transition: color 0.15s, background 0.15s, transform 0.12s var(--ease-out);
 }
+.nav-link-icon { display: inline-flex; align-items: center; }
+.nav-link-icon svg { width: 15px; height: 15px; display: block; }
 .nav-link:active { transform: scale(0.95); }
 .nav-link[aria-current="page"] {
   color: var(--accent);

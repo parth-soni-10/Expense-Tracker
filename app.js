@@ -3590,7 +3590,9 @@ function renderHeader() {
       $('a', { href: '#dashboard', class: 'logo-wordmark', style: 'font-family:"Space Grotesk",sans-serif;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary', style: locked ? 'display:none;' : '' },
-      ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : null }, titleFor(r))),
+      ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : null },
+        $('span', { class: 'nav-link-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', balances: 'wallet', insights: 'chart' }[r]] || MENU_ICONS.home }),
+        titleFor(r))),
     ),
     $('div', { class: 'header-actions', style: locked ? 'display:none;' : '' },
       $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Space Grotesk",sans-serif;font-size:14px;color:var(--muted);' }),      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
