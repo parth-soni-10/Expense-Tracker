@@ -3106,8 +3106,19 @@ function parseNaturalLanguage(text) {
   const splices = tryParseSplitSlices(lower);
   if (splices && splices.length >= 2) {
     const splitTotal = Math.round(splices.reduce((sum, s) => sum + s.amount, 0) * 100) / 100;
+    // Drop the split methods themselves out of the description, otherwise a
+    // split names the paying accounts too ("Pepper 0.49: 0.17 Aldi, 0.32
+    // revolut" → "Pepper"). Amounts are already stripped by the cleaner.
+    const methodWords = {
+      Cash: /\b(?:cash|notes|wallet)\b/gi, RS: /\b(?:revolut\s+savings|\brs\b|savings\s+account)\b/gi,
+      Revolut: /\brevolut\b/gi, AIB: /\b(?:aib|bank|current\s+account)\b/gi,
+      AG: /\b(?:aldi|aldi'?s)\b/gi, LG: /\b(?:lidl|lidl'?s)\b/gi, TG: /\b(?:tesco|tesco'?s)\b/gi,
+    };
+    let cleanRaw = raw;
+    for (const s of splices) { const mv = methodWords[s.method]; if (mv) cleanRaw = cleanRaw.replace(mv, ' '); }
+    const splitDetails = cleanMagicDescription(cleanRaw, '') || 'Entry';
     return {
-      date, type: isCredit ? 'credit' : 'expense', amount: splitTotal, details,
+      date, type: isCredit ? 'credit' : 'expense', amount: splitTotal, details: splitDetails,
       category: isCredit ? 'misc' : guessed.category, method: splices[0].method, split: splices,
     };
   }
@@ -3234,6 +3245,9 @@ function tryParseSplitSlices(lower) {
     { re: /\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+account\b|\bfrom\s+savings\b/g, method: 'RS' },
     { re: /\brevolut\b/g, method: 'Revolut' },
     { re: /\baib\b|\bbank\b|\bcurrent\s+account\b/g, method: 'AIB' },
+    { re: /\b(?:aldi|aldi'?s)\b/g, method: 'AG' },
+    { re: /\b(?:lidl|lidl'?s)\b/g, method: 'LG' },
+    { re: /\b(?:tesco|tesco'?s)\b/g, method: 'TG' },
   ];
   const found = [];
   for (const rule of rules) {
