@@ -5335,6 +5335,7 @@ function screenAdd() {
   const magicExamples = [
     { label: 'coffee 3.50 cash', hint: 'paid in cash' },
     { label: 'groceries 24: 10 cash, 14 revolut', hint: 'split payment' },
+    { label: 'tesco shop 6: 2 aldi, 4 revolut', hint: 'split across a gift card and an account' },
     { label: 'rent 850 from AIB', hint: 'a bill from an account' },
   ];
 
@@ -5692,9 +5693,6 @@ function screenHistory() {
       const isCredit = e.type === 'credit';
       const isTransfer = !!e.transferId;
       const totalAmount = isGroup ? Math.round(legs.reduce((sum, l) => sum + l.amount, 0) * 100) / 100 : e.amount;
-      const methodBreakdown = isGroup
-        ? legs.map(l => `${fmt(l.amount)} ${methodShort(l.method)}`).join(' · ')
-        : methodShort(e.method);
       const rowBalance = cachedBalanceForEntry(legs[0]);
       const rowType = isNote ? 'note-row' : isCredit ? 'income-row' : 'expense-row';
       const openRow = () => {
@@ -5731,7 +5729,9 @@ function screenHistory() {
         ),
         $('span', { class: `display-num history-amount${isCredit ? ' is-credit' : ''}` }, isNote ? 'Note' : (isCredit ? '+' : '') + fmt(totalAmount)),
         $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, isNote ? '-' : fmt(rowBalance)),
-        $('span', { class: 'history-method-wrap' }, $('span', { class: 'pill history-method' }, isGroup ? methodBreakdown : e.method)),
+        $('span', { class: 'history-method-wrap' }, ...(isGroup
+          ? legs.map(l => $('button', { type: 'button', class: 'pill split-leg', title: 'Edit this slice', 'aria-label': `Edit ${methodShort(l.method)} slice`, onClick: ev => { ev.stopPropagation(); openLegEditor(l); } }, `${fmt(l.amount)} ${methodShort(l.method)}`))
+          : [$('span', { class: 'pill history-method' }, methodShort(e.method))])),
         $('span', { class: 'history-actions' },
           !isNote && !isTransfer ? $('button', { type: 'button', class: 'history-action-btn budget-toggle-btn', title: e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', 'aria-label': 'Toggle budget inclusion', onClick: ev => {
             ev.stopPropagation();
@@ -6614,6 +6614,67 @@ function openEdit(id) {
       || modal.querySelector('input, select, button');
     if (first) first.focus();
   });
+}
+
+// ---------- modal: single split leg editor ----------
+// Tap one slice's pill in History to adjust just that leg's amount or method
+// without opening the whole group editor. Updates one entry, tracked as one
+// undoable action (re-ranks coins when Cash is involved).
+function openLegEditor(leg) {
+  const splitId = leg.splitId;
+  const isCredit = leg.type === 'credit';
+  const allMethodIds = METHODS.map(m => m.id);
+
+  const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Edit split slice', tabindex: '-1', style: 'max-width:400px;' });
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+
+  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
+  const onEsc = ev => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onEsc, true);
+
+  const sel = $('select', { 'aria-label': 'Slice method', style: 'width:100%;' });
+  appendMethodOptions(sel, allMethodIds, leg.method);
+  sel.value = leg.method;
+  const amt = $('input', { type: 'text', inputmode: 'decimal', value: String(leg.amount), 'aria-label': 'Slice amount', autocomplete: 'off', style: 'width:100%;text-align:right;' });
+
+  modal.append(
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;' },
+      $('div', null,
+        $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:24px;margin:0;' }, 'Edit slice'),
+        $('div', { class: 'muted', style: 'font-size:11px;' }, 'Adjust just this part of the split. Undoable.'),
+      ),
+      $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
+    ),
+    $('div', { style: 'display:grid;grid-template-columns:1fr 1fr;gap:12px;' },
+      $('div', null, $('label', { class: 'eyebrow', for: 'leg-method' }, 'Method'), Object.assign(sel, { id: 'leg-method' })),
+      $('div', null, $('label', { class: 'eyebrow', for: 'leg-amount' }, isCredit ? 'Amount (in)' : 'Amount (out)'), Object.assign(amt, { id: 'leg-amount' })),
+    ),
+    $('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:18px;' },
+      $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
+      $('button', { type: 'button', class: 'btn btn-primary', onClick: save }, 'Save'),
+    ),
+  );
+
+  function save() {
+    const amount = parseAmount(amt.value);
+    if (!Number.isFinite(amount) || amount <= 0) { toast('Enter a positive slice amount.'); return; }
+    const current = state.entries.find(x => x.id === leg.id && x.splitId === splitId);
+    if (!current) { close(); return; }
+    const before = { ...current };
+    current.method = sel.value;
+    current.amount = Math.round(amount * 100) / 100;
+    if (current.method === 'Cash' || before.method === 'Cash') cashAutoFollow();
+    persist();
+    trackAction(() => {
+      const back = state.entries.find(x => x.id === current.id && x.splitId === splitId);
+      if (back) Object.assign(back, before);
+      persist();
+    }, 'Edited split slice', current);
+    toast('Slice updated.');
+    close();
+  }
 }
 
 // ---------- modal: split payment editor ----------

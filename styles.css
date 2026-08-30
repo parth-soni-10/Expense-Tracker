@@ -878,6 +878,15 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .history-balance.is-negative { color: var(--negative); }
 .history-method.pill,
 .history-method.pill:hover { border-color: transparent; background: transparent; }
+.split-leg {
+  display: inline-flex; align-items: center; gap: 4px;
+  border: 1px solid var(--line); background: var(--surface);
+  border-radius: 6px; padding: 2px 7px; font-size: 11px;
+  color: var(--ink); cursor: pointer; white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.split-leg:hover { border-color: currentColor; color: var(--accent); }
+.split-leg:active { transform: translateY(0.5px); }
 .history-actions { display: flex; justify-content: flex-end; align-items: center; gap: 5px; min-width: 0; }
 .budget-toggle-btn { display: inline-flex; white-space: nowrap; }
 
