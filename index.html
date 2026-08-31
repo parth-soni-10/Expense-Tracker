@@ -261,63 +261,84 @@
     // alone can't signal readiness). The boot-fail panel and a hard backstop
     // guarantee it can never trap the user.
     (function () {
-      var splash = document.getElementById('splash');
-      if (!splash) return;
-      var mount = document.getElementById('app');
-      var bootFail = document.getElementById('boot-fail');
-      var removed = false;
-      // The auth bubble (PIN lock / onboarding) must only appear after the
-      // draw-on logo has finished, so the splash stays up until BOTH the app
-      // has booted AND the logo animation completed. The wordmark is the last
-      // element to animate; its animationend marks the end of the sequence.
-      // Reduced-motion users get no animation (the finished mark is shown
-      // statically), so they're done immediately. A safety timeout covers any
-      // browser that never fires animationend. Independent of all of that, a
-      // minimum on-screen floor guarantees the mark is always perceivable
-      // even on a warm PWA launch that boots in a couple hundred ms.
-      var logoDone = false;
-      var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-      var MIN_VISIBLE = 1300; // the shortest time the mark is guaranteed on screen
-      var shownAt = Date.now();
-      if (reduceMotion) {
-        logoDone = true;
-      } else {
-        var name = splash.querySelector('.splash-name');
-        if (name) name.addEventListener('animationend', function () { logoDone = true; }, { once: true });
-        setTimeout(function () { logoDone = true; }, 1900);
+      // Wired as `start()` below so a warm back/forward-cache restore (closing
+      // the tab and reopening it, or browser Back) can replay the splash
+      // instead of dropping straight onto the auth bubble. The first capture
+      // of the element doubles as the template for those restores.
+      var splashHtml = null;
+      var MIN_VISIBLE = 2400; // shortest time the mark is guaranteed on screen
+      var LOGO_TIMEOUT = 2200; // backstop if animationend never fires (~1.5s anim)
+      function start() {
+        var splash = document.getElementById('splash');
+        if (!splash) return;
+        if (splashHtml === null) splashHtml = splash.outerHTML;
+        var mount = document.getElementById('app');
+        var bootFail = document.getElementById('boot-fail');
+        var removed = false;
+        // The auth bubble (PIN lock / onboarding) must only appear after the
+        // draw-on logo has finished, so the splash stays up until BOTH the app
+        // has booted AND the logo animation completed. The wordmark is the last
+        // element to animate; its animationend marks the end of the sequence.
+        // Reduced-motion users get no animation (the finished mark is shown
+        // statically), so they're done immediately. A safety timeout covers any
+        // browser that never fires animationend. Independent of all of that, a
+        // minimum on-screen floor guarantees the mark is always perceivable
+        // even on a warm PWA launch that boots in a couple hundred ms.
+        var logoDone = false;
+        var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var shownAt = Date.now();
+        if (reduceMotion) {
+          logoDone = true;
+        } else {
+          var name = splash.querySelector('.splash-name');
+          if (name) name.addEventListener('animationend', function () { logoDone = true; }, { once: true });
+          setTimeout(function () { logoDone = true; }, LOGO_TIMEOUT);
+        }
+        // Warm launches (an installed PWA with a cached shell) boot in a few
+        // hundred ms and can strip the splash before the mark is ever perceived.
+        // Enforce a floor on how long the logo stays up, independent of boot
+        // speed or whether animations actually fire on the target device.
+        function readyAfterMinimum() {
+          var min = reduceMotion ? 1100 : MIN_VISIBLE;
+          return Date.now() - shownAt >= min;
+        }
+        function hide() {
+          if (removed) return;
+          removed = true;
+          // Choreographed handoff: the splash lingers a beat, then dissolves
+          // (fade + a barely-there scale-up) to reveal the lock screen beneath,
+          // instead of a hard cut. Reduced-motion users get a quick plain fade.
+          var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          var dur = reduce ? 0.15 : 0.5;
+          var ease = reduce ? 'ease' : 'cubic-bezier(0.4, 0, 0.2, 1)';
+          splash.style.transition = 'opacity ' + dur + 's ' + ease + ', transform ' + dur + 's ' + ease;
+          splash.style.opacity = '0';
+          splash.style.transform = 'scale(1.02)';
+          setTimeout(function () { if (splash.parentNode) splash.parentNode.removeChild(splash); }, Math.round(dur * 1000) + 40);
+        }
+        function check() {
+          if (removed) return;
+          if (bootFail && !bootFail.hidden) return hide();
+          // Both the app must be booted AND the logo finished AND the mark must
+          // have been visible for at least the minimum floor.
+          if (readyAfterMinimum() && ((window.__centsBooted && logoDone) || (mount && mount.children.length > 0 && logoDone))) return hide();
+          setTimeout(check, 120);
+        }
+        check();
+        setTimeout(hide, 10000);
       }
-      // Warm launches (an installed PWA with a cached shell) boot in a few
-      // hundred ms and can strip the splash before the mark is ever perceived.
-      // Enforce a floor on how long the logo stays up, independent of boot
-      // speed or whether animations actually fire on the target device.
-      function readyAfterMinimum() {
-        var min = reduceMotion ? 600 : MIN_VISIBLE;
-        return Date.now() - shownAt >= min;
-      }
-      function hide() {
-        if (removed) return;
-        removed = true;
-        // Choreographed handoff: the splash lingers a beat, then dissolves
-        // (fade + a barely-there scale-up) to reveal the lock screen beneath,
-        // instead of a hard cut. Reduced-motion users get a quick plain fade.
-        var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        var dur = reduce ? 0.15 : 0.5;
-        var ease = reduce ? 'ease' : 'cubic-bezier(0.4, 0, 0.2, 1)';
-        splash.style.transition = 'opacity ' + dur + 's ' + ease + ', transform ' + dur + 's ' + ease;
-        splash.style.opacity = '0';
-        splash.style.transform = 'scale(1.02)';
-        setTimeout(function () { if (splash.parentNode) splash.parentNode.removeChild(splash); }, Math.round(dur * 1000) + 40);
-      }
-      function check() {
-        if (removed) return;
-        if (bootFail && !bootFail.hidden) return hide();
-        // Both the app must be booted AND the logo finished AND the mark must
-        // have been visible for at least the minimum floor.
-        if (readyAfterMinimum() && ((window.__centsBooted && logoDone) || (mount && mount.children.length > 0 && logoDone))) return hide();
-        setTimeout(check, 120);
-      }
-      check();
-      setTimeout(hide, 10000);
+      start();
+      // A tab reopened from the back/forward cache comes back exactly as it
+      // was left — splash already gone — so the auth bubble would appear the
+      // instant the page paints, cutting the logo out entirely. Catch those
+      // restores and replay the splash over everything (z-index 60 beats every
+      // overlay) so the mark always plays out before the UI takes over.
+      window.addEventListener('pageshow', function (ev) {
+        if (ev.persisted && !document.getElementById('splash') && splashHtml) {
+          document.body.insertAdjacentHTML('afterbegin', splashHtml);
+          start();
+        }
+      });
     })();
   </script>
   <div id="boot-fail" hidden></div>
