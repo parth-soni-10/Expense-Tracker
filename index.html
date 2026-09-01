@@ -267,9 +267,11 @@
         #splash .splash-name { opacity: 0; animation-delay: 1.02s; }
       }
       @media (prefers-reduced-motion: reduce) {
-        #splash .splash-mark .c, #splash .splash-mark .l1, #splash .splash-mark .l2 { animation: none; }
+        /* The draw-on is a tiny contained brand mark, so it plays on every
+           device — a reduced-motion phone must behave like the laptop. Only
+           the decorative settle pulse (scale + glow) is suppressed here, and
+           the handoff fade in the script stays short for these users. */
         #splash .splash-mark, #splash .splash-mark svg { animation: none; }
-        #splash .splash-name { animation: none; }
       }
     </style>
   </div>
@@ -279,51 +281,54 @@
     // onboarding overlays mount on <body>, not #app, so 'mount has children'
     // alone can't signal readiness). The boot-fail panel and a hard backstop
     // guarantee it can never trap the user.
+    //
+    // Phone rules — the splash must behave identically whether the tab boots
+    // in the foreground or is restored into the background (a PWA launched
+    // from the app switcher, or a tab reopened): while the document is hidden
+    // the splash is never removed, and the on-screen clock only counts time
+    // the mark is actually SEEN. Before this, a backgrounded boot consumed
+    // the logo invisibly and the auth box was already up the moment the user
+    // looked — the phone-only failure.
     (function () {
       // Wired as `start()` below so a warm back/forward-cache restore (closing
       // the tab and reopening it, or browser Back) can replay the splash
       // instead of dropping straight onto the auth bubble. The first capture
       // of the element doubles as the template for those restores.
       var splashHtml = null;
-      var MIN_VISIBLE = 2400; // shortest time the mark is guaranteed on screen
-      var LOGO_TIMEOUT = 2200; // backstop if animationend never fires (~1.5s anim)
+      var MIN_VISIBLE = 2400;   // shortest time the seen mark stays up
+      var LOGO_TIMEOUT = 2300;   // backstop if animationend never fires (~1.5s anim)
+      var HARD_BACKSTOP = 12000; // absolute safety: never trap the user
+
       function start() {
         var splash = document.getElementById('splash');
         if (!splash) return;
         if (splashHtml === null) splashHtml = splash.outerHTML;
         var mount = document.getElementById('app');
         var bootFail = document.getElementById('boot-fail');
-        var removed = false;
-        // The auth bubble (PIN lock / onboarding) must only appear after the
-        // draw-on logo has finished, so the splash stays up until BOTH the app
-        // has booted AND the logo animation completed. The wordmark is the last
-        // element to animate; its animationend marks the end of the sequence.
-        // Reduced-motion users get no animation (the finished mark is shown
-        // statically), so they're done immediately. A safety timeout covers any
-        // browser that never fires animationend. Independent of all of that, a
-        // minimum on-screen floor guarantees the mark is always perceivable
-        // even on a warm PWA launch that boots in a couple hundred ms.
-        var logoDone = false;
-        var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        var shownAt = Date.now();
-        if (reduceMotion) {
-          logoDone = true;
-        } else {
+        // Per-instance state: a replay replaces `splash`, and its poll loop
+        // must never share state with the previous (already removed) instance.
+        var st = {
+          done: false, armed: false, seen: false, logoDone: false,
+          shownAt: 0, startedAt: Date.now()
+        };
+        function arm() {
+          if (st.armed || st.done) return;
+          st.armed = true;
+          // The wordmark is the last element to animate; its animationend
+          // marks the end of the draw-on sequence. The timeout backstop covers
+          // browsers that throttle or never fire animationend (hidden tabs,
+          // battery saver, 'remove animations') — the finished mark is the CSS
+          // default, so logoDone only times the handoff, it never decides
+          // whether the logo is visible.
           var name = splash.querySelector('.splash-name');
-          if (name) name.addEventListener('animationend', function () { logoDone = true; }, { once: true });
-          setTimeout(function () { logoDone = true; }, LOGO_TIMEOUT);
-        }
-        // Warm launches (an installed PWA with a cached shell) boot in a few
-        // hundred ms and can strip the splash before the mark is ever perceived.
-        // Enforce a floor on how long the logo stays up, independent of boot
-        // speed or whether animations actually fire on the target device.
-        function readyAfterMinimum() {
-          var min = reduceMotion ? 1100 : MIN_VISIBLE;
-          return Date.now() - shownAt >= min;
+          if (name) {
+            try { name.addEventListener('animationend', function () { st.logoDone = true; }, { once: true }); } catch (e) {}
+          }
+          setTimeout(function () { st.logoDone = true; }, LOGO_TIMEOUT);
         }
         function hide() {
-          if (removed) return;
-          removed = true;
+          if (st.done) return;
+          st.done = true;
           // Choreographed handoff: the splash lingers a beat, then dissolves
           // (fade + a barely-there scale-up) to reveal the lock screen beneath,
           // instead of a hard cut. Reduced-motion users get a quick plain fade.
@@ -334,24 +339,48 @@
           splash.style.opacity = '0';
           splash.style.transform = 'scale(1.02)';
           setTimeout(function () { if (splash.parentNode) splash.parentNode.removeChild(splash); }, Math.round(dur * 1000) + 40);
+          // One-line diagnostic: after a reload, read sessionStorage
+          // 'centsSplash' on the phone to confirm how long the mark was seen
+          // and whether the animation really played.
+          try {
+            sessionStorage.setItem('centsSplash', JSON.stringify({
+              ms: Date.now() - (st.shownAt || st.startedAt),
+              seen: st.seen,
+              animEnded: st.logoDone,
+              reduce: reduce
+            }));
+          } catch (e) {}
         }
         function check() {
-          if (removed) return;
+          if (st.done) return;
           if (bootFail && !bootFail.hidden) return hide();
-          // Both the app must be booted AND the logo finished AND the mark must
-          // have been visible for at least the minimum floor.
-          if (readyAfterMinimum() && ((window.__centsBooted && logoDone) || (mount && mount.children.length > 0 && logoDone))) return hide();
+          // Never hand off while the document is hidden (see the phone rules
+          // above). Timers here may be throttled to ~1 Hz in a hidden tab; the
+          // worst case is the splash simply waits — which is the point.
+          if (document.hidden) { setTimeout(check, 150); return; }
+          if (!st.seen) {
+            // First moment the mark can actually be seen — cold start, or a
+            // backgrounded boot finally brought forward. Start the floor
+            // clock here and arm the completion cues, now that animations
+            // (and animationend) can actually run.
+            st.seen = true;
+            st.shownAt = Date.now();
+            arm();
+          }
+          var booted = window.__centsBooted || (mount && mount.children.length > 0);
+          if (booted && st.logoDone && Date.now() - st.shownAt >= MIN_VISIBLE) return hide();
+          if (Date.now() - st.shownAt >= HARD_BACKSTOP) return hide();
           setTimeout(check, 120);
         }
         check();
-        setTimeout(hide, 10000);
       }
       start();
       // A tab reopened from the back/forward cache comes back exactly as it
       // was left — splash already gone — so the auth bubble would appear the
       // instant the page paints, cutting the logo out entirely. Catch those
-      // restores and replay the splash over everything (z-index 60 beats every
-      // overlay) so the mark always plays out before the UI takes over.
+      // restores and replay the splash over everything (z-index 100000 beats
+      // every overlay, including the lock at 10000 and onboarding at 10001)
+      // so the mark always plays out before the UI takes over.
       window.addEventListener('pageshow', function (ev) {
         if (ev.persisted && !document.getElementById('splash') && splashHtml) {
           document.body.insertAdjacentHTML('afterbegin', splashHtml);
