@@ -221,9 +221,10 @@
     </div>
     <div class="splash-name">cents<span class="splash-dot">.</span></div>
     <style>
-      /* z-index above .modal-bg (50) so the lock/onboarding overlays can never
-         paint over the logo while it is still drawing in. */
-      #splash { --splash-line: #E8EBE5; position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: #101210; color: #35B877; }
+      /* z-index above every overlay: the lock screen mounts at 10000 and
+         onboarding at 10001, so the splash must sit above both to keep the
+         auth box from painting over the logo while it is still drawing in. */
+      #splash { --splash-line: #E8EBE5; position: fixed; inset: 0; z-index: 100000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: #101210; color: #35B877; }
       #splash .splash-mark { width: 52px; height: 52px; }
       #splash .splash-mark svg { width: 100%; height: 100%; display: block; }
       #splash .splash-mark path { fill: none; stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 0; }
