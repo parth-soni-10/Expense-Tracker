@@ -4665,7 +4665,7 @@ function screenDashboard() {
     ),
     recent.length === 0
       ? $('div', { class: 'empty' }, emptyIcon('chart'), ' No entries yet.')
-      : $('div', { style: `display:grid;grid-template-columns:${isNarrow() ? '75px 1fr 80px' : '90px 1fr 110px 90px'};gap:${isNarrow() ? '8px 12px' : '12px 24px'};font-size:${isNarrow() ? '12px' : '14px'};${isNarrow() ? '' : 'min-width:520px;'}` },
+      : $('div', { style: `display:grid;grid-template-columns:${isNarrow() ? '75px 1fr 80px' : '90px 1fr 110px 150px'};gap:${isNarrow() ? '8px 12px' : '12px 24px'};font-size:${isNarrow() ? '12px' : '14px'};${isNarrow() ? '' : 'min-width:580px;'}` },
           ...recent.flatMap(e => [
             $('span', { class: 'muted', style: 'font-size:12px;' }, friendlyDate(e.date)),
             $('div', null,
@@ -4673,7 +4673,7 @@ function screenDashboard() {
               $('div', { style: `font-size:11px;color:var(--muted);${isNarrow() ? 'display:none;' : ''}` }, `${categoryLabel(e.category)} · ${methodLabel(e.method)}`),
             ),
             $('span', { class: 'display-num', style: `text-align:right;font-size:${isNarrow() ? '13px' : '15px'};color:${e.type === 'credit' ? 'var(--positive)' : 'var(--negative)'}` }, (e.type === 'credit' ? '+' : '') + fmt(e.amount)),
-            ...(isNarrow() ? [] : [$('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, e.method))]),
+            ...(isNarrow() ? [] : [$('span', null, $('span', { class: 'pill', style: 'border-color:transparent;' }, methodShort(e.method)))]),
           ]),
         ),
   );
