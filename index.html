@@ -233,6 +233,13 @@
       #splash .splash-mark .l2  { animation: splash-draw-l2 .28s cubic-bezier(0.3, 0.7, 0.4, 1) .88s forwards; }
       #splash .splash-name { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 15px; letter-spacing: 0.02em; color: #E8EBE5; opacity: 1; animation: splash-name-in .45s ease 1.02s forwards; }
       #splash .splash-dot { color: #35B877; }
+      /* Settle pulse: once the mark has drawn and the wordmark has landed
+         (~1.5s), the logo breathes once - a gentle scale bump with a soft
+         emerald glow that fades back out before the splash hands off. Uses
+         currentColor so the glow follows the dark/light accent. Purely
+         cosmetic; the finished mark stays the default state either way. */
+      #splash .splash-mark { animation: splash-settle .8s cubic-bezier(0.22, 1, 0.36, 1) 1.45s both; }
+      #splash .splash-mark svg { animation: splash-glow .8s cubic-bezier(0.22, 1, 0.36, 1) 1.45s both; }
       /* The finished mark is the DEFAULT state so the logo is always visible,
          even on machines that throttle or skip CSS animations (energy saver /
          background tabs) without reporting prefers-reduced-motion. The draw-on
@@ -242,6 +249,16 @@
       @keyframes splash-draw-l1 { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
       @keyframes splash-draw-l2 { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
       @keyframes splash-name-in { from { opacity: 0; } to { opacity: 1; } }
+      @keyframes splash-settle {
+        0%   { transform: scale(1); }
+        45%  { transform: scale(1.06); }
+        100% { transform: scale(1); }
+      }
+      @keyframes splash-glow {
+        0%   { filter: drop-shadow(0 0 0 transparent); }
+        45%  { filter: drop-shadow(0 0 14px currentColor); }
+        100% { filter: drop-shadow(0 0 0 transparent); }
+      }
       [data-theme="light"] #splash { --splash-line: #161712; background: #F5F5F2; color: #157A4A; }
       [data-theme="light"] #splash .splash-name { color: #161712; }
       [data-theme="light"] #splash .splash-dot { color: #157A4A; }
@@ -251,6 +268,7 @@
       }
       @media (prefers-reduced-motion: reduce) {
         #splash .splash-mark .c, #splash .splash-mark .l1, #splash .splash-mark .l2 { animation: none; }
+        #splash .splash-mark, #splash .splash-mark svg { animation: none; }
         #splash .splash-name { animation: none; }
       }
     </style>
