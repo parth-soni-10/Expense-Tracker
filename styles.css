@@ -1213,13 +1213,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .pulse-footnote { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; }
 
 /* ── Consistent history actions and day groups ── */
-.history-day-header {
-  position: sticky; left: 0; z-index: 1;
-  display: grid; grid-template-columns: 1fr; gap: 8px;
-  padding: 14px 27px 8px; min-width: 780px; /* left 27px = 24px padding + 3px row border, so labels align with rows */
-  background: var(--bg-deep);
-  border-bottom: 1px solid var(--line);
-}
 .history-action-btn {
   border: 1px solid transparent;
   border-radius: 8px;
@@ -1840,6 +1833,5 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   .history-balance { grid-column: 3; grid-row: 2; font-size: 11px; }
   .history-method-wrap { grid-column: 2; grid-row: 3; }
   .history-actions { grid-column: 3; grid-row: 3; }
-  .history-day-header { min-width: 0; padding: 12px 14px 8px; }
   .history-audio { width: 100%; }
 }
