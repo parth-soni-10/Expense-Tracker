@@ -1822,11 +1822,14 @@ function reconcileAll() {
   render();
 }
 
-function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', editable = false, canLoad = false, indent = false } = {}) {
+function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', editable = false, canLoad = false, indent = false, startInLoad = false } = {}) {
   const row = $('div', { class: 'balance-editor-row', style: `display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;${indent ? `padding-left:${isNarrow() ? '26px' : '32px'};` : ''}border-bottom:1px solid var(--line);font-size:13px;` });
   let editing = false;
   let editMode = 'reconcile'; // 'reconcile' | 'load'
   const isGiftCard = GIFT_CARD_IDS.includes(methodId);
+  // Deep-link support: #balances?load=<card> lands a row straight in its load
+  // editor, so the dashboard's low-balance alert is one tap from a top-up.
+  if (startInLoad && (isGiftCard || canLoad)) { editing = true; editMode = 'load'; }
   const actualBalance = () => balanceAt(methodId, today());
   const reconciliationSummary = () => {
     const point = userCheckpointFor(methodId, today());
@@ -3074,11 +3077,26 @@ function parseNaturalLanguage(text) {
   // card - a plain "at Tesco from Revolut" expense must stay a single entry.
   // Accept natural ways of describing a card top-up: users may say "gift card",
   // "GC", "voucher", "put money on Tesco", or "top up Tesco".
-  const isGiftCardPurchase = /gift.?card|\bgc\b|voucher|(?:put|add|load|top\s*up|topped\s*up|loaded)\s+(?:money\s+)?(?:on|to|into)\s+(?:my\s+)?(?:tesco|lidl|aldi)\b/i.test(lower)
+  // A bare gift-card LOAD - "tesco load 20", "lidl loaded", "loaded 20 on aldi"
+  // - moves money ONTO the card from some other payment method. The load verb
+  // sitting next to the brand (either order) carries the intent, so it fires
+  // even when the sentence never says "gift card" - and must not swallow
+  // shopping phrasing ("top up my phone at Tesco" stays an expense).
+  const isCardLoad = !!brand && (
+    /\b(?:tesco|lidl|aldi)(?:'s)?\s+(?:card\s+|gc\s+|gift\s*card\s+)?(?:load(?:ed|s|ing)?|top\s*ups?|topped(?:\s*up)?|reload(?:ed|s|ing)?|recharge(?:d|s)?)\b(?!\s*(?:of|with)\b)/.test(lower)
+    || /\b(?:load(?:ed|s|ing)?|top\s*ups?|topped(?:\s*up)?|reload(?:ed|s|ing)?|recharge(?:d|s)?)\s+(?:money\s+|funds\s+|[€$£]?\s*\d+(?:[.,]\d{1,2})?\s+)?(?:on|to|into|onto|in|up)?\s*(?:my\s+|the\s+)?(?:tesco|lidl|aldi)\b/.test(lower));
+  const isGiftCardPurchase = isCardLoad
+    || /gift.?card|\bgc\b|voucher|(?:put|add|load|top\s*up|topped\s*up|loaded)\s+(?:money\s+)?(?:on|to|into)\s+(?:my\s+)?(?:tesco|lidl|aldi)\b/i.test(lower)
     || /\b(?:top\s*up|top\s+up|add|load|put)\s+(?:my\s+)?(?:tesco|lidl|aldi)\b/i.test(lower)
     || /(?:tesco|lidl|aldi)\b.{0,24}\b(?:gift.?card|\bgc\b|voucher)\b/i.test(lower)
     || /\b(?:tesco|lidl|aldi)(?:'s)?\s+(?:card|voucher)\b/i.test(lower);
-  const isTransferToCard = isGiftCardPurchase && !!brand && !!source && source !== brand;
+  // A load is by definition funded from elsewhere; when no account is named,
+  // default to the primary account so the transfer pair is well-formed. The
+  // same default applies to any gift-card purchase ("put 20 on my aldi gift
+  // card") - money must come from somewhere, and a bare card-side expense
+  // would credit the card with no matching debit.
+  const fundingSource = source || (isGiftCardPurchase && brand ? 'AIB' : null);
+  const isTransferToCard = isGiftCardPurchase && !!brand && !!fundingSource && fundingSource !== brand;
   let method = source || brand || 'AIB';
 
   // Only unambiguous income signals - bare "pay" or "got" is far too common
@@ -3098,7 +3116,7 @@ function parseNaturalLanguage(text) {
     // Move the value from the payment account into the gift card. `method` is
     // kept (the card) so the preview/chips render; addMagic uses `transfer`
     // to build the two-leg transfer pair.
-    return { date, type: 'transfer', transfer: { from: source, to: brand }, amount, details, category: 'GC', method: brand };
+    return { date, type: 'transfer', transfer: { from: fundingSource, to: brand }, amount, details, category: 'GC', method: brand };
   }
   // Mixed payment: “10 cash 14 revolut” etc. - two or more payment methods each
   // next to their own amount. The slices become grouped single-method legs, and
@@ -4389,7 +4407,10 @@ function screenDashboard() {
           lowGiftVisible.map(card => `${card.label} has ${fmt(card.balance)} left`).join(' · '),
         ),
       ),
-      $('a', { href: '#balances', class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;flex-shrink:0;' }, 'Top up'),
+      // One tap per card lands straight in that card's pre-focused load
+      // editor on Balances - the whole top-up flow is two taps from home.
+      ...lowGiftVisible.map(card =>
+        $('a', { href: `#balances?load=${card.id}`, class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;flex-shrink:0;' }, `Top up ${card.label}`)),
     );
     screen.appendChild(giftCard);
     attachSwipeDismiss(giftCard, () => {
@@ -5336,6 +5357,7 @@ function screenAdd() {
     { label: 'coffee 3.50 cash', hint: 'paid in cash' },
     { label: 'groceries 24: 10 cash, 14 revolut', hint: 'split payment' },
     { label: 'tesco shop 6: 2 aldi, 4 revolut', hint: 'split across a gift card and an account' },
+    { label: 'tesco load 20 from revolut', hint: 'top up a gift card' },
     { label: 'rent 850 from AIB', hint: 'a bill from an account' },
   ];
 
@@ -5806,6 +5828,12 @@ function monthNav(label, onClick, disabled) {
 // changed. All tracked balances share one inline reconciliation flow.
 function screenBalances() {
   const c = $('section', { class: 'page-section', 'aria-label': 'Balances' });
+  // The dashboard's low-balance alert links here as #balances?load=<card>.
+  // Land that card's row straight into its load editor, then strip the param
+  // so saving/cancelling (which re-render) doesn't re-open the editor.
+  const loadParam = new URLSearchParams((location.hash.split('?')[1]) || '').get('load');
+  const autoLoadId = GIFT_CARD_IDS.includes(loadParam) ? loadParam : null;
+  if (autoLoadId) { try { history.replaceState(null, '', location.pathname + '#balances'); } catch {} }
 
   c.appendChild($('div', { class: 'page-title-row' },
     $('h1', { class: 'page-title' }, 'Balances'),
@@ -5841,6 +5869,7 @@ function screenBalances() {
             ? `${userCheckpointFor(id, today()) ? 'net adjustments · loads' : 'recorded loads'} ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}`
             : '',
           editable: true,
+          startInLoad: id === autoLoadId,
         });
       }),
     ),
