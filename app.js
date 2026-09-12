@@ -2974,11 +2974,6 @@ function daysInMonth(key) {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
-function payeeHistory() {
-  return [...new Set(state.entries.map(e => (e.details || '').trim()).filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b));
-}
-
 function parseNaturalLanguage(text) {
   const raw = String(text || '').trim();
   if (!raw) return null;
@@ -3946,7 +3941,7 @@ function formView({ initial = null, onSubmit, onCancel }) {
 
   const amountInput = $('input', { type: 'text', inputmode: 'decimal', value: data.amount, 'aria-label': 'Amount in euros', placeholder: '0.00', autocomplete: 'off', required: true, onInput: (e) => { data.amount = e.target.value; } });
 
-  const detailsInput = $('input', { type: 'text', value: data.details || '', 'aria-label': 'Transaction details', placeholder: 'e.g. Tesco, Leap Card', list: 'payee-list', required: true, onInput: (e) => data.details = e.target.value });
+  const detailsInput = $('input', { type: 'text', value: data.details || '', 'aria-label': 'Transaction details', placeholder: 'e.g. Tesco, Leap Card', autocomplete: 'off', required: true, onInput: (e) => data.details = e.target.value });
 
   const dateInput = $('input', { type: 'date', value: data.date, 'aria-label': 'Date', required: true, onInput: (e) => data.date = e.target.value });
   wireFlatpickr(dateInput, { defaultDate: data.date, onChange: (dateStr) => { data.date = dateStr; } });
@@ -4216,11 +4211,9 @@ function formView({ initial = null, onSubmit, onCancel }) {
     onSubmit([entry]);
   };
 
-  const payeeList = $('datalist', { id: 'payee-list' }, ...payeeHistory().map(payee => $('option', { value: payee })));
   let detailsLabel;
   let noteFieldSection;
   const formEl = $('div', { class: 'card', style: `padding:${isNarrow() ? '20px 16px' : '32px 16px'};max-width:540px;margin:0 auto;` },
-    payeeList,
     tabs,
     amountSection,
     dateMethodSection,
