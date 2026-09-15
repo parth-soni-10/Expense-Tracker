@@ -469,7 +469,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .footer-action.danger:hover { background: color-mix(in srgb, var(--negative) 10%, transparent); }
 
 /* ── Layout containers ── */
-.shell { max-width: 980px; margin: 0 auto; padding: 36px 28px 80px; position: relative; z-index: 1; }
+.shell { max-width: var(--shell-max, 980px); margin: 0 auto; padding: 36px 28px 80px; position: relative; z-index: 1; }
 @media (min-width: 760px) { .shell { padding: 52px 40px 100px; } }
 
 /* ── App header ── */
@@ -893,6 +893,31 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .split-leg:active { transform: translateY(0.5px); }
 .history-actions { display: flex; justify-content: flex-end; align-items: center; gap: 5px; min-width: 0; }
 .budget-toggle-btn { display: inline-flex; white-space: nowrap; }
+
+/* ── Desktop-wide history table ─────────────────────────────
+   On the History route (>=1024px viewports) the shell, footer, and table
+   expand to the full window so every column — date, description, amount,
+   after-entry balance, method, actions — fits without horizontal scrolling
+   on typical desktops. The renderer sets body[data-wide] only on the
+   history route; other routes keep the 980px column. The header is
+   full-bleed on every route already, so it needs no adjustment. */
+:root { --shell-max: 980px; }
+@media (min-width: 1024px) {
+  body[data-wide] { --shell-max: 1780px; }
+  body[data-wide] main.shell { max-width: 1780px; }
+  body[data-wide] .history-row,
+  body[data-wide] .history-head-row {
+    grid-template-columns: 48px minmax(110px, 130px) minmax(280px, 1.4fr) minmax(120px, 0.8fr) minmax(130px, 0.9fr) minmax(180px, 1fr) minmax(200px, 0.9fr);
+    gap: 22px;
+    /* Floors of the columns above + gaps + row padding; fr columns stretch
+       beyond this, so the table fills a 1780px shell yet still fits a ~1310px
+       window without horizontal scrolling. */
+    min-width: 1256px;
+  }
+  /* Same horizontal padding for header and data rows so the columns align. */
+  body[data-wide] .history-row,
+  body[data-wide] .history-head-row { padding: 15px 28px; }
+}
 
 /* ── Heatmap tooltip popup ── */
 .heat-cell-wrap { position: relative; }

@@ -380,7 +380,7 @@ export default async (request, _context) => {
                        ? body.message.trim().slice(0, 200)
                        : 'cents: update expenses';
       const branchParam = body.branch == null || body.branch === '' ? branch : body.branch;
-      if (typeof branchParam !== 'string' || branchParam.length > 200 || !/^[A-Za-z0-9._/-]+$/.test(branchParam)) {
+      if (typeof branchParam !== 'string' || branchParam.length > 200 || !/^(?!.*\.\.)[A-Za-z0-9._/-]+$/.test(branchParam)) {
         return err('Body.branch is invalid', 400, cors);
       }
       const encoded = encodeBase64(JSON.stringify(incoming, null, 2));

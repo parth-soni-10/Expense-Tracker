@@ -3446,14 +3446,24 @@ function deletionEntriesFor(id) {
     ? state.entries.filter(entry => entry.transferId === target.transferId)
     : [target];
 }
-function deleteEntryOrTransfer(id) {
+async function deleteEntryOrTransfer(id) {
   const target = state.entries.find(e => e.id === id);
   if (!target) return false;
   const removed = deletionEntriesFor(id);
+  // Reconciliation no longer hard-blocks deletion: it warns first, so a
+  // mistaken checkpoint can always be worked around. Deleting inside a
+  // reconciled period makes balances before the checkpoint drift from the
+  // reconciled figure — the confirm exists so that consequence is a choice,
+  // not a surprise. The delete itself stays fully undoable.
   const protection = removed.map(reconciliationProtectionFor).find(Boolean);
   if (protection) {
-    toast(`Deletion blocked: ${methodShort(protection.methodId)} is reconciled through ${friendlyDate(protection.point.date)}. Remove or revise that checkpoint first.`);
-    return false;
+    const ok = await swalConfirm({
+      title: 'Entry is inside a reconciled period',
+      text: `${methodShort(protection.methodId)} is reconciled through ${friendlyDate(protection.point.date)}, and this ${removed.length > 1 ? 'transfer pair is part of' : 'entry is part of'} that checkpoint. Delete anyway? Balances before that date will drift from the reconciled figure. You can undo this.`,
+      confirmButtonText: 'Delete anyway',
+      danger: true,
+    });
+    if (!ok) return false;
   }
   const transferId = target.transferId;
   state.entries = transferId
@@ -3475,8 +3485,13 @@ async function removeDuplicateEntry(id) {
     : [target];
   const protection = removed.map(reconciliationProtectionFor).find(Boolean);
   if (protection) {
-    toast(`Duplicate deletion blocked: ${methodShort(protection.methodId)} is reconciled through ${friendlyDate(protection.point.date)}.`);
-    return;
+    const ok = await swalConfirm({
+      title: 'Duplicate is inside a reconciled period',
+      text: `${methodShort(protection.methodId)} is reconciled through ${friendlyDate(protection.point.date)}, and this duplicate is part of that checkpoint. Delete anyway? Balances before that date will drift from the reconciled figure.`,
+      confirmButtonText: 'Delete anyway',
+      danger: true,
+    });
+    if (!ok) return;
   }
   const removedIds = new Set(removed.map(e => e.id));
   state.entries = state.entries.filter(e => !removedIds.has(e.id));
@@ -5576,19 +5591,52 @@ function screenHistory() {
     bulkBar.style.display = n ? 'flex' : 'none';
     bulkBar.querySelector('.bulk-count').textContent = n ? `${n} selected` : '';
   }
-  function bulkDeleteSelected() {
+  async function bulkDeleteSelected() {
     const ids = [...selected];
     if (!ids.length) return;
     const affected = [];
+    const protectedIds = [];
     const seen = new Set();
-    let protectedCount = 0;
+    let protectedOldest = null;
+    const addAll = (list) => { for (const e of list) { if (!seen.has(e.id)) { seen.add(e.id); affected.push(e); } } };
     for (const id of ids) {
       const removed = deletionEntriesFor(id);
-      if (removed.map(reconciliationProtectionFor).find(Boolean)) { protectedCount++; continue; }
-      for (const e of removed) { if (!seen.has(e.id)) { seen.add(e.id); affected.push(e); } }
+      const protection = removed.map(reconciliationProtectionFor).find(Boolean);
+      if (protection) {
+        protectedIds.push(...removed.map(e => e.id));
+        if (!protectedOldest || protection.point.date < protectedOldest) protectedOldest = protection.point.date;
+        continue;
+      }
+      addAll(removed);
+    }
+    // Deleting inside a reconciled period is allowed on explicit confirm: the
+    // balance drift it causes is a known, undoable trade-off, not a wall.
+    if (protectedIds.length && affected.length) {
+      const includeProtected = await swalConfirm({
+        title: `${protectedIds.length} selected ${protectedIds.length === 1 ? 'entry is' : 'entries are'} inside a reconciled period`,
+        text: `AIB is reconciled through ${friendlyDate(protectedOldest)}. Include them in the deletion anyway? Balances before that date will drift from the reconciled figure. You can undo this.`,
+        confirmButtonText: 'Delete everything',
+        cancelButtonText: 'Delete the rest only',
+        danger: true,
+      });
+      if (includeProtected) {
+        const protectedSet = new Set(protectedIds);
+        addAll(state.entries.filter(e => protectedSet.has(e.id)));
+      }
+    } else if (protectedIds.length && !affected.length) {
+      const deleteProtected = await swalConfirm({
+        title: `All ${protectedIds.length} selected ${protectedIds.length === 1 ? 'entry is' : 'entries are'} inside a reconciled period`,
+        text: `AIB is reconciled through ${friendlyDate(protectedOldest)}. Delete them anyway? Balances before that date will drift from the reconciled figure. You can undo this.`,
+        confirmButtonText: 'Delete anyway',
+        danger: true,
+      });
+      if (deleteProtected) {
+        const protectedSet = new Set(protectedIds);
+        addAll(state.entries.filter(e => protectedSet.has(e.id)));
+      }
     }
     if (!affected.length) {
-      toast('None of those entries can be deleted - they are protected by reconciliation.');
+      toast('Nothing was deleted.');
       selected.clear(); syncBulkBar(); render();
       return;
     }
@@ -5603,7 +5651,7 @@ function screenHistory() {
       untombstoneIds(removedCopy.map(e => e.id));
       persist();
     }, `Deleted ${removedCopy.length} entr${removedCopy.length === 1 ? 'y' : 'ies'}`, removedCopy);
-    toast(protectedCount ? `Deleted ${removedCopy.length} (${protectedCount} kept - protected).` : `Deleted ${removedCopy.length} entr${removedCopy.length === 1 ? 'y' : 'ies'}.`);
+    toast(`Deleted ${removedCopy.length} entr${removedCopy.length === 1 ? 'y' : 'ies'}.`);
     selected.clear();
     render();
   }
@@ -6495,9 +6543,9 @@ function openTransferDelete(e) {
   modal.appendChild($('p', { class: 'serif', style: 'font-size:15px;color:var(--negative);margin:16px 0 8px;' }, 'Delete this transfer pair? You can undo it with the Undo button.'));
   modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:12px;' },
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
-    $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: () => {
+    $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: async () => {
       const removed = pair.map(entry => ({ ...entry }));
-      if (deleteEntryOrTransfer(e.id)) {
+      if (await deleteEntryOrTransfer(e.id)) {
         trackAction(() => {
           state.entries.push(...removed);
           state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -6607,11 +6655,11 @@ function openEdit(id) {
     deleteStage1.style.display = '';
     deleteStage1.focus();
   } }, 'Cancel');
-  const confirmDeleteBtn = $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: () => {
+  const confirmDeleteBtn = $('button', { type: 'button', class: 'btn btn-primary', style: 'background:var(--negative);', onClick: async () => {
     const removed = e.transferId
       ? state.entries.filter(entry => entry.transferId === e.transferId).map(entry => ({ ...entry }))
       : [{ ...e }];
-    if (deleteEntryOrTransfer(id)) {
+    if (await deleteEntryOrTransfer(id)) {
       trackAction(() => {
         state.entries.push(...removed);
         state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -7396,6 +7444,15 @@ function _render() {
   main.appendChild(renderHeader());
 
   const route = currentRoute();
+  // The History table gets the full window width on desktop (>=1024px) so all
+  // columns fit without horizontal scrolling; every other route keeps the
+  // 980px reading column. The attribute drives .shell/.history-row overrides
+  // and the footer width in styles.css.
+  if (route === 'history' && window.matchMedia && window.matchMedia('(min-width: 1024px)').matches) {
+    document.body.setAttribute('data-wide', '');
+  } else {
+    document.body.removeAttribute('data-wide');
+  }
   const shouldAnimateScreen = route !== lastRenderedRoute;
   lastRenderedRoute = route;
   const screen = $('main', { class: `shell screen${shouldAnimateScreen ? ' stagger' : ' screen-static'}`, id: 'screen' });
@@ -7453,7 +7510,7 @@ function _render() {
     target?.focus({ preventScroll: true });
   }
 
-  main.appendChild($('footer', { style: 'max-width:980px;margin:0 auto;padding:32px 28px 64px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line);' },
+  main.appendChild($('footer', { style: 'max-width:var(--shell-max,980px);margin:0 auto;padding:32px 28px 64px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line);' },
     $('span', null, String(state.entries.length), ` entr${state.entries.length === 1 ? 'y' : 'ies'} \u00b7 `, getSyncSettings().enabled ? 'cloud-synced' : 'stored locally'),
     $('span', { style: 'display:flex;justify-content:flex-end;flex-wrap:wrap;gap:0 8px;align-items:center;' },
       $('button', { type: 'button', class: 'footer-action danger', onClick: function() {
@@ -7597,24 +7654,59 @@ window.addEventListener('DOMContentLoaded', () => {
   // control - the lock/onboarding overlays mount on <body>, not #app, so
   // "mount has children" can't be the signal. Set before anything renders.
   window.__centsBooted = true;
+  // ── OTA update flow ──────────────────────────────────────────────
   // A redeploy swaps the served index.html; the service worker notices the
-  // changed document and asks any open, controlled tab to reload so it leaves
-  // the old build behind without waiting for a manual refresh. This fires at
-  // most once per build (the worker dedupes on the document body), and it's
-  // skipped while the user is mid-typing or has an overlay open to avoid
-  // discarding in-progress work.
-  if ('serviceWorker' in navigator && navigator.serviceWorker.addEventListener) {
+  // changed document and asks open, controlled tabs to reload so they leave
+  // the old build behind without waiting for a manual refresh. Reloads are
+  // skipped while the user is mid-typing or has an overlay open — those tabs
+  // get an "Update ready" toast instead, so the update lands on the next
+  // refocus/idle moment rather than being silently deferred forever.
+  let updateToastShownAt = 0;
+  function isBusyWithWork() {
+    return (typeof isTypingInApp === 'function' && isTypingInApp())
+      || !!(document.activeElement && /input|textarea|select/i.test(document.activeElement.tagName))
+      || !!document.body.querySelector('.modal-bg');
+  }
+  function handleNewBuildMessage() {
     try {
-      navigator.serviceWorker.addEventListener('message', (ev) => {
-        try {
-          if (ev.data && ev.data.type === 'centsNewBuild') {
-            const busy = typeof isTypingInApp === 'function' && isTypingInApp()
-              || !!(document.activeElement && /input|textarea|select/i.test(document.activeElement.tagName))
-              || !!document.body.querySelector('.modal-bg');
-            if (!busy && !document.hidden) location.reload();
-          }
-        } catch (e) {}
+      if (!document.hidden && !isBusyWithWork()) {
+        location.reload();
+        return;
+      }
+      const now = Date.now();
+      if (now - updateToastShownAt > 15000) {
+        updateToastShownAt = now;
+        toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;' }, iconSpan('cloud', 'sm'), 'Update ready — refresh to get the latest version.'));
+      }
+    } catch (e) {}
+  }
+  if ('serviceWorker' in navigator) {
+    try {
+      if (navigator.serviceWorker.addEventListener) {
+        navigator.serviceWorker.addEventListener('message', (ev) => {
+          try {
+            if (ev.data && ev.data.type === 'centsNewBuild') handleNewBuildMessage();
+          } catch (e) {}
+        });
+      }
+      // Ask the worker to re-diff index.html when the tab comes back into
+      // use, plus a slow periodic sweep while visible. PWAs opened from a
+      // home-screen icon can run for days without a navigation, so without
+      // this a long-lived phone session never sees a redeploy.
+      let lastUpdateCheck = 0;
+      function askWorkerToCheckForUpdate() {
+        if (!navigator.serviceWorker.controller) return;
+        lastUpdateCheck = Date.now();
+        navigator.serviceWorker.controller.postMessage({ type: 'centsCheckUpdate' });
+      }
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && Date.now() - lastUpdateCheck > 30000) {
+          askWorkerToCheckForUpdate();
+        }
       });
+      setInterval(() => {
+        if (!document.hidden && Date.now() - lastUpdateCheck > 30000) askWorkerToCheckForUpdate();
+      }, 60000);
     } catch (e) {}
   }
   // Lock background scroll while any modal (or the pin-lock/onboarding

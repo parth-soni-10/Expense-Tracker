@@ -9,6 +9,9 @@
 
 [build]
   publish = "."
+  # Fails the deploy if any sw.js SHELL entry points at a missing file —
+  # the guardrail for the offline shell (scripts/check-sw-shell.mjs).
+  command = "node scripts/check-sw-shell.mjs"
 
 # Multiple `[[headers]]` blocks (note the DOUBLE brackets — this is TOML
 # array-of-tables form) so each rule stands on its own. Single `[headers]`

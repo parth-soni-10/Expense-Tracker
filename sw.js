@@ -11,7 +11,7 @@
  * Network-first: every request tries the network and only falls back to a
  * cached copy when offline. It never serves stale content while online.
  */
-const CACHE = 'cents-v8';
+const CACHE = 'cents-v10';
 const SHELL = [
   '/',
   '/index.html',
@@ -106,3 +106,33 @@ async function maybeBroadcastBuildChange(request, response) {
     // A body that can't be read shouldn't break serving the page.
   }
 }
+
+// ── Push-driven update checks ────────────────────────────────────
+// Navigations are the only moment the worker re-diffs index.html on its own.
+// A long-lived PWA opened from the home screen may never navigate again, so
+// the page asks the worker to re-check ("centsCheckUpdate") when the tab
+// regains focus after being away — this is what makes a redeploy reach a
+// phone that has been sitting on the lock screen for days.
+self.addEventListener('message', (event) => {
+  if (!event.data || event.data.type !== 'centsCheckUpdate') return;
+  event.source?.postMessage({ type: 'centsCheckUpdateStart' });
+  fetch('/index.html', { cache: 'no-store' })
+    .then(async (res) => {
+      if (!res || !res.ok) return;
+      // Clone BEFORE reading: a body can only be consumed once, so cloning
+      // after res.text() would throw and the cache refresh below would never
+      // run (the catch would silently eat it).
+      const copy = res.clone();
+      const text = await res.text();
+      const url = new URL('/index.html', self.location.origin).href;
+      const prev = buildSeen.get(url);
+      buildSeen.set(url, text);
+      if (prev === undefined || prev === text) return;
+      // Also refresh the cached navigation fallback so an offline open after
+      // this point boots the new build, not the stale one.
+      caches.open(CACHE).then((c) => c.put(new Request('/index.html'), copy)).catch(() => {});
+      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: false });
+      for (const client of clients) client.postMessage({ type: 'centsNewBuild', url });
+    })
+    .catch(() => {});
+});
