@@ -47,7 +47,7 @@ function validateEntry(e) {
   if (Math.round(amt * 100) / 100 !== amt) return null;
   // method: must match the configured list (forward-compat kept by editing seed.js)
   if (!METHODS_OK.has(e.method)) return null;
-  // Base fields + pass through any extra keys (e.g. transferId, settled) so
+  // Base fields + pass through any extra keys (e.g. transferId) so
   // cloud sync and import don't silently strip metadata added by newer clients.
   const id = typeof e.id === 'string' && e.id ? e.id : uid();
   const details = typeof e.details === 'string' ? e.details : '';
@@ -138,7 +138,6 @@ function validateEntry(e) {
   }
   // Preserve transfer metadata if present
   if (typeof e.transferId === 'string' && e.transferId.length <= 200) base.transferId = e.transferId;
-  if (typeof e.settled === 'boolean') base.settled = e.settled;
   if (typeof e.budgetExcluded === 'boolean') base.budgetExcluded = e.budgetExcluded;
   // Split-payment group marker - several single-method legs rendered as one row.
   if (typeof e.splitId === 'string' && e.splitId.length <= 200) base.splitId = e.splitId;
@@ -254,7 +253,7 @@ function normalizeTransferGroups(entries) {
     // Preserve malformed imported legs as ordinary visible transactions rather
     // than letting an orphaned/standalone transfer silently evade spending
     // totals or distort balance semantics.
-    const { transferId, settled, ...ordinary } = entry;
+    const { transferId, ...ordinary } = entry;
     return entry.type === 'transfer' ? { ...ordinary, type: 'expense' } : ordinary;
   });
 }

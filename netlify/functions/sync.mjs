@@ -243,8 +243,7 @@ function validIncomingState(content) {
        || (entry.audioData != null && (entry.type !== 'note' || typeof entry.audioData !== 'string'
         || !/^data:audio\/[a-z0-9.+-]+;base64,[a-z0-9+/=]+$/i.test(entry.audioData)
         || entry.audioData.length > 2_000_000))
-      || (entry.audioType != null && (entry.type !== 'note' || typeof entry.audioType !== 'string' || !/^audio\/[a-z0-9.+-]+$/i.test(entry.audioType)))
-      || (entry.settled != null && typeof entry.settled !== 'boolean')) return false;
+      || (entry.audioType != null && (entry.type !== 'note' || typeof entry.audioType !== 'string' || !/^audio\/[a-z0-9.+-]+$/i.test(entry.audioType)))) return false;
   }
   for (const group of transferGroups.values()) {
     const debit = group.find(entry => entry.type === 'expense');

@@ -867,8 +867,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .history-date { font-size: 13px; }
 .history-details { font-size: 14px; display: flex; align-items: center; gap: 6px; }
 .history-audio { width: 130px; height: 28px; }
-.history-settled { font-size: 10px; cursor: pointer; user-select: none; color: var(--muted); }
-.history-settled.is-settled { color: var(--positive); }
 .history-category { font-size: 11px; color: var(--muted); }
 .history-amount { text-align: right; font-size: 15px; color: var(--negative); }
 .history-amount.is-credit { color: var(--positive); }
@@ -1731,7 +1729,6 @@ html.modal-open { overflow: hidden; }
 
 /* Links that carry an icon glyph sit neatly next to their label */
 .btn-link { display: inline-flex; align-items: center; gap: 5px; }
-.history-settled { display: inline-flex; align-items: center; gap: 3px; }
 
 /* Keyboard focus everywhere else */
 button:focus-visible, a:focus-visible, select:focus-visible, [role='button']:focus-visible {

@@ -208,10 +208,20 @@ function _wireChipSortableNow(containerEl) {
   });
   containerEl._sortable = sortable;
   _sortables.add(sortable);
+}// ---------- state ----------
+
+let state = loadState();
+
+// One-time boot migration: the retired `settled` transfer flag is no longer
+// part of the data model. validateState drops it during load, and this write
+// back makes the next load start from the cleaned state too - so stored data,
+// not just memory, reflects the removal (and any settled-dependent display
+// recalculates naturally, since nothing reads the flag anymore).
+if (state.entries.some(e => 'settled' in e)) {
+  state = validateState(state);
+  saveState(state);
 }
 
-// ---------- state ----------
-let state = loadState();
 // Keep storage.js validation set in sync with seed + custom categories.
 updateAllowedCategories([...CATEGORIES, ...(state.settings.customCategories || [])].map(c => c.id));
 function localDateKey(date = new Date()) {
@@ -3473,6 +3483,11 @@ async function deleteEntryOrTransfer(id) {
   // devices through the cloud merge.
   tombstoneIds(removed.map(e => e.id));
   persist();
+  // The displayed balance is pinned to the latest reconciliation: deleting an
+  // entry inside a reconciled period rewrites the book history but leaves the
+  // shown number exactly where the checkpoint put it. Say so, or the delete
+  // looks like it did nothing.
+  if (protection) toast(`${methodShort(protection.methodId)} stays at its reconciled balance until you reconcile again.`);
   return true;
 }
 
@@ -4160,7 +4175,7 @@ function formView({ initial = null, onSubmit, onCancel }) {
       if (isEdit) { toast('Transfers cannot be edited here. Delete and recreate the pair.'); return; }
       if (data.transferFrom === data.transferTo) { toast('From and To cannot be the same account.'); return; }
       const pairId = uid();
-      const base = { createdAt: nowIso(), date: data.date, amount: amt, details: data.details.trim(), note: data.note?.trim() || '', category: 'misc', transferId: pairId, settled: false };
+      const base = { createdAt: nowIso(), date: data.date, amount: amt, details: data.details.trim(), note: data.note?.trim() || '', category: 'misc', transferId: pairId };
       const fromEntry = { ...base, id: uid(), type: 'expense', method: data.transferFrom };
       const toEntry   = { ...base, id: uid(), type: 'credit',  method: data.transferTo };
       if (data.transferFrom === 'Cash' || data.transferTo === 'Cash') cashAutoFollow();
@@ -4712,16 +4727,7 @@ function screenDashboard() {
 
   // All tracked balances share one inline reconciliation flow. A checkpoint
   // records the actual balance on a date without rewriting any transactions.
-  const pendingPerMethod = {};
-  for (const e of state.entries) {
-    if (!e.transferId || e.settled) continue;
-    pendingPerMethod[e.method] = (pendingPerMethod[e.method] || 0) + (e.type === 'credit' ? e.amount : -e.amount);
-  }
-  const secondaryFor = (id) => {
-    const status = accountStatus(id);
-    const pending = pendingPerMethod[id] ? `${pendingPerMethod[id] > 0 ? '+' : ''}${fmt(pendingPerMethod[id])} pending` : '';
-    return [status.label, pending].filter(Boolean).join(' · ');
-  };
+  const secondaryFor = (id) => accountStatus(id).label;
   const accountsCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
     $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:16px;' },
       $('div', null,
@@ -5383,8 +5389,8 @@ function screenAdd() {
       // Funding a gift card with a payment account is a two-leg transfer: the
       // payment account is debited and the card is credited, sharing one id.
       const pairId = uid();
-      const fromEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'expense', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.from, note: 'Created with natural-language input', transferId: pairId, settled: false };
-      const toEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'credit', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.to, note: 'Created with natural-language input', transferId: pairId, settled: false };
+      const fromEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'expense', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.from, note: 'Created with natural-language input', transferId: pairId };
+      const toEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'credit', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.to, note: 'Created with natural-language input', transferId: pairId };
       state.entries.push(fromEntry, toEntry);
       state.entries.sort((a, b) => a.date.localeCompare(b.date));
       if (parsed.transfer.from === 'Cash' || parsed.transfer.to === 'Cash') cashAutoFollow();
@@ -5766,27 +5772,13 @@ function screenHistory() {
       };
       const selectAll = isGroup ? legs.map(l => l.id) : [e.id];
       const budgetAppliedTo = isGroup ? legs : [e];
-      const settledLabel = isTransfer
-        ? $('span', { class: `history-settled${e.settled ? ' is-settled' : ''}`, onClick: (ev) => {
-            ev.stopPropagation();
-            const newVal = !e.settled;
-            for (const x of state.entries) {
-              if (x.transferId === e.transferId) x.settled = newVal;
-            }
-            persist(); toast(newVal ? 'Transfer settled.' : 'Transfer unsettled.'); render();
-          }, title: 'Click to toggle settled' },
-            iconSpan(e.settled ? 'check-circle' : 'circle', 'sm'),
-            e.settled ? ' settled' : ' unsettled')
-        : null;
       const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${e.details || ''} on ${friendlyDate(e.date)}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
         $('span', { role: 'cell', class: 'history-cell-check' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selectAll.every(id => selected.has(id)) ? true : null, 'aria-label': `Select ${e.details || 'entry'}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
           for (const id of selectAll) { if (ev.target.checked) selected.add(id); else selected.delete(id); }
           syncBulkBar();
         } })),
         $('span', { class: 'muted history-date' }, friendlyDate(e.date)),          $('div', { class: 'history-details-wrap' },
-            $('div', { class: 'history-details' }, e.details || '-',
-              e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, class: 'history-audio' }) : null,
-            isTransfer ? settledLabel : null,
+            $('div', { class: 'history-details' }, e.details || '-',            e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, class: 'history-audio' }) : null,
           ),
           $('div', { class: 'history-category' }, categoryLabel(e.category)),
         ),
@@ -6823,21 +6815,26 @@ function openSplitEditor(legs) {
     const createdAt = legs[0].createdAt || nowIso();
     const note = legs[0].note || '';
     const category = legs[0].category || 'misc';
-    const newIds = new Set(parsed.map(r => r.id));
+    // Replace the whole group: surviving rows are rebuilt, and rows removed in
+    // the editor are genuinely deleted (they used to survive with their
+    // splitId intact, silently keeping their balance effect forever).
     const newLegs = parsed.map(r => {
       const existing = state.entries.find(x => x.id === r.id && x.splitId === splitId);
       if (existing) return { ...existing, method: r.method, amount: Math.round(r.amount * 100) / 100, details, date: dateInput.value };
       return { id: uid(), createdAt, date: dateInput.value, type, category, details, amount: Math.round(r.amount * 100) / 100, method: r.method, note, splitId };
     });
+    const removedLegs = before.filter(b => !newLegs.some(l => l.id === b.id));
     state.entries = state.entries
-      .filter(x => !(x.splitId === splitId && (newIds.has(x.id))))
+      .filter(x => x.splitId !== splitId)
       .concat(newLegs);
+    if (removedLegs.length) tombstoneIds(removedLegs.map(x => x.id));
     state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    if (newLegs.some(l => l.method === 'Cash')) cashAutoFollow();
+    if (newLegs.some(l => l.method === 'Cash') || removedLegs.some(l => l.method === 'Cash')) cashAutoFollow();
     persist();
     trackAction(() => {
       state.entries = state.entries.filter(x => x.splitId !== splitId).concat(before);
       state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      if (removedLegs.length) untombstoneIds(removedLegs.map(x => x.id));
       persist();
     }, 'Edited split payment', newLegs);
     toast('Split payment updated.');
