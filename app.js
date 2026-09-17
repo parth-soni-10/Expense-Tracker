@@ -3483,6 +3483,9 @@ async function deleteEntryOrTransfer(id) {
   // devices through the cloud merge.
   tombstoneIds(removed.map(e => e.id));
   persist();
+  // Repaint immediately: persist() already cleared the balance caches, and
+  // render() coalesces frames so the caller's own render becomes a no-op.
+  render();
   // The displayed balance is pinned to the latest reconciliation: deleting an
   // entry inside a reconciled period rewrites the book history but leaves the
   // shown number exactly where the checkpoint put it. Say so, or the delete
@@ -3512,9 +3515,9 @@ async function removeDuplicateEntry(id) {
   state.entries = state.entries.filter(e => !removedIds.has(e.id));
   tombstoneIds([...removedIds]);
   persist();
+  render();
   trackAction(() => { state.entries.push(...removed); state.entries.sort((a, b) => a.date.localeCompare(b.date)); untombstoneIds(removed.map(e => e.id)); persist(); }, `Deleted ${target.details}`, removed);
   toast(target.transferId ? 'Duplicate transfer pair deleted.' : 'Duplicate deleted.');
-  render();
 }
 
 function uniqueEntryKey(e) {
