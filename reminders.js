@@ -67,7 +67,7 @@ function msUntil(time, now = new Date()) {
   return target.getTime() - now.getTime();
 }
 
-export function notificationsSupported() {
+function notificationsSupported() {
   return typeof window !== 'undefined' && 'Notification' in window;
 }
 
@@ -176,7 +176,7 @@ async function pushFetch(url, init, timeoutMs = PUSH_TIMEOUT_MS) {
  * on a machine that is on, and the in-app scheduler is the right surface.
  * Matches the UA convention of app.js's isMobileDevice().
  */
-export function mobileWebApp() {
+function mobileWebApp() {
   return typeof window !== 'undefined'
     && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
 }
