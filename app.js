@@ -261,9 +261,6 @@ const PROFILE_UNLOCK_KEY = 'cents-profile-unlocked';
 function markProfileUnlocked() {
   try { sessionStorage.setItem(PROFILE_UNLOCK_KEY, getActiveProfileId() || 'personal'); } catch { /* session unavailable */ }
 }
-function isProfileUnlocked() {
-  try { return sessionStorage.getItem(PROFILE_UNLOCK_KEY) === (getActiveProfileId() || 'personal'); } catch { return false; }
-}
 let syncBootStarted = false;
 let lastRenderedRoute = null;
 let renderFrame = null;
@@ -789,7 +786,13 @@ function lockApp() {
 
 function switchToProfile(id) {
   if (!setActiveProfileId(id)) return;
-  try { sessionStorage.removeItem('cents-profile-unlocked'); } catch { /* ignore */ }
+  try {
+    sessionStorage.removeItem('cents-profile-unlocked');
+    // Carry the chosen identity through the reload so the boot gate does not
+    // ask who's tracking again (the user just answered it). Still lands on
+    // that profile's PIN lock — the identity is remembered, never the unlock.
+    sessionStorage.setItem('cents-pending-profile', id);
+  } catch { /* ignore */ }
   location.reload(); // profiles re-resolve on every page load
 }
 
@@ -852,6 +855,16 @@ function initialOf(name) {
 // straight to its lock/onboarding.
 function showProfileGate() {
   applySetupLinkIfPresent();
+  let pending = null;
+  try { pending = sessionStorage.getItem('cents-pending-profile'); } catch { /* ignore */ }
+  if (pending) {
+    try { sessionStorage.removeItem('cents-pending-profile'); } catch { /* ignore */ }
+    if (pending === getActiveProfileId() && listProfiles().length > 1) {
+      if (needsOnboarding()) showOnboarding();
+      else showPinLock();
+      return;
+    }
+  }
   if (listProfiles().length > 1) { showProfilePicker({ cancellable: false }); return; }
   if (needsOnboarding()) showOnboarding();
   else if (hasPinLock()) showPinLock();

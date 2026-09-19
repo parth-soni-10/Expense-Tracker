@@ -129,6 +129,8 @@ export default async (_request, _context) => {
     // run may succeed. (Slightly wider delivery window beats silent loss.)
   }
 
+  // One-line run summary in Netlify's function logs (useful when debugging
+  // "why didn't my phone get the reminder").
   console.log(`cents reminders-send: considered=${considered} sent=${sent} pruned=${pruned}`);
   return { statusCode: 200, body: `sent=${sent}` };
 };
