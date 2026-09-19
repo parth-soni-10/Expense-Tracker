@@ -8,9 +8,16 @@
 
    The proxy hides the GitHub PAT; only the password the user set
    as APP_PASSWORD is sent in the X-Cents-Password header.
+
+   Profiles: the active profile's id rides along in the
+   X-Cents-Profile header. The proxy resolves it to a per-profile
+   password (APP_PASSWORD_<ID>) and a per-profile cloud file
+   (data-<id>.json), so two profiles on one device never see each
+   other's entries or balances in the cloud either.
    ============================================================ */
 
 import { getSyncSettings, patchSyncSettings, isValidEndpoint } from './settings.js';
+import { getActiveProfileId } from './profiles.js';
 
 const TIMEOUT_MS = 12000;
 
@@ -36,6 +43,7 @@ async function authedFetch(init = {}) {
   }
   const headers = new Headers(init.headers || {});
   headers.set('X-Cents-Password', s.password);
+  headers.set('X-Cents-Profile', getActiveProfileId() || 'personal');
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
   let resp;
@@ -97,7 +105,7 @@ export async function syncTestConnection(endpoint, password) {
   try {
     resp = await withTimeout(fetch(candidateEndpoint, {
       method: 'GET',
-      headers: { 'X-Cents-Password': password },
+      headers: { 'X-Cents-Password': password, 'X-Cents-Profile': getActiveProfileId() || 'personal' },
       cache: 'no-store',
     }), TIMEOUT_MS);
   } catch (e) {
@@ -141,7 +149,7 @@ export async function syncIssueSetupToken() {
   try {
     resp = await withTimeout(fetch(url, {
       method: 'POST',
-      headers: { 'X-Cents-Password': s.password, 'Content-Type': 'application/json' },
+      headers: { 'X-Cents-Password': s.password, 'X-Cents-Profile': getActiveProfileId() || 'personal', 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
       cache: 'no-store',
     }), TIMEOUT_MS);

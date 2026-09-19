@@ -13,6 +13,14 @@
   # the guardrail for the offline shell (scripts/check-sw-shell.mjs).
   command = "node scripts/check-sw-shell.mjs"
 
+# Scheduled function: the daily-reminder push dispatcher. Runs every 15
+# minutes in UTC; each subscription carries its own IANA zone + HH:MM, and
+# the sender fires when a record's local time falls inside the current slot
+# (see netlify/functions/reminders-send.mjs).
+[[functions]]
+  name = "reminders-send"
+  schedule = "*/15 * * * *"
+
 # Multiple `[[headers]]` blocks (note the DOUBLE brackets — this is TOML
 # array-of-tables form) so each rule stands on its own. Single `[headers]`
 # is "extend this table" — last declaration wins, and we lose every other rule.

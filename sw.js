@@ -11,7 +11,7 @@
  * Network-first: every request tries the network and only falls back to a
  * cached copy when offline. It never serves stale content while online.
  */
-const CACHE = 'cents-v11';
+const CACHE = 'cents-v14';
 const SHELL = [
   '/',
   '/index.html',
@@ -22,6 +22,8 @@ const SHELL = [
   '/storage.js',
   '/sync.js',
   '/sync-merge.js',
+  '/profiles.js',
+  '/reminders.js',
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
@@ -135,4 +137,45 @@ self.addEventListener('message', (event) => {
       for (const client of clients) client.postMessage({ type: 'centsNewBuild', url });
     })
     .catch(() => {});
+});
+
+// ── Daily reminder Web Push (closed-app delivery) ────────────────
+// The scheduled function (reminders-send.mjs) pushes an encrypted payload
+// { title, body, tag }; the browser decrypts it and hands it here. Payloads
+// are tiny and trusted (our own server), but parsing is still guarded — a
+// malformed push must never throw inside the SW.
+self.addEventListener('push', (event) => {
+  let payload = {};
+  try {
+    payload = event.data ? event.data.json() : {};
+  } catch {
+    payload = { title: 'cents.', body: event.data ? event.data.text() : 'Daily reminder.' };
+  }
+  const title = typeof payload.title === 'string' && payload.title ? payload.title : 'cents.';
+  const options = {
+    body: typeof payload.body === 'string' ? payload.body : 'Time to upload your transactions.',
+    tag: typeof payload.tag === 'string' && payload.tag ? payload.tag : 'cents-daily-reminder',
+    renotify: true,
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    // Deep-link straight into the app; the lock screen does its job first.
+    data: { url: '/index.html#add' },
+  };
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || '/index.html';
+  event.waitUntil((async () => {
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of clients) {
+      if (client.url.includes(self.location.origin)) {
+        await client.focus().catch(() => {});
+        if (client.navigate && target !== '/index.html') await client.navigate(target).catch(() => {});
+        return;
+      }
+    }
+    await self.clients.openWindow(target);
+  })());
 });

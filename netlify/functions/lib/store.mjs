@@ -9,8 +9,9 @@
    functions never hard-fail because the Blobs package is missing.
 
    The adapter is intentionally narrow — getJSON / setJSON / an
-   atomic consume-once — so the two callers (single-use setup
-   tokens) stay readable and testable.
+   atomic consume-once / delete / prefix list — so its callers
+   (single-use setup tokens, the reminder push store) stay
+   readable and testable.
    ============================================================ */
 
 let blobsModule = null;
@@ -38,15 +39,30 @@ function memoryStore() {
       const v = memMap.get(key);
       return v === undefined ? null : v;
     },
+    async set(key, value) {
+      memMap.set(key, String(value));
+      return { modified: true };
+    },
     async setJSON(key, value) {
       memMap.set(key, JSON.parse(JSON.stringify(value)));
       return { modified: true };
+    },
+    async getJSON(key) {
+      const v = memMap.get(key);
+      return v === undefined ? null : JSON.parse(JSON.stringify(v));
     },
     // Atomic claim: succeeds only if the key does not exist yet.
     async claimIfNew(key, value) {
       if (memMap.has(key)) return { modified: false };
       memMap.set(key, JSON.parse(JSON.stringify(value)));
       return { modified: true };
+    },
+    async del(key) {
+      memMap.delete(key);
+      return { deleted: true };
+    },
+    async list(prefix = '') {
+      return [...memMap.keys()].filter(k => k.startsWith(prefix)).map(key => ({ key }));
     },
   };
 }
@@ -63,5 +79,27 @@ async function blobStore() {
 }
 
 export async function getStore() {
-  return (await blobStore()) || memoryStore();
+  const blobs = await blobStore();
+  if (!blobs) return memoryStore();
+  return {
+    get: (key) => blobs.get(key),
+    set: (key, value) => blobs.set(key, value),
+    setJSON: async (key, value) => { await blobs.set(key, JSON.stringify(value)); return { modified: true }; },
+    getJSON: async (key) => {
+      const raw = await blobs.get(key);
+      if (raw == null) return null;
+      try { return JSON.parse(raw); } catch { return null; }
+    },
+    claimIfNew: async (key, value) => {
+      // Blobs has no server-side compare-and-swap; emulate with an explicit
+      // get-then-set. Fine for the token store's practical race window, and
+      // documented as best-effort in the token module.
+      const existing = await blobs.get(key);
+      if (existing != null) return { modified: false };
+      await blobs.set(key, JSON.stringify(value));
+      return { modified: true };
+    },
+    del: (key) => blobs.delete(key),
+    list: (prefix = '') => blobs.list({ prefix }).then(r => r.blobs || []),
+  };
 }

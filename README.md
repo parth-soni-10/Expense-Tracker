@@ -16,6 +16,7 @@ A calm, private expense tracker that runs right in your browser. No app store, n
 - **Never miss a bill** — rent, subscriptions, and paydays as recurring reminders, with one-tap marking done.
 - **Undo anything** — every action can be undone, even after a reload.
 - **Stay private** — the app opens locked (default PIN `100901`); on your phone you can unlock with fingerprint or Face ID instead.
+- **Daily reminder** — a nudge to upload your transactions at a time you choose (default 20:00). While the app is open it's a notification; on **mobile** (installed PWA or phone browser) with **Cloud sync on** you can also enable **push**, which reaches you even when cents. is fully closed.
 
 ## Getting started
 
@@ -28,6 +29,19 @@ A calm, private expense tracker that runs right in your browser. No app store, n
 
 - **By default, everything stays on your device.** Your data lives in your browser's local storage; nothing is sent anywhere.
 - **Optional cloud sync** — want the same data on your phone and laptop? Sync keeps a copy in a **private GitHub repo that only you control**. Your login token never touches the browser. Set it up in **☰ → Cloud sync**.
+
+## Self-hosting notes (Netlify)
+
+The optional sync and push features need a few environment variables in Netlify (Site configuration → Environment variables):
+
+| Variable | What it's for |
+|---|---|
+| `APP_PASSWORD` | App password for the default profile's sync (min 8 chars) |
+| `APP_PASSWORD_<NAME>` | Per-profile sync password (e.g. `APP_PASSWORD_SAM`), optional |
+| `GITHUB_TOKEN` / `GITHUB_REPO` | The private repo that stores synced data |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web Push keys for the closed-app daily reminder — generate once with `node scripts/generate-vapid-keys.mjs` and keep the private key secret |
+
+Push subscriptions live in Netlify Blobs; the scheduled function that dispatches reminders runs every 15 minutes and fires each device at its profile's chosen local time.
 
 ## Run it locally
 

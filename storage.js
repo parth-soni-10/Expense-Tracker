@@ -5,8 +5,9 @@
    ============================================================ */
 import { SEED_SETTINGS } from './seed.js';
 import { getPrivacyPin, setPrivacyPin } from './settings.js';
+import { nsKey } from './profiles.js';
 
-const KEY = 'expense-tracker:v1';
+const KEY = () => nsKey('state');
 
 export const uid = () =>
   (globalThis.crypto?.randomUUID?.())
@@ -403,7 +404,7 @@ export function validateState(s) {
 
 export function loadState() {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(KEY());
     if (!raw) return defaultState();
     const parsed = JSON.parse(raw);
     const validated = validateState(parsed);
@@ -418,7 +419,7 @@ export function loadState() {
 }
 
 export function saveState(state) {
-  try { localStorage.setItem(KEY, JSON.stringify(state)); }
+  try { localStorage.setItem(KEY(), JSON.stringify(state)); }
   catch (e) { console.warn('Failed to save state:', e); }
 }
 
@@ -459,14 +460,14 @@ export function exportJSON(state) {
 // write a small journal — the removed entries — to storage. On boot, app.js
 // offers to restore them. The journal is intentionally kept out of the synced
 // state: it is a per-device safety net, never part of the cloud payload.
-const UNDO_KEY = 'cents-undo-journal';
+const UNDO_KEY = () => nsKey('undo');
 export function saveUndoJournal(journal) {
-  try { localStorage.setItem(UNDO_KEY, JSON.stringify(journal)); }
+  try { localStorage.setItem(UNDO_KEY(), JSON.stringify(journal)); }
   catch (e) { console.warn('Failed to save undo journal:', e); }
 }
 export function loadUndoJournal() {
   try {
-    const raw = localStorage.getItem(UNDO_KEY);
+    const raw = localStorage.getItem(UNDO_KEY());
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || (!Array.isArray(parsed.entries) && !Array.isArray(parsed.checkpoints))) return null;
@@ -474,6 +475,6 @@ export function loadUndoJournal() {
   } catch { return null; }
 }
 export function clearUndoJournal() {
-  try { localStorage.removeItem(UNDO_KEY); } catch { /* noop */ }
+  try { localStorage.removeItem(UNDO_KEY()); } catch { /* noop */ }
 }
 
