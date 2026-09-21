@@ -10,7 +10,7 @@
  */
 import { readFileSync } from 'node:fs';
 
-const files = ['app.js', 'profiles.js', 'reminders.js', 'settings.js', 'storage.js', 'sync-merge.js', 'sync.js', 'seed.js', 'index.html', 'sw.js'];
+const files = ['app.js', 'reminders.js', 'settings.js', 'storage.js', 'sync-merge.js', 'sync.js', 'seed.js', 'index.html', 'sw.js'];
 const sources = files.map(f => ({ name: f, text: readFileSync(new URL(`../${f}`, import.meta.url), 'utf8') }));
 const all = sources.map(s => s.text).join('\n');
 

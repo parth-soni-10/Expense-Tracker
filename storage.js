@@ -5,9 +5,42 @@
    ============================================================ */
 import { SEED_SETTINGS } from './seed.js';
 import { getPrivacyPin, setPrivacyPin } from './settings.js';
-import { nsKey } from './profiles.js';
 
-const KEY = () => nsKey('state');
+const KEY = () => 'expense-tracker:v1';
+
+// One-time reverse migration for the removed multi-profile feature: while
+// profiles existed, data lived under cents:p/<id>/<base>. On first load
+// without profiles, the primary profile's data (the largest state — the main
+// user) is copied back to the original global keys. Any other profiles'
+// keys are left in place as device-local copies.
+(function migrateProfilesBack() {
+  try {
+    if (localStorage.getItem('cents:profiles-migrated')) return;
+    const states = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('cents:p/') && k.endsWith('/state')) states.push(k);
+    }
+    if (states.length > 0) {
+      const LEGACY = {
+        state: 'expense-tracker:v1', privacy: 'cents:privacySettings', bio: 'cents:biometric',
+        sync: 'cents:syncSettings', undo: 'cents-undo-journal', alerts: 'cents-dismissed-alerts',
+        reminder: 'cents:reminder',
+      };
+      let primary = states[0], bestSize = -1;
+      for (const k of states) {
+        const size = (localStorage.getItem(k) || '').length;
+        if (size > bestSize) { bestSize = size; primary = k; }
+      }
+      const id = primary.split('/')[2];
+      for (const base of Object.keys(LEGACY)) {
+        const v = localStorage.getItem(`cents:p/${id}/${base}`);
+        if (v != null) localStorage.setItem(LEGACY[base], v);
+      }
+    }
+    localStorage.setItem('cents:profiles-migrated', '1');
+  } catch { /* storage unavailable; namespaced keys remain as fallback */ }
+})();
 
 export const uid = () =>
   (globalThis.crypto?.randomUUID?.())
@@ -460,7 +493,7 @@ export function exportJSON(state) {
 // write a small journal — the removed entries — to storage. On boot, app.js
 // offers to restore them. The journal is intentionally kept out of the synced
 // state: it is a per-device safety net, never part of the cloud payload.
-const UNDO_KEY = () => nsKey('undo');
+const UNDO_KEY = () => 'cents-undo-journal';
 export function saveUndoJournal(journal) {
   try { localStorage.setItem(UNDO_KEY(), JSON.stringify(journal)); }
   catch (e) { console.warn('Failed to save undo journal:', e); }

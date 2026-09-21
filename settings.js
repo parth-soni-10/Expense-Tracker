@@ -2,19 +2,11 @@
    Sync settings — stored separately from app state.
    Lives under its own localStorage key so wiping expenses
    doesn't wipe sync config (and vice versa).
-
-   Every key is namespaced under the ACTIVE PROFILE (profiles.js),
-   so profiles keep separate PINs, biometric credentials, and sync
-   credentials. The per-profile sync password is also the profile's
-   CLOUD password: the sync proxy maps <profile-id> to a dedicated
-   APP_PASSWORD_<ID> env var and a dedicated cloud file.
    ============================================================ */
 
-import { nsKey } from './profiles.js';
-
-const KEY = () => nsKey('sync');
-const PRIVACY_KEY = () => nsKey('privacy');
-const BIOMETRIC_KEY = () => nsKey('bio');
+const KEY = () => 'cents:syncSettings';
+const PRIVACY_KEY = () => 'cents:privacySettings';
+const BIOMETRIC_KEY = () => 'cents:biometric';
 
 const SYNC_DEFAULTS = Object.freeze({
   enabled: false,

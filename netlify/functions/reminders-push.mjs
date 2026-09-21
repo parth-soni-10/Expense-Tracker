@@ -4,11 +4,10 @@
 
    GET  → { publicKey }  (the VAPID public key; the client needs it
           before calling pushManager.subscribe)
-   POST { subscription, profileId, profileName, time }
+   POST { subscription, time }
         → stores the subscription keyed by a hash of its endpoint,
-          tagged with the profile it belongs to and the schedule to
-          deliver at. Auth: the profile's app password in
-          X-Cents-Password (+ X-Cents-Profile), exactly like sync.
+          tagged with the schedule to deliver at. Auth: the app
+          password in X-Cents-Password, exactly like sync.
    DELETE { subscription }
         → removes the stored subscription (user turned the reminder
           off, or the browser revoked it). Same auth.
@@ -18,25 +17,23 @@
    Why the app password gates this: a subscription endpoint URL is
    a capability — anyone who has it can push to that browser. We
    only accept subscriptions from someone who can already read the
-   data, and we bind the stored record to the profile id, so the
-   scheduled sender never leaks one profile's reminder to another.
+   data, and the scheduled sender delivers whatever schedule each
+   stored record carries.
 
    Storage: one Blobs key per subscription under "push/",
-   { profileId, profileName, time, subscription, createdAt }.
+   { time, zone, subscription, createdAt }.
    The endpoint is never stored in plaintext; the key is
    SHA-256(endpoint) so URL-bearing keys cannot be enumerated, and
    duplicates (same endpoint re-subscribed) overwrite cleanly.
 
    Env: VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY (base64url, see
-   scripts/generate-vapid-keys.mjs), plus the sync function's
-   APP_PASSWORD* set for profile auth.
+   scripts/generate-vapid-keys.mjs), plus APP_PASSWORD for auth.
    ============================================================ */
 
 import { createHash } from 'node:crypto';
 import { getStore } from './lib/store.mjs';
 import { pushSend } from './lib/webpush.mjs';
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
-import { resolveProfileForAuth } from './lib/profiles.mjs';
 
 const PUSH_PREFIX = 'push:';
 const failureThrottle = createFailureThrottle({ windowMs: 5 * 60 * 1000, max: 15 });
@@ -44,7 +41,7 @@ const failureThrottle = createFailureThrottle({ windowMs: 5 * 60 * 1000, max: 15
 function corsHeaders(request) {
   const origin = request.headers.get('origin');
   const cors = {
-    'Access-Control-Allow-Headers': 'Content-Type, X-Cents-Password, X-Cents-Profile',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Cents-Password',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Max-Age': '86400',
     'Cache-Control': 'no-store',
@@ -81,12 +78,8 @@ function validTime(time) {
   return typeof time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(time);
 }
 
-function recordFrom({ profileId, profileName, time, zone, subscription }) {
+function recordFrom({ time, zone, subscription }) {
   return {
-    profileId,
-    // profileName is display-only (notification body) — bounded like the
-    // registry's names.
-    profileName: typeof profileName === 'string' ? profileName.slice(0, 24) : '',
     time: validTime(time) ? time : '20:00',
     // IANA zone the device reported at subscribe time. The scheduled sender
     // resolves HH:MM in this zone. An unknown zone id is rejected here so
@@ -97,15 +90,12 @@ function recordFrom({ profileId, profileName, time, zone, subscription }) {
   };
 }
 
-/** Resolve { profile, cors } or null (an error response was already sent). */
-function authenticate(request, cors) {
-  const profile = resolveProfileForAuth(request);
-  if (!profile.ok) return null;
+/** Resolve true when the request carries the app password. */
+function authenticate(request) {
+  const expected = process.env.APP_PASSWORD;
+  if (!expected) return false;
   const got = request.headers.get('x-cents-password') || '';
-  if (!safeEqual(got, profile.expected)) {
-    return null;
-  }
-  return profile;
+  return safeEqual(got, expected);
 }
 
 export default async (request, _context) => {
@@ -126,8 +116,8 @@ export default async (request, _context) => {
       { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': String(throttle.retryAfterSeconds), ...cors } });
   }
 
-  const auth = authenticate(request, cors);
-  if (!auth) {
+  const authed = authenticate(request);
+  if (!authed) {
     throttle.record();
     await new Promise(r => setTimeout(r, 500));
     return err('Bad app password', 401, cors);
@@ -151,15 +141,14 @@ export default async (request, _context) => {
   if (request.method === 'PUT') {
     const key = body.endpoint ? endpointKey(body.endpoint) : null;
     const record = key ? await store.getJSON(key) : null;
-    if (!record || record.profileId !== auth.id) {
-      // Do not reveal whether the endpoint exists under another profile.
-      return err('No push subscription found for this profile', 404, cors);
+    if (!record) {
+      return err('No push subscription found for this endpoint', 404, cors);
     }
     const vapid = { subject: process.env.VAPID_SUBJECT || 'cents@example.com', publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY };
     if (!vapid.publicKey || !vapid.privateKey) return err('VAPID keys not configured on the function', 500, cors);
     const result = await pushSend(record.subscription, {
       title: 'cents. — test reminder',
-      body: record.profileName ? `Push works for ${record.profileName}.` : 'Push is working.',
+      body: 'Push is working.',
       tag: 'cents-reminder-test',
     }, vapid);
     if (result.gone) {
@@ -175,8 +164,6 @@ export default async (request, _context) => {
     const sub = body.subscription;
     if (!validSubscription(sub)) return err('Body.subscription is not a valid Web Push subscription', 400, cors);
     const record = recordFrom({
-      profileId: auth.id,
-      profileName: body.profileName,
       time: body.time,
       zone: body.zone,
       subscription: sub,

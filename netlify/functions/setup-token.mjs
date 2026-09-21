@@ -33,7 +33,6 @@ import { createHash } from 'node:crypto';
 import { issueSetupToken, redeemSetupToken, SETUP_TOKEN_TTL_MS } from './lib/tokens.mjs';
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
 import { getStore } from './lib/store.mjs';
-import { resolveProfileForAuth } from './lib/profiles.mjs';
 
 // In-memory sliding-window throttle: 15 failed issue attempts per IP per 5 min.
 const failureThrottle = createFailureThrottle({ windowMs: 5 * 60 * 1000, max: 15 });
@@ -76,7 +75,6 @@ export default async (request, _context) => {
   }
   const secret = process.env.GITHUB_TOKEN;
   if (!secret) return err('GITHUB_TOKEN env var not set on the function', 500, cors);
-  const profile = resolveProfileForAuth(request);
 
   const token = request.headers.get('x-cents-setup-token');
   const password = request.headers.get('x-cents-password');
@@ -139,13 +137,13 @@ export default async (request, _context) => {
           },
         });
     }
-    if (!safeEqual(password, profile.expected)) {
+    if (!safeEqual(password, expected)) {
       throttle.record();
       await new Promise(r => setTimeout(r, 500)); // slow brute force
       return err('Bad app password', 401, cors);
     }
     return ok({
-      token: issueSetupToken(secret, profile.expected),
+      token: issueSetupToken(secret, expected),
       expiresInDays: Math.round(SETUP_TOKEN_TTL_MS / (24 * 60 * 60 * 1000)),
     }, 200, cors);
   }

@@ -36,12 +36,11 @@ The optional sync and push features need a few environment variables in Netlify 
 
 | Variable | What it's for |
 |---|---|
-| `APP_PASSWORD` | App password for the default profile's sync (min 8 chars) |
-| `APP_PASSWORD_<NAME>` | Per-profile sync password (e.g. `APP_PASSWORD_SAM`), optional |
+| `APP_PASSWORD` | App password for sync (min 8 chars) |
 | `GITHUB_TOKEN` / `GITHUB_REPO` | The private repo that stores synced data |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web Push keys for the closed-app daily reminder — generate once with `node scripts/generate-vapid-keys.mjs` and keep the private key secret |
 
-Push subscriptions live in Netlify Blobs; the scheduled function that dispatches reminders runs every 15 minutes and fires each device at its profile's chosen local time.
+Push subscriptions live in Netlify Blobs; the scheduled function that dispatches reminders runs every 15 minutes and fires each device at its chosen local time.
 
 ## Run it locally
 

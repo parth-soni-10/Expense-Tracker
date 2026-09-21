@@ -1,7 +1,7 @@
 /* ============================================================
    reminders.js — daily "upload your transactions" reminder.
 
-   Per-profile setting (default 20:00 local time). Two delivery
+   Stored per device (default 20:00 local time). Two delivery
    paths, because a web app can be closed at any moment:
      1. While the app is OPEN (any tab, locked or not): a
         setTimeout loop checks each minute whether the day's
@@ -13,15 +13,11 @@
         when the app is closed. Desktop is intentionally excluded:
         there the app lives in a tab and the in-app scheduler above
         is the right surface. See reminders-push.mjs.
-
-   Fire state ("last fired" date) is per profile so each user is
-   reminded about their own data.
    ============================================================ */
 
-import { nsKey, activeProfile, getActiveProfileId } from './profiles.js';
 import { getSyncSettings } from './settings.js';
 
-const KEY = () => nsKey('reminder');
+const KEY = () => 'cents:reminder';
 
 function normalize(raw) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
@@ -84,9 +80,9 @@ export async function requestNotificationPermission() {
 
 /** Show the reminder now: system notification (if allowed) + a callback the
  *  app uses for its in-app toast. Safe to call while locked. */
-export function showReminderNotification(profileName) {
+export function showReminderNotification() {
   const title = 'cents. — time to upload your transactions';
-  const body = profileName ? `Quick tally for ${profileName} — it takes a minute.` : 'Log today\'s spending while it\'s fresh.';
+  const body = 'Log today\'s spending while it\'s fresh.';
   if (notificationPermission() === 'granted') {
     try {
       const n = new Notification(title, { body, tag: 'cents-daily-reminder', renotify: true });
@@ -107,9 +103,7 @@ export function onReminderFired(fn) {
 }
 
 function fire() {
-  let profileName = null;
-  try { profileName = activeProfile().name; } catch { /* registry unavailable */ }
-  const payload = showReminderNotification(profileName);
+  const payload = showReminderNotification();
   for (const fn of listeners) { try { fn(payload); } catch { /* listener error never breaks the loop */ } }
 }
 
@@ -140,10 +134,10 @@ export function startReminderScheduler() {
 // ---------- closed-app push (Web Push via the Netlify functions) ----------
 // While the app is open, the scheduler above is enough. When it is closed,
 // delivery needs a real Web Push subscription: the browser hands us an
-// endpoint + keys, the server stores them per profile, and a scheduled
-// function fires the push at the profile's local time. Subscribing requires
-// the profile's app password (same credential as cloud sync) so random
-// sites cannot seed reminders into someone's store.
+// endpoint + keys, the server stores them, and a scheduled function fires
+// the push at the chosen local time. Subscribing requires the app password
+// (same credential as cloud sync) so random sites cannot seed reminders
+// into someone's store.
 
 const PUSH_TIMEOUT_MS = 12000;
 
@@ -190,7 +184,7 @@ export function pushSupported() {
 }
 
 /**
- * Subscribe this browser to closed-app reminders for the ACTIVE profile.
+ * Subscribe this browser to closed-app reminders.
  * Requires sync to be configured (the app password gates the store).
  * Returns { ok: true } or { ok: false, reason, message? }.
  */
@@ -215,19 +209,14 @@ export async function subscribeReminderPush() {
       });
     }
     const subJson = sub.toJSON();
-    let profileName = null;
-    try { profileName = activeProfile().name; } catch { /* registry unavailable */ }
     const resp = await pushFetch(base, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Cents-Password': sync.password,
-        'X-Cents-Profile': getActiveProfileId() || 'personal',
       },
       body: JSON.stringify({
         subscription: subJson,
-        profileId: getActiveProfileId() || 'personal',
-        profileName,
         time: getReminderSettings().time,
         zone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       }),
@@ -254,7 +243,6 @@ export async function unsubscribeReminderPush() {
           headers: {
             'Content-Type': 'application/json',
             'X-Cents-Password': sync.password,
-            'X-Cents-Profile': getActiveProfileId() || 'personal',
           },
           body: JSON.stringify({ subscription: { endpoint: s.pushEndpoint } }),
         }).catch(() => {}); // best effort — the local unsubscribe matters most
@@ -269,7 +257,7 @@ export async function unsubscribeReminderPush() {
   return { ok: true };
 }
 
-/** Ask the server to push a test message to this profile's subscription. */
+/** Ask the server to push a test message to this device's subscription. */
 export async function sendTestPush() {
   const s = getReminderSettings();
   const sync = getSyncSettings();
@@ -282,7 +270,6 @@ export async function sendTestPush() {
       headers: {
         'Content-Type': 'application/json',
         'X-Cents-Password': sync.password,
-        'X-Cents-Profile': getActiveProfileId() || 'personal',
       },
       body: JSON.stringify({ endpoint: s.pushEndpoint }),
     });
@@ -298,7 +285,7 @@ export async function sendTestPush() {
   }
 }
 
-/** Re-announce the current time/zone for this profile after a time change. */
+/** Re-announce the current time/zone after a time change. */
 export async function updateReminderPushTime() {
   const s = getReminderSettings();
   if (!s.pushSubscribed) return { ok: true, skipped: true };

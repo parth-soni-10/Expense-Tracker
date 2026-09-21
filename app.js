@@ -7,7 +7,6 @@ import { CATEGORIES, METHODS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken } from './sync.js';
 import { mergeStates } from './sync-merge.js';
-import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfile, setActiveProfileId, getActiveProfileId } from './profiles.js';
 import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, sendTestPush, updateReminderPushTime } from './reminders.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
@@ -255,12 +254,6 @@ let pendingSetupLinkToast = null;
 // A parsed but not-yet-confirmed sync setup link (see applySetupLinkIfPresent).
 // Stashed at boot, applied only after the user confirms post-unlock.
 let pendingSetupLink = null;
-// sessionStorage flag marking the ACTIVE profile as unlocked on THIS page
-// load. Locking one profile never locks another (they are separate pages).
-const PROFILE_UNLOCK_KEY = 'cents-profile-unlocked';
-function markProfileUnlocked() {
-  try { sessionStorage.setItem(PROFILE_UNLOCK_KEY, getActiveProfileId() || 'personal'); } catch { /* session unavailable */ }
-}
 let syncBootStarted = false;
 let lastRenderedRoute = null;
 let renderFrame = null;
@@ -455,7 +448,6 @@ function closePinOverlay() {
 // sync boot and the persisted-undo offer both wait until the lock is open.
 function completeUnlock() {
   pinUnlocked = true;
-  markProfileUnlocked();
   closePinOverlay();
   render();
   startInitSync();
@@ -649,7 +641,6 @@ function needsOnboarding() {
 function showOnboarding() {
   if (pinUnlocked || pinOverlay) return;
   pinUnlocked = true; // the dashboard renders behind the overlay; no lock screen on first boot
-  markProfileUnlocked();
 
   const inputStyle = 'width:100%;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:12px 14px;font-size:15px;outline:none;transition:border-color .15s;box-sizing:border-box;';
   const focusRing = (e) => { e.target.style.borderColor = 'var(--accent)'; };
@@ -777,166 +768,6 @@ function lockApp() {
   showPinLock();
 }
 
-// ================= Profiles (Netflix-style) =================
-// Profiles are device-local spaces with separate entries, balances, PINs and
-// cloud files. The gate below decides what the user meets first: a single
-// profile boots straight into the classic flow (lock or onboarding); several
-// profiles meet a Netflix-style picker. "Who are you?" → "PIN?" — in that
-// order, so nobody is ever asked for a PIN before an identity.
-
-function switchToProfile(id) {
-  if (!setActiveProfileId(id)) return;
-  try {
-    sessionStorage.removeItem('cents-profile-unlocked');
-    // Carry the chosen identity through the reload so the boot gate does not
-    // ask who's tracking again (the user just answered it). Still lands on
-    // that profile's PIN lock — the identity is remembered, never the unlock.
-    sessionStorage.setItem('cents-pending-profile', id);
-  } catch { /* ignore */ }
-  location.reload(); // profiles re-resolve on every page load
-}
-
-function showProfilePicker({ cancellable = false } = {}) {
-  if (document.querySelector('.profile-picker-bg')) return;
-  const profiles = listProfiles();
-  const active = getActiveProfileId();
-
-  const grid = $('div', { class: 'profile-grid', role: 'list' });
-  for (const p of profiles) {
-    const tile = $('button', {
-      type: 'button', class: 'profile-tile' + (p.id === active ? ' current' : ''), role: 'listitem',
-      'aria-label': `Open ${p.name}`, onClick: () => {
-        if (p.id !== active) { switchToProfile(p.id); return; }
-        // Re-opening the current profile → its lock (data is already loaded).
-        close();
-        if (needsOnboarding()) showOnboarding();
-        else showPinLock();
-      },
-    },
-      $('span', { class: 'profile-avatar', 'aria-hidden': 'true' }, initialOf(p.name)),
-      $('span', { class: 'profile-name' }, p.name),
-      p.id === active ? $('span', { class: 'profile-current-tag' }, 'Current') : null,
-    );
-    grid.append(tile);
-  }
-
-  const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); };
-  const onKey = ev => { if (ev.key === 'Escape' && cancellable) { ev.preventDefault(); close(); } };
-
-  const card = $('div', { class: 'modal profile-picker', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Choose a profile', style: 'max-width:420px;text-align:center;' },
-    $('div', { class: 'serif', style: 'font-size:30px;margin-bottom:2px;' }, 'cents.'),
-    $('p', { class: 'eyebrow', style: 'margin:0 0 18px;' }, 'Who\'s tracking?'),
-    grid,
-    $('button', { type: 'button', class: 'btn-link', style: 'margin-top:18px;width:100%;text-align:center;', onClick: () => {
-      close();
-      openProfileManager(() => {
-        // Redraw in place so adds/renames/deletes are reflected without a
-        // reload. Only dropping to a single profile needs a real reboot.
-        document.querySelector('.profile-picker-bg')?.remove();
-        if (listProfiles().length > 1) showProfilePicker({ cancellable });
-        else location.reload();
-      });
-    } }, 'Manage profiles'),
-  );
-  const bg = $('div', { class: 'modal-bg profile-picker-bg', style: 'z-index:10002;background:rgba(0,0,0,.82);' }, card);
-  if (cancellable) {
-    bg.addEventListener('click', ev => { if (ev.target === bg) close(); });
-    document.addEventListener('keydown', onKey, true);
-  }
-  document.body.appendChild(bg);
-}
-
-function initialOf(name) {
-  return String(name || '?').trim().charAt(0).toUpperCase() || '?';
-}
-
-// Boot gate: stash any setup link first (it configures the ACTIVE profile
-// after unlock), then several profiles meet the picker, one profile goes
-// straight to its lock/onboarding.
-function showProfileGate() {
-  applySetupLinkIfPresent();
-  let pending = null;
-  try { pending = sessionStorage.getItem('cents-pending-profile'); } catch { /* ignore */ }
-  if (pending) {
-    try { sessionStorage.removeItem('cents-pending-profile'); } catch { /* ignore */ }
-    if (pending === getActiveProfileId() && listProfiles().length > 1) {
-      if (needsOnboarding()) showOnboarding();
-      else showPinLock();
-      return;
-    }
-  }
-  if (listProfiles().length > 1) { showProfilePicker({ cancellable: false }); return; }
-  if (needsOnboarding()) showOnboarding();
-  else if (hasPinLock()) showPinLock();
-}
-
-// ---------- profile manager (create / rename / delete / switch) ----------
-function openProfileManager(onChanged = null) {
-  if (document.querySelector('.profile-mgr-bg')) return;
-  const bg = $('div', { class: 'modal-bg profile-mgr-bg', onClick: ev => { if (ev.target === bg) close(); } });
-  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Profiles', tabindex: '-1', style: 'max-width:460px;' });
-  const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); if (onChanged) onChanged(); };
-  const onKey = ev => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
-  document.addEventListener('keydown', onKey, true);
-  bg.appendChild(modal); document.body.appendChild(bg);
-
-  const draw = () => {
-    const profiles = listProfiles();
-    const active = getActiveProfileId();
-    const rows = $('div', { style: 'display:flex;flex-direction:column;gap:8px;margin:18px 0;' });
-    for (const p of profiles) {
-      const isCurrent = p.id === active;
-      const row = $('div', { class: 'profile-row' },
-        $('span', { class: 'profile-avatar', style: 'width:34px;height:34px;font-size:14px;', 'aria-hidden': 'true' }, initialOf(p.name)),
-        $('span', { class: 'profile-row-main' },
-          $('span', { class: 'profile-row-name' }, p.name),
-          isCurrent ? $('span', { class: 'profile-row-note' }, 'This profile is open') : null),
-        $('span', { class: 'profile-row-actions' },
-          !isCurrent ? $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => switchToProfile(p.id) }, 'Open') : null,
-          $('button', { type: 'button', class: 'btn btn-ghost', 'aria-label': `Rename ${p.name}`, onClick: async () => {
-            const name = window.prompt('Profile name', p.name);
-            if (name == null) return;
-            const r = renameProfile(p.id, name);
-            if (r.error) { toast(r.error); return; }
-            draw();
-          } }, 'Rename'),
-          profiles.length > 1 ? $('button', { type: 'button', class: 'btn btn-danger', 'aria-label': `Delete ${p.name}`, onClick: async () => {
-            const ok = await swalConfirm({
-              title: `Delete ${p.name}?`,
-              text: 'Every entry, balance, and setting stored on this device for that profile is removed. Cloud data is not touched.',
-              confirmButtonText: 'Delete', danger: true,
-            });
-            if (!ok) return;
-            const r = deleteProfile(p.id);
-            if (r.error) { toast(r.error); return; }
-            if (isCurrent) { location.reload(); return; }
-            draw();
-          } }, 'Delete') : null),
-      );
-      rows.append(row);
-    }
-
-    modal.replaceChildren(
-      $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' },
-        $('h2', { class: 'serif', style: 'font-size:28px;font-weight:400;' }, 'Profiles'),
-        $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
-      $('p', { class: 'muted', style: 'font-size:12px;line-height:1.5;' },
-        'Each profile keeps separate transactions, balances, PIN, and cloud space on this device. Switching profiles reloads the app.'),
-      rows,
-      $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' },
-        $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
-          const name = window.prompt('New profile name');
-          if (name == null) return;
-          const r = createProfile(name);
-          if (r.error) { toast(r.error); return; }
-          toast(`Profile "${r.profile.name}" created. Open it to set it up.`);
-          draw();
-        } }, 'Add profile')),
-    );
-  };
-  draw();
-}
-
 // ---------- daily reminder settings ----------
 function openReminderSettings() {
   const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
@@ -1019,7 +850,7 @@ function openReminderSettings() {
         $('h2', { class: 'serif', style: 'font-size:28px;font-weight:400;' }, 'Daily reminder'),
         $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
       $('p', { class: 'muted', style: 'font-size:12px;line-height:1.5;' },
-        'A nudge to upload your transactions - for this profile only, at your local time.'),
+        'A nudge to upload your transactions - at your local time.'),
       enabledRow,
       $('div', { style: 'display:flex;align-items:center;gap:12px;margin-bottom:18px;' },
         $('span', { class: 'muted', style: 'font-size:12px;' }, 'Time'), timeInput),
@@ -1028,7 +859,7 @@ function openReminderSettings() {
       $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' },
         $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => {
           patchReminderSettings({ lastFiredDate: null });
-          const payload = showReminderNotification(activeProfile().name);
+          const payload = showReminderNotification();
           toast(`Test reminder: ${payload.body}`);
         } }, 'Test now')),
     );
@@ -1319,9 +1150,8 @@ function parseSetupLink(raw) {
 function applySetupLinkIfPresent() {
   let raw = new URLSearchParams(location.search).get('centsSync');
   if (!raw) {
-    // A link can arrive BEFORE the profile is chosen (multiple profiles).
-    // The picker switch reloads the page, so the stashed link is kept in
-    // sessionStorage and re-parsed here for whichever profile was picked.
+    // A link can arrive before the user is logged in on a shared device.
+    // The stashed link is kept in sessionStorage and re-parsed after unlock.
     try { raw = sessionStorage.getItem('cents-pending-setup'); } catch { raw = null; }
     if (!raw) return;
     try { sessionStorage.removeItem('cents-pending-setup'); } catch { /* ignore */ }
@@ -1357,7 +1187,7 @@ async function confirmPendingSetupLink() {
   if (!pending) return;
   pendingSetupLink = null;
   // The link is now in flight (or consumed): drop the cross-reload stash so
-  // it cannot re-apply after another profile switch.
+  // it cannot re-apply after a later reload.
   try { sessionStorage.removeItem('cents-pending-setup'); } catch { /* ignore */ }
   const endpointLabel = pending.endpoint === '/.netlify/functions/sync'
     ? 'this site'
@@ -3925,11 +3755,6 @@ function renderHeader() {
         titleFor(r))),
     ),
     $('div', { class: 'header-actions', style: locked ? 'display:none;' : '' },
-      // Profile chip: quick "who am I" + tap to switch. Hidden with a single
-      // profile to keep the header clean for solo users.
-      listProfiles().length > 1 ? $('button', { type: 'button', class: 'profile-chip', title: 'Switch profile', 'aria-label': `Switch profile (current: ${activeProfile().name})`, onClick: () => showProfilePicker({ cancellable: true }) },
-        $('span', { class: 'profile-avatar', style: 'width:22px;height:22px;font-size:10px;', 'aria-hidden': 'true' }, initialOf(activeProfile().name)),
-        $('span', { class: 'profile-chip-name' }, activeProfile().name)) : null,
       $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Space Grotesk",sans-serif;font-size:14px;color:var(--muted);' }),      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
          const wasDark = document.documentElement.dataset.theme === 'dark';
          toggleDarkMode();
@@ -4061,7 +3886,6 @@ function buildMenuLevel(id) {
     if (canInstallApp()) {
       list.append(menuRowEl({ icon: 'download', label: 'Install app', onClick: () => { closeAppMenu(); promptInstall(); } }));
     }
-    list.append(menuRowEl({ icon: 'user', label: 'Switch profile', chevron: true, onClick: () => { closeAppMenu(); showProfilePicker({ cancellable: true }); } }));
     list.append(menuRowEl({ icon: 'clock', label: 'Daily reminder', onClick: () => { closeAppMenu(); openReminderSettings(); } }));
     list.append(menuRowEl({ icon: 'appearance', label: 'Appearance', chevron: true, onClick: () => menuDrill('appearance') }));
     list.append(menuRowEl({ icon: 'lock', label: 'Privacy & security', chevron: true, onClick: () => menuDrill('privacy') }));
@@ -7580,7 +7404,7 @@ function attachSwipeDismiss(el, onDismiss) {
 // and never sync — and are per-profile, like the rest of the data. An alert
 // stays dismissed while its condition holds and re-arms automatically once the
 // condition clears, so a genuinely new event notifies again.
-const ALERT_DISMISS_KEY = () => nsKey('alerts');
+const ALERT_DISMISS_KEY = () => 'cents-dismissed-alerts';
 function readAlertDismissals() {
   try { return JSON.parse(localStorage.getItem(ALERT_DISMISS_KEY())) || {}; } catch { return {}; }
 }
@@ -8011,17 +7835,17 @@ window.addEventListener('DOMContentLoaded', () => {
     document.documentElement.classList.toggle('modal-open', open);
   }).observe(document.body, { childList: true });
   initCardSpotlight();
-  // Profile gate replaces the old direct boot: several profiles meet a
-  // Netflix-style picker first, then that profile's lock or onboarding.
-  // Cloud sync and the persisted-undo offer still start after the first
-  // surface resolves. The reminder scheduler runs regardless of lock state
-  // so a reminder can never be missed because the app is sitting on the
-  // lock screen.
+  // Boot: the PIN lock (or first-run onboarding) resolves first. Cloud sync
+  // and the persisted-undo offer still start after unlock. The reminder
+  // scheduler runs regardless of lock state so a reminder can never be
+  // missed because the app is sitting on the lock screen.
   startReminderScheduler();
   onReminderFired(({ body }) => {
     toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;' }, iconSpan('clock'), body));
   });
-  showProfileGate();
+  applySetupLinkIfPresent();
+  if (needsOnboarding()) showOnboarding();
+  else if (hasPinLock()) showPinLock();
   render();
 });
 

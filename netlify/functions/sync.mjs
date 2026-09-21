@@ -15,16 +15,6 @@
      APP_PASSWORD    any string the client sends in X-Cents-Password
                      (must be at least 8 characters)
 
-   Profiles: the client sends X-Cents-Profile (<profile-id>, a short
-   slug). The password is resolved per profile — APP_PASSWORD_<ID>
-   first, then APP_PASSWORD as the shared fallback — and the cloud
-   file becomes data-<id>.json (REPO_FILE only for the default/absent
-   profile). Two profiles therefore never share a password or a cloud
-   file: one profile's credential cannot read another's data. A
-   profile id that has no dedicated env var falls back to the shared
-   password + REPO_FILE, so existing single-user setups keep working
-   unchanged.
-
    Auth hardening:
      * APP_PASSWORD is compared in constant time.
      * Failed attempts are throttled per client IP (in-memory,
@@ -36,7 +26,6 @@
    ============================================================ */
 
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
-import { profileIdFromHeader, passwordEnvName, cloudFileFor, DEFAULT_PROFILE } from './lib/profiles.mjs';
 
 function corsHeaders(request) {
   const origin = request.headers.get('origin');
@@ -290,18 +279,6 @@ function cfg() {
   };
 }
 
-/** Resolve the request's profile to its password source and cloud file.
- *  See lib/profiles.mjs for the mapping. */
-function resolveProfile(request) {
-  const id = profileIdFromHeader(request.headers.get('x-cents-profile'));
-  if (id === DEFAULT_PROFILE) return { id, file: cfg().file, expected: process.env.APP_PASSWORD };
-  return {
-    id,
-    file: cloudFileFor(id, cfg().file),
-    expected: process.env[passwordEnvName(id)] || process.env.APP_PASSWORD,
-  };
-}
-
 function decodeBase64(b64) {
   return Buffer.from(b64, 'base64').toString('utf8');
 }
@@ -318,13 +295,6 @@ export default async (request, _context) => {
   if (expected.length < 8) {
     return err('APP_PASSWORD must be at least 8 characters - set a stronger password in Netlify env', 500, cors);
   }
-  const profile = resolveProfile(request);
-  if (!profile.expected) {
-    return err(`No password configured for profile "${profile.id}" - set APP_PASSWORD_${profile.id.toUpperCase().replace(/-/g, '_')} in Netlify env`, 500, cors);
-  }
-  if (profile.expected.length < 8) {
-    return err(`APP_PASSWORD_${profile.id.toUpperCase().replace(/-/g, '_')} must be at least 8 characters`, 500, cors);
-  }
 
   const throttle = failureThrottle.check(request);
   if (!throttle.ok) {
@@ -339,14 +309,14 @@ export default async (request, _context) => {
       });
   }
   const got = request.headers.get('x-cents-password') || '';
-  if (!safeEqual(got, profile.expected)) {
+  if (!safeEqual(got, expected)) {
     throttle.record();
     await new Promise(r => setTimeout(r, 500)); // slow brute force
     return err('Bad app password', 401, cors);
   }
 
   const { owner, repo, branch } = cfg();
-  const file = profile.file;
+  const file = cfg().file;
   if (!owner || !repo) return err('REPO_OWNER / REPO_NAME env vars not set on the function', 500, cors);
 
   try {

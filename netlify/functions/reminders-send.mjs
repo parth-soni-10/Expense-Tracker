@@ -2,7 +2,7 @@
    reminders-send.mjs — SCHEDULED function (Netlify Scheduled
    Functions, cron in netlify.toml) that delivers the daily
    "upload your transactions" Web Push to every subscribed device
-   at its profile's local time.
+   at its chosen local time.
 
    Runs every 15 minutes. For each stored push subscription:
      - compute the subscription's current local HH:MM from the
@@ -19,7 +19,7 @@
 
    Env: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT (optional).
    No app password needed: the scheduler is platform-invoked, and
-   the stored records already bind each subscription to its profile.
+   the stored records already carry each subscription's schedule.
    ============================================================ */
 
 import { getStore } from './lib/store.mjs';
@@ -109,9 +109,7 @@ export default async (_request, _context) => {
     const localDate = localDateInZone(now, zone);
     if (record.lastFiredDate && record.lastFiredDate === localDate) continue;
 
-    const body = record.profileName
-      ? `Quick tally for ${record.profileName} — it takes a minute.`
-      : 'Log today\'s spending while it\'s fresh.';
+    const body = 'Log today\'s spending while it\'s fresh.';
     const result = await pushSend(record.subscription, {
       title: 'cents. — time to upload your transactions',
       body,

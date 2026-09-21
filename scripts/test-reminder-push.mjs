@@ -86,7 +86,7 @@ const { getStore } = await import('../netlify/functions/lib/store.mjs');
 function call(handler, method, body, extraHeaders = {}) {
   const req = new Request('http://localhost/.netlify/functions/reminders-push', {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-Cents-Password': 'test-password-123', 'X-Cents-Profile': 'personal', ...extraHeaders },
+    headers: { 'Content-Type': 'application/json', 'X-Cents-Password': 'test-password-123', ...extraHeaders },
     body: body == null ? undefined : JSON.stringify(body),
   });
   return handler(req, {});
@@ -106,13 +106,13 @@ check('auth-required', unauth.status === 401);
 
 // ---------- 3. subscribe (stored, normalized time) ----------
 const subResp = JSON.parse(await text(await call(pushHandler, 'POST', {
-  subscription, profileId: 'personal', profileName: 'Personal', time: '25:99', zone: 'Europe/Dublin',
+  subscription, time: '25:99', zone: 'Europe/Dublin',
 })));
 check('subscribe-normalizes-time', subResp.stored === true && subResp.time === '20:00');
 
 // ---------- 4. malformed subscription rejected ----------
 const badSub = await call(pushHandler, 'POST', {
-  subscription: { endpoint: 'https://x.example', keys: { p256dh: 'short', auth: 'no' } }, profileId: 'personal',
+  subscription: { endpoint: 'https://x.example', keys: { p256dh: 'short', auth: 'no' } }
 });
 check('invalid-subscription-rejected', badSub.status === 400);
 
@@ -122,14 +122,14 @@ check('invalid-subscription-rejected', badSub.status === 400);
 const dublinNow = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Dublin', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
 const [dh, dm] = dublinNow.split(':').map(Number);
 await call(pushHandler, 'POST', {
-  subscription, profileId: 'personal', profileName: 'Personal', time: `${String(dh).padStart(2, '0')}:${String(dm).padStart(2, '0')}`, zone: 'Europe/Dublin',
+  subscription, time: `${String(dh).padStart(2, '0')}:${String(dm).padStart(2, '0')}`, zone: 'Europe/Dublin',
 });
 received.length = 0;
 // The dispatcher reads `new Date()` internally; the record's time is 'now',
 // so the run is due unless the minute ticks past mid-run — acceptable.
 const sendResp = await sendHandler(null, {});
 check('scheduled-delivery', received.length === 1 && received[0].title === 'cents. — time to upload your transactions');
-check('payload-names-profile', received.length === 1 && received[0].body.includes('Personal'));
+check('payload-has-generic-body', received.length === 1 && received[0].body === "Log today's spending while it's fresh.");
 
 // ---------- 6. no double-send within the same day ----------
 received.length = 0;
@@ -140,7 +140,7 @@ check('no-double-send-same-day', received.length === 0);
 const store = await getStore();
 // Time = current UTC HH:MM so the record is due on the next run.
 const utcNow = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
-await store.setJSON('push:prune-test', { profileId: 'personal', profileName: 'P', time: utcNow, zone: 'UTC', lastFiredDate: '1999-01-01', subscription: { endpoint: 'http://localhost:8201/fake-push', keys: subscription.keys } });
+await store.setJSON('push:prune-test', { time: utcNow, zone: 'UTC', lastFiredDate: '1999-01-01', subscription: { endpoint: 'http://localhost:8201/fake-push', keys: subscription.keys } });
 endpointAlive = false;
 const sendResp2 = await sendHandler(null, {});
 endpointAlive = true;
@@ -149,7 +149,7 @@ check('dead-subscription-pruned', !pruneKeys.includes('push:prune-test') && send
 
 // ---------- 8. unsubscribe removes the record ----------
 await call(pushHandler, 'POST', {
-  subscription, profileId: 'personal', profileName: 'Personal', time: '20:00', zone: 'UTC',
+  subscription, time: '20:00', zone: 'UTC',
 });
 const delResp = await call(pushHandler, 'DELETE', { subscription });
 const keysAfterDel = (await store.list('push:')).map(k => k.key);
@@ -157,15 +157,15 @@ check('unsubscribe-removes', delResp.status === 200 && keysAfterDel.length === 0
 
 // ---------- 9. test push (PUT) sends immediately ----------
 await call(pushHandler, 'POST', {
-  subscription, profileId: 'personal', profileName: 'Personal', time: '20:00', zone: 'UTC',
+  subscription, time: '20:00', zone: 'UTC',
 });
 received.length = 0;
 const testResp = await call(pushHandler, 'PUT', { endpoint: subscription.endpoint });
 check('test-push-sent', testResp.status === 200 && received.length === 1 && received[0].title === 'cents. — test reminder');
 
-// ---------- 10. test push is profile-bound ----------
-const foreign = await call(pushHandler, 'PUT', { endpoint: subscription.endpoint }, { 'X-Cents-Profile': 'someoneelse' });
-check('test-push-profile-bound', foreign.status === 404);
+// ---------- 10. test push rejects a wrong password ----------
+const foreign = await call(pushHandler, 'PUT', { endpoint: subscription.endpoint }, { 'X-Cents-Password': 'wrong-password' });
+check('test-push-auth-rejected', foreign.status === 401);
 
 fakePushServer.close();
 await new Promise(r => setTimeout(r, 50)); // let in-flight sockets drain
