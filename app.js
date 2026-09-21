@@ -7401,7 +7401,7 @@ function attachSwipeDismiss(el, onDismiss) {
 }
 
 // Notification dismissals are device-local (like a phone's notification shade)
-// and never sync — and are per-profile, like the rest of the data. An alert
+// and never sync. An alert
 // stays dismissed while its condition holds and re-arms automatically once the
 // condition clears, so a genuinely new event notifies again.
 const ALERT_DISMISS_KEY = () => 'cents-dismissed-alerts';

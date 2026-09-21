@@ -1343,8 +1343,6 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
 
 /* ── SweetAlert2 ── */
 .swal-popup {
-  --swal2-background: var(--card);
-  --swal2-color: var(--ink);
   /* Solid: a translucent confirm re-samples its backdrop on every button
      hover/repaint. Near-opaque reads identically. */
   background: var(--card);
