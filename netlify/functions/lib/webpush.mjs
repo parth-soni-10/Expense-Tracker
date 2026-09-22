@@ -13,6 +13,11 @@
      pushSend(sub, payload, vapid) -> { ok } | { ok:false, gone }
        gone=true means the subscription is dead (404/410 or
        malformed keys) and the caller should delete it.
+     encryptPayload(sub, payloadUtf8, deterministic)
+       Exported for the RFC 8291 test-vector check in
+       scripts/test-reminder-push.mjs. Production only ever goes
+       through pushSend, which passes no `deterministic`, so the
+       ephemeral key and salt are random per message.
    ============================================================ */
 
 import { createECDH, createCipheriv, createHmac, createPrivateKey, createSign, randomBytes } from 'node:crypto';
@@ -75,8 +80,11 @@ function hkdfSha256(salt, ikm, info, length) {
   return Buffer.concat(chunks).subarray(0, length);
 }
 
-/** RFC 8291 aes128gcm encryption of `payloadUtf8` for one subscription. */
-function encryptPayload({ p256dh, auth }, payloadUtf8) {
+/** RFC 8291 aes128gcm encryption of `payloadUtf8` for one subscription.
+ *  `deterministic` ({ asPrivate, salt }, both base64url) pins the ephemeral
+ *  key pair and the salt so the RFC's published test vector can be
+ *  reproduced; omit it and both are random per message. */
+export function encryptPayload({ p256dh, auth }, payloadUtf8, deterministic = null) {
   const uaPublic = Buffer.from(p256dh, 'base64url');
   const authSecret = Buffer.from(auth, 'base64url');
   if (uaPublic.length !== 65 || uaPublic[0] !== 4 || authSecret.length < 16) {
@@ -84,23 +92,31 @@ function encryptPayload({ p256dh, auth }, payloadUtf8) {
   }
 
   const ecdh = createECDH('prime256v1');
-  ecdh.generateKeys();
+  if (deterministic?.asPrivate) ecdh.setPrivateKey(Buffer.from(deterministic.asPrivate, 'base64url'));
+  else ecdh.generateKeys();
   const asPublic = ecdh.getPublicKey();
   const ecdhSecret = ecdh.computeSecret(uaPublic);
 
-  // ecdh_secret -> PRK (HKDF with the auth secret as salt).
+  // ecdh_secret -> IKM (HKDF with the auth secret as salt).
   const prkInfo = Buffer.concat([
     Buffer.from('WebPush: info\0', 'utf8'),
     uaPublic,
     asPublic,
   ]);
-  const prk = hkdfSha256(authSecret, ecdhSecret, prkInfo, 32);
+  const ikm = hkdfSha256(authSecret, ecdhSecret, prkInfo, 32);
 
-  // PRK -> CEK (16 bytes) + NONCE (12 bytes).
-  const cekNonceInfo = Buffer.from('Content-Encoding: aes128gcm\0', 'utf8');
-  const okm = hkdfSha256(Buffer.alloc(0), prk, cekNonceInfo, 16 + 12);
-  const cek = okm.subarray(0, 16);
-  const nonce = okm.subarray(16, 28);
+  // IKM -> CEK (16 bytes) + NONCE (12 bytes). RFC 8291 section 3.4: the HKDF
+  // salt for this step is the random salt that rides in the content-coding
+  // header, and the nonce is expanded under its own info string. Both are
+  // load-bearing for interop — derive them under an empty salt, or expand the
+  // nonce under the cek_info, and the body authenticates against keys no
+  // browser computes. Nothing reports an error: the push service accepts the
+  // POST, the browser drops the message, and the reminder silently never
+  // arrives. (scripts/test-reminder-push.mjs pins this against the RFC's own
+  // vector, so the failure can't come back.)
+  const salt = deterministic?.salt ? Buffer.from(deterministic.salt, 'base64url') : randomBytes(16);
+  const cek = hkdfSha256(salt, ikm, Buffer.from('Content-Encoding: aes128gcm\0', 'utf8'), 16);
+  const nonce = hkdfSha256(salt, ikm, Buffer.from('Content-Encoding: nonce\0', 'utf8'), 12);
 
   // Single record: payload || 0x02 delimiter (final-record flag).
   const record = Buffer.concat([Buffer.from(payloadUtf8, 'utf8'), Buffer.from([2])]);
@@ -109,7 +125,7 @@ function encryptPayload({ p256dh, auth }, payloadUtf8) {
 
   // aes128gcm header: salt(16) | rs(4, big-endian) | idlen(1) | asPublic(65)
   const header = Buffer.alloc(21);
-  randomBytes(16).copy(header, 0);          // salt
+  salt.copy(header, 0);                     // salt — the one the CEK/nonce used
   header.writeUInt32BE(4096, 16);           // rs
   header.writeUInt8(65, 20);                // idlen
   return Buffer.concat([header, asPublic, ciphertext]);

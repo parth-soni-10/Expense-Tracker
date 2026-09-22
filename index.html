@@ -9,7 +9,11 @@
     })();
   </script>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+  <!-- Zoom is deliberately left enabled: pinching to read a small balance beats
+       a fixed layout, and WCAG 1.4.4 requires it. `viewport-fit=cover` keeps the
+       notch areas usable and `interactive-widget` stops iOS from scrolling the
+       whole page when the keyboard opens. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
   <meta name="color-scheme" content="dark" />
   <meta name="description" content="cents. - a calm, precise personal expense tracker. Track spending, budgets, balances and recurring bills." />
   <meta name="theme-color" content="#101210" />
@@ -199,6 +203,9 @@
   </style>
 </head>
 <body>
+  <!-- First tab stop: a hash link would fight the hash router (it would be read
+       as a route), so this is a button that moves focus to the screen instead. -->
+  <button type="button" id="skip-to-main" class="skip-link">Skip to main content</button>
   <noscript>
     <div style="padding:32px;font-family:'Space Grotesk',system-ui,sans-serif;">This app needs JavaScript enabled to run.</div>
   </noscript>

@@ -7,40 +7,31 @@ import { SEED_SETTINGS } from './seed.js';
 import { getPrivacyPin, setPrivacyPin } from './settings.js';
 
 const KEY = () => 'expense-tracker:v1';
+// Where an UNREADABLE stored document is parked instead of being lost.
+const QUARANTINE_KEY = () => 'expense-tracker:unreadable';
+// A one-shot message the UI shows after boot (see takeStorageNotice).
+let storageNotice = null;
 
-// One-time reverse migration for the removed multi-profile feature: while
-// profiles existed, data lived under cents:p/<id>/<base>. On first load
-// without profiles, the primary profile's data (the largest state — the main
-// user) is copied back to the original global keys. Any other profiles'
-// keys are left in place as device-local copies.
-(function migrateProfilesBack() {
-  try {
-    if (localStorage.getItem('cents:profiles-migrated')) return;
-    const states = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith('cents:p/') && k.endsWith('/state')) states.push(k);
-    }
-    if (states.length > 0) {
-      const LEGACY = {
-        state: 'expense-tracker:v1', privacy: 'cents:privacySettings', bio: 'cents:biometric',
-        sync: 'cents:syncSettings', undo: 'cents-undo-journal', alerts: 'cents-dismissed-alerts',
-        reminder: 'cents:reminder',
-      };
-      let primary = states[0], bestSize = -1;
-      for (const k of states) {
-        const size = (localStorage.getItem(k) || '').length;
-        if (size > bestSize) { bestSize = size; primary = k; }
-      }
-      const id = primary.split('/')[2];
-      for (const base of Object.keys(LEGACY)) {
-        const v = localStorage.getItem(`cents:p/${id}/${base}`);
-        if (v != null) localStorage.setItem(LEGACY[base], v);
-      }
-    }
-    localStorage.setItem('cents:profiles-migrated', '1');
-  } catch { /* storage unavailable; namespaced keys remain as fallback */ }
-})();
+/** Consume the pending storage notice, if any. */
+export function takeStorageNotice() {
+  const notice = storageNotice;
+  storageNotice = null;
+  return notice;
+}
+
+/** The raw bytes of a document that could not be parsed, if one was kept. */
+export function unreadableBackup() {
+  try { return localStorage.getItem(QUARANTINE_KEY()); } catch { return null; }
+}
+
+// The reverse migration for the removed multi-profile feature is gone. It was
+// written against cents:p/<id>/<base> keys, but its id lookup read the wrong
+// path segment (`split('/')[2]` is the field name, not the profile id), so it
+// could never restore anything — it only ever planted its own "migrated" flag.
+// Any device that has loaded the app since profiles were removed has that flag,
+// which makes the shim permanently inert; its only remaining power was to
+// overwrite live keys with stale profile-scoped copies. Stray cents:p/* keys are
+// now simply ignored, and nothing on a live install can be replaced by one.
 
 export const uid = () =>
   (globalThis.crypto?.randomUUID?.())
@@ -360,8 +351,85 @@ function defaultState() {
       ...SEED_SETTINGS,
       balanceCheckpoints: Object.fromEntries(BALANCE_METHOD_IDS.map(id => [id, []])),
     },
+    tesco: emptyTesco(),
     schemaVersion: 2,
   };
+}
+
+// ---------- Tesco Pay (shifts + payslips) ----------
+function emptyTesco() {
+  return { shifts: [], payslips: [], deletedShiftIds: [], deletedPayslipIds: [] };
+}
+const TESCO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TESCO_TIME_RE = /^\d{1,2}:\d{2}$/;
+const TESCO_MAX_SHIFTS = 2000;
+const TESCO_MAX_PAYSLIPS = 500;
+const TESCO_MAX_TOMBSTONES = 1000;
+
+function tescoMoney(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < -100000 || n > 100000) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+// Normalize the Tesco Pay block. Unknown/corrupt shapes fall back to empty
+// collections, never throw — this data rides in the same state document as
+// entries and must tolerate hand-edited or legacy cloud files.
+function normalizeTesco(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const out = emptyTesco();
+  const seen = new Set();
+  if (Array.isArray(src.shifts)) {
+    for (const s of src.shifts) {
+      if (!s || typeof s !== 'object' || Array.isArray(s)) continue;
+      const id = typeof s.id === 'string' && s.id && s.id.length <= 200 ? s.id : uid();
+      if (seen.has(id)) continue;
+      if (!TESCO_DATE_RE.test(String(s.date || '')) || Number.isNaN(Date.parse(s.date))) continue;
+      if (!TESCO_TIME_RE.test(String(s.start || '')) || !TESCO_TIME_RE.test(String(s.end || ''))) continue;
+      seen.add(id);
+      out.shifts.push({
+        id,
+        date: s.date,
+        start: s.start,
+        end: s.end,
+        note: typeof s.note === 'string' ? s.note.slice(0, 120) : '',
+        special: !!s.special,
+        createdAt: typeof s.createdAt === 'string' ? s.createdAt : undefined,
+      });
+      if (out.shifts.length >= TESCO_MAX_SHIFTS) break;
+    }
+  }
+  const seenSlip = new Set();
+  if (Array.isArray(src.payslips)) {
+    for (const p of src.payslips) {
+      if (!p || typeof p !== 'object' || Array.isArray(p)) continue;
+      const id = typeof p.id === 'string' && p.id && p.id.length <= 200 ? p.id : uid();
+      if (seenSlip.has(id)) continue;
+      if (!TESCO_DATE_RE.test(String(p.weekStart || '')) || Number.isNaN(Date.parse(p.weekStart))) continue;
+      seenSlip.add(id);
+      out.payslips.push({
+        id,
+        weekStart: p.weekStart,
+        paye: tescoMoney(p.paye),
+        usc: tescoMoney(p.usc),
+        prsi: tescoMoney(p.prsi),
+        futureFund: tescoMoney(p.futureFund),
+        createdAt: typeof p.createdAt === 'string' ? p.createdAt : undefined,
+      });
+      if (out.payslips.length >= TESCO_MAX_PAYSLIPS) break;
+    }
+  }
+  const tombs = (ids) => {
+    const set = new Set();
+    for (const id of Array.isArray(ids) ? ids : []) {
+      if (typeof id === 'string' && id && id.length <= 200) set.add(id);
+      if (set.size >= TESCO_MAX_TOMBSTONES) break;
+    }
+    return [...set];
+  };
+  out.deletedShiftIds = tombs(src.deletedShiftIds);
+  out.deletedPayslipIds = tombs(src.deletedPayslipIds);
+  return out;
 }
 
 export function validateState(s) {
@@ -430,16 +498,85 @@ export function validateState(s) {
     coins: normalizeCoins(safeSettings.coins),
     tescoVouchers: normalizeVoucherAmount(safeSettings.tescoVouchers),
     categoryBudgets: normalizeCategoryBudgets(rawSettings.categoryBudgets, CATEGORIES_OK),
+    tescoRates: normalizeTescoRates(safeSettings.tescoRates),
+    tescoWeekNos: normalizeWeekNos(safeSettings.tescoWeekNos),
   };
+  out.tesco = normalizeTesco(s.tesco);
   out.schemaVersion = 2;
   return out;
 }
 
+// Editable pay rules for the Tesco tab — scalars only, bounded.
+function normalizeTescoRates(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const out = {};
+  const num = (v, min, max) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= min && n <= max ? n : undefined;
+  };
+  const defs = {
+    normal: [1, 100], specialMultiplier: [1, 4], pensionPct: [0, 20],
+    payeCredit: [0, 500], payeCutoff: [10, 5000], payeRateLow: [0, 60],
+    payeRateHigh: [0, 90], prsiRate: [0, 20],
+  };
+  for (const [key, [min, max]] of Object.entries(defs)) {
+    const v = num(src[key], min, max);
+    if (v != null) out[key] = v;
+  }
+  return out;
+}
+
+// The user's own week numbering, per pay week: {"2026-09-20": 30}. The sheet
+// hand-types this column (it counts 1..52/53 from the week its pay year starts
+// in — for the current sheet, the first Sunday of March — and restarts at 1),
+// so a stored number is the only way to match it exactly. Bounded like every
+// other settings map: date-shaped keys, small integers.
+function normalizeWeekNos(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const out = {};
+  let n = 0;
+  for (const [key, value] of Object.entries(src)) {
+    if (n >= 400) break;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) continue;
+    const no = Math.trunc(Number(value));
+    if (!Number.isFinite(no) || no < 1 || no > 53) continue;
+    out[key] = no;
+    n++;
+  }
+  return out;
+}
+
 export function loadState() {
+  let raw = null;
   try {
-    const raw = localStorage.getItem(KEY());
-    if (!raw) return defaultState();
-    const parsed = JSON.parse(raw);
+    raw = localStorage.getItem(KEY());
+  } catch {
+    // Storage blocked entirely (private browsing): there is nothing to read,
+    // and no write is possible either - start blank without pretending to have
+    // lost something.
+    return defaultState();
+  }
+  if (!raw) return defaultState();
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Unreadable document (truncated write, quota-clipped value, hand-edited
+    // storage). Park the exact bytes under a quarantine key BEFORE returning a
+    // blank slate: the next save overwrites the original key, so without this
+    // copy a year of entries would be gone with nothing to recover from.
+    try {
+      localStorage.setItem(QUARANTINE_KEY(), raw);
+      storageNotice = `Stored data could not be read. A copy has been kept on this device (${QUARANTINE_KEY()}).`;
+    } catch {
+      storageNotice = 'Stored data could not be read.';
+    }
+    console.error('cents: stored document is not valid JSON - its bytes were kept under', QUARANTINE_KEY());
+    return defaultState();
+  }
+
+  try {
     const validated = validateState(parsed);
     // Self-heal: when validation changes the stored data (e.g. duplicate
     // recurring entries collapsed, legacy fields normalized) write the clean
@@ -447,13 +584,22 @@ export function loadState() {
     if (JSON.stringify(validated) !== raw) saveState(validated);
     return validated;
   } catch {
+    // A bug in validation must never take the app down, and must not touch the
+    // stored bytes either - the next load gets a fresh attempt at them.
     return defaultState();
   }
 }
 
 export function saveState(state) {
-  try { localStorage.setItem(KEY(), JSON.stringify(state)); }
-  catch (e) { console.warn('Failed to save state:', e); }
+  try {
+    localStorage.setItem(KEY(), JSON.stringify(state));
+    return true;
+  } catch (e) {
+    // The caller must be able to tell the user: a silent failure here means the
+    // entry they just added is not on disk and a reload loses it.
+    console.warn('Failed to save state:', e);
+    return false;
+  }
 }
 
 export function resetToBlank() {
@@ -470,21 +616,27 @@ export function resetToBlank() {
   return fresh;
 }
 
+// A file the user asked for, written from memory — no server round trip. Both
+// exports go through here so the object URL and the anchor are cleared the same
+// way (revoking the URL is what frees the blob).
+export function downloadText(filename, text, mime = 'text/plain') {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+}
+
 export function exportJSON(state) {
   // PIN fallback material is intentionally local-only. Never place it in a
   // downloadable export, even if device storage was unavailable during legacy
   // PIN migration.
   const safeState = JSON.parse(JSON.stringify(state || {}));
   if (safeState.settings && typeof safeState.settings === 'object') delete safeState.settings.pinHash;
-  const blob = new Blob([JSON.stringify(safeState, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
   const now = new Date();
   const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  a.download = `expenses-${localDate}.json`;
-  document.body.appendChild(a); a.click();
-  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+  downloadText(`expenses-${localDate}.json`, JSON.stringify(safeState, null, 2), 'application/json');
 }
 
 // ---------- persistent undo journal ----------

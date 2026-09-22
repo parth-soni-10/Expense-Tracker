@@ -141,6 +141,38 @@ html, body { transition: none; }
    and no text-selection flash when hammering buttons quickly. */
 html { -webkit-tap-highlight-color: transparent; }
 button, a, [role='button'], select, input[type='checkbox'], input[type='radio'], label { touch-action: manipulation; }
+
+/* ── Screen-reader utility + skip link ── */
+/* One per route: the visual pages label their sections with .eyebrow text, so
+   without this the document had no heading at all to navigate by. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+/* The router owns the URL hash (#dashboard, #history, …), so the skip link is a
+   button rather than a #main anchor: the first Tab stop jumps focus to the
+   screen instead of being read as a route. */
+.skip-link {
+  position: fixed; top: 10px; left: 10px; z-index: 200;
+  padding: 10px 14px;
+  font: inherit; font-size: 14px;
+  color: var(--bg); background: var(--accent);
+  border: none; border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  transform: translateY(-200%);
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* Only offered when there is a screen to skip to. While the lock screen is up
+   the app chrome is not mounted and `#screen` does not exist, so the link
+   would be a first tab stop that does nothing. */
+.skip-link { display: none; }
+body:has(#screen) .skip-link { display: block; }
+.skip-link:focus-visible { transform: translateY(0); outline: 2px solid var(--ink); outline-offset: 2px; }
+/* The programmatic focus target for that skip link. Not tab-reachable, so a
+   ring on it would only ever be noise — every operable control keeps one. */
+.screen:focus { outline: none; }
 .btn, .pill, .nav-link, .bottom-tab, .menu-row, .menu-back, .menu-close, .cal-day, .history-action-btn,
 .footer-action, .dark-toggle, .menu-trigger, .heat-cell, .history-row, .btn-link {
   -webkit-user-select: none; user-select: none;
@@ -345,7 +377,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .btn-primary:hover { transform: translateY(-1px) scale(1.02); box-shadow: 0 14px 40px -8px var(--accent-glow); }
 .btn-primary:hover::after { animation: btnShine 0.9s ease; }
 @keyframes btnShine { to { left: 130%; } }
-[data-theme="dark"] .btn-primary { color: #101210; }
 .btn-ghost {
   color: var(--ink);
   border-color: var(--line);
@@ -424,7 +455,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   border-color: transparent;
   box-shadow: var(--shadow-glow);
 }
-[data-theme="dark"] .pill-cat[data-active="true"] { color: #26160C; }
 
 /* ============================================================
    Header
@@ -495,7 +525,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   box-shadow: var(--shadow-glow), inset 0 1px 0 rgba(255,255,255,0.35);
   transition: transform 0.25s var(--ease-spring), box-shadow 0.25s;
 }
-[data-theme="dark"] .app-header .logo .mark { color: #26160C; }
 .app-header .logo:hover .mark {
   transform: scale(1.09) rotate(-4deg);
   box-shadow: 0 16px 44px -8px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.35);
@@ -674,6 +703,8 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   box-shadow: var(--shadow-xl), inset 0 1px 0 var(--glass-highlight);
   width: 100%; max-width: 540px;
   padding: 32px;
+  /* A scrolled modal must not chain its scroll to the page behind it. */
+  overscroll-behavior: contain;
   max-height: 90vh; overflow: auto;
   animation: modalIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
@@ -1142,6 +1173,10 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 @media (max-width: 639px) {
   .app-header { gap: 8px; padding-bottom: 14px; margin-bottom: 22px; }
   .nav-link { font-size: 13px; padding: 8px 13px; }
+  /* On phones the bottom tab bar carries all six destinations, so the header
+     strip was a second copy of the same navigation — and at 390px its last
+     item was clipped mid-word. The burger menu still lists every route. */
+  .app-header .nav { display: none; }
 }
 @media (max-width: 479px) {
   .app-header .nav { gap: 4px; }
@@ -1283,9 +1318,18 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 
 .insight-bar-row { content-visibility: auto; contain-intrinsic-size: 38px; }
 
+/* The Load / Reconcile / history row actions per account. Sized here rather
+   than inline: the inline padding used to outrank the mobile rule below, so
+   these chips stayed 22×19 on phones — under the 24×24 WCAG 2.2 AA target. */
+.balance-row-actions { display: flex; align-items: center; gap: 4px; }
+.balance-row-actions .btn-link { font-size: 11px; padding: 6px 8px; }
+
 @media (max-width: 639px) {
   .pulse-heading { gap: 10px; }
   .pulse-grid { gap: 12px; }
+  /* 8px between adjacent targets, and a ~30px-tall chip for the primary
+     per-account action on a phone. */
+  .balance-row-actions { gap: 8px; }
   .pulse-grid .display-num { font-size: 16px !important; }
   .insight-narrative-text { font-size: 19px; }
   .history-action-btn { padding: 9px 10px; }
@@ -1368,10 +1412,8 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
 }
 .swal-confirm:active, .swal-cancel:active { transform: scale(0.96); }
 .swal-confirm { background: var(--gradient); color: #ffffff; box-shadow: var(--shadow-glow); }
-[data-theme='dark'] .swal-confirm { color: #26160C; }
 .swal-confirm:hover { transform: translateY(-1px); box-shadow: 0 14px 40px -8px var(--accent-glow); }
 .swal-confirm.swal-danger { background: var(--negative); color: #ffffff; box-shadow: 0 10px 34px -10px rgba(185,28,28,0.4); }
-[data-theme='dark'] .swal-confirm.swal-danger { color: #ffffff; }
 .swal-cancel {
   background: transparent; color: var(--muted);
   border: 1px solid var(--line);
@@ -1397,41 +1439,51 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
 }
 .has-tippy .heat-tip { display: none; }
 
-/* ── Flatpickr ── */
-.flatpickr-calendar {
+/* ── Flatpickr ──
+   vendor/flatpickr.min.css is loaded on first use, i.e. appended to <head>
+   AFTER this file. On equal specificity the later sheet wins, so the stock
+   light theme (white panel, #569ff7 selected day, #393939 day text) beat
+   every rule below and the picker ignored the app theme entirely. Scoping to
+   `body` adds one level of specificity so these win regardless of order. */
+body .flatpickr-calendar {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: 16px;
   box-shadow: var(--shadow-xl);
   font-family: 'Space Grotesk', system-ui, sans-serif;
 }
-.flatpickr-calendar.arrowTop:before { border-bottom-color: var(--line); }
-.flatpickr-calendar.arrowTop:after { border-bottom-color: var(--card); }
-.flatpickr-calendar.arrowBottom:before { border-top-color: var(--line); }
-.flatpickr-calendar.arrowBottom:after { border-top-color: var(--card); }
-.flatpickr-months .flatpickr-month,
-.flatpickr-current-month .flatpickr-monthDropdown-months,
-.flatpickr-current-month input.cur-year { color: var(--ink); }
-.flatpickr-current-month .numInputWrapper span.arrowUp:after,
-.flatpickr-current-month .numInputWrapper span.arrowDown:after {
+body .flatpickr-calendar.arrowTop:before { border-bottom-color: var(--line); }
+body .flatpickr-calendar.arrowTop:after { border-bottom-color: var(--card); }
+body .flatpickr-calendar.arrowBottom:before { border-top-color: var(--line); }
+body .flatpickr-calendar.arrowBottom:after { border-top-color: var(--card); }
+body .flatpickr-months .flatpickr-month,
+body .flatpickr-current-month .flatpickr-monthDropdown-months,
+body .flatpickr-current-month input.cur-year { color: var(--ink); }
+body .flatpickr-current-month .numInputWrapper span.arrowUp:after,
+body .flatpickr-current-month .numInputWrapper span.arrowDown:after {
   border-bottom-color: var(--muted); border-top-color: var(--muted);
 }
-.flatpickr-weekday { color: var(--muted); }
-.flatpickr-day { color: var(--ink); border-radius: 9px; }
-.flatpickr-day:not(.flatpickr-disabled):not(.flatpickr-nextmonth):not(.flatpickr-prevmonth):hover { background: var(--accent-soft); }
-.flatpickr-day.selected,
-.flatpickr-day.selected:hover,
-.flatpickr-day.selected:focus { background: var(--gradient); border-color: transparent; color: #ffffff; }
-[data-theme='dark'] .flatpickr-day.selected { color: #26160C; }
-.flatpickr-day.today { border-color: var(--accent); }
-.flatpickr-day.today:hover { background: var(--accent-soft); }
-.flatpickr-day.prevMonthDay, .flatpickr-day.nextMonthDay { color: var(--muted); opacity: 0.55; }
-.flatpickr-day.flatpickr-disabled { color: var(--muted); opacity: 0.5; }
-.flatpickr-calendar .flatpickr-innerContainer,
-.flatpickr-calendar .flatpickr-rContainer { border-radius: 16px; }
-.flatpickr-time input, .flatpickr-time .flatpickr-am-pm { color: var(--ink); }
-.flatpickr-time .flatpickr-time-separator, .flatpickr-time .numInputWrapper span.arrowUp:after,
-.flatpickr-time .numInputWrapper span.arrowDown:after { border-color: var(--muted); }
+body .flatpickr-calendar .flatpickr-weekday,
+body .flatpickr-calendar .flatpickr-weekwrapper .flatpickr-weekday { color: var(--muted); }
+/* The month arrows ship as near-black SVG fills — invisible on a dark panel. */
+body .flatpickr-calendar .flatpickr-prev-month svg,
+body .flatpickr-calendar .flatpickr-next-month svg { fill: var(--muted); }
+body .flatpickr-calendar .flatpickr-prev-month:hover svg,
+body .flatpickr-calendar .flatpickr-next-month:hover svg { fill: var(--ink); }
+body .flatpickr-day { color: var(--ink); border-radius: 9px; }
+body .flatpickr-day:not(.flatpickr-disabled):not(.flatpickr-nextmonth):not(.flatpickr-prevmonth):hover { background: var(--accent-soft); }
+body .flatpickr-day.selected,
+body .flatpickr-day.selected:hover,
+body .flatpickr-day.selected:focus { background: var(--gradient); border-color: transparent; color: #ffffff; }
+body .flatpickr-day.today { border-color: var(--accent); }
+body .flatpickr-day.today:hover { background: var(--accent-soft); }
+body .flatpickr-day.prevMonthDay, body .flatpickr-day.nextMonthDay { color: var(--muted); opacity: 0.55; }
+body .flatpickr-day.flatpickr-disabled { color: var(--muted); opacity: 0.5; }
+body .flatpickr-calendar .flatpickr-innerContainer,
+body .flatpickr-calendar .flatpickr-rContainer { border-radius: 16px; }
+body .flatpickr-time input, body .flatpickr-time .flatpickr-am-pm { color: var(--ink); }
+body .flatpickr-time .flatpickr-time-separator, body .flatpickr-time .numInputWrapper span.arrowUp:after,
+body .flatpickr-time .numInputWrapper span.arrowDown:after { border-color: var(--muted); }
 
 /* ── SortableJS ── */
 .pill[data-custom] { cursor: grab; }
@@ -1457,7 +1509,6 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
 .cal-day:active { transform: scale(0.94); }
 .cal-day[data-today] { box-shadow: 0 0 0 1.5px var(--accent); }
 .cal-day[data-selected] { background: var(--gradient); border-color: transparent; color: #ffffff; box-shadow: var(--shadow-glow); }
-[data-theme="dark"] .cal-day[data-selected] { color: #26160C; }
 .cal-num { line-height: 1; }
 .cal-dot { border-radius: 50%; background: var(--accent); opacity: .85; }
 
@@ -1538,6 +1589,7 @@ html.modal-open { overflow: hidden; }
   display: flex; flex-direction: column;
   background: transparent;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 /* The drill animations composite via transform/opacity; a persistent
    will-change on the level kept a nested layer alive and made row hover
@@ -1733,6 +1785,22 @@ button:focus-visible, a:focus-visible, select:focus-visible, [role='button']:foc
   outline: 2px solid var(--accent);
   outline-offset: 3px;
 }
+/* Text fields were relying on a bottom-border colour change alone, which is the
+   focus indicator a keyboard user is least likely to see. They carry no inline
+   outline:none any more, so the ring renders. */
+input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* A sticky header must never sit over the control the keyboard just focused
+   (WCAG 2.2 AA 2.4.11). The mobile header is static, only the desktop one
+   sticks, so the offset is scoped to where it applies. */
+@media (min-width: 640px) {
+  html { scroll-padding-top: 88px; }
+  a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible,
+  textarea:focus-visible, [tabindex]:focus-visible { scroll-margin-top: 88px; }
+}
 
 /* ============================================================
    Ledger skin - flat surfaces, hairline rules, one accent
@@ -1743,6 +1811,12 @@ body, [data-theme="dark"] body { background-image: none; }
 body::before, body::after { display: none; }
 
 /* Typography: Space Grotesk display, IBM Plex Mono numerals */
+
+/* Headings never leave one word stranded on its own line, and body copy keeps
+   its last line from a single orphan. Both are hints — a browser that does not
+   support them lays the text out exactly as before. */
+h1, h2, h3, h4, .pulse-status, .empty-state-title { text-wrap: balance; }
+p, li, .muted { text-wrap: pretty; }
 body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 .serif {
   font-family: 'Space Grotesk', system-ui, sans-serif;
@@ -1784,9 +1858,6 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 }
 .btn-primary::after { display: none; }
 .btn-primary:hover { transform: none; box-shadow: none; }
-[data-theme="dark"] .btn-primary { color: #101210; }
-.pill-cat[data-active="true"] { color: #ffffff; }
-[data-theme="dark"] .pill-cat[data-active="true"] { color: #ffffff; }
 
 /* Header mark: solid emerald square */
 .app-header .logo .mark {
@@ -1797,7 +1868,6 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   font-style: normal;
   box-shadow: none;
 }
-[data-theme="dark"] .app-header .logo .mark { color: #ffffff; }
 .app-header .logo:hover .mark { transform: none; box-shadow: none; }
 
 /* Hero / pulse / insight: flat surfaces with hairlines */
@@ -1819,13 +1889,23 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 
 /* Selected calendar day + date picker + dialogs: solid emerald, white text */
 .cal-day[data-selected] { color: #ffffff; }
-[data-theme="dark"] .cal-day[data-selected] { color: #ffffff; }
 .flatpickr-day.selected, .flatpickr-day.selected:hover, .flatpickr-day.selected:focus { color: #ffffff; }
-[data-theme='dark'] .flatpickr-day.selected { color: #ffffff; }
 .swal-confirm { background: var(--accent); color: #ffffff; box-shadow: none; }
-[data-theme='dark'] .swal-confirm { color: #ffffff; }
 .swal-confirm:hover { transform: none; box-shadow: none; }
 .swal-popup { border: 1px solid var(--line); background: var(--card); }
+
+/* Filled buttons and chips take white text in light mode, where the accent is
+   deep (#157A4A, 5.4:1) and the danger fill is #C0392B (5.4:1). Dark mode
+   brightens both so they stay legible AS TEXT on the dark page (#35B877,
+   #F06A5B) — but that leaves white on the fill at 2.5:1 and 3.0:1. So ink
+   those fills dark instead. One rule, so no surface can be missed. */
+[data-theme="dark"] .btn-primary,
+[data-theme="dark"] .app-header .logo .mark,
+[data-theme="dark"] .cal-day[data-selected],
+[data-theme="dark"] .flatpickr-day.selected,
+[data-theme="dark"] .pill-cat[data-active="true"],
+[data-theme="dark"] .swal-confirm,
+[data-theme="dark"] .swal-confirm.swal-danger { color: #101210; }
 
 /* Rows and cells: flat on hover, no emerald ring wash */
 .cal-day:hover { box-shadow: none; }
@@ -1856,3 +1936,135 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   .history-audio { width: 100%; }
 }
 
+
+/* ============================================================
+   Tesco Pay tab — shift ledger, pay weeks, payslips, roster scan
+   ============================================================ */
+.tesco-section .card { margin-bottom: 20px; }
+.tesco-card-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; font-weight: 600; margin-bottom: 12px;
+}
+.tesco-stats-grid {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
+}
+.tesco-stat-value {
+  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-size: 20px; font-weight: 600; letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums; margin-top: 2px;
+}
+.tesco-form-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.tesco-form-row-spread { align-items: center; justify-content: space-between; }
+.tesco-in {
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: transparent; color: inherit; font: inherit; font-size: 13px;
+  font-variant-numeric: tabular-nums; min-width: 0; max-width: 100%;
+}
+.tesco-in:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tesco-in-grow { flex: 1 1 160px; }
+.tesco-in-num { width: 84px; }
+.tesco-in-date { width: 148px; }
+.tesco-file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.tesco-filelabel { position: relative; overflow: hidden; cursor: pointer; }
+.tesco-scan-wrap {
+  position: relative; margin-top: 10px; border: 1px solid var(--line);
+  border-radius: var(--radius); overflow: hidden;
+}
+.tesco-scan-preview { display: block; width: 100%; height: auto; }
+.tesco-progress {
+  height: 3px; background: var(--line); border-radius: 99px;
+  overflow: hidden; margin: 10px 0 0;
+}
+.tesco-progress-fill {
+  height: 100%; width: 0%; background: var(--accent);
+  transition: width 0.25s var(--ease-out);
+}
+.tesco-rowlist { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.tesco-row {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer;
+}
+.tesco-row.active { border-color: var(--accent); background: var(--accent-soft); }
+.tesco-chip {
+  font-size: 10px; padding: 2px 6px; border-radius: 99px;
+  border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+}
+.tesco-chip-good { border-color: var(--accent); color: var(--accent); }
+.tesco-chip-warn { border-color: var(--negative); color: var(--negative); }
+.tesco-celledit { display: flex; flex-direction: column; gap: 6px; }
+.tesco-celledit-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.tesco-week {
+  border-top: 1px solid var(--line); padding: 12px 0 4px;
+}
+.tesco-week:first-of-type { border-top: none; padding-top: 0; }
+.tesco-week-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+/* The sheet's week-number column, editable in place: 3 digits, no spinner. */
+.tesco-weekno {
+  width: 42px; padding: 4px 4px; text-align: center; font: inherit; font-size: 11px;
+  font-variant-numeric: tabular-nums; color: var(--ink);
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+}
+.tesco-weekno:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.tesco-weekno:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tesco-weekno::-webkit-outer-spin-button,
+.tesco-weekno::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.tesco-weekno { -moz-appearance: textfield; appearance: textfield; }
+.tesco-week-gross {
+  font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.tesco-shiftlist { margin-top: 8px; display: flex; flex-direction: column; }
+.tesco-shiftrow {
+  display: flex; align-items: center; gap: 8px; padding: 5px 0;
+  border-bottom: 1px dashed color-mix(in srgb, var(--line) 70%, transparent);
+  font-size: 12px;
+}
+.tesco-shiftrow:last-child { border-bottom: none; }
+.tesco-shift-day { width: 30px; color: var(--muted); }
+.tesco-shift-time { font-variant-numeric: tabular-nums; min-width: 92px; }
+.tesco-shift-amt {
+  margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600;
+}
+.tesco-actual {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+  padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius);
+}
+.tesco-del { font-size: 16px; line-height: 1; opacity: 0.5; }
+.tesco-del:hover { opacity: 1; color: var(--negative); }
+.tesco-payslip {
+  border-top: 1px solid var(--line); padding: 10px 0;
+}
+.tesco-payslip:first-of-type { border-top: none; }
+.tesco-payslip-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.tesco-numfield { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
+.tesco-derived { font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums; }
+.tesco-payslip-foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.tesco-payslip-total {
+  margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; font-size: 13px;
+}
+.tesco-totals {
+  display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline;
+  margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--muted);
+}
+.tesco-totals-sum { margin-left: auto; color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tesco-rates { margin-top: 4px; }
+.tesco-rates summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.tesco-rates-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+
+@media (max-width: 639px) {
+  .tesco-stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+  .tesco-stat-value { font-size: 16px; }
+  .tesco-in-date { width: 132px; }
+  .tesco-numfield { flex: 1 1 40%; }
+  .tesco-in-num { width: 100%; }
+  /* Shift rows hold day + times + badge + hours + amount + delete; tighten the
+     fixed columns so the row never overflows its card on a narrow phone. */
+  .tesco-shiftrow { gap: 6px; font-size: 11.5px; }
+  .tesco-shift-day { width: 26px; }
+  .tesco-shift-time { min-width: 68px; }
+  .tesco-shift-amt { font-size: 12px; }
+  .tesco-celledit-row { gap: 4px; }
+  .tesco-celledit-row .tesco-in { padding: 6px 8px; }
+}

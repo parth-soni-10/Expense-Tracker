@@ -9,9 +9,29 @@
 
 [build]
   publish = "."
-  # Fails the deploy if any sw.js SHELL entry points at a missing file —
-  # the guardrail for the offline shell (scripts/check-sw-shell.mjs).
-  command = "node scripts/check-sw-shell.mjs"
+  # Five guardrails, all pure-Node and fast:
+  #   check-sw-shell      — every sw.js SHELL entry exists on disk
+  #   check-image-hygiene — the roster-OCR code has no way to persist the photo
+  #   check-csp-hashes    — every inline boot script is hashed in the CSP below
+  #                         (a miss is invisible locally: no CSP is sent there)
+  #   test-tesco          — the pay/tax engine still matches the workbook's
+  #                         own cached figures, so a pay change can't ship silently
+  #   test-sync           — the sync contract still round-trips the full state
+  #                         (stubbed GitHub API; no network, no token)
+  command = "node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs"
+
+  # Pin the build runtime. scripts/test-tesco.mjs imports tesco.js — a plain
+  # .js browser module, and this repo has no package.json (no-build model), so
+  # it is ESM by syntax detection only. Node 18 parses it as CommonJS and dies
+  # with "Cannot use import statement outside a module", which would fail the
+  # build and block the deploy. Detection is on by default from Node 22.7 and
+  # 20.19, so pin 22 rather than inherit whatever the site default is.
+  #
+  # This table must come AFTER `command`: opening any sub-table ends the parent
+  # table, so `command` above would otherwise land inside `environment` — and
+  # Netlify, seeing no build command, would skip the guards silently.
+  [build.environment]
+    NODE_VERSION = "22"
 
 # Scheduled function: the daily-reminder push dispatcher. Runs every 15
 # minutes in UTC; each subscription carries its own IANA zone + HH:MM, and
@@ -56,6 +76,18 @@
     Cache-Control = "no-cache, must-revalidate"
     X-Content-Type-Options = "nosniff"
 
+# WebAssembly core for the roster OCR. `Content-Type: application/wasm` is not
+# cosmetic: the browser's streaming compiler refuses a mislabelled response
+# ("Incorrect response MIME type. Expected 'application/wasm'"), and Netlify's
+# extension table is not something to bet the OCR on. no-cache for the same
+# reason as every other asset: a redeploy must never be masked by a stale copy.
+[[headers]]
+  for = "/vendor/tesseract/*.wasm"
+  [headers.values]
+    Content-Type = "application/wasm"
+    Cache-Control = "no-cache, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+
 # Web App Manifest — Chrome expects a JSON MIME type before it treats the
 # site as installable; Netlify's default for .json would also work, but be
 # explicit so the PWA signal can never be missed.
@@ -90,6 +122,10 @@
 #     to styles (the UI sets style attributes dynamically). connect-src
 #     allows any https endpoint because the sync proxy can be self-hosted
 #     on a custom domain; localhost is allowed for local development.
+#     'wasm-unsafe-eval' is required by the Tesco Pay roster OCR: the vendored
+#     tesseract.js core ships WebAssembly, and Chrome refuses to instantiate
+#     it without this. It permits WASM compilation only — still no string-eval
+#     — and every byte it loads comes from /vendor/tesseract on this origin.
 [[headers]]
   for = "/*"
   [headers.values]
@@ -98,4 +134,4 @@
     X-Frame-Options = "DENY"
     Cross-Origin-Opener-Policy = "same-origin"
     Cross-Origin-Resource-Policy = "same-origin"
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'sha256-rQpWdpfO3jew1iL5zZ98vGEJgNo+qkd+3CxRBjXKHX0=' 'sha256-D2LzLLViPue4ETfCdLrasOjw6uXTHzgIw0+qHJWBrQY=' 'sha256-pKNS52PZ3v76TT3jH+prU69ajXz9OUzty+4lmTKzpVQ=' 'sha256-ZL/v8fWbS7Fj5A65sCiiFXqwLIgSYaIPlzRmrBe3qYc=' 'sha256-Tcie8lUtWw9EUeiQ+I8ykdJCQwFFJC8hxZPGmniSwLA='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' data:; font-src 'self'; connect-src 'self' https: http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-rQpWdpfO3jew1iL5zZ98vGEJgNo+qkd+3CxRBjXKHX0=' 'sha256-D2LzLLViPue4ETfCdLrasOjw6uXTHzgIw0+qHJWBrQY=' 'sha256-pKNS52PZ3v76TT3jH+prU69ajXz9OUzty+4lmTKzpVQ=' 'sha256-ZL/v8fWbS7Fj5A65sCiiFXqwLIgSYaIPlzRmrBe3qYc=' 'sha256-Tcie8lUtWw9EUeiQ+I8ykdJCQwFFJC8hxZPGmniSwLA='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' data:; font-src 'self'; connect-src 'self' https: http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"

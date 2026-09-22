@@ -43,14 +43,23 @@ function maxIso(a, b) {
 }
 
 function unionIds(a = [], b = []) {
-  return [...new Set([...a, ...b])];
+  // Only real ids, and only from real arrays: a hostile or corrupt document
+  // could carry a string where a list belongs, and spreading a string would
+  // inject one "id" per character.
+  const clean = (value) => (Array.isArray(value) ? value.filter(id => typeof id === 'string' && id) : []);
+  return [...new Set([...clean(a), ...clean(b)])];
 }
 
 /** Union entries by id; per-id LWW by version; tombstoned ids are dropped. */
 function mergeEntries(localEntries, cloudEntries, deletedIds) {
   const byId = new Map();
-  for (const entry of localEntries || []) byId.set(entry.id, entry);
-  for (const entry of cloudEntries || []) {
+  // Nullish rows are skipped rather than dereferenced: one junk element in
+  // either document must not abort the merge (and with it, every sync).
+  for (const entry of Array.isArray(localEntries) ? localEntries : []) {
+    if (entry && entry.id) byId.set(entry.id, entry);
+  }
+  for (const entry of Array.isArray(cloudEntries) ? cloudEntries : []) {
+    if (!entry || !entry.id) continue;
     const existing = byId.get(entry.id);
     if (!existing || entryVersion(entry) > entryVersion(existing)) byId.set(entry.id, entry);
   }
@@ -65,8 +74,8 @@ function mergeEntries(localEntries, cloudEntries, deletedIds) {
 /** Union id-keyed lists (customCategories); `newer` wins a clash. */
 function unionById(older = [], newer = []) {
   const map = new Map();
-  for (const item of older) if (item && item.id) map.set(item.id, item);
-  for (const item of newer) if (item && item.id) map.set(item.id, item);
+  for (const item of Array.isArray(older) ? older : []) if (item && item.id) map.set(item.id, item);
+  for (const item of Array.isArray(newer) ? newer : []) if (item && item.id) map.set(item.id, item);
   return [...map.values()];
 }
 
@@ -86,8 +95,8 @@ function recurringFingerprint(item) {
  *  the union picked; the client-side validateState re-checks on adoption. */
 function mergeRecurring(older = [], newer = []) {
   const map = new Map();
-  for (const item of older || []) if (item && item.id) map.set(item.id, item);
-  for (const item of newer || []) if (item && item.id) map.set(item.id, item);
+  for (const item of Array.isArray(older) ? older : []) if (item && item.id) map.set(item.id, item);
+  for (const item of Array.isArray(newer) ? newer : []) if (item && item.id) map.set(item.id, item);
   const out = [];
   const seen = new Set();
   for (const item of map.values()) {
@@ -103,8 +112,10 @@ function mergeRecurring(older = [], newer = []) {
  *  across devices keeping the max count per denomination (never a wholesale
  *  replace, which would silently drop the other device's coins). */
 function mergeCoins(a = {}, b = {}) {
-  const out = { ...(a || {}) };
-  for (const [key, count] of Object.entries(b || {})) {
+  const left = a && typeof a === 'object' && !Array.isArray(a) ? a : {};
+  const right = b && typeof b === 'object' && !Array.isArray(b) ? b : {};
+  const out = { ...left };
+  for (const [key, count] of Object.entries(right)) {
     out[key] = Math.max(Number(out[key]) || 0, Number(count) || 0);
   }
   return out;
@@ -113,14 +124,16 @@ function mergeCoins(a = {}, b = {}) {
 /** balanceCheckpoints: {methodId: [{date, at, balance}]} — keep the point
  *  with the later `at` for the same date, union across methods. */
 function mergeCheckpoints(a = {}, b = {}) {
-  const methods = new Set([...Object.keys(a), ...Object.keys(b)]);
+  const left = a && typeof a === 'object' && !Array.isArray(a) ? a : {};
+  const right = b && typeof b === 'object' && !Array.isArray(b) ? b : {};
+  const methods = new Set([...Object.keys(left), ...Object.keys(right)]);
   const out = {};
   for (const method of methods) {
     const byDate = new Map();
-    for (const point of (a[method] || [])) {
+    for (const point of (Array.isArray(left[method]) ? left[method] : [])) {
       if (point && point.date) byDate.set(point.date, point);
     }
-    for (const point of (b[method] || [])) {
+    for (const point of (Array.isArray(right[method]) ? right[method] : [])) {
       if (!point || !point.date) continue;
       const existing = byDate.get(point.date);
       if (!existing || Date.parse(point.at || '') > Date.parse(existing.at || '')) byDate.set(point.date, point);
@@ -148,23 +161,61 @@ function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresher) {
     // categoryBudgets: per-key LWW — a target set on either side survives, and
     // the fresher side wins a clash for the same category.
     categoryBudgets: { ...(older.categoryBudgets || {}), ...(newer.categoryBudgets || {}) },
+    // tescoWeekNos is per-week too: a week number typed on either device
+    // survives, and the fresher side wins a clash for the same week.
+    tescoWeekNos: { ...(older.tescoWeekNos || {}), ...(newer.tescoWeekNos || {}) },
     deletedEntryIds,
   };
 }
 
 /** Merge two full state documents into one raw state object (unvalidated —
  *  callers run it through validateState() before adopting). */
+/** Union one id-keyed Tesco collection (shifts / payslips) with LWW per id,
+ *  dropping tombstones. Mirrors mergeEntries, minus the entry-shape rules. */
+function mergeTescoList(localList, cloudList, deleted) {
+  const byId = new Map();
+  for (const item of localList || []) if (item && item.id) byId.set(item.id, item);
+  for (const item of cloudList || []) {
+    if (!item || !item.id) continue;
+    const existing = byId.get(item.id);
+    if (!existing || entryVersion(item) > entryVersion(existing)) byId.set(item.id, item);
+  }
+  return [...byId.values()].filter(item => !deleted.has(item.id));
+}
+
+/** Tesco Pay: union shifts + payslips by id, union both tombstone lists.
+ *  Rates live under settings.tescoRates and follow the scalar LWW rule. */
+function mergeTesco(localTesco, cloudTesco) {
+  const empty = { shifts: [], payslips: [], deletedShiftIds: [], deletedPayslipIds: [] };
+  const local = localTesco && typeof localTesco === 'object' ? localTesco : empty;
+  const cloud = cloudTesco && typeof cloudTesco === 'object' ? cloudTesco : empty;
+  const deletedShiftIds = unionIds(local.deletedShiftIds, cloud.deletedShiftIds);
+  const deletedPayslipIds = unionIds(local.deletedPayslipIds, cloud.deletedPayslipIds);
+  return {
+    shifts: mergeTescoList(local.shifts, cloud.shifts, new Set(deletedShiftIds)),
+    payslips: mergeTescoList(local.payslips, cloud.payslips, new Set(deletedPayslipIds)),
+    deletedShiftIds,
+    deletedPayslipIds,
+  };
+}
+
 export function mergeStates(local, cloud) {
-  const localTime = Date.parse(local.lastLocalChangeAt || '');
-  const cloudTime = Date.parse(cloud.lastLocalChangeAt || '');
+  // Tolerate a missing or non-object document on either side: a merge that
+  // throws here takes every subsequent sync down with it, and the cloud copy
+  // can legitimately be absent (first push) or unreadable.
+  const mine = local && typeof local === 'object' && !Array.isArray(local) ? local : {};
+  const theirs = cloud && typeof cloud === 'object' && !Array.isArray(cloud) ? cloud : {};
+  const localTime = Date.parse(mine.lastLocalChangeAt || '');
+  const cloudTime = Date.parse(theirs.lastLocalChangeAt || '');
   const cloudFresher = Number.isFinite(cloudTime) && (!Number.isFinite(localTime) || cloudTime > localTime);
-  const deletedIds = new Set(unionIds(local.settings?.deletedEntryIds, cloud.settings?.deletedEntryIds));
+  const deletedIds = new Set(unionIds(mine.settings?.deletedEntryIds, theirs.settings?.deletedEntryIds));
   const merged = {
-    ...local,
-    entries: mergeEntries(local.entries, cloud.entries, deletedIds),
-    settings: mergeSettings(local.settings || {}, cloud.settings || {}, cloudFresher),
-    lastLocalChangeAt: maxIso(local.lastLocalChangeAt, cloud.lastLocalChangeAt),
-    localResetAt: maxIso(local.localResetAt, cloud.localResetAt),
+    ...mine,
+    entries: mergeEntries(mine.entries, theirs.entries, deletedIds),
+    settings: mergeSettings(mine.settings || {}, theirs.settings || {}, cloudFresher),
+    tesco: mergeTesco(mine.tesco, theirs.tesco),
+    lastLocalChangeAt: maxIso(mine.lastLocalChangeAt, theirs.lastLocalChangeAt),
+    localResetAt: maxIso(mine.localResetAt, theirs.localResetAt),
     schemaVersion: 2,
   };
   return merged;

@@ -16,6 +16,42 @@ falls back to native behaviour.
 | `flatpickr.min.js`      | flatpickr        | 4.6.13    | MIT     | https://github.com/flatpickr/flatpickr                    |
 | `flatpickr.min.css`     | flatpickr styles | 4.6.13    | MIT     | https://github.com/flatpickr/flatpickr                    |
 
+### `tesseract/` — roster OCR (Tesco Pay tab)
+
+| File                                | What it is                              | License    |
+| ----------------------------------- | --------------------------------------- | ---------- |
+| `tesseract.min.js`                  | tesseract.js 5.1.1 browser build        | Apache-2.0 |
+| `worker.min.js`                     | recognition worker                      | Apache-2.0 |
+| `tesseract-core-simd-lstm.wasm.js`  | LSTM core glue, SIMD                    | Apache-2.0 |
+| `tesseract-core-simd-lstm.wasm`     | its WebAssembly binary (~2.9 MB)        | Apache-2.0 |
+| `tesseract-core-lstm.wasm.js`       | LSTM core glue, non-SIMD (old iOS)      | Apache-2.0 |
+| `tesseract-core-lstm.wasm`          | its WebAssembly binary                  | Apache-2.0 |
+| `eng.traineddata.gz`                | English model, 4.0.0_best_int (~3 MB)   | Apache-2.0 |
+
+Vendored rather than CDN-loaded so the OCR stays same-origin (the CSP allows
+no third-party scripts) and works offline once used. Nothing here is on the
+boot path: `tesco.js` injects `tesseract.min.js` on the first roster scan,
+and the core/WASM/model are fetched by the worker at that point. The service
+worker's runtime cache picks them up, so later scans (and offline scans) skip
+the download. Sources: npm `tesseract.js@5.1.1`, `tesseract.js-core@5.1.1`,
+`@tesseract.js-data/eng@1.0.0` (`4.0.0_best_int`).
+
+**The core ships as glue + `.wasm`, not the `-single-file` build.**
+tesseract.js-core publishes both; the `*.wasm.js` files used here are the
+*glue* from the split build, which fetches its sibling `.wasm` binary as a
+normal same-origin request. The other published variant inlines that binary
+as a base64 `data:` URL the core loads, and a strict `connect-src` blocks it —
+it still scanned, but only by falling back, logging a CSP error per scan.
+
+That split build only resolves its `.wasm` sibling when the worker has a real
+base URL, so `tesco.js` passes `workerBlobURL: false`. tesseract.js otherwise
+wraps the worker in a blob URL, and a relative URL cannot be resolved against
+`blob:` (`Failed to parse URL from tesseract-core-….wasm`). Both settings are
+load-bearing: change one and the scan stops finding its core.
+
+`netlify.toml` also pins `Content-Type: application/wasm` for `*.wasm`, which
+the streaming compiler requires — a mislabelled response is rejected outright.
+
 ## Load strategy (kept deliberately light)
 
 `index.html` loads **only `sweetalert2.min.js`** eagerly (confirm dialogs are

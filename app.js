@@ -2,12 +2,13 @@
    Expense Tracker - editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #balances | #insights
    ============================================================ */
-import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal } from './storage.js';
+import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, takeStorageNotice } from './storage.js';
 import { CATEGORIES, METHODS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, sendTestPush, updateReminderPushTime } from './reminders.js';
+import { screenTesco, monthSummary, TESCO_RATE_DEFAULTS } from './tesco.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
@@ -251,6 +252,23 @@ let pinOverlay = null;
 // (it sits above the toast layer), so the message is queued and shown the
 // moment the device is unlocked.
 let pendingSetupLinkToast = null;
+
+// Warnings raised while an overlay still covers the toast layer (an unreadable
+// stored document, a failed save). Queueing them is what stops the app from
+// telling someone their data is fine when it could not be written.
+const deferredNotices = [];
+let saveFailureNotified = false;
+const overlayVisible = () => !!pinOverlay || !!document.querySelector('.modal-bg');
+function raiseNotice(text) {
+  if (overlayVisible()) deferredNotices.push(text);
+  else toast(text);
+}
+function flushNotices() {
+  // Same guard as raising: a queued notice must not be toasted behind an
+  // overlay either, or it silently expires before the user can see it.
+  if (overlayVisible()) return;
+  while (deferredNotices.length) toast(deferredNotices.shift());
+}
 // A parsed but not-yet-confirmed sync setup link (see applySetupLinkIfPresent).
 // Stashed at boot, applied only after the user confirms post-unlock.
 let pendingSetupLink = null;
@@ -452,6 +470,7 @@ function completeUnlock() {
   render();
   startInitSync();
   offerPersistedUndo();
+  flushNotices();
   if (pendingSetupLinkToast) {
     toast(pendingSetupLinkToast);
     pendingSetupLinkToast = null;
@@ -642,7 +661,10 @@ function showOnboarding() {
   if (pinUnlocked || pinOverlay) return;
   pinUnlocked = true; // the dashboard renders behind the overlay; no lock screen on first boot
 
-  const inputStyle = 'width:100%;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:12px 14px;font-size:15px;outline:none;transition:border-color .15s;box-sizing:border-box;';
+  // No inline outline:none — the stylesheet's :focus-visible ring is the focus
+  // indicator, and an inline reset would outrank it (it is still the border
+  // colour that shifts on mouse focus).
+  const inputStyle = 'width:100%;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:12px 14px;font-size:15px;transition:border-color .15s;box-sizing:border-box;';
   const focusRing = (e) => { e.target.style.borderColor = 'var(--accent)'; };
   const field = (label, input) => $('div', { style: 'margin-bottom:14px;' },
     $('label', { class: 'eyebrow', style: 'display:block;margin-bottom:6px;' }, label),
@@ -684,6 +706,7 @@ function showOnboarding() {
     render();
     startInitSync();
     toast('cents. is ready. Add an expense any time.');
+    flushNotices();
     if (pendingSetupLinkToast) { toast(pendingSetupLinkToast); pendingSetupLinkToast = null; }
     if (pendingSetupLink) queueMicrotask(confirmPendingSetupLink);
   };
@@ -791,7 +814,7 @@ function openReminderSettings() {
         } else draw();
       } }),
     );
-    const timeInput = $('input', { type: 'time', value: s.time, 'aria-label': 'Reminder time', style: 'padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font:inherit;font-size:15px;outline:none;' });
+    const timeInput = $('input', { type: 'time', value: s.time, 'aria-label': 'Reminder time', style: 'padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font:inherit;font-size:15px;' });
     timeInput.addEventListener('change', () => {
       const value = String(timeInput.value || '');
       if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) return;
@@ -966,7 +989,13 @@ function persist() {
   ensureCashCoins();
   clearBalanceCaches();
   syncRevision++;
-  saveState(state);
+  // A rejected write (storage full, or blocked entirely) means the change the
+  // user just made is not on disk. Say so once, rather than letting a reload
+  // silently reveal that it never saved.
+  if (saveState(state) === false && !saveFailureNotified) {
+    saveFailureNotified = true;
+    raiseNotice('Could not save to this device - storage may be full. Export a backup from the menu under Data.');
+  }
   scheduleSyncPush();
 }
 
@@ -2128,12 +2157,14 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
             ? $('div', { style: 'margin-top:2px;' }, $('span', { class: `signed-chip ${difference >= 0 ? 'is-positive' : 'is-negative'}`, style: 'font-size:10px;font-weight:700;padding:2px 9px;' }, `${difference >= 0 ? '+' : ''}${fmt(difference)} vs book`))
             : null,
         ),
-        editable && (isGiftCard || canLoad) ? $('span', { style: 'display:flex;gap:4px;align-items:center;' },
-          $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'load'; editing = true; draw(); }, 'aria-label': `Load ${label}` }, iconSpan('plus', 'sm'), 'Load'),
-          $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editMode = 'reconcile'; editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, iconSpan('pencil', 'sm')),
-          isGiftCard ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => openGiftCardHistoryModal(methodId), 'aria-label': `${label} history` }, iconSpan('clipboard', 'sm')) : null,
-        ) : editable ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;padding:3px 5px;', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, iconSpan('pencil', 'sm')) : null,
-        editable && summary ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:10px;padding:3px 5px;color:var(--negative);', onClick: async () => {
+        // Sizing lives in .balance-row-actions, not inline: an inline padding
+        // outranks the mobile rule, and these had stayed 22×19 there.
+        editable && (isGiftCard || canLoad) ? $('span', { class: 'balance-row-actions' },
+          $('button', { type: 'button', class: 'btn-link', onClick: () => { editMode = 'load'; editing = true; draw(); }, 'aria-label': `Load ${label}` }, iconSpan('plus', 'sm'), 'Load'),
+          $('button', { type: 'button', class: 'btn-link', onClick: () => { editMode = 'reconcile'; editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, iconSpan('pencil', 'sm')),
+          isGiftCard ? $('button', { type: 'button', class: 'btn-link', onClick: () => openGiftCardHistoryModal(methodId), 'aria-label': `${label} history` }, iconSpan('clipboard', 'sm')) : null,
+        ) : editable ? $('button', { type: 'button', class: 'btn-link', onClick: () => { editing = true; draw(); }, 'aria-label': `Reconcile ${label}` }, iconSpan('pencil', 'sm')) : null,
+        editable && summary ? $('button', { type: 'button', class: 'btn-link', style: 'color:var(--negative);', onClick: async () => {
           if (!(await swalConfirm({ title: 'Remove reconciliation?', text: `Remove the ${label} reconciliation from ${friendlyDate(summary.point.date)}?`, confirmButtonText: 'Remove', danger: true }))) return;
           const removed = removeBalanceCheckpoint(methodId, summary.point.date);
           if (removed) {
@@ -3382,22 +3413,35 @@ function tryParseSplitSlices(lower) {
     { re: /\b(?:lidl|lidl'?s)\b/g, method: 'LG' },
     { re: /\b(?:tesco|tesco'?s)\b/g, method: 'TG' },
   ];
+  // An amount is claimed by ONE method only. Without this, a single number
+  // sitting between two method words is read twice — “aldi 12.40 cash” gave Aldi
+  // the number after it and Cash the number before it, turning €12.40 into a
+  // €24.80 split. A genuine split names a separate amount per method
+  // (“10 cash, 14 revolut”), so claiming spans costs nothing real.
+  const usedSpans = [];
+  const overlaps = (s, e) => usedSpans.some(([a, b]) => s < b && e > a);
   const found = [];
   for (const rule of rules) {
     const rx = new RegExp(rule.re.source, rule.re.flags);
     let m;
     while ((m = rx.exec(lower)) !== null) {
-      const before = lower.slice(Math.max(0, m.index - 60), m.index);
-      const after = lower.slice(m.index + m[0].length, m.index + m[0].length + 60);
-      // Amount immediately before (allowing a currency symbol) is the stronger
-      // signal - “10 cash” → cash:10. Otherwise take an amount right after.
-      const numBefore = /(\d+(?:[.,]\d{1,2})?)\s*$/.exec(before.replace(/[€£$]/g, ' '));
+      const beforeStart = Math.max(0, m.index - 60);
+      const before = lower.slice(beforeStart, m.index);
+      const afterStart = m.index + m[0].length;
+      const after = lower.slice(afterStart, afterStart + 60);
+      // Amount immediately before (allowing a currency symbol either side) is
+      // the stronger signal - “10 cash” → cash:10, else an amount right after.
+      const numBefore = /(\d+(?:[.,]\d{1,2})?)\s*[€£$]?\s*$/.exec(before);
       const numAfter = /^\s*[€£$]?\s*(\d+(?:[.,]\d{1,2})?)\b/.exec(after);
-      const raw = numBefore ? numBefore[1] : (numAfter ? numAfter[1] : null);
-      if (raw == null) { rx.lastIndex = m.index + m[0].length; continue; }
-      const amt = parseAmount(raw);
-      if (Number.isFinite(amt) && amt > 0) found.push({ method: rule.method, amount: amt });
+      const span = numBefore
+        ? [beforeStart + numBefore.index, beforeStart + numBefore.index + numBefore[1].length]
+        : (numAfter ? [afterStart + numAfter.index + numAfter[0].indexOf(numAfter[1]), afterStart + numAfter.index + numAfter[0].indexOf(numAfter[1]) + numAfter[1].length] : null);
       rx.lastIndex = m.index + m[0].length;
+      if (!span || overlaps(span[0], span[1])) continue;
+      const amt = parseAmount(numBefore ? numBefore[1] : numAfter[1]);
+      if (!Number.isFinite(amt) || amt <= 0) continue;
+      usedSpans.push(span);
+      found.push({ method: rule.method, amount: amt });
     }
   }
   // One slice per method (first mention wins), requires at least two methods.
@@ -3696,7 +3740,7 @@ function computeDataHealth(entries) {
 }
 
 // ---------- router ----------
-const ROUTES = ['dashboard', 'add', 'history', 'balances', 'insights'];
+const ROUTES = ['dashboard', 'add', 'history', 'balances', 'tesco', 'insights'];
 const isNarrow = () => typeof window !== 'undefined' && window.innerWidth < 640;
 const isTiny = () => typeof window !== 'undefined' && window.innerWidth < 480;
 function currentRoute() {
@@ -3722,7 +3766,12 @@ function $(tag, attrs = {}, ...children) {
     if (k === 'class') el.setAttribute('class', v);
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'data' && typeof v === 'object') Object.assign(el.dataset, v);
-    else if (k === 'innerHTML') el.innerHTML = v;
+    // Only ever markup. `el.innerHTML = undefined` writes the STRING
+    // "undefined" into the element, so an icon lookup that misses (e.g. a
+    // route with no entry in the menu's icon map) used to render the literal
+    // word next to the label instead of failing quietly. Markup is the only
+    // thing this key is for; anything else is a miss and means "no content".
+    else if (k === 'innerHTML') { if (typeof v === 'string') el.innerHTML = v; }
     else if (v === true) el.setAttribute(k, '');
     else if (v === false || v == null) {}
     else el.setAttribute(k, v);
@@ -3751,7 +3800,7 @@ function renderHeader() {
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary', style: locked ? 'display:none;' : '' },
       ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : null },
-        $('span', { class: 'nav-link-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', balances: 'wallet', insights: 'chart' }[r]] || MENU_ICONS.home }),
+        $('span', { class: 'nav-link-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', balances: 'wallet', tesco: 'briefcase', insights: 'chart' }[r]] || MENU_ICONS.home }),
         titleFor(r))),
     ),
     $('div', { class: 'header-actions', style: locked ? 'display:none;' : '' },
@@ -3775,7 +3824,7 @@ function renderHeader() {
 }
 
 function titleFor(r) {
-  return ({ dashboard: 'Dashboard', add: 'New entry', history: 'History', balances: 'Balances', insights: 'Insights' })[r];
+  return ({ dashboard: 'Dashboard', add: 'New entry', history: 'History', balances: 'Balances', tesco: 'Tesco Pay', insights: 'Insights' })[r];
 }
 
 // ---------- animated drill-down menu ----------
@@ -3791,6 +3840,7 @@ const MENU_ICONS = {
   chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-6M22 20H2"/></svg>',
   wallet: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12"/><path d="M20 7v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7"/><rect x="16" y="11" width="4" height="5" rx="1"/></svg>',
   appearance: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/></svg>',
+  briefcase: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7.5" width="18" height="12.5" rx="2"/><path d="M8.5 7.5V6a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v1.5"/><path d="M3 12.5h18"/></svg>',
   lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>',
   cloud: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg>',
   data: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 10h8M8 14h5"/></svg>',
@@ -3878,7 +3928,7 @@ function buildMenuLevel(id) {
   if (id === 'root') {
     const route = currentRoute();
     ROUTES.forEach(r => list.append($('a', { href: `#${r}`, class: 'menu-row' + (r === route ? ' active' : ''), 'aria-current': r === route ? 'page' : null, onClick: closeAppMenu },
-      $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', balances: 'wallet', insights: 'chart' }[r]] }),
+      $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', balances: 'wallet', tesco: 'briefcase', insights: 'chart' }[r]] || MENU_ICONS.home }),
       $('span', { class: 'menu-row-label' }, titleFor(r)),
     )));
     list.append($('div', { class: 'menu-sep' }));
@@ -4115,7 +4165,7 @@ function formView({ initial = null, onSubmit, onCancel }) {
   let splitOn = false;
   const splitRows = [];
   const SLICE_METHODS = METHODS.map(m => m.id);
-  const splitToggle = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;margin-top:8px;', onClick: () => {
+  const splitToggle = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;margin-top:8px;min-height:24px;', onClick: () => {
     splitOn = !splitOn;
     if (splitOn && splitRows.length === 0) {
       splitRows.push({ method: data.method || 'AIB', amount: String(data.amount || '') });
@@ -4190,7 +4240,7 @@ function formView({ initial = null, onSubmit, onCancel }) {
     if (!_catAdding) {
       catChips.appendChild($('button', { type: 'button', class: 'pill pill-cat', style: 'border-style:dashed;opacity:0.55;', title: 'Add custom category', onClick: () => { _catAdding = true; rebuildCatChips(); } }, '+ Add'));
     } else {
-      const input = $('input', { type: 'text', placeholder: 'Category name', 'aria-label': 'New category name', autocomplete: 'off', style: 'border:1px solid var(--accent);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:4px 10px;font-size:12px;width:130px;outline:none;', onKeydown: (ev) => {
+      const input = $('input', { type: 'text', placeholder: 'Category name', 'aria-label': 'New category name', autocomplete: 'off', style: 'border:1px solid var(--accent);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:4px 10px;font-size:12px;width:130px;', onKeydown: (ev) => {
         if (ev.key === 'Escape') { _catAdding = false; rebuildCatChips(); return; }
         if (ev.key === 'Enter') confirmAdd(ev.target);
       }, onBlur: (ev) => { setTimeout(() => { if (_catAdding) { _catAdding = false; rebuildCatChips(); } }, 150); } });
@@ -4514,7 +4564,7 @@ function screenDashboard() {
     ),
     $('div', { class: 'dashboard-actions' },
       $('label', { class: 'eyebrow', for: 'budget-input' }, 'Budget'),
-      $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '-', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
+      $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '-', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
         e.target.style.borderColor = 'var(--line)';
         if (!commitBudget(e.target.value)) { e.target.value = String(budget || ''); toast('Enter a non-negative number.'); }
       }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
@@ -4626,6 +4676,24 @@ function screenDashboard() {
     ));
   }
 
+  // Tesco Pay - the pay-month snapshot from the #tesco tab, one tap away.
+  // Only rendered once there are shifts, so it never clutters the dashboard
+  // for anyone who isn't on a Tesco rota.
+  const tescoShifts = (state.tesco && state.tesco.shifts) || [];
+  if (tescoShifts.length) {
+    const tescoRates = { ...TESCO_RATE_DEFAULTS, ...(state.settings.tescoRates || {}) };
+    const tescoMonth = monthSummary(tescoShifts, (state.tesco && state.tesco.payslips) || [], tescoRates, now.getFullYear(), now.getMonth());
+    screen.appendChild($('a', { href: '#tesco', class: 'card', style: 'display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;margin-bottom:24px;' },
+      iconSpan('briefcase', 'md'),
+      $('div', { style: 'flex:1;min-width:0;' },
+        $('div', { style: 'font-weight:600;font-size:13px;' }, 'Tesco Pay'),
+        $('div', { class: 'muted', style: 'font-size:12px;margin-top:2px;' },
+          `${tescoMonth.hours}h this month · ${fmt(tescoMonth.anticipated)} anticipated · ${fmt(tescoMonth.received)} received`),
+      ),
+      $('span', { class: 'muted', style: 'font-size:11px;' }, 'Open →'),
+    ));
+  }
+
   // Recurring transactions - always show card so "+ New" is accessible
   const allRecurring = state.settings.recurring || [];
   const recurring = allRecurring.filter(r => r.nextDate <= key + '-31');
@@ -4644,7 +4712,10 @@ function screenDashboard() {
       ),
       $('div', { style: 'display:flex;align-items:center;gap:12px;' },
         allRecurring.length > 0 ? $('button', { type: 'button', style: 'font-size:11px;color:var(--muted);cursor:pointer;background:none;border:none;padding:0;text-decoration:underline;text-underline-offset:2px;', onClick: () => openRecurringManager() }, 'Manage all') : null,
-        $('button', { type: 'button', style: 'font-size:11px;color:var(--accent);cursor:pointer;background:none;border:none;padding:0;', onClick: () => openNewRecurring() }, '+ New'),
+        // 44×24 hit area (WCAG 2.2 AA target size) without moving the visual
+        // baseline: padding plus a matching negative margin keeps the text
+        // where it sat while the tappable box grows around it.
+        $('button', { type: 'button', style: 'font-size:11px;color:var(--accent);cursor:pointer;background:none;border:none;padding:5px 6px;margin:-5px -6px;min-height:24px;display:inline-flex;align-items:center;border-radius:6px;', onClick: () => openNewRecurring() }, '+ New'),
       ),
     ),
     dueThisWeek.length > 0 ? $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;' },
@@ -4760,7 +4831,7 @@ function screenDashboard() {
       barEl.style.background = over ? 'var(--negative)' : catBarGradient(cat);
     };
     const startEdit = () => {
-      const input = $('input', { type: 'text', inputmode: 'decimal', value: target ? String(target) : '', 'aria-label': `Monthly target for ${categoryLabel(cat)}`, autocomplete: 'off', style: 'width:62px;border:1px solid var(--accent);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;outline:none;padding:3px 8px;font-size:12px;text-align:right;' });
+      const input = $('input', { type: 'text', inputmode: 'decimal', value: target ? String(target) : '', 'aria-label': `Monthly target for ${categoryLabel(cat)}`, autocomplete: 'off', style: 'width:62px;border:1px solid var(--accent);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:3px 8px;font-size:12px;text-align:right;' });
       const commit = raw => {
         const v = parseAmount(raw);
         if (!Number.isFinite(v) || v < 0) { toast('Enter a non-negative number.'); paintDisplay(); return; }
@@ -4925,7 +4996,7 @@ function screenDashboard() {
                 $('span', { class: 'display-num', style: `font-size:14px;color:${paid ? 'var(--positive)' : 'var(--muted)'};` },
                   paid ? `+${fmt(incomeByDate[d])}` : '-',
                 ),
-                canFill ? $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:3px 10px;font-size:10px;', onClick: () => fillThursday(d) }, 'Fill') : null,
+                canFill ? $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:3px 10px;font-size:10px;min-height:24px;', onClick: () => fillThursday(d) }, 'Fill') : null,
               ),
             );
           }),
@@ -5368,7 +5439,7 @@ function openVoucherEditor() {
   const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
-  const input = $('input', { type: 'text', inputmode: 'decimal', value: amount ? amount.toFixed(2) : '', 'aria-label': 'Voucher amount in euros', autocomplete: 'off', style: 'width:110px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;font-family:inherit;font-size:16px;text-align:center;outline:none;padding:8px 10px;transition:border-color .15s;', onFocus: (e) => e.target.select(), onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } });
+  const input = $('input', { type: 'text', inputmode: 'decimal', value: amount ? amount.toFixed(2) : '', 'aria-label': 'Voucher amount in euros', autocomplete: 'off', style: 'width:110px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;font-family:inherit;font-size:16px;text-align:center;padding:8px 10px;transition:border-color .15s;', onFocus: (e) => e.target.select(), onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } });
   const warnEl = $('div', { style: 'font-size:12px;color:var(--negative);text-align:center;', hidden: amount <= VOUCHER_NOTICE_AT }, `You have ${fmt(amount)} of vouchers - that's above the ${fmt(VOUCHER_NOTICE_AT)} limit.`);
   const refresh = () => {
     warnEl.hidden = amount <= VOUCHER_NOTICE_AT;
@@ -5497,6 +5568,29 @@ function screenAdd() {
       magicInput.focus();
     } }, ex.label)),
   );
+  // Every entry that leaves this screen goes through here, so adding is
+  // undoable like any other write: the slot removes exactly the legs that were
+  // just created and tombstones them, so a later cloud merge can't restore
+  // them. cashAutoFollow may re-anchor the cash base while adding, so its
+  // previous values ride along. No journal: undoing an addition is a
+  // live-session action, and a reload already has the entries.
+  const commitAdded = (entries, label) => {
+    const prevCashBase = state.settings.cashBase;
+    const prevCoinsManual = state.settings.coinsManual;
+    state.entries.push(...entries);
+    state.entries.sort((a, b) => a.date.localeCompare(b.date));
+    if (entries.some(e => e.method === 'Cash')) cashAutoFollow();
+    const ids = entries.map(e => e.id);
+    trackAction(() => {
+      state.entries = state.entries.filter(e => !ids.includes(e.id));
+      tombstoneIds(ids);
+      state.settings.cashBase = prevCashBase;
+      state.settings.coinsManual = prevCoinsManual;
+      persist();
+    }, label);
+    persist();
+  };
+
   const addMagic = () => {
     const parsed = parseNaturalLanguage(magicInput.value);
     if (!parsed || parsed.error) { toast(parsed?.error || 'Describe an entry first.'); magicInput.focus(); return; }
@@ -5506,10 +5600,8 @@ function screenAdd() {
       const pairId = uid();
       const fromEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'expense', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.from, note: 'Created with natural-language input', transferId: pairId };
       const toEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'credit', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.to, note: 'Created with natural-language input', transferId: pairId };
-      state.entries.push(fromEntry, toEntry);
-      state.entries.sort((a, b) => a.date.localeCompare(b.date));
-      if (parsed.transfer.from === 'Cash' || parsed.transfer.to === 'Cash') cashAutoFollow();
-      persist(); toast('Gift card loaded - transfer created from your description.'); location.hash = '#dashboard';
+      commitAdded([fromEntry, toEntry], `${parsed.details} transfer`);
+      toast('Gift card loaded - transfer created from your description.'); location.hash = '#dashboard';
       return;
     }
     if (parsed.split && parsed.split.length >= 2) {
@@ -5522,10 +5614,8 @@ function screenAdd() {
         category: parsed.category, details: parsed.details, amount: s.amount,
         method: s.method, note: 'Created with natural-language input', splitId,
       }));
-      state.entries.push(...legs);
-      state.entries.sort((a, b) => a.date.localeCompare(b.date));
-      if (legs.some(l => l.method === 'Cash')) cashAutoFollow();
-      persist(); toast('Split payment created from your description.'); location.hash = '#dashboard';
+      commitAdded(legs, `${parsed.details} split payment`);
+      toast('Split payment created from your description.'); location.hash = '#dashboard';
       return;
     }
     const entry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: parsed.type, category: parsed.category, details: parsed.details, amount: parsed.amount, method: parsed.method, note: 'Created with natural-language input' };
@@ -5533,15 +5623,13 @@ function screenAdd() {
     const dup = findPotentialDuplicate(entry);
     if (dup) {
       openDuplicateConfirm(entry, dup, () => {
-        state.entries.push(entry);
-        state.entries.sort((a, b) => a.date.localeCompare(b.date));
-        persist(); toast('Entry created from your description.'); location.hash = '#dashboard';
+        commitAdded([entry], entry.details || 'entry');
+        toast('Entry created from your description.'); location.hash = '#dashboard';
       });
       return;
     }
-    state.entries.push(entry);
-    state.entries.sort((a, b) => a.date.localeCompare(b.date));
-    persist(); toast('Entry created from your description.'); location.hash = '#dashboard';
+    commitAdded([entry], entry.details || 'entry');
+    toast('Entry created from your description.'); location.hash = '#dashboard';
   };
   const restoreVoiceLabel = () => { voiceInputBtn.textContent = ''; voiceInputBtn.append(iconSpan('mic', 'sm'), ' Voice'); };
   const voiceInputBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => {
@@ -5568,9 +5656,8 @@ function screenAdd() {
   const form = formView({
     onSubmit: (entryOrEntries) => {
       const entries = Array.isArray(entryOrEntries) ? entryOrEntries : [entryOrEntries];
-      for (const e of entries) state.entries.push(e);
-      state.entries.sort((a, b) => a.date.localeCompare(b.date));
-      persist();
+      const label = entries.length > 1 ? `${entries.length} entries` : (entries[0].details || 'entry');
+      commitAdded(entries, label);
       toast(entries.length > 1 ? `Saved ${entries.length} entries.` : 'Saved.');
       location.hash = '#dashboard';
     },
@@ -6027,6 +6114,15 @@ function screenBalances() {
 }
 
 // ---------- screens: insights ----------
+// Day digits sit on the tinted cell, which is darkest at the top bucket in
+// light mode but brightest in dark mode, so the ink has to follow the theme:
+// page ink reads as dark-on-dark up there in one theme and white-on-bright in
+// the other. Every other bucket is a mid-tint where --ink always works.
+function heatDigitInk(pct) {
+  if (pct < 0.75) return 'var(--ink)';
+  return document.documentElement.dataset.theme === 'dark' ? 'var(--bg)' : '#FFFFFF';
+}
+
 // Heatmap cells tint --accent into --bg. Browsers without color-mix() support
 // get a manual blend so the cells never render transparent.
 function heatColor(pct) {
@@ -6179,7 +6275,7 @@ function screenInsights() {
     const val = heatByDay[ds] || 0;
     const intensity = maxDay > 0 ? val / maxDay : 0;
     const color = intensity === 0 ? 'var(--line)' : heatColor(
-      intensity < 0.25 ? 0.22 : intensity < 0.5 ? 0.42 : intensity < 0.75 ? 0.65 : 0.9
+      intensity < 0.25 ? 0.22 : intensity < 0.5 ? 0.42 : intensity < 0.75 ? 0.65 : 1
     );
     const tip = val > 0 ? `${fmt(val)}` : '';
     const ttip = val > 0 ? `${friendlyDate(ds)} · ${fmt(val)}` : '';
@@ -6197,7 +6293,7 @@ function screenInsights() {
         },
         style: `border-radius:5px;aspect-ratio:1;background:${color};cursor:pointer;font-size:9px;display:flex;align-items:center;justify-content:center;${val === 0 ? 'opacity:0.5;' : ''}${ds === today() ? 'box-shadow:0 0 0 1.5px var(--ink);' : ''}`,
       },
-        val > 0 ? $('span', { style: 'color:var(--ink);font-weight:600;font-size:8px;' }, String(d)) : null,
+        val > 0 ? $('span', { style: `color:${heatDigitInk(intensity)};font-weight:600;font-size:8px;` }, String(d)) : null,
       ),
     ));
   }
@@ -7567,11 +7663,18 @@ function _render() {
   }
   const shouldAnimateScreen = route !== lastRenderedRoute;
   lastRenderedRoute = route;
-  const screen = $('main', { class: `shell screen${shouldAnimateScreen ? ' stagger' : ' screen-static'}`, id: 'screen' });
+  const screen = $('main', { class: `shell screen${shouldAnimateScreen ? ' stagger' : ' screen-static'}`, id: 'screen', tabindex: '-1' });
+  // Each route needs a heading: the pages label their sections with .eyebrow
+  // text, so the document otherwise had no outline to navigate by. Visually
+  // hidden, and it doubles as the skip link's landing target.
+  screen.appendChild($('h1', { class: 'sr-only' }, titleFor(route)));
   switch (route) {
     case 'add':      screen.appendChild(screenAdd()); break;
     case 'history':  screen.appendChild(screenHistory()); break;
     case 'balances': screen.appendChild(screenBalances()); break;
+    case 'tesco':    screen.appendChild(screenTesco({
+      getState: () => state, $, iconSpan, toast, persist, render, trackAction, swalConfirm, fmt,
+    })); break;
     case 'insights': screen.appendChild(screenInsights()); break;
     default:         screen.appendChild(screenDashboard());
   }
@@ -7593,18 +7696,19 @@ function _render() {
       history: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>' },
       insights: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="12" width="4" height="9"/><rect x="10" y="6" width="4" height="15"/><rect x="17" y="3" width="4" height="18"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z"/></svg>' },
       balances: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 7H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h12"/><path d="M20 7v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7"/><rect x="16" y="11" width="4" height="5" rx="1"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M4 4h14a3 3 0 0 1 3 3v1h-4.5a2.5 2.5 0 0 0 0 5H21v3a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V7a3 3 0 0 1 1-2.2A3 3 0 0 1 4 4z"/><rect x="14" y="10" width="4" height="2" rx="1"/></svg>' },
+      tesco: { outline: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7.5" width="18" height="12.5" rx="2"/><path d="M8.5 7.5V6a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v1.5"/><path d="M3 12.5h18"/></svg>', filled: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M9 4h6a3 3 0 0 1 2.83 2H8.5A2.5 2.5 0 0 0 6 8.5V19H5a2 2 0 0 1-2-2V6.5A1.5 1.5 0 0 1 4.5 5H6a3 3 0 0 1 3-1z"/><rect x="7" y="8" width="14" height="12" rx="2"/></svg>' },
     };
     const set = icons[id] || icons.dashboard;
     return $('span', { class: 'bottom-tab-icon', 'aria-hidden': 'true' },
       $('span', { class: 'tab-icon-outline', innerHTML: set.outline }),
       $('span', { class: 'tab-icon-filled', innerHTML: set.filled }),
     );
-  };
-  const tabItems = [
+  };    const tabItems = [
     { id: 'dashboard', label: 'Home' },
     { id: 'add', label: 'Add' },
     { id: 'history', label: 'History' },
     { id: 'balances', label: 'Balances' },
+    { id: 'tesco', label: 'Tesco' },
     { id: 'insights', label: 'Insights' },
   ];
   main.appendChild($('nav', { class: 'bottom-tab-bar', 'aria-label': 'Mobile navigation' },
@@ -7843,10 +7947,26 @@ window.addEventListener('DOMContentLoaded', () => {
   onReminderFired(({ body }) => {
     toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;' }, iconSpan('clock'), body));
   });
+  // First tab stop: moves focus into the screen instead of leaving a keyboard
+  // user to tab through the whole header on every navigation.
+  const skipLink = document.getElementById('skip-to-main');
+  if (skipLink) {
+    skipLink.addEventListener('click', () => {
+      const target = document.getElementById('screen');
+      if (!target) return;
+      target.focus({ preventScroll: true });
+      target.scrollIntoView({ block: 'start' });
+    });
+  }
   applySetupLinkIfPresent();
   if (needsOnboarding()) showOnboarding();
   else if (hasPinLock()) showPinLock();
   render();
+  // Anything the storage layer could not do (an unreadable document) is
+  // reported once the UI is up; raiseNotice defers it behind any overlay.
+  const storageNotice = takeStorageNotice();
+  if (storageNotice) raiseNotice(storageNotice);
+  flushNotices();
 });
 
 // Expose tiny global for DevTools tinkering

@@ -1,17 +1,26 @@
 #!/usr/bin/env node
 /**
  * Local integration harness for the reminder push pipeline.
- * Simulates: browser subscribe → server store → scheduled dispatch →
- * delivery to a FAKE local push service (with real RFC 8291 decryption) →
- * dead-subscription pruning → unsubscribe.
+ *
+ *   0. the ciphertext against RFC 8291's own published test vector
+ *   1-10. browser subscribe → server store → scheduled dispatch → delivery
+ *         to a FAKE local push service → dead-subscription pruning →
+ *         unsubscribe
  *
  *   node scripts/test-reminder-push.mjs
  *
+ * Check 0 exists because the rest of this file CANNOT catch a wrong key
+ * derivation on its own: encryptor and decryptor live in the same repo, so a
+ * scheme both agree on passes here while every real browser discards the push
+ * (the failure mode this harness was blind to until the vector was added).
+ * The vector is the RFC's fixed salt/key material, so the expected bytes are
+ * an external constant rather than anything this repo computed.
+ *
  * Runs fully in-process: the functions fall back to the shared in-memory
- * store outside Netlify's runtime (lib/store.mjs), and the fake push
- * service decrypts the aes128gcm body with the subscription's own keys —
- * proving the encryption path byte-for-byte. The dispatcher gets an
- * injectable clock so the "due now" case is deterministic, not flaky.
+ * store outside Netlify's runtime (lib/store.mjs), and the fake push service
+ * decrypts the aes128gcm body the way a browser does — header salt, per-info
+ * expansions, padding delimiter checked. The dispatcher gets an injectable
+ * clock so the "due now" case is deterministic, not flaky.
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
@@ -30,6 +39,7 @@ const fakePushServer = http.createServer((req, res) => {
     try {
       const body = Buffer.concat(chunks);
       // aes128gcm header: salt(16) | rs(4) | idlen(1) | as_public(idlen)
+      const salt = body.subarray(0, 16);
       const idlen = body.readUInt8(20);
       const asPublic = body.subarray(21, 21 + idlen);
       const ciphertext = body.subarray(21 + idlen);
@@ -43,12 +53,17 @@ const fakePushServer = http.createServer((req, res) => {
         }
         return Buffer.concat(out).subarray(0, len);
       };
-      // ecdh_secret -> PRK (WebPush: info) -> CEK+NONCE (aes128gcm).
-      const prk = hkdf(AUTH, ecdhSecret, Buffer.concat([Buffer.from('WebPush: info\0'), Buffer.from(subscription.keys.p256dh, 'base64url'), asPublic]), 32);
-      const okm = hkdf(Buffer.alloc(0), prk, Buffer.from('Content-Encoding: aes128gcm\0'), 28);
-      const dec = crypto.createDecipheriv('aes-128-gcm', okm.subarray(0, 16), okm.subarray(16, 28));
+      // ecdh_secret -> IKM (WebPush: info), then CEK and NONCE per RFC 8291
+      // section 3.4: both expansions are salted with the header salt, and the
+      // nonce gets its own info string.
+      const ikm = hkdf(AUTH, ecdhSecret, Buffer.concat([Buffer.from('WebPush: info\0'), Buffer.from(subscription.keys.p256dh, 'base64url'), asPublic]), 32);
+      const cek = hkdf(salt, ikm, Buffer.from('Content-Encoding: aes128gcm\0'), 16);
+      const nonce = hkdf(salt, ikm, Buffer.from('Content-Encoding: nonce\0'), 12);
+      const dec = crypto.createDecipheriv('aes-128-gcm', cek, nonce);
       dec.setAuthTag(ciphertext.subarray(ciphertext.length - 16));
       const plain = Buffer.concat([dec.update(ciphertext.subarray(0, ciphertext.length - 16)), dec.final()]);
+      // RFC 8291 section 4: a receiver MUST check the padding delimiter.
+      if (plain[plain.length - 1] !== 2) throw new Error('bad padding delimiter');
       received.push(JSON.parse(plain.subarray(0, plain.length - 1).toString('utf8')));
       res.writeHead(201); res.end();
     } catch (e) {
@@ -70,7 +85,7 @@ const subscription = {
 // ---------- env + fresh in-memory store per run ----------
 process.env.VAPID_SUBJECT = 'mailto:test@example.com';
 process.env.APP_PASSWORD = 'test-password-123';
-const { generateVapidKeys } = await import('../netlify/functions/lib/webpush.mjs');
+const { generateVapidKeys, encryptPayload } = await import('../netlify/functions/lib/webpush.mjs');
 const keys = generateVapidKeys();
 process.env.VAPID_PUBLIC_KEY = keys.publicKey;
 process.env.VAPID_PRIVATE_KEY = keys.privateKey;
@@ -95,6 +110,22 @@ const text = (r) => r.text();
 
 const results = {};
 const check = (name, pass) => { results[name] = !!pass; if (!pass) console.log(`  ✗ ${name}`); };
+
+// ---------- 0. RFC 8291 section 5 / appendix A test vector ----------
+// Fixed salt, sender private key and receiver keys from the RFC, so this is
+// the only assertion here whose expected value comes from outside this repo.
+const RFC8291_VECTOR_SUB = {
+  p256dh: 'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4',
+  auth: 'BTBZMqHH6r4Tts7J_aSIgg',
+};
+const vectorBody = encryptPayload(RFC8291_VECTOR_SUB, 'When I grow up, I want to be a watermelon', {
+  asPrivate: 'yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw',
+  salt: 'DGv6ra1nlYgDCS1FRnbzlw',
+}).toString('base64url');
+check('rfc8291-test-vector', vectorBody ===
+  'DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIg'
+  + 'Dll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVB'
+  + 'St2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN');
 
 // ---------- 1. GET returns the VAPID public key ----------
 const keyResp = await call(pushHandler, 'GET');
