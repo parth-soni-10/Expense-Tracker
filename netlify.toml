@@ -9,7 +9,11 @@
 
 [build]
   publish = "."
-  # Seven guardrails, all pure-Node and fast:
+  # Eight guardrails, all pure-Node and fast:
+  #   check-netlify-config — THIS file is shaped the way Netlify's schema
+  #                          requires (see the note on the scheduled function
+  #                          below), every scheduled function it names exists,
+  #                          and every guard in this list is actually wired in
   #   check-sw-shell      — every sw.js SHELL entry exists on disk
   #   check-image-hygiene — the roster-OCR code has no way to persist the photo
   #   check-csp-hashes    — every inline boot script is hashed in the CSP below
@@ -22,7 +26,7 @@
   #                         resurrect data on hostile input
   #   test-reminder-push  — the push payload still matches the RFC 8291 vector,
   #                         so a reminder can't silently stop being decryptable
-  command = "node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/test-integrity.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-reminder-push.mjs"
+  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/test-integrity.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-reminder-push.mjs"
 
   # Pin the build runtime. scripts/test-tesco.mjs imports tesco.js — a plain
   # .js browser module, and this repo has no package.json (no-build model), so
@@ -41,8 +45,15 @@
 # minutes in UTC; each subscription carries its own IANA zone + HH:MM, and
 # the sender fires when a record's local time falls inside the current slot
 # (see netlify/functions/reminders-send.mjs).
-[[functions]]
-  name = "reminders-send"
+#
+# SHAPE MATTERS: `[functions."<name>"]` is a TABLE. The array form
+# `[[functions]] name = "..."` is rejected by Netlify while it parses this
+# file — before any build step runs — with "Configuration property functions
+# must be an object", so no predeploy guard can ever report it: the only
+# signal is a failed production deploy. check-netlify-config.mjs now guards
+# this exact mistake, and every other shape here that Netlify would take
+# silently.
+[functions."reminders-send"]
   schedule = "*/15 * * * *"
 
 # Multiple `[[headers]]` blocks (note the DOUBLE brackets — this is TOML
