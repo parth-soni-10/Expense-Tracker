@@ -72,13 +72,17 @@ const fakePushServer = http.createServer((req, res) => {
     }
   });
 });
-await new Promise(r => fakePushServer.listen(8201, r));
+// Port 0 = let the OS pick a free one. A hard-coded port would make this
+// suite fail on a machine (or build container) where that port is taken, and
+// it is wired into the deploy as a gate.
+await new Promise(r => fakePushServer.listen(0, r));
+const pushPort = fakePushServer.address().port;
 // Keep the process exit clean on Windows: an open listening handle at
 // exit trips a libuv assertion in some Node builds.
 fakePushServer.unref();
 
 const subscription = {
-  endpoint: 'http://localhost:8201/fake-push',
+  endpoint: `http://localhost:${pushPort}/fake-push`,
   keys: { p256dh: ua.getPublicKey().toString('base64url'), auth: AUTH.toString('base64url') },
 };
 
@@ -171,7 +175,7 @@ check('no-double-send-same-day', received.length === 0);
 const store = await getStore();
 // Time = current UTC HH:MM so the record is due on the next run.
 const utcNow = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
-await store.setJSON('push:prune-test', { time: utcNow, zone: 'UTC', lastFiredDate: '1999-01-01', subscription: { endpoint: 'http://localhost:8201/fake-push', keys: subscription.keys } });
+await store.setJSON('push:prune-test', { time: utcNow, zone: 'UTC', lastFiredDate: '1999-01-01', subscription: { endpoint: `http://localhost:${pushPort}/fake-push`, keys: subscription.keys } });
 endpointAlive = false;
 const sendResp2 = await sendHandler(null, {});
 endpointAlive = true;

@@ -9,7 +9,7 @@
 
 [build]
   publish = "."
-  # Five guardrails, all pure-Node and fast:
+  # Seven guardrails, all pure-Node and fast:
   #   check-sw-shell      — every sw.js SHELL entry exists on disk
   #   check-image-hygiene — the roster-OCR code has no way to persist the photo
   #   check-csp-hashes    — every inline boot script is hashed in the CSP below
@@ -18,7 +18,11 @@
   #                         own cached figures, so a pay change can't ship silently
   #   test-sync           — the sync contract still round-trips the full state
   #                         (stubbed GitHub API; no network, no token)
-  command = "node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs"
+  #   test-integrity      — the storage/merge paths cannot lose, corrupt or
+  #                         resurrect data on hostile input
+  #   test-reminder-push  — the push payload still matches the RFC 8291 vector,
+  #                         so a reminder can't silently stop being decryptable
+  command = "node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/test-integrity.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-reminder-push.mjs"
 
   # Pin the build runtime. scripts/test-tesco.mjs imports tesco.js — a plain
   # .js browser module, and this repo has no package.json (no-build model), so
