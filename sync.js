@@ -4,7 +4,12 @@
    Every call returns a discriminated result object so the caller
    can render a precise status without guessing what went wrong:
      { ok: true,  ...payload }
-     { ok: false, reason: 'auth' | 'network' | 'empty' | 'not_configured' | 'conflict' | 'http', status?, message? }
+     { ok: false, reason: 'auth' | 'network' | 'empty' | 'not_configured' | 'conflict' | 'rejected' | 'http', status?, message? }
+
+   'conflict' (409/422) means the cloud moved and a pull+merge+retry helps.
+   'rejected' (400/413) means the server refused THIS content - our validator
+   or the platform's 6 MB request cap - so retrying the same bytes cannot
+   succeed and the caller must surface it instead of looping.
 
    The proxy hides the GitHub PAT; only the password the user set
    as APP_PASSWORD is sent in the X-Cents-Password header.
@@ -13,6 +18,32 @@
 import { getSyncSettings, patchSyncSettings, isValidEndpoint } from './settings.js';
 
 const TIMEOUT_MS = 12000;
+
+// Netlify rejects a synchronous function request over 6 MB before the function
+// body ever runs, so an oversize payload can never be fixed by retrying. Catching
+// it here also avoids pushing megabytes of doomed upload over a phone's data.
+// The function's own cap stays the backstop for non-browser callers.
+const MAX_PUSH_BYTES = 6 * 1024 * 1024;
+
+/** Which failure class an HTTP status belongs to (see the header comment). */
+// Every 4xx that is not a genuine conflict is 'rejected': the server refused
+// this request — payload too large, invalid data, bad permissions, wrong repo —
+// and none of those improve by resending the same bytes. Retrying them on a
+// timer is how a permanent 403 (token without contents:write) becomes a request
+// every 15 seconds. 5xx and platform errors stay transient, because they do
+// recover on their own.
+function reasonForStatus(status) {
+  if (status === 409 || status === 422) return 'conflict';
+  if (status >= 400 && status < 500) return 'rejected';
+  return 'http';
+}
+
+function oversizeMessage(content) {
+  const notes = Array.isArray(content?.entries) ? content.entries.filter(e => e?.audioData) : [];
+  const noteMb = notes.reduce((sum, e) => sum + e.audioData.length, 0) / (1024 * 1024);
+  const mb = n => n.toFixed(1);
+  return `Cloud copy is too large to upload (6 MB limit). ${notes.length} audio note${notes.length === 1 ? '' : 's'} account for ${mb(noteMb)} MB - remove some to sync.`;
+}
 
 const HINT_BY_STATUS = {
   400: ' - bad request, check endpoint',
@@ -74,18 +105,19 @@ export async function syncPull() {
 
 /** PUT the cloud file. Provide the latest known sha if you have it; omit for first push. */
 export async function syncPush(content, { sha = null, message = 'cents: update expenses' } = {}) {
-  const r = await authedFetch({
-    method: 'PUT',
-    body: JSON.stringify({ content, sha, message }),
-  });
+  const payload = JSON.stringify({ content, sha, message });
+  if (new TextEncoder().encode(payload).byteLength > MAX_PUSH_BYTES) {
+    return { ok: false, reason: 'rejected', message: oversizeMessage(content) };
+  }
+  const r = await authedFetch({ method: 'PUT', body: payload });
   if (!r.ok) return r;
+  const status = r.resp.status;
   let body;
   try { body = await r.resp.json(); }
-  catch { return { ok: false, reason: 'http', message: 'invalid JSON from proxy' }; }
-  if (body?.error) return { ok: false, reason: 'http', message: body.error };
-  if (body?.conflict) {
-    return { ok: false, reason: 'conflict' };
-  }
+  catch { return { ok: false, reason: 'http', status, message: 'invalid JSON from proxy' }; }
+  if (body?.conflict) return { ok: false, reason: 'conflict', status };
+  if (body?.error) return { ok: false, reason: reasonForStatus(status), status, message: body.error };
+  if (!r.resp.ok) return { ok: false, reason: reasonForStatus(status), status, message: `HTTP ${status}` };
   return { ok: true, sha: body.sha, commit: body.commit, branch: body.branch };
 }
 

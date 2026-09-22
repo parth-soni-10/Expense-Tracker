@@ -196,35 +196,49 @@ export function nextWeekStart(afterIso) {
 
 // Group shifts and payslips into Sunday→Saturday pay weeks. A payslip's typed
 // weekStart is snapped to its week's Sunday so the two sides always join.
-export function buildPayWeeks(shifts, payslips) {
+export function buildPayWeeks(shifts, payslips, rates) {
   const weeks = new Map();
   const week = (key) => {
-    if (!weeks.has(key)) weeks.set(key, { weekStart: key, shifts: [], payslip: null });
+    if (!weeks.has(key)) weeks.set(key, { weekStart: key, shifts: [], payslips: [] });
     return weeks.get(key);
   };
   for (const s of shifts) week(weekStartOf(s.date)).shifts.push(s);
-  for (const p of payslips) week(weekStartOf(p.weekStart)).payslip = p;
+  for (const p of payslips) week(weekStartOf(p.weekStart)).payslips.push(p);
   for (const w of weeks.values()) {
     w.shifts.sort((a, b) => a.date.localeCompare(b.date) || String(a.start).localeCompare(String(b.start)));
-    w.gross = r2(w.shifts.reduce((sum, s) => {
-      const p = shiftPay(s, null);
-      return sum + (p ? p.gross : 0);
-    }, 0));
-    w.hours = r2(w.shifts.reduce((sum, s) => {
-      const p = shiftPay(s, null);
-      return sum + (p ? p.hours : 0);
-    }, 0));
+    w.payslips.sort((a, b) => String(a.weekStart).localeCompare(String(b.weekStart)));
+    // One payslip per week is the normal case, and the row the tab edits. A
+    // correction run inside the same week adds to it instead of one silently
+    // replacing the other — the sheet's tax table holds both rows, and the
+    // importer has always summed them.
+    w.payslip = w.payslips[w.payslips.length - 1] || null;
+    w.paid = r2(w.payslips.reduce((sum, p) => sum + payslipTotal(p), 0));
+    const banked = w.payslips.filter(p => p.bankPay != null && Number.isFinite(Number(p.bankPay)));
+    // The sheet's Final Bank Pay, typed from a bank statement: the net that
+    // actually landed, which no formula here can derive (holiday pay, a refund
+    // or a correction are all reasons it differs from gross − tax).
+    w.bankPaid = banked.length ? r2(banked.reduce((sum, p) => sum + Number(p.bankPay), 0)) : null;
+    // One pass at the user's rates, so a week's totals always agree with the
+    // per-shift rows the tab prints under them and with monthSummary above.
+    const pays = w.shifts.map(s => shiftPay(s, rates)).filter(Boolean);
+    w.gross = r2(pays.reduce((sum, p) => sum + p.gross, 0));
+    w.hours = r2(pays.reduce((sum, p) => sum + p.hours, 0));
   }
   return [...weeks.values()].sort((a, b) => b.weekStart.localeCompare(a.weekStart));
 }
 
-// Money that actually landed, per the spreadsheet's Calculated Income column
-// (O = Gross Income − Potential Tax − Pension): a pay week's gross minus the
-// tax + Future Fund its payslip recorded. A payslip with no shifts beside it
-// has no gross to net against, so it contributes nothing.
+// Money that actually landed. A week whose payslip recorded its net into the
+// bank uses that figure — the sheet types it from a statement, and it is the
+// only way holiday pay, a tax refund or a correction can be counted, since the
+// shift rows cannot express any of them. Otherwise it is the spreadsheet's
+// Calculated Income (O = Gross Income − Potential Tax − Pension): the week's
+// gross minus the tax + Future Fund its payslips recorded. A payslip with no
+// shifts beside it has no gross to net against, so it contributes nothing.
 function receivedTotal(weeks) {
-  return r2(weeks.reduce((sum, w) =>
-    (w.payslip && w.shifts.length ? sum + (w.gross - payslipTotal(w.payslip)) : sum), 0));
+  return r2(weeks.reduce((sum, w) => {
+    if (w.bankPaid != null) return sum + w.bankPaid;
+    return w.payslips.length && w.shifts.length ? sum + (w.gross - w.paid) : sum;
+  }, 0));
 }
 // Month summary — the spreadsheet's monthly stats block, simplified to a
 // calendar-month basis: hours/anticipated by shift date, received by the pay
@@ -237,16 +251,16 @@ export function monthSummary(shifts, payslips, rates, year, monthIdx) {
     const p = shiftPay(s, rates);
     if (p) { hours += p.hours; anticipated += p.gross; }
   }
-  const received = receivedTotal(buildPayWeeks(shifts, payslips).filter(w => inMonth(w.weekStart)));
+  const received = receivedTotal(buildPayWeeks(shifts, payslips, rates).filter(w => inMonth(w.weekStart)));
   return { hours: r2(hours), anticipated: r2(anticipated), received };
 }
-export function lifetimeTotals(shifts, payslips) {
+export function lifetimeTotals(shifts, payslips, rates) {
   let hours = 0, anticipated = 0;
   for (const s of shifts) {
-    const p = shiftPay(s, null);
+    const p = shiftPay(s, rates);
     if (p) { hours += p.hours; anticipated += p.gross; }
   }
-  return { hours: r2(hours), anticipated: r2(anticipated), received: receivedTotal(buildPayWeeks(shifts, payslips)) };
+  return { hours: r2(hours), anticipated: r2(anticipated), received: receivedTotal(buildPayWeeks(shifts, payslips, rates)) };
 }
 export function payslipTotal(p) { return r2((+p.paye || 0) + (+p.usc || 0) + (+p.prsi || 0) + (+p.futureFund || 0)); }
 
@@ -263,7 +277,7 @@ const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frid
 // The sheet keeps its actual tax figures in a second table (the Summary's
 // "Total tax paid" block), so the file carries one too: the shift table above,
 // the tax table below it.
-export const TESCO_CSV_PAYSLIP_HEADER = Object.freeze(['Week Start Date', 'Pay Date', 'PAYE', 'USC', 'PRSI', 'Future Fund']);
+export const TESCO_CSV_PAYSLIP_HEADER = Object.freeze(['Week Start Date', 'Pay Date', 'PAYE', 'USC', 'PRSI', 'Future Fund', 'Final Bank Pay']);
 
 // A field is quoted only when it has to be, so the file stays readable — and a
 // note containing a comma survives the round trip.
@@ -293,7 +307,7 @@ function csvUnquote(v) {
 function csvNum(v) { return v == null || v === '' ? '' : r2(v).toFixed(2); }
 
 export function tescoCsv(shifts, payslips, rates, weekNos) {
-  const weeks = new Map(buildPayWeeks(shifts, payslips).map(w => [w.weekStart, w]));
+  const weeks = new Map(buildPayWeeks(shifts, payslips, rates).map(w => [w.weekStart, w]));
   // Which shift row carries a week's figures: the week's first row by date, so
   // the Sunday when one was worked and a plain week still exports its totals
   // instead of dropping them.
@@ -319,10 +333,11 @@ export function tescoCsv(shifts, payslips, rates, weekNos) {
     if (w && carrier.get(ws) === s.date) {
       const sim = simulateTax(w.gross, rates);
       row.push(csvNum(w.gross), csvNum(sim.tax), csvNum(sim.pension), csvNum(sim.net),
-        // The sheet's Final Bank Pay is typed from a bank statement. The app
-        // knows what actually landed once a payslip is entered (gross minus the
-        // tax it recorded), so it exports that rather than inventing a number.
-        w.payslip ? csvNum(w.gross - payslipTotal(w.payslip)) : '');
+        // The sheet's Final Bank Pay is typed from a bank statement. Where the
+        // week's payslip recorded its net, that is what landed; otherwise the
+        // app exports what should have (gross minus the tax it recorded) rather
+        // than inventing a number.
+        w.payslip ? csvNum(w.bankPaid != null ? w.bankPaid : w.gross - w.paid) : '');
     } else {
       row.push('', '', '', '', '');
     }
@@ -333,8 +348,11 @@ export function tescoCsv(shifts, payslips, rates, weekNos) {
   if (slips.length) {
     lines.push('', TESCO_CSV_PAYSLIP_HEADER.join(','));
     for (const p of slips) {
+      // The stored week start, not the snapped one: a second pay run inside the
+      // same Sun → Sat week keeps its own date, the way the sheet's tax table
+      // holds two rows for it. The import snaps both back onto the week.
       const ws = weekStartOf(p.weekStart);
-      lines.push([ws, payDateOf(ws), csvNum(p.paye), csvNum(p.usc), csvNum(p.prsi), csvNum(p.futureFund)].map(csvCell).join(','));
+      lines.push([p.weekStart, payDateOf(ws), csvNum(p.paye), csvNum(p.usc), csvNum(p.prsi), csvNum(p.futureFund), csvNum(p.bankPay)].map(csvCell).join(','));
     }
   }
   return `${lines.join('\r\n')}\r\n`;
@@ -438,6 +456,7 @@ export function parseTescoCsv(text) {
     // (a correction, say), and those are the same week's tax, so they add up
     // rather than one silently replacing the other.
     const fields = [['paye', 'paye'], ['usc', 'usc'], ['prsi', 'prsi'], ['futureFund', 'future fund']];
+    const iBank = at(head, 'final bank pay', 'net paid');
     const byWeek = new Map();
     for (const r of rows.slice(slipHead + 1)) {
       const ws = csvDate(r[iWeek]);
@@ -450,6 +469,14 @@ export function parseTescoCsv(text) {
         byWeek.set(week, draft);
       }
       for (const [key, col] of fields) draft[key] += cell(head.indexOf(col));
+      // The net that reached the bank. A blank cell must stay "not known" so
+      // the week keeps falling back to gross − tax, and two runs in one week
+      // add up the way their tax figures do.
+      if (iBank >= 0) {
+        const raw = String(r[iBank] == null ? '' : r[iBank]).replace(/[^\d.-]/g, '');
+        const n = Number(raw);
+        if (raw !== '' && Number.isFinite(n)) draft.bankPay = (draft.bankPay || 0) + n;
+      }
     }
     payslips.push(...byWeek.values());
   }
@@ -739,6 +766,25 @@ export function parseRosterWords(rawWords, today = new Date(Date.UTC(2026, 8, 22
       cells,
     });
   }
+
+  // Cells read at cell resolution (see ocrOwnerCells) belong to the row the
+  // typed name matched: each came from a crop of one day column rather than from
+  // a word box, so they replace that row's loose strip reads. When the pass
+  // covered the whole grid its silence about a day means the day is blank; when
+  // it only covered part of the grid, the strip reads it never covered are kept.
+  if (Array.isArray(opts.cells) && opts.cells.length) {
+    let owner = out.find(r => r.matches);
+    if (!owner && opts.name) { owner = { name: opts.name, matches: true, cells: [] }; out.unshift(owner); }
+    if (owner) {
+      if (opts.cellsComplete) {
+        owner.cells = opts.cells;
+      } else {
+        const merged = new Map(owner.cells.map(c => [c.date, c]));
+        for (const c of opts.cells) merged.set(c.date, c);
+        owner.cells = [...merged.values()];
+      }
+    }
+  }
   return { rows: out, columns: cols };
 }
 function isoLocalUTC(d) { return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`; }
@@ -867,6 +913,412 @@ export function ocrStripRanges(count = OCR_STRIP_COUNT, height = OCR_STRIP_H) {
   });
 }
 
+// ---------- OCR: reading the owner's row, cell by cell ----------
+// A strip read is cheap and finds the header and the typed name, but its word
+// boxes cannot be trusted on a tall, glare-lit photo — tesseract reported a
+// six-letter name as a 126px-tall box on the sample roster — and a roster's
+// cells are ~30px glyphs, so cropping "to the box" lands beside the text as
+// often as on it. The owner's row is therefore re-read the way a person reads a
+// row: one cell at a time, each crop aligned to the ink of its own column. That
+// also follows a tilted sheet, which a whole-width strip read cannot.
+const OCR_CELL_UPSCALE = 3;    // one cell is ~0.3 MP: the 12 MP working budget is never near
+const OCR_CELL_INSET = 0.07;   // keeps a column's own rule line out of the crop
+const OCR_CELL_BG = 18;        // "darker than its own row's average by this much" = ink
+const OCR_CELL_BG_FAINT = 8;   // for a cell in glare, where 18 finds no glyphs at all
+const OCR_CELL_RUN = 0.6;      // a cell's ink: strokes, not a rule across the column
+const OCR_CELL_DRIFT = 0.42;   // how far a cell's ink may sit from the row's line
+// A cell is looked at through these views, best first, until one reads back as a
+// shift. Flat-field first: it is the only one that survives glare.
+const OCR_CELL_MODES = ['local', 'ink', 'grey'];
+// A cell holds a range of hours or a rest word, nothing else — telling the
+// engine so removes most of its wrong answers ("17-22" for "17-22.").
+const OCR_CELL_CHARS = '0123456789:-·. oOffFhHaAlLnNsSwW/()';
+
+// "Ink" is what is meaningfully darker than its own row's average — not a fixed
+// level. That is what makes glare, the photo's brightness gradient and the
+// sheet's horizontal rule lines all disappear: a rule darkens a whole row, so
+// nothing in that row is darker than its own mean.
+function rowInkCut(d, w, y, bg = OCR_CELL_BG) {
+  const base = y * w * 4;
+  let sum = 0;
+  for (let x = 0; x < w; x++) sum += d[base + x * 4];
+  return sum / w - bg;
+}
+
+// Per-row ink counts for one column slice: one run per line of text.
+function ocrInkProfile(bitmap, canvas, x0, y0, x1, y1, bg = OCR_CELL_BG, maxRunFrac = 0.22) {
+  const w = Math.max(8, Math.round(x1 - x0));
+  const h = Math.max(8, Math.round(y1 - y0));
+  // A rectangle that is off the image, or one the grid produced as NaN, has no
+  // ink to report — returning an empty profile keeps the caller on its normal
+  // "nothing in this cell" path instead of throwing out of the whole scan.
+  if (![w, h, x0, y0].every(Number.isFinite) || x1 - x0 < 8 || y1 - y0 < 8) return new Float32Array(0);
+  canvas.width = w; canvas.height = h;
+  const c = canvas.getContext('2d', { willReadFrequently: true });
+  c.drawImage(bitmap, x0, y0, x1 - x0, y1 - y0, 0, 0, w, h);
+  const d = c.getImageData(0, 0, w, h).data;
+  // Only runs of ink a GLYPH could make count: the sheet's own rule lines run
+  // unbroken across the crop, so a row that is one long run is a rule, not
+  // text — which is how a ruled roster stops reading as forty lines of ink.
+  const maxRun = Math.max(6, Math.round(w * maxRunFrac));
+  const ink = new Float32Array(h);
+  for (let y = 0; y < h; y++) {
+    const cut = rowInkCut(d, w, y, bg);
+    const base = y * w * 4;
+    let n = 0, run = 0;
+    for (let x = 0; x < w; x++) {
+      if (d[base + x * 4] < cut) { run++; continue; }
+      if (run && run <= maxRun) n += run;
+      run = 0;
+    }
+    if (run && run <= maxRun) n += run;
+    ink[y] = n;
+  }
+  return ink;
+}
+
+// One cell as the engine wants it: glyphs upscaled to the size tesseract reads
+// reliably, then binarised against each row's own average so glare, gradient and
+// shadow all cancel instead of hardening into speckle.
+function ocrCellImage(bitmap, canvas, box, scale, mode, bg = OCR_CELL_BG) {
+  const w = Math.max(16, Math.round((box.x1 - box.x0) * scale));
+  const h = Math.max(16, Math.round((box.y1 - box.y0) * scale));
+  canvas.width = w; canvas.height = h;
+  const c = canvas.getContext('2d', { willReadFrequently: true });
+  c.imageSmoothingQuality = 'high';
+  c.drawImage(bitmap, box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, 0, 0, w, h);
+  const img = c.getImageData(0, 0, w, h);
+  const d = img.data;
+  if (mode === 'grey') {
+    // The same cell as plain grey, stretched to full contrast: a second view
+    // for a glyph the binarised one loses (a thin "1", a faint hyphen).
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < d.length; i += 4) hist[d[i]]++;
+    const total = w * h;
+    let lo = 0, hi = 255, acc = 0;
+    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= total * 0.02) { lo = v; break; } }
+    acc = 0;
+    for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= total * 0.02) { hi = v; break; } }
+    const span = Math.max(24, hi - lo);
+    for (let i = 0; i < d.length; i += 4) {
+      const v = Math.max(0, Math.min(255, Math.round(((d[i] - lo) / span) * 255)));
+      d[i] = d[i + 1] = d[i + 2] = v;
+      d[i + 3] = 255;
+    }
+  } else if (mode === 'local') {
+    // Flat-field the cell: compare every pixel with the paper brightness around
+    // it, estimated by a box blur, so a glyph reads as dark against its own
+    // surroundings wherever the glare happens to be. This is the one view that
+    // survives a photo shot through a reflection.
+    ocrFlatField(d, w, h);
+  } else {
+    for (let y = 0; y < h; y++) {
+      const cut = rowInkCut(d, w, y, bg);
+      const base = y * w * 4;
+      for (let x = 0; x < w; x++) {
+        const i = base + x * 4;
+        const v = d[i] < cut ? 0 : 255;
+        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i + 3] = 255;
+      }
+    }
+  }
+  c.putImageData(img, 0, 0);
+}
+
+// Remove the paper's own brightness from a cell. The background is a box blur of
+// the crop — far wider than a stroke, so it follows glare and shadow but not the
+// glyphs — and what is left is scaled so the darkest one percent of the crop
+// reads as full black. In place, on the image data.
+export function ocrFlatField(d, w, h) {
+  const n = w * h;
+  const grey = new Float32Array(n);
+  for (let i = 0; i < n; i++) grey[i] = d[i * 4];
+  const r = Math.max(8, Math.min(Math.round(Math.min(w, h) * 0.6), Math.round(w / 4)));
+  const span = 2 * r + 1;
+  const clampX = x => (x < 0 ? 0 : x >= w ? w - 1 : x);
+  const clampY = y => (y < 0 ? 0 : y >= h ? h - 1 : y);
+  const tmp = new Float32Array(n), bg = new Float32Array(n);
+  for (let y = 0; y < h; y++) {
+    const base = y * w;
+    let sum = 0;
+    for (let x = -r; x <= r; x++) sum += grey[base + clampX(x)];
+    for (let x = 0; x < w; x++) {
+      tmp[base + x] = sum / span;
+      sum += grey[base + clampX(x + r + 1)] - grey[base + clampX(x - r)];
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let sum = 0;
+    for (let y = -r; y <= r; y++) sum += tmp[clampY(y) * w + x];
+    for (let y = 0; y < h; y++) {
+      bg[y * w + x] = sum / span;
+      sum += tmp[clampY(y + r + 1) * w + x] - tmp[clampY(y - r) * w + x];
+    }
+  }
+  const diff = new Float32Array(n);
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < n; i++) {
+    const v = Math.max(0, Math.min(255, bg[i] - grey[i]));
+    diff[i] = v;
+    hist[Math.round(v)]++;
+  }
+  let acc = 0, peak = 12;
+  for (let v = 255; v >= 0; v--) {
+    acc += hist[v];
+    if (acc >= n * 0.01) { peak = Math.max(12, v); break; }
+  }
+  const gain = 255 / peak;
+  for (let i = 0; i < n; i++) {
+    const v = Math.round(255 - Math.min(255, diff[i] * gain));
+    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v;
+    d[i * 4 + 3] = 255;
+  }
+}
+
+async function ocrReadCell(worker, bitmap, canvas, box, opts = {}) {
+  const { accept = () => false, bg = OCR_CELL_BG, chars = '' } = opts;
+  if (![box.x0, box.y0, box.x1, box.y1].every(Number.isFinite)) return { text: '', confidence: 0 };
+  await worker.setParameters({ tessedit_char_whitelist: chars });
+  try {
+    let best = { text: '', confidence: 0 };
+    for (const mode of OCR_CELL_MODES) {
+      ocrCellImage(bitmap, canvas, box, OCR_CELL_UPSCALE, mode, bg);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+      const res = await worker.recognize(blob);
+      const read = {
+        text: String(res?.data?.text || '').replace(/\s+/g, ' ').trim(),
+        confidence: Math.round(res?.data?.confidence ?? 0),
+      };
+      if (read.text && read.confidence > best.confidence) best = read;
+      // A read the caller can use ends the search; otherwise the cell is looked at
+      // again through the other view of the same glyphs before giving up on it.
+      if (read.text && accept(read.text)) return read;
+    }
+    return best;
+  } finally {
+    // The whitelist is a property of the cell pass, and the name read shares
+    // this worker: left set, it would restrict every later read too.
+    if (chars) await worker.setParameters({ tessedit_char_whitelist: '' }).catch(() => {});
+  }
+}
+
+// Pure, so the decisions taken on a photo can be tested without one.
+// Contiguous runs of ink in a vertical profile — one run per line of text.
+export function ocrInkBands(ink, minInk = 2, minH = 4) {
+  const bands = [];
+  let start = -1, peak = 0;
+  for (let i = 0; i <= ink.length; i++) {
+    const v = i < ink.length ? ink[i] : 0;
+    if (v >= minInk) {
+      if (start < 0) { start = i; peak = v; } else if (v > peak) peak = v;
+      continue;
+    }
+    if (start >= 0) {
+      if (i - start >= minH) bands.push({ y0: start, y1: i, cy: (start + i) / 2, ink: peak });
+      start = -1;
+    }
+  }
+  return bands;
+}
+
+// Keep only the bands a line of text could be. A ruled sheet puts a faint rule
+// between its rows, and a faint rule breaks into short runs as readily as text
+// does, so richness of ink will not separate them — height does: glyphs are tens
+// of pixels tall. Without this the row pitch reads as half its true value and a
+// cell's crop lands on the rule instead of the shift.
+export function ocrTextBands(bands) {
+  const heights = bands.map(b => b.y1 - b.y0).sort((a, b) => a - b);
+  const med = heights.length ? heights[Math.floor(heights.length / 2)] : 0;
+  return bands.filter(b => b.y1 - b.y0 >= Math.max(8, med * 0.6));
+}
+
+// The part of a band that actually carries strokes. A profile band can run from
+// one rule to the next, and a crop that includes those empty edges is what
+// truncates a long line of text: cropped to its glyphs it reads back whole.
+function ocrTightBand(ink, band, minInk) {
+  let y0 = band.y0, y1 = band.y1;
+  while (y0 < y1 && ink[y0] < minInk) y0++;
+  while (y1 > y0 && ink[y1 - 1] < minInk) y1--;
+  return { y0, y1, cy: (y0 + y1) / 2 };
+}
+
+// The line a cell sits on, as the centre of mass of the ink in its window. A
+// band's midpoint is dragged by a rule welded to the text it shares a row with
+// (the sheet's bands run from rule to rule), while the mass sits on the glyphs —
+// which is what keeps a chain of cells on one row across a photo.
+function ocrInkCentre(ink, minInk) {
+  let sum = 0, mass = 0;
+  for (let i = 0; i < ink.length; i++) { sum += i * ink[i]; mass += ink[i]; }
+  return mass < minInk * 3 ? null : sum / mass;
+}
+
+// The line a cell sits on: the band nearest `prior`, and never one so far away
+// that it must belong to the row above or below.
+export function ocrPickBand(bands, prior, maxDrift) {
+  let best = null, bestD = maxDrift;
+  for (const b of bands) {
+    const d = Math.abs(b.cy - prior);
+    if (d <= bestD) { best = b; bestD = d; }
+  }
+  return best;
+}
+
+// Read the row the typed name sits on, cell by cell. Returns the cells it read
+// (already in the shape parseRosterWords emits, dated off the same grid) and
+// whether every column of that grid was attempted.
+async function ocrOwnerCells(worker, file, canvas, opts = {}) {
+  const { name, nameWord, cols, progress } = opts;
+  const cells = [];
+  // "Complete" only once the row itself is confirmed: a full grid read off the
+  // wrong row would otherwise replace the matched row's cells with another
+  // person's shifts. Unconfirmed, the pass merges instead of replacing.
+  let complete = false;
+  let bitmap = null;
+  try {
+    // Every read in this pass is one line of one cell, which is exactly what
+    // "single text line" tells the engine to expect. The worker is disposed at
+    // the end of the scan, so the strip pass's own setting is untouched.
+    await worker.setParameters({ tessedit_pageseg_mode: '7' });
+    const buf = await file.arrayBuffer();
+    bitmap = await createImageBitmap(new Blob([buf], { type: file.type || 'image/jpeg' }), { imageOrientation: 'from-image' });
+    const imgW = bitmap.width, imgH = bitmap.height;
+    // Column bounds: halfway between neighbouring centres, half a gap at each
+    // end, then inset clear of the rule lines.
+    const cx = cols.map(c => c.cx);
+    const bounds = cx.map((c, i) => {
+      const left = i > 0 ? (cx[i - 1] + c) / 2 : c - (cx[1] - cx[0]) / 2;
+      const right = i < cx.length - 1 ? (c + cx[i + 1]) / 2 : c + (c - cx[i - 1]) / 2;
+      const inset = Math.max(2, (right - left) * OCR_CELL_INSET);
+      return [Math.max(0, left + inset), Math.min(imgW, right - inset)];
+    });
+
+    // Three rectangles, one job each: the name column's strip is what the rows
+    // are measured in, the name itself is read from a box that reaches far enough
+    // left to hold it, and each day column is cropped inside its own bounds.
+    const colGap = Math.max(40, cx[1] - cx[0]);
+    const profX0 = Math.max(0, cx[0] - colGap * 0.95);
+    const profX1 = Math.max(profX0 + 40, cx[0] - colGap * 0.15);
+    const nameX0 = Math.max(0, cx[0] - colGap * 1.3);
+    // 5% of the strip's width per row: a line of text puts tens of stroke pixels
+    // in a row, while paper grain and a faint rule leave a handful — at 2% the
+    // noise read as ink and every row looked 60px tall.
+    const nameMinInk = Math.max(4, Math.round((profX1 - profX0) * 0.05));
+
+    // Pitch: a line of text is tens of pixels tall and a sheet's rows are a little
+    // over twice that. Measuring the TEXT heights is what sizes a window that
+    // holds one row and not its neighbours — a rule is a few pixels tall, and
+    // reading rules as rows made the pitch come out at half its true value.
+    const textHeights = ocrInkBands(ocrInkProfile(bitmap, canvas, profX0, 0, profX1, imgH), nameMinInk, 3)
+      .map(b => b.y1 - b.y0).filter(h => h >= 14).sort((a, b) => a - b);
+    const textH = textHeights.length ? textHeights[Math.floor(textHeights.length / 2)] : imgH * 0.012;
+    const pitch = Math.min(Math.max(textH * 2.1, imgH * 0.012), imgH * 0.05);
+    // The window a cell is looked for in: one row's worth either side of the line,
+    // and no more. Widening it to catch a cell whose text sits high in a tilted
+    // photo merges the neighbouring rows' bands into a single run instead, which
+    // measures worse on the sample roster than the tighter window does.
+    const win = Math.max(10, Math.round(pitch * 0.45));
+
+    // The row's line. A word box's HEIGHT is unreliable but its centre is not —
+    // the strip read puts the name within a few pixels of its line — so the row
+    // is that point refined by the ink around it. One measurement, not a chain of
+    // bands: a chain accumulates whatever bias each column has and walks onto the
+    // next row (measured on a real roster: 12px a column, one whole row off by the
+    // last day).
+    const anchorCy = (nameWord.y0 + nameWord.y1) / 2;
+    const probe0 = Math.max(0, Math.round(anchorCy - win));
+    const probeRel = ocrInkCentre(ocrInkProfile(bitmap, canvas, profX0, probe0, profX1, Math.min(imgH, Math.round(anchorCy + win))), nameMinInk);
+    const rowCy = probeRel == null ? anchorCy : probe0 + probeRel;
+
+    // Confirm the row by reading its name, one word at a time: the strip carries
+    // the band column beside the name ("Parth 20"), which no whole-line compare
+    // survives.
+    progress(0.86, 'Checking your name on this row');
+    const nameRead = await ocrReadCell(worker, bitmap, canvas, {
+      x0: nameX0, x1: profX1, y0: Math.max(0, Math.round(rowCy - textH * 0.8)), y1: Math.min(imgH, Math.round(rowCy + textH * 0.8)),
+    }, { accept: text => String(text).split(/\s+/).some(w => nameMatches(w, name)) });
+    const validated = String(nameRead.text || '').split(/\s+/).filter(Boolean).some(w => nameMatches(w, name));
+    if (!validated) progress(0.87, 'That row does not carry your name');
+
+    for (let i = 0; i < cols.length; i++) {
+      const [x0, x1] = bounds[i];
+      if (!(x1 - x0 > 20)) continue;
+      progress(0.88 + (i / cols.length) * 0.1, `Reading shift ${i + 1} of ${cols.length}`);
+      // Measure the column's ink between its own rule lines, never across them:
+      // a vertical rule runs the full height of the crop, so leaving it in puts
+      // the same ink on every row and the "line" reads as the window's middle —
+      // which is exactly where the sheet's horizontal rule sits.
+      const inset = Math.max(3, Math.round((x1 - x0) * 0.06));
+      // A rule is short and fat, a line of glyphs is tall — and the sheet's rule
+      // sits directly under its text, so a lax height test picks the rule as the
+      // row's line and crops the glyphs in half. Keep only bands as tall as the
+      // name that anchors this row, then take the one nearest it.
+      //
+      // Only a band as tall as the name that anchors this row can be a line of
+      // text; the rule directly beneath it is shorter.
+      const minBandH = Math.max(6, Math.round(textH * 0.75));
+      const margin = Math.round(textH * 0.15);
+      let parsed = null, read = { text: '', confidence: 0 };
+      // A cell's text is not always on the line the row is tracked at: the sheet's
+      // day columns drift tens of pixels from it when the photo is taken at an
+      // angle, and the glyphs hang above the rule the tracking follows. So a cell
+      // that reads back as nothing gets a second look with the window lifted by a
+      // text height — and only the cells that fail pay for it. The same two looks
+      // are then repeated at a fainter sensitivity, for cells in the photo's glare.
+      for (const bg of [OCR_CELL_BG, OCR_CELL_BG_FAINT]) {
+        for (const lift of [0, Math.round(textH * 0.6)]) {
+          const line = rowCy - lift;
+          const win0 = Math.max(0, Math.round(line - win));
+          const win1 = Math.min(imgH, Math.round(line + win));
+          // Under glare a glyph's strokes blur into each other and the run limit
+          // written for rule lines starts discarding them as if they were rules, so
+          // a cell is profiled with a limit only a rule across the whole column
+          // can exceed.
+          const profile = ocrInkProfile(bitmap, canvas, x0 + inset, win0, x1 - inset, win1, bg, OCR_CELL_RUN);
+          // Of the bands in the window, the line of text is the tall one and the
+          // sheet's rule the short one, so only glyph-height bands are candidates;
+          // between two, the row's own is the band ending nearest its line.
+          const band = ocrInkBands(profile, 2, minBandH)
+            .reduce((a, b) => (!a || Math.abs(b.y1 - (line - win0)) < Math.abs(a.y1 - (line - win0)) ? b : a), null);
+          if (!band) continue;
+          // Crop to the strokes of that band. The trim threshold has to be low: one
+          // sized to a shadowed cell trims a glare-lit one down to the rule beside
+          // it, which is the one thing in that crop that is not a shift.
+          const strokes = ocrTightBand(profile, band, Math.max(2, Math.round((x1 - x0) * 0.02)));
+          read = await ocrReadCell(worker, bitmap, canvas, {
+            x0: x0 + inset, x1: x1 - inset,
+            y0: Math.max(0, win0 + strokes.y0 - margin), y1: Math.min(imgH, win0 + strokes.y1 + margin),
+          }, {
+            accept: text => parseTimeCell(text) || /^\s*(off|hol|n\/?a)\b/i.test(text),
+            bg, chars: OCR_CELL_CHARS,
+          });
+          // A cell's crop can still carry a character from the column beside it (the
+          // band number, a rule's edge). If the whole text is not a range but holds
+          // exactly one, that is the cell's shift.
+          const found = String(read.text || '').match(/\d{1,2}(?::\d{2})?\s*[-–—]\s*\d{1,2}(?::\d{2})?/g) || [];
+          parsed = parseTimeCell(read.text) || (found.length === 1 ? parseTimeCell(found[0]) : null);
+          if (parsed) break;
+        }
+        if (parsed) break;
+      }
+      if (!parsed) continue;
+      const col = cols[i];
+      cells.push({
+        date: col && col.date ? isoLocalUTC(col.date) : null,
+        weekday: col && col.date ? col.date.getUTCDay() : (col && col.weekday != null ? col.weekday : null),
+        startMin: parsed.startMin, endMin: parsed.endMin,
+        raw: read.text, confidence: read.confidence, dupe: false,
+      });
+    }
+    complete = validated && cols.length >= 7;
+  } finally {
+    if (bitmap) bitmap.close();
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+  return { cells, complete };
+}
+
 // Find the user's row and read it, without asking them to frame it.
 //
 // Roster photos are handed round, shot at an angle or taken through glare, and
@@ -881,10 +1333,12 @@ export function ocrStripRanges(count = OCR_STRIP_COUNT, height = OCR_STRIP_H) {
 // success, a throw mid-scan, and a scan that found nothing.
 export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
   const name = String(opts.name || '');
+  const today = opts.today || new Date();
   const progress = onProgress || (() => {});
   const ranges = ocrStripRanges();
   const words = [];
   let scanned = 0, found = false;
+  let cells = [], cellsComplete = false;
   progress(0.02, 'Reading photo');
   try {
     const worker = await ensureOcrWorker();
@@ -899,11 +1353,24 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
       scanned++;
       if (name && read.some(w => nameMatches(w.text, name))) { found = true; break; }
     }
+    // The row was located, so read it again at cell resolution — the strip pass
+    // only had to find the header and the name (see ocrOwnerCells). The column
+    // grid comes from the same words, so no second engine session is needed.
+    const nameWord = found ? words.find(w => nameMatches(w.text, name)) : null;
+    if (nameWord) {
+      const cols = parseRosterWords(words, today, { name }).columns;
+      if (cols.length >= 2) {
+        _progressSink = () => {};
+        const read = await ocrOwnerCells(worker, file, canvas, { name, nameWord, cols, progress });
+        cells = read.cells;
+        cellsComplete = read.complete;
+      }
+    }
   } finally {
     _progressSink = () => {};
     disposeOcrWorker();
   }
-  return { words, found, scanned };
+  return { words, found, scanned, cells, cellsComplete };
 }
 
 // ============================================================
@@ -953,7 +1420,7 @@ export function screenTesco(ctx) {
 
   // ----- header stats -----
   const month = monthSummary(shifts(), payslips(), rates, now.getFullYear(), now.getMonth());
-  const life = lifetimeTotals(shifts(), payslips());
+  const life = lifetimeTotals(shifts(), payslips(), rates);
   screen.appendChild($('div', { class: 'card tesco-stats' },
     $('div', { class: 'tesco-stats-grid' },
       statCell('Hours this month', `${month.hours}h`),
@@ -982,6 +1449,8 @@ export function screenTesco(ctx) {
   screen.appendChild(buildRatesCard());
   // ----- import / export -----
   screen.appendChild(buildDataCard());
+  // ----- start over -----
+  screen.appendChild(buildClearCard());
 
   // ================= add shift =================
   function buildAddCard() {
@@ -1039,7 +1508,11 @@ export function screenTesco(ctx) {
       const ws = weekStartOf(p.weekStart);
       if (!dateOk(ws) || seen.has(ws)) continue;
       seen.add(ws);
-      out.push({ id: uid(), weekStart: ws, paye: +p.paye || 0, usc: +p.usc || 0, prsi: +p.prsi || 0, futureFund: +p.futureFund || 0, createdAt: new Date().toISOString() });
+      out.push({
+        id: uid(), weekStart: ws, paye: +p.paye || 0, usc: +p.usc || 0, prsi: +p.prsi || 0, futureFund: +p.futureFund || 0,
+        bankPay: Number.isFinite(Number(p.bankPay)) && p.bankPay != null ? +p.bankPay : undefined,
+        createdAt: new Date().toISOString(),
+      });
     }
     return out;
   }
@@ -1098,6 +1571,37 @@ export function screenTesco(ctx) {
       { ...before, shifts: [...before.shifts, ...fresh], payslips: [...before.payslips, ...freshTax], weekNos: weekNosNext },
       `Import ${parts.join(' and ')}`, `Imported ${parts.join(' and ')}.`);
   }
+
+  // Every week the tab holds, gone at once. Both id tables are tombstoned for the
+  // same reason a single delete is (see below): sync unions by id, so a wipe with
+  // no tombstones comes straight back from the other device's copy on the next
+  // merge. One snapshot, one undo, so the whole thing is reversible for as long
+  // as the app holds undo steps.
+  function clearAllTesco() {
+    const before = snapshot();
+    const shiftIds = before.shifts.map(s => s.id);
+    const slipIds = before.payslips.map(p => p.id);
+    const restore = () => {
+      const cur = ctx.getState();
+      cur.tesco.shifts = before.shifts;
+      cur.tesco.payslips = before.payslips;
+      cur.settings.tescoWeekNos = { ...before.weekNos };
+      shiftIds.forEach(id => tombstone('deletedShiftIds', id, false));
+      slipIds.forEach(id => tombstone('deletedPayslipIds', id, false));
+      persist(); render();
+    };
+    ctx.getState().tesco.shifts = [];
+    ctx.getState().tesco.payslips = [];
+    ctx.getState().settings.tescoWeekNos = {};
+    shiftIds.forEach(id => tombstone('deletedShiftIds', id, true));
+    slipIds.forEach(id => tombstone('deletedPayslipIds', id, true));
+    trackAction(restore, 'Delete all Tesco Pay weeks');
+    persist(); render();
+    toast(`Deleted ${count(before.shifts.length, 'shift')} and ${count(before.payslips.length, 'payslip week')}.`, restore, 'Undo');
+  }
+
+  // Plural helper for the counts the card and the toast both state.
+  function count(n, noun) { return `${n} ${noun}${n === 1 ? '' : 's'}`; }
 
   // A deleted row must stay tombstoned until every device has merged. Sync
   // unions shifts/payslips by id and drops only ids it finds in these lists,
@@ -1182,13 +1686,18 @@ export function screenTesco(ctx) {
       let note = '';
       const setP = (p, msg) => { bar.firstChild.style.width = `${Math.round(p * 100)}%`; if (msg) status.textContent = msg; };
       try {
-        const { words, found, scanned } = await ocrRosterRow(file, canvas, { name }, setP);
+        const { words, found, scanned, cells, cellsComplete } = await ocrRosterRow(file, canvas, { name }, setP);
         setP(0.85, 'Reading the shifts');
-        const parsed = parseRosterWords(words, new Date(), { fallback: { weekStart: weekIn.value }, name });
+        const parsed = parseRosterWords(words, new Date(), { fallback: { weekStart: weekIn.value }, name, cells, cellsComplete });
+        // The cell pass is what turns "a row was found" into "these shifts were
+        // read", so say how many it managed and leave the rest to be filled in.
+        const cellNote = cellsComplete
+          ? ` Read ${cells.length} shift${cells.length === 1 ? '' : 's'} cell by cell${cells.length < 7 ? '; fix any day left blank' : ''}.`
+          : '';
         note = !parsed.rows.length
           ? 'Nothing read — try a photo with the whole sheet in frame, or check the name.'
           : found
-            ? `Found your row on pass ${scanned} of ${OCR_STRIP_COUNT}. Photo discarded from memory.`
+            ? `Found your row on pass ${scanned} of ${OCR_STRIP_COUNT}.${cellNote} Photo discarded from memory.`
             : `No row named “${name}” was read — pick your row below and fix anything the scanner misread.`;
         // Held so a rebuild mid-review reopens the same row instead of nothing.
         const matched = parsed.rows.findIndex(r => r.matches);
@@ -1314,7 +1823,7 @@ export function screenTesco(ctx) {
 
   // ================= pay weeks =================
   function buildWeeksCard() {
-    const weeks = buildPayWeeks(shifts(), payslips());
+    const weeks = buildPayWeeks(shifts(), payslips(), rates);
     const card = $('div', { class: 'card' });
     card.appendChild($('div', { class: 'tesco-card-title' }, 'Pay weeks', iconSpan('clock', 'md')));
     if (!weeks.length) {
@@ -1332,7 +1841,7 @@ export function screenTesco(ctx) {
 
   function weekBlock(w) {
     const sim = w.gross > 0 ? simulateTax(w.gross, rates) : null;
-    const actual = w.payslip ? payslipTotal(w.payslip) : null;
+    const actual = w.payslips.length ? w.paid : null;
     const box = $('div', { class: 'tesco-week' });
     // The week number is the sheet's own column, so it is editable: the sheet
     // counts 1..52/53 from where its pay year starts and restarts at 1, which
@@ -1383,6 +1892,7 @@ export function screenTesco(ctx) {
         : null;
       box.appendChild($('div', { class: 'tesco-actual' },
         $('span', { style: 'font-weight:600;font-size:12px;' }, `Payslip total ${fmt(actual)}`),
+        w.bankPaid != null ? $('span', { class: 'tesco-derived' }, `Received ${fmt(w.bankPaid)}`) : null,
         chip,
       ));
     }
@@ -1445,12 +1955,14 @@ export function screenTesco(ctx) {
     // aria-labels carry the payslip id: the app restores focus across renders
     // by label, so two rows sharing "Payslip paye" would send the caret to the
     // wrong row after the debounced repaint below.
-    const numIn = (key) => $('input', {
-      type: 'number', step: '0.01', value: p[key],
+    // `optional` is for the net that reached the bank: clearing it means "not
+    // known", not €0, or a blank field would zero that week's received figure.
+    const numIn = (key, optional) => $('input', {
+      type: 'number', step: '0.01', value: p[key] ?? '',
       'aria-label': `Payslip ${key} ${p.id}`, class: 'tesco-in tesco-in-num',
       onInput: e => {
         const v = parseFloat(e.target.value);
-        updatePayslip(p.id, { [key]: Number.isFinite(v) ? v : 0 });
+        updatePayslip(p.id, { [key]: Number.isFinite(v) ? v : (optional ? undefined : 0) });
         refreshTotal();            // instant feedback on this row
         schedulePayslipRender();   // then the week card, footer and month stats follow
       },
@@ -1463,6 +1975,9 @@ export function screenTesco(ctx) {
       $('input', { type: 'date', value: p.weekStart, 'aria-label': `Week start ${p.id}`, class: 'tesco-in tesco-in-date', onInput: e => { if (dateOk(e.target.value)) { updatePayslip(p.id, { weekStart: e.target.value }); schedulePayslipRender(); } } }),
       $('div', { class: 'tesco-payslip-grid' },
         numField('PAYE', numIn('paye')), numField('USC', numIn('usc')), numField('PRSI', numIn('prsi')), numField('FF', numIn('futureFund')),
+        // The net that landed in the bank, when the payslip states it. Optional
+        // on purpose: a blank falls back to gross − tax.
+        numField('Bank', numIn('bankPay', true)),
       ),
       $('div', { class: 'tesco-payslip-foot' },
         $('span', { class: 'muted', style: 'font-size:11px;' }, `Pay ${prettyDate(payDateOf(weekStartOf(p.weekStart)))}`),
@@ -1586,6 +2101,32 @@ export function screenTesco(ctx) {
       $('div', { class: 'tesco-form-row' }, exportBtn, importBtn, fileIn),
       $('div', { class: 'muted', style: 'font-size:12px;margin-top:8px;' },
         'CSV in the sheet’s own columns: one row per shift, newest first, each week’s figures on its first row.'),
+    );
+  }
+
+  // ================= start over =================
+  function buildClearCard() {
+    const nShifts = shifts().length, nSlips = payslips().length;
+    const empty = !nShifts && !nSlips;
+    const button = $('button', {
+      type: 'button', class: 'btn btn-danger',
+      onClick: async () => {
+        if (empty) { toast('There are no Tesco Pay weeks to delete.'); return; }
+        const ok = await swalConfirm({
+          title: 'Delete all Tesco Pay weeks?',
+          text: `${count(nShifts, 'shift')} and ${count(nSlips, 'payslip week')} are removed, with the week numbers that go with them. Your pay rules and rates stay. You can undo it straight after.`,
+          danger: true, confirmButtonText: 'Delete everything',
+        });
+        if (ok) clearAllTesco();
+      },
+    }, 'Delete all weeks');
+    return $('div', { class: 'card' },
+      $('div', { class: 'tesco-card-title' }, 'Delete all weeks', iconSpan('alert', 'md')),
+      $('div', { class: 'tesco-form-row' }, button),
+      $('div', { class: 'muted', style: 'font-size:12px;margin-top:8px;' },
+        empty
+          ? 'Nothing stored yet.'
+          : `${count(nShifts, 'shift')} and ${count(nSlips, 'payslip week')} are stored, on this device and every device it syncs with.`),
     );
   }
 

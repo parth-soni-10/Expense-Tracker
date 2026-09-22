@@ -1,0 +1,33 @@
+# The guard suite, run somewhere the failure is visible before it costs a deploy.
+#
+# Netlify parses netlify.toml BEFORE it runs the build command, so a config
+# mistake fails the deploy with every guard unreported — the `[[functions]]`
+# array form did that for seven commits and left production frozen on an older
+# build. No guard inside the build can catch that; this can, because it runs
+# before Netlify reads the file.
+#
+# It runs exactly the command netlify.toml declares (see scripts/run-guards.mjs),
+# so CI and the deploy cannot drift apart.
+name: guards
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Matches NODE_VERSION in netlify.toml, so the suite runs under the same
+      # runtime the deploy uses — the guards rely on ESM-by-syntax-detection for
+      # this repo's plain .js modules, which older Node parses as CommonJS.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # No install step: the repo has no dependencies by design.
+      - name: Run the guards netlify.toml declares
+        run: node scripts/run-guards.mjs

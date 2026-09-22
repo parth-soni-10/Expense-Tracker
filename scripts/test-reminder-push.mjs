@@ -135,6 +135,18 @@ check('rfc8291-test-vector', vectorBody ===
 const keyResp = await call(pushHandler, 'GET');
 check('get-public-key', (JSON.parse(await text(keyResp))).publicKey === keys.publicKey);
 
+// A site with no push keys must say so in a way the app can act on: 503 (the
+// site isn't configured yet) rather than a bare 500, naming the variables to
+// set. The client turns exactly this into "push isn't switched on for this
+// site yet" instead of "key HTTP 500".
+const savedKeys = [process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY];
+delete process.env.VAPID_PUBLIC_KEY;
+delete process.env.VAPID_PRIVATE_KEY;
+const unconfigured = await call(pushHandler, 'GET');
+const unconfiguredText = await text(unconfigured);
+check('unconfigured-push-503', unconfigured.status === 503 && /VAPID_PUBLIC_KEY/.test(unconfiguredText));
+[process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY] = savedKeys;
+
 // ---------- 2. auth required ----------
 const unauth = await call(pushHandler, 'POST', { subscription }, { 'X-Cents-Password': 'wrong-password' });
 check('auth-required', unauth.status === 401);

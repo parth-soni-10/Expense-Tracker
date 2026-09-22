@@ -222,6 +222,22 @@ const tombstoneKept = validateState({ entries: [], settings: {}, tesco: { shifts
 check('shift tombstones survive validation', (tombstoneKept.tesco.deletedShiftIds || []).includes('t9'),
   JSON.stringify(tombstoneKept.tesco.deletedShiftIds));
 check('payslip tombstones survive validation', (tombstoneKept.tesco.deletedPayslipIds || []).includes('p9'));
+// "Delete all weeks" tombstones every row of both tables in one burst, appended
+// at the tail of the list. Validation trims that list to a cap, so the cap must
+// be at least as large as the biggest possible tab (2000 shifts + 500 payslips),
+// and the trim must drop the OLDEST ids: a device that has not merged since has
+// to be told about the newest deletions, and discarding those resurrects the
+// weeks the user just wiped on the next sync.
+const manyIds = (n, prefix) => Array.from({ length: n }, (_, i) => `${prefix}${String(i).padStart(5, '0')}`);
+const wiped = validateState({ entries: [], settings: {}, tesco: { shifts: [], payslips: [], deletedShiftIds: manyIds(2000, 's'), deletedPayslipIds: manyIds(500, 'p') } });
+check('a clear of the largest possible tab keeps every tombstone',
+  (wiped.tesco.deletedShiftIds || []).length === 2000 && (wiped.tesco.deletedPayslipIds || []).length === 500,
+  `${(wiped.tesco.deletedShiftIds || []).length} shifts / ${(wiped.tesco.deletedPayslipIds || []).length} payslips kept`);
+const overflow = validateState({ entries: [], settings: {}, tesco: { shifts: [], payslips: [], deletedShiftIds: manyIds(3000, 's'), deletedPayslipIds: [] } });
+const keptIds = overflow.tesco.deletedShiftIds || [];
+check('over the cap the newest tombstones are the ones kept',
+  keptIds.length === 2500 && keptIds[keptIds.length - 1] === 's02999' && !keptIds.includes('s00000'),
+  `${keptIds.length} kept, newest ${keptIds[keptIds.length - 1]}`);
 
 // ------------------------------------------------- 7. Tesco engine and CSV
 const rates = { normal: 14.44, specialMultiplier: 1.5, pensionPct: 1.5, payeCredit: 76.93, payeCutoff: 846.15, payeRateLow: 20, payeRateHigh: 40, prsiRate: 4.2 };

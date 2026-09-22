@@ -315,8 +315,7 @@ export default async (request, _context) => {
     return err('Bad app password', 401, cors);
   }
 
-  const { owner, repo, branch } = cfg();
-  const file = cfg().file;
+  const { owner, repo, branch, file } = cfg();
   if (!owner || !repo) return err('REPO_OWNER / REPO_NAME env vars not set on the function', 500, cors);
 
   try {
@@ -358,7 +357,7 @@ export default async (request, _context) => {
     if (request.method === 'PUT') {
       const rawBody = await request.text();
       if (new TextEncoder().encode(rawBody).byteLength > MAX_BODY_BYTES) {
-        return err('Request body is too large', 413, cors);
+        return err('Request body is too large (6 MB limit) - remove audio notes to shrink the cloud copy', 413, cors);
       }
       let body;
       try { body = JSON.parse(rawBody || '{}'); }

@@ -26,12 +26,24 @@
  *   5. A guard on disk that the build command never runs, or a build command
  *      naming a script that is gone. Both leave the deploy green with the
  *      guard unenforced.
+ *   6. An env var a function reads that the README never documents. This site
+ *      is configured by hand, so the README is the only install guide: a var
+ *      that exists in code and nowhere else surfaces as a runtime failure
+ *      nobody can act on. (The README named `GITHUB_REPO` while sync.mjs reads
+ *      REPO_OWNER/REPO_NAME — sync could not be configured from the docs.)
+ *   7. A guard the build runs that the README never lists — the reader never
+ *      learns it exists, and so never runs it after changing what it guards.
+ *   8. CI exists but does not run the same suite under the same runtime, or is
+ *      missing entirely: it is the only place a config mistake is caught
+ *      before it costs a deploy.
  *
  * Run: node scripts/check-netlify-config.mjs
  * Also the first step of the build command — cheapest, and the only gate whose
  * failure explains why the others might not have reported anything.
  */
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const root = new URL('../', import.meta.url);
 const toml = readFileSync(new URL('netlify.toml', root), 'utf8');
@@ -159,10 +171,58 @@ if (command) {
   }
 }
 
+// CI is the only place a config mistake is caught BEFORE it costs a deploy
+// (Netlify reads this file before running the build), so it has to run the same
+// suite under the same runtime — otherwise it silently checks something else.
+const workflow = new URL('.github/workflows/guards.yml', root);
+if (!existsSync(workflow)) {
+  problems.push('.github/workflows/guards.yml is gone — without it a config mistake is only discovered by a dead deploy, which is how seven commits went unshipped.');
+} else {
+  // Comments stripped first: this file explains in prose which script it runs,
+  // and a check that a comment can satisfy would pass with the run line gone.
+  const yml = readFileSync(workflow, 'utf8').replace(/^[ \t]*#.*$/gm, '');
+  const runs = [...yml.matchAll(/^\s*run:\s*(.+)$/gm)].map(m => m[1].trim());
+  if (!runs.some(r => r.includes('scripts/run-guards.mjs'))) {
+    problems.push('.github/workflows/guards.yml does not run scripts/run-guards.mjs — CI would check something other than what the deploy runs' +
+      (runs.length ? ` (it runs: ${runs.join('; ')})` : ' (no run step at all).' ));
+  }
+  const node = unquote(get('build.environment', 'NODE_VERSION')?.value || '');
+  if (node && !new RegExp(`node-version:\\s*['"]?${node}\\b`).test(yml)) {
+    problems.push(`.github/workflows/guards.yml must pin node-version ${node}, matching NODE_VERSION in this file — CI and the deploy would otherwise run different runtimes.`);
+  }
+}
+
+// The README is this project's install guide: a Netlify site is configured by
+// hand from it. So every env var a function reads must be named there, and so
+// must every guard the deploy runs.
+const readme = readFileSync(new URL('README.md', root), 'utf8');
+const envVars = new Set();
+(function walk(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) walk(full);
+    else if (/\.m?js$/.test(entry.name)) {
+      for (const m of readFileSync(full, 'utf8').matchAll(/process\.env\.([A-Z][A-Z0-9_]*)/g)) envVars.add(m[1]);
+    }
+  }
+})(fileURLToPath(functionsDir));
+
+const undocumentedEnv = [...envVars].filter(name => !readme.includes(name));
+if (undocumentedEnv.length) {
+  problems.push(`README.md documents no such variable: ${undocumentedEnv.join(', ')} — the functions read it, so a hand-configured site fails at runtime instead.`);
+}
+
+const documentedGuards = [...new Set([...unquote(command?.value || '').matchAll(/node\s+scripts\/([\w.-]+\.mjs)/g)].map(m => m[1]))];
+const unlistedGuards = documentedGuards.filter(name => !readme.includes(name));
+if (unlistedGuards.length) {
+  problems.push(`README.md never lists ${unlistedGuards.join(', ')} — the deploy runs them, so the reader cannot know they exist or run them by hand.`);
+}
+
 if (problems.length) {
   console.error(`check-netlify-config: ${problems.length} problem(s):`);
   for (const p of problems) console.error('  ' + p);
   process.exit(1);
 }
 console.log(`check-netlify-config: OK — ${arrayBlocks} array-of-table block(s), ` +
-  `${scheduled.length} scheduled function(s), ${guardFiles.length} guards wired.`);
+  `${scheduled.length} scheduled function(s), ${guardFiles.length} guards wired, ` +
+  `${envVars.size} env var(s) documented.`);

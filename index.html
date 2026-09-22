@@ -50,8 +50,13 @@
     // fetched — so Chrome can mark the site installable the moment the page
     // starts loading instead of waiting for the 344 KB app.js to download and
     // run. Silent failure: the app works with or without SW support.
+    //
+    // updateViaCache 'none': the browser must never answer the worker script
+    // itself from its own HTTP cache. By default Chrome may keep a cached
+    // sw.js for up to 24 hours, which holds back a new worker — and with it
+    // the new cache namespace and the shell warm — for a day after a deploy.
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(function () {});
+      navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).catch(function () {});
     }
   </script>
 

@@ -8,7 +8,7 @@ import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, s
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, sendTestPush, updateReminderPushTime } from './reminders.js';
-import { screenTesco, monthSummary, TESCO_RATE_DEFAULTS } from './tesco.js';
+import { screenTesco, monthSummary, TESCO_RATE_DEFAULTS, weekStartOf, shiftPay, r2 } from './tesco.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
@@ -849,7 +849,7 @@ function openReminderSettings() {
         const r = s.pushSubscribed ? await unsubscribeReminderPush() : await subscribeReminderPush();
         btn.disabled = false;
         if (r.ok) { toast(s.pushSubscribed ? 'Push reminders off.' : 'Push reminders on — works even when the app is closed.'); draw(); return; }
-        const messages = { unsupported: 'Push is not available in this browser.', 'no-sync': 'Set up Cloud sync first.', auth: 'Sync password was rejected - check Sync settings.', network: 'Network error - try again when online.' };
+        const messages = { unsupported: 'Push is not available in this browser.', 'no-sync': 'Set up Cloud sync first.', 'not-configured': 'Push is not switched on for this site yet - add VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in Netlify.', auth: 'Sync password was rejected - check Sync settings.', network: 'Network error - try again when online.' };
         toast(messages[r.reason] || ('Could not ' + (s.pushSubscribed ? 'disable' : 'enable') + ' push: ' + (r.message || r.reason || 'error') + '.'));
         draw();
       } }, s.pushSubscribed ? 'Disable push' : 'Enable push') : null,
@@ -1084,7 +1084,7 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
   }
   if (!r.content) {
     // No cloud file yet - first sync. Keep local; a push creates the file.
-    patchSyncSettings({ lastError: null, lastErrorAt: null });
+    markSyncOk({ lastError: null, lastErrorAt: null });
     if (hasLocalDataToProtect()) {
       if (!quiet) toast('First sync - pushing your data to the cloud.');
       scheduleSyncPush();
@@ -1102,7 +1102,7 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
   if (winner === 'local') {
     // This device reset more recently than the cloud - keep local and push it
     // over the cloud (merging would resurrect the entries the reset cleared).
-    patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
+    markSyncOk({ lastSha: r.sha, lastError: null, lastErrorAt: null });
     if (!quiet) toast('A reset happened on this device after the cloud copy - local data kept.');
     scheduleSyncPush();
     notifySyncChange();
@@ -1113,7 +1113,7 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
   // skipping would silently hide them on this device.
   if (winner === 'cloud') {
     adoptState(r.content);
-    patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
+    markSyncOk({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
     if (!quiet) toast('A reset happened on another device - this device now matches the cloud.');
     notifySyncChange();
     render();
@@ -1124,7 +1124,7 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
   const merged = mergeStates(cloudPayload(), r.content);
   adoptState(merged);
   const diff = state.entries.length - prevCount;
-  patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
+  markSyncOk({ lastSyncAt: new Date().toISOString(), lastSha: r.sha, lastError: null, lastErrorAt: null });
   if (!quiet) {
     if (diff > 0) toast(`Synced ${diff} new entr${diff === 1 ? 'y' : 'ies'} from another device.`);
     else if (diff < 0) toast(`Removed ${-diff} entr${diff === -1 ? 'y' : 'ies'} deleted on another device.`);
@@ -1269,17 +1269,38 @@ let syncInFlight = false;
 // checks alone cannot prevent an already-started push from writing after a pull.
 let syncExclusive = false;
 let syncRevision = 0;
+// The revision whose push the server REFUSED ('rejected' — too large, or
+// failing validation). Those exact bytes can never be accepted, so automatic
+// triggers skip that revision; any real change bumps syncRevision and re-arms.
+let rejectedRevision = null;
+// A rejected push is NOT settled by a pull succeeding: the cloud copy is still
+// missing or older, and the pull says nothing about the push. Every "pull went
+// fine" marker goes through here so the banner keeps saying so until a push
+// actually lands, or the payload changes and a fresh attempt is made.
+function markSyncOk(patch) {
+  if (rejectedRevision === syncRevision) return;
+  patchSyncSettings(patch);
+}
 function cancelScheduledSyncPush() {
   if (pushTimer) {
     clearTimeout(pushTimer);
     pushTimer = null;
   }
 }
-function scheduleSyncPush() {
+// delayMs: edits use the short debounce; a FAILED auto-push waits longer so a
+// flaky server isn't hammered every 1.5s while it is down.
+// `force` is for a push the user asked for by hand — the one case where
+// re-sending a payload the server already refused is a request, not a loop.
+function scheduleSyncPush(delayMs = 1500, force = false) {
   cancelScheduledSyncPush();
   const s = getSyncSettings();
   if (!s.enabled || !s.endpoint || !s.password) return;
-  pushTimer = setTimeout(doAutoPush, 1500);
+  // Every automatic trigger (a poll, a tab becoming visible, a save) funnels
+  // through here, so the refused-payload skip belongs here rather than at one
+  // call site. On a phone, switching apps fires visibility changes constantly —
+  // each one used to re-push bytes the server had already turned down.
+  if (!force && rejectedRevision === syncRevision) return;
+  pushTimer = setTimeout(doAutoPush, delayMs);
 }
 
 let sessionSyncFailed = false;
@@ -1296,6 +1317,7 @@ async function doPushNow(message) {
     setSyncPulsing(true);
     let r = await syncPush(payload, { sha: s.lastSha, message });
     if (r.ok) {
+      rejectedRevision = null;
       if (revision !== syncRevision) {
         // A newer local mutation happened while this request was in flight. The
         // old payload may be on the server, so retain its SHA as the parent for
@@ -1315,7 +1337,7 @@ async function doPushNow(message) {
     // The cloud moved underneath us (409 sha conflict, or GitHub refused a
     // sha-less write to an existing file) - pull, merge, and retry instead of
     // deadlocking or clobbering the other device's changes.
-    if (r.reason === 'conflict' || r.reason === 'http') {
+    if (r.reason === 'conflict') {
       syncInFlight = false;
       await resolveConflictAndPush();
       return;
@@ -1325,6 +1347,11 @@ async function doPushNow(message) {
       toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));' }, iconSpan('alert'), 'Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.'));
       sessionSyncFailed = true;
     }
+    // Transient failures (offline, server hiccup) retry themselves after a
+    // pause. A 'rejected' payload never does: the server refused those exact
+    // bytes - too large, or failing validation - so only the message can help.
+    if (r.reason === 'http' || r.reason === 'network') scheduleSyncPush(15000);
+    rejectedRevision = r.reason === 'rejected' ? syncRevision : null;
     notifySyncChange();
   } catch (error) {
     const message = error?.message || 'sync failed';
@@ -1384,10 +1411,15 @@ async function resolveConflictAndPush() {
       // entries), so never merge in this branch. A 'tie' (equal reset marker)
       // falls through to the merge below: both sides are post-reset, so the
       // union only adds genuinely new entries.
-      patchSyncSettings({ lastSha: r.sha, lastError: null, lastErrorAt: null });
+      markSyncOk({ lastSha: r.sha, lastError: null, lastErrorAt: null });
       const push = await syncPush(cloudPayload(), { sha: r.sha, message: 'cents: auto push' });
       if (push.ok) patchSyncSettings({ lastSyncAt: new Date().toISOString(), lastSha: push.sha, lastError: null, lastErrorAt: null });
-      else scheduleSyncPush(); // retry any failure (conflict, http, network) - the guards keep it bounded
+      else {
+        // Record it before retrying: a refused payload is not retried at all,
+        // so this message is the only way the user hears about it.
+        patchSyncSettings({ lastError: push.message || push.reason || 'error', lastErrorAt: new Date().toISOString() });
+        scheduleSyncPush(); // transient failures (conflict, http, network) retry - bounded
+      }
       notifySyncChange();
       return;
     }
@@ -1410,9 +1442,10 @@ async function resolveConflictAndPush() {
         sessionSyncFailed = false;
       }
     } else if (push.reason === 'conflict' || push.reason === 'http') {
-      // Raced again - don't loop forever; the next poll/push reconciles.
+      // Raced again - don't loop forever. Retried after a pause, so a flapping
+      // cloud isn't hammered and a server-refused payload never loops at all.
       patchSyncSettings({ lastError: 'conflict - will retry automatically', lastErrorAt: new Date().toISOString() });
-      scheduleSyncPush();
+      scheduleSyncPush(15000);
     } else {
       patchSyncSettings({ lastError: push.message || push.reason || 'error', lastErrorAt: new Date().toISOString() });
     }
@@ -1486,7 +1519,7 @@ async function silentSyncPoll() {
     }
     if (!r.content) {
       if (hasLocalDataToProtect()) scheduleSyncPush();
-      patchSyncSettings({ lastError: null, lastErrorAt: null });
+      markSyncOk({ lastError: null, lastErrorAt: null });
       notifySyncChange();
       return;
     }
@@ -1500,7 +1533,7 @@ async function silentSyncPoll() {
     if (getSyncSettings().lastSha !== r.sha) {
       await applyReconcile(r, { quiet: true });
     } else {
-      patchSyncSettings({ lastError: null, lastErrorAt: null });
+      markSyncOk({ lastError: null, lastErrorAt: null });
       notifySyncChange();
     }
   } finally {
@@ -3959,7 +3992,7 @@ function buildMenuLevel(id) {
     list.append(menuInfoRow('Status', s.enabled ? st.label : 'Off'));
     list.append(menuRowEl({ icon: 'cloud', label: 'Sync settings', onClick: () => { closeAppMenu(); openSyncSettings(); } }));
     if (s.enabled && s.endpoint && s.password) {
-      list.append(menuRowEl({ icon: 'cloud', label: 'Sync now', onClick: () => { scheduleSyncPush(); toast('Syncing…'); menuRefreshLevel('sync'); } }));
+      list.append(menuRowEl({ icon: 'cloud', label: 'Sync now', onClick: () => { scheduleSyncPush(1500, true); toast('Syncing…'); menuRefreshLevel('sync'); } }));
     }
   } else if (id === 'data') {
     list.append(menuRowEl({ icon: 'data', label: 'Export data', onClick: () => { closeAppMenu(); exportJSON(state); toast('Exported.'); } }));
@@ -4454,7 +4487,7 @@ async function doResync() {
       return;
     }
     if (!r.content) {
-      if (hasLocalDataToProtect()) { toast('Cloud file is empty - local data was kept and will be pushed.'); scheduleSyncPush(); }
+      if (hasLocalDataToProtect()) { toast('Cloud file is empty - local data was kept and will be pushed.'); scheduleSyncPush(1500, true); }
       else toast('Cloud file is empty - nothing to pull.');
       return;
     }
@@ -7356,6 +7389,23 @@ function dashboardPulse(key, expenseSum, runningBalance) {
     tone = 'var(--muted)'; status = 'Tracking';
   }
 
+  // Work this week, at a glance: the hours a rota has put in and the gross pay
+  // they earn. Summed over the same Sunday→Saturday pay week the Tesco tab
+  // uses, so this pill and that tab's week card always agree.
+  let tescoWeek = null;
+  if (((state.tesco && state.tesco.shifts) || []).length) {
+    const rates = { ...TESCO_RATE_DEFAULTS, ...(state.settings.tescoRates || {}) };
+    const weekStart = weekStartOf(t);
+    let hours = 0, pay = 0;
+    for (const s of state.tesco.shifts) {
+      if (weekStartOf(s.date) !== weekStart) continue;
+      const p = shiftPay(s, rates);
+      if (p) { hours += p.hours; pay += p.gross; }
+    }
+    tescoWeek = stat('Tesco week', `${r2(hours)}h · ${fmt(r2(pay))}`,
+      hours > 0 ? 'var(--positive)' : '');
+  }
+
   return $('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
     $('div', { class: 'pulse-heading' },
       $('div', null,
@@ -7381,6 +7431,7 @@ function dashboardPulse(key, expenseSum, runningBalance) {
         const pctProj = Math.round((projected / monthBudget) * 100);
         return pctProj > 100 ? $('span', { style: 'display:inline-flex;align-items:center;gap:5px;' }, iconSpan('alert', 'md'), `${pctProj}%`) : `${pctProj}%`;
       })()) : null,
+      tescoWeek,
     ),
     $('div', { style: 'display:flex;flex-wrap:wrap;gap:4px 20px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);' },
       $('span', null, 'Today ', $('span', { style: 'color:var(--ink);' }, todaySummary)),

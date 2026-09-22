@@ -364,7 +364,10 @@ const TESCO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TESCO_TIME_RE = /^\d{1,2}:\d{2}$/;
 const TESCO_MAX_SHIFTS = 2000;
 const TESCO_MAX_PAYSLIPS = 500;
-const TESCO_MAX_TOMBSTONES = 1000;
+// At least as large as the biggest tab, because "Delete all weeks" tombstones
+// every row of both tables in one go — a smaller cap would trim away part of
+// that burst on the next load and let the wiped weeks return from the cloud.
+const TESCO_MAX_TOMBSTONES = TESCO_MAX_SHIFTS + TESCO_MAX_PAYSLIPS;
 
 function tescoMoney(v) {
   const n = Number(v);
@@ -414,18 +417,24 @@ function normalizeTesco(raw) {
         usc: tescoMoney(p.usc),
         prsi: tescoMoney(p.prsi),
         futureFund: tescoMoney(p.futureFund),
+        // The net that reached the bank, when the payslip records it (the
+        // sheet's Final Bank Pay column). Absent — never 0 — when blank, so a
+        // week with no figure keeps falling back to gross − tax.
+        bankPay: p.bankPay == null || p.bankPay === '' || !Number.isFinite(Number(p.bankPay)) ? undefined : tescoMoney(p.bankPay),
         createdAt: typeof p.createdAt === 'string' ? p.createdAt : undefined,
       });
       if (out.payslips.length >= TESCO_MAX_PAYSLIPS) break;
     }
   }
+  // Trim from the FRONT when it comes to it: ids are appended as rows are
+  // deleted, so the tail holds the newest ones, and those are the deletions a
+  // device that has not merged since still has to be told about.
   const tombs = (ids) => {
     const set = new Set();
     for (const id of Array.isArray(ids) ? ids : []) {
       if (typeof id === 'string' && id && id.length <= 200) set.add(id);
-      if (set.size >= TESCO_MAX_TOMBSTONES) break;
     }
-    return [...set];
+    return [...set].slice(-TESCO_MAX_TOMBSTONES);
   };
   out.deletedShiftIds = tombs(src.deletedShiftIds);
   out.deletedPayslipIds = tombs(src.deletedPayslipIds);

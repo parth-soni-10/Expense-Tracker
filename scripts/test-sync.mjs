@@ -81,6 +81,62 @@ check('wrong password rejected (401)', badAuth.status === 401, `got ${badAuth.st
 const noAuth = await handler(new Request('https://cents.test/.netlify/functions/sync', { method: 'GET' }), {});
 check('missing password rejected (401)', noAuth.status === 401, `got ${noAuth.status}`);
 
+// The platform refuses a synchronous function request over 6 MB before the
+// function body runs, and nothing the user does locally makes the same payload
+// smaller — so the message has to name what to remove.
+const huge = await call('PUT', { content: { version: 2, entries: [], settings: {}, pad: 'x'.repeat(6 * 1024 * 1024) } });
+const hugeText = await huge.text();
+check('a body over 6 MB is refused with an actionable message', huge.status === 413 && /audio notes/.test(hugeText), `got ${huge.status} ${hugeText.slice(0, 120)}`);
+
+// ---- the client's half of that contract ---------------------------------
+// The retry logic keys off the failure CLASS, so the class must follow the
+// status: 409/422 means the cloud moved and a pull+merge+retry helps, while
+// 400/413 means the server refused these exact bytes and a retry can only fail
+// the same way (that conflation is how an oversize payload looped forever).
+const serverFetch = globalThis.fetch;
+const mem = new Map();
+globalThis.localStorage = {
+  getItem: k => (mem.has(k) ? mem.get(k) : null),
+  setItem: (k, v) => mem.set(k, String(v)),
+  removeItem: k => mem.delete(k),
+};
+mem.set('cents:syncSettings', JSON.stringify({
+  enabled: true,
+  endpoint: 'https://cents.test/.netlify/functions/sync',
+  password: 'test-password-1234',
+}));
+const { syncPush } = await import(REPO + '/sync.js');
+const tiny = { version: 2, entries: [], settings: {} };
+const clientCalls = [];
+let clientBody = { error: 'server said no' };
+let clientStatus = 400;
+globalThis.fetch = async (url, opts = {}) => {
+  clientCalls.push(opts.method || 'GET');
+  return new Response(JSON.stringify(clientBody), { status: clientStatus, headers: { 'content-type': 'application/json' } });
+};
+
+for (const [status, expected] of [
+  [400, 'rejected'], [403, 'rejected'], [404, 'rejected'], [413, 'rejected'],
+  [409, 'conflict'], [422, 'conflict'], [500, 'http'], [502, 'http'],
+]) {
+  clientStatus = status;
+  clientBody = { error: 'server said no' };
+  const r = await syncPush(tiny);
+  check(`HTTP ${status} maps to '${expected}'`, r.ok === false && r.reason === expected, `got ${r.reason}`);
+}
+clientStatus = 200;
+clientBody = { conflict: true };
+const raced = await syncPush(tiny);
+check("the function's conflict flag maps to 'conflict'", raced.ok === false && raced.reason === 'conflict', raced.reason);
+
+clientCalls.length = 0;
+const oversized = await syncPush({ version: 2, entries: [{ id: 'n1', audioData: 'data:audio/webm;base64,' + 'A'.repeat(7 * 1024 * 1024) }], settings: {} });
+check('an oversize payload is refused before any upload',
+  oversized.ok === false && oversized.reason === 'rejected' && clientCalls.length === 0,
+  `${oversized.reason}, ${clientCalls.length} request(s) made`);
+check('that refusal names the cause', /audio note/.test(oversized.message || ''), oversized.message);
+globalThis.fetch = serverFetch;
+
 if (fails.length) {
   console.error(`test-sync: ${fails.length} FAILED, ${pass} passed\n`);
   for (const f of fails) console.error('  ✗ ' + f);

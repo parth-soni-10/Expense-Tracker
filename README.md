@@ -37,9 +37,17 @@ The optional sync and push features need a few environment variables in Netlify 
 
 | Variable | What it's for |
 |---|---|
-| `APP_PASSWORD` | App password for sync (min 8 chars) |
-| `GITHUB_TOKEN` / `GITHUB_REPO` | The private repo that stores synced data |
-| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` | Web Push keys for the closed-app daily reminder — generate once with `node scripts/generate-vapid-keys.mjs` and keep the private key secret |
+| `APP_PASSWORD` | The password you type under **☰ → Cloud sync** (at least 8 characters). It gates sync *and* the push subscription store. |
+| `GITHUB_TOKEN` | Fine-grained GitHub token with **contents: read and write**, for the data repo only. It never leaves the function. |
+| `REPO_OWNER` | Owner of the data repo — your GitHub username or org. |
+| `REPO_NAME` | The **private** repo the synced copy lives in. |
+| `REPO_BRANCH` | Optional — branch the data file lives on. Default `main`. |
+| `REPO_FILE` | Optional — path of the data file in that repo. Default `data.json`. |
+| `VAPID_PUBLIC_KEY` | Web Push keys for the closed-app daily reminder. Both are required before the app will offer push — generate them once with `node scripts/generate-vapid-keys.mjs`. |
+| `VAPID_PRIVATE_KEY` | Keep it secret; it never ships in the page. |
+| `VAPID_SUBJECT` | Optional — contact string for the push service, e.g. `mailto:you@example.com`. |
+
+The build also pins `NODE_VERSION = "22"` in `netlify.toml` — the guard scripts import the app's browser modules as ES modules, and Node 18 would parse them as CommonJS and fail the deploy.
 
 Push subscriptions live in Netlify Blobs; the scheduled function that dispatches reminders runs every 15 minutes and fires each device at its chosen local time.
 
@@ -55,17 +63,24 @@ or any simple static server, e.g. `python -m http.server 8080` — then open the
 
 ## Checks
 
-Five pure-Node guardrails run on every deploy (see the build command in `netlify.toml`) and can be run by hand:
+Nine pure-Node guardrails run in the Netlify build command and **block the deploy when one fails**. `run-guards.mjs` runs all nine in build order — that single command is also what CI calls:
 
 ```
-node scripts/check-sw-shell.mjs       # every offline-shell entry exists on disk
-node scripts/check-image-hygiene.mjs  # the roster photo can never be persisted
-node scripts/check-csp-hashes.mjs     # every inline boot script is hashed in the CSP
-node scripts/test-tesco.mjs           # the pay/tax engine still matches the workbook
-node scripts/test-sync.mjs            # the sync contract still round-trips all state
+node scripts/run-guards.mjs            # all nine, in build order
+node scripts/check-netlify-config.mjs  # netlify.toml's shape, its scheduled functions, the CI wiring, the env-var docs below
+node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
+node scripts/check-image-hygiene.mjs   # the roster photo can never be persisted
+node scripts/check-csp-hashes.mjs      # every inline boot script is hashed in the CSP
+node scripts/check-freshness.mjs       # every app asset revalidates; no 404 rule can hit an app file
+node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or resurrect data
+node scripts/test-tesco.mjs            # the pay/tax engine still matches the workbook's figures
+node scripts/test-sync.mjs             # the sync contract still round-trips all state
+node scripts/test-reminder-push.mjs    # the push payload still matches the RFC 8291 vector
 ```
 
-If you edit one of the inline scripts in `index.html`, re-hash it in the CSP in `netlify.toml` — the third check tells you the exact hash to paste, and the browser would otherwise refuse to run that script in production only.
+`.github/workflows/guards.yml` runs the same suite on every push, on the same Node version the deploy uses. That matters for one specific reason: Netlify parses `netlify.toml` *before* it runs the build command, so a broken config can never be reported by a predeploy guard — the only signal is a failed deploy. CI is the earliest place it can be caught.
+
+If you edit one of the inline scripts in `index.html`, re-hash it in the CSP in `netlify.toml`: `check-csp-hashes` prints the exact hash to paste, and the browser would otherwise refuse to run that script in production only (no CSP is sent locally).
 
 ## Built with
 

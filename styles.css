@@ -1386,6 +1386,13 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
    ============================================================ */
 
 /* ── SweetAlert2 ── */
+/* Above the fixed bottom navigation and the menu backdrop. On a phone the confirm
+   sheet sits at the bottom of the screen too, and the vendored build leaves its
+   container statically positioned, where a z-index does nothing: measured on a
+   387x939 viewport, the nav swallowed the tap on the confirm button, so a confirm
+   opened from the bottom nav could not be answered. `relative` keeps the sheet's
+   own layout and only lifts it in the paint order. */
+.swal2-container { position: relative; z-index: 70; }
 .swal-popup {
   /* Solid: a translucent confirm re-samples its backdrop on every button
      hover/repaint. Near-opaque reads identically. */

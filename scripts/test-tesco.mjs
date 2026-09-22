@@ -14,7 +14,8 @@
 import {
   paidHours, parseHM, fmtHM, shiftPay, simulateTax, r2,
   weekStartOf, payDateOf, buildPayWeeks, monthSummary, lifetimeTotals,
-  payslipTotal, parseTimeCell, parseRosterWords, isSunday, nameMatches, ocrStripRanges,
+  payslipTotal, parseTimeCell, parseRosterWords, isSunday, nameMatches, ocrStripRanges, ocrInkBands, ocrPickBand, ocrFlatField,
+  TESCO_RATE_DEFAULTS,
   tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf,
 } from '../tesco.js';
 
@@ -118,6 +119,49 @@ ok('a payslip with no shifts beside it adds nothing', lifetimeTotals(withSlips, 
 ok('lifetime received = €635.58', lifetimeTotals(withSlips, payslips).received, 635.58);
 ok('lifetime hours = 41.5', lifetimeTotals(withSlips, payslips).hours, 41.5);
 
+// A correction run inside one week: the sheet's tax table holds two rows for
+// the week of 6 Dec 2025 (€0.70 and €0.56) and the app stores two payslips, so
+// the week's tax is both of them — keeping only the later one under-reported
+// that week against the sheet's own total (€1,004.10 vs €1,004.80).
+const twoRuns = [
+  { id: 'x', weekStart: '2026-09-20', paye: 1, usc: 0, prsi: 0, futureFund: 0 },
+  { id: 'y', weekStart: '2026-09-23', paye: 2, usc: 0, prsi: 0, futureFund: 0 },
+];
+const runWeek = buildPayWeeks(weekShifts, twoRuns).find(w => w.weekStart === '2026-09-20');
+ok('two pay runs in one week both count', runWeek.paid, 3);
+ok('and both are kept for the tab to show', runWeek.payslips.length, 2);
+ok('the week received nets both runs off the gross', lifetimeTotals(weekShifts, twoRuns).received, r2(550.53 - 3));
+
+// The sheet's Final Bank Pay (its tax table's net, typed from a statement): it
+// is the money that actually landed, so it wins over gross − tax. That is how
+// holiday pay, a refund or a correction is counted — and how a paid week with
+// no shifts at all stops reading as €0 received.
+const banked = { ...payslips[0], bankPay: 600 };
+ok('an entered net replaces gross − tax', lifetimeTotals(withSlips, [banked]).received, 600);
+ok('a paid week with no shifts receives its net', lifetimeTotals(withSlips, [{ ...payslips[2], bankPay: 316.99 }]).received, 316.99);
+ok('its month counts it too', monthSummary(withSlips, [{ ...payslips[2], bankPay: 316.99 }], null, 2026, 7).received, 316.99);
+ok('an absent net still falls back to gross − tax', lifetimeTotals(withSlips, [payslips[0]]).received, 478.42);
+ok('two runs with a net each add up',
+  lifetimeTotals(weekShifts, [{ ...twoRuns[0], bankPay: 300 }, { ...twoRuns[1], bankPay: 200 }]).received, 500);
+
+// A custom hourly rate must reach the week and lifetime totals, not only the
+// per-shift rows: a user on €15/h had one card print €157.50 + €112.50 beside
+// the shifts while ITS OWN week total still read €259.92, computed at the
+// built-in defaults, and the dashboard summary disagreed with both.
+const customRates = { ...TESCO_RATE_DEFAULTS, normal: 15 };
+const customGross = r2(weekShifts.reduce((sum, s) => sum + shiftPay(s, customRates).gross, 0));
+const customWeeks = buildPayWeeks(weekShifts, [], customRates);
+ok("a week's gross uses the custom rate", customWeeks[0].gross, customGross);
+ok('and is not the default-rate figure', customWeeks[0].gross === 550.53, false);
+ok('lifetime anticipated uses the custom rate', lifetimeTotals(weekShifts, [], customRates).anticipated, customGross);
+ok('received nets the payslip off the custom-rate gross',
+  lifetimeTotals(withSlips, [payslips[0]], customRates).received, r2(customGross - payslipTotal(payslips[0])));
+const sepCustom = monthSummary(weekShifts, [payslips[0]], customRates, 2026, 8);
+ok("a month's anticipated uses the custom rate", sepCustom.anticipated, customGross);
+ok("and its received nets the payslip off that same gross", sepCustom.received, r2(customGross - payslipTotal(payslips[0])));
+ok('the CSV export carries the custom-rate gross',
+  tescoCsv(weekShifts, [], customRates, new Map()).includes(customGross.toFixed(2)), true);
+
 // September 2026: the six shifts above all fall in it, and the August payslip
 // week drops out of the month's received.
 const sep = monthSummary(withSlips, payslips, null, 2026, 8);
@@ -176,7 +220,17 @@ ok('rows are CRLF-terminated for Excel', csv.endsWith('\r\n'), true);
 const withTax = tescoCsv(weekShifts, payslips, null);
 ok('a tax table follows the shift table', withTax.includes(`\r\n\r\n${TESCO_CSV_PAYSLIP_HEADER.join(',')}`), true);
 const taxRows = tescoCsv(weekShifts, [payslips[0]], null).trim().split('\r\n').slice(-1)[0].split(',');
-ok('a tax row carries the week, pay date and the four figures', taxRows, ['2026-09-20', '2026-10-01', '33.18', '7.55', '23.12', '8.26']);
+ok('a tax row carries the week, pay date and the four figures', taxRows, ['2026-09-20', '2026-10-01', '33.18', '7.55', '23.12', '8.26', '']);
+ok('a blank net column is empty, not nought', taxRows[6], '');
+const bankRow = tescoCsv(weekShifts, [banked], null).trim().split('\r\n').slice(-1)[0].split(',');
+ok('the tax row carries the net that landed when it is known', bankRow[6], '600.00');
+ok('and the week row carries the same figure', cells(lines.findIndex(l => l.startsWith('2026-09-20')))[14], '478.42');
+ok('the stored net reaches the shift table’s Final Bank Pay',
+  tescoCsv(weekShifts, [banked], null).trim().split('\r\n').find(l => l.startsWith('2026-09-20')).split(',')[14], '600.00');
+ok('an entered net round-trips', parseTescoCsv(tescoCsv(weekShifts, [banked], null)).payslips[0].bankPay, 600);
+ok('a blank net round-trips as unknown', 'bankPay' in parseTescoCsv(csv).payslips[0], false);
+ok('a second pay run keeps its own date in the file',
+  tescoCsv(weekShifts, [payslips[1]], null).includes('2026-09-12,'), true);
 // A payslip is exported against its pay week's Sunday, which is how the app
 // already reads it (the 12 Sep refund belongs to the week starting the 6th).
 ok('every payslip survives the round trip', parseTescoCsv(withTax).payslips, [
@@ -326,6 +380,63 @@ ok('its cells carry the times from the photo', sheet.rows[0].cells.map(c => `${f
 ok('its cells total 16.25h', r2(sheet.rows[0].cells.reduce((n, c) => n + paidHours(c.startMin, c.endMin), 0)), 16.25);
 ok('the other row lands on its own day', sheet.rows[1].cells.map(c => c.date), ['2026-09-21']);
 ok('an unmatched name flags nothing', parseRosterWords(tilted, new Date(Date.UTC(2026, 8, 22)), { name: 'Nobody' }).rows.every(r => !r.matches), true);
+
+// ---------- cell-level reads: the ink profile decides which line a cell is on ----------
+// The strip pass only has to find the header and the typed name; the shifts are
+// read cell by cell, and each cell's line is chosen from the ink profile of its
+// own column — never from a word box (see ocrOwnerCells).
+const ink = ocrInkBands([0, 5, 5, 5, 5, 5, 5, 5, 0, 0, 0, 0, 5, 5, 5, 5, 5, 5, 0]);
+ok('one run of ink per line of text', ink.map(b => [b.y0, b.y1]), [[1, 8], [12, 18]]);
+ok('a mark too small to be a glyph is not a line', ocrInkBands([9, 0, 0, 0, 0, 0]).length, 0);
+ok('a cell takes the line nearest its row', ocrPickBand(ink, 14, 4).cy, 15);
+ok('a cell never jumps to the row above or below', ocrPickBand(ink, 0, 3), null);
+
+// ---------- the flat-field view of a cell ----------
+// A photo's glare is a brightness gradient across the sheet, and a cell read
+// against a threshold fitted to the whole crop loses the glyphs on its bright
+// side. Flat-fielding compares each pixel with the paper around it instead, so
+// a stroke is dark on both sides of the gradient.
+{
+  const w = 96, h = 24;
+  // The paper is brightest at the left edge and falls away to the right, the way
+  // a phone's reflection does across a sheet.
+  const paper = (x) => 210 - Math.round((x / (w - 1)) * 90);
+  const cell = (stroke) => {
+    const px = new Uint8ClampedArray(w * h * 4);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const v = stroke && y > 3 && y < h - 4 && (x === 20 || x === 70) ? paper(x) - 50 : paper(x);
+        px[i] = px[i + 1] = px[i + 2] = v;
+        px[i + 3] = 255;
+      }
+    }
+    ocrFlatField(px, w, h);
+    return px;
+  };
+  const written = cell(true);
+  const at = (px, x, y) => px[(y * w + x) * 4];
+  ok('a stroke stays dark on the bright side of the glare', at(written, 20, 12) < at(written, 20, 1) - 80, true);
+  ok('a stroke stays dark on the dark side of the glare', at(written, 70, 12) < at(written, 70, 1) - 80, true);
+  ok('paper stays light wherever the glare falls', at(written, 20, 1) > 180 && at(written, 70, 1) > 180, true);
+  const blank = cell(false);
+  let darkest = 255;
+  for (let i = 0; i < blank.length; i += 4) darkest = Math.min(darkest, blank[i]);
+  ok('a cell with no writing in it is not turned into ink', darkest > 150, true);
+}
+
+// ---------- cell-pass reads own the row they belong to ----------
+const readCells = [{ date: '2026-09-20', weekday: 0, startMin: 0, endMin: 300, raw: 'x', confidence: 92, dupe: false }];
+const withCells = (cells, cellsComplete) => parseRosterWords(tilted, new Date(Date.UTC(2026, 8, 22)), { name: 'parth', cells, cellsComplete });
+ok('a complete cell pass owns the matched row',
+  withCells(readCells, true).rows.find(r => r.matches).cells.map(c => c.date), ['2026-09-20']);
+ok('its read replaces the strip read for that day',
+  withCells(readCells, true).rows.find(r => r.matches).cells.map(c => fmtHM(c.endMin)), ['05:00']);
+ok('a partial cell pass keeps the reads it never covered',
+  withCells(readCells, false).rows.find(r => r.matches).cells.map(c => c.date), ['2026-09-20', '2026-09-23']);
+ok('a row too garbled to parse still gets its cells',
+  parseRosterWords([{ text: 'Parth', x0: 10, y0: 210, x1: 98, y1: 240, confidence: 93 }], new Date(), { name: 'parth', cells: readCells, cellsComplete: true })
+    .rows.map(r => [r.name, r.matches, r.cells.length]), [['parth', true, 1]]);
 
 // ---------- report ----------
 if (fails.length) {

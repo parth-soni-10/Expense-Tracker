@@ -106,7 +106,13 @@ export default async (request, _context) => {
   // page anyway when subscribing).
   if (request.method === 'GET') {
     const publicKey = process.env.VAPID_PUBLIC_KEY;
-    if (!publicKey) return err('VAPID_PUBLIC_KEY env var not set on the function', 500, cors);
+    // 503, not 500: this is the site not being configured yet, not a crash, and
+    // the client turns it into "push isn't switched on for this site" instead of
+    // a bare HTTP error. Both keys are needed before a push can be encrypted,
+    // so a public key alone is not enough to advertise.
+    if (!publicKey || !process.env.VAPID_PRIVATE_KEY) {
+      return err('Push is not configured on this site yet - set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in Netlify', 503, cors);
+    }
     return ok({ publicKey }, 200, cors);
   }
 

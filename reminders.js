@@ -45,7 +45,7 @@ export function patchReminderSettings(patch) {
   // Merge onto stored state FIRST, then normalize the merged object so an
   // invalid patch field is dropped without resetting the untouched ones.
   const clean = normalize({ ...getReminderSettings(), ...source });
-  try { localStorage.setItem(KEY(), JSON.stringify(clean)); } catch (e) { /* read-only storage */ }
+  try { localStorage.setItem(KEY(), JSON.stringify(clean)); } catch { /* read-only storage */ }
   return clean;
 }
 
@@ -196,6 +196,9 @@ export async function subscribeReminderPush() {
   if (!base) return { ok: false, reason: 'invalid_endpoint' };
   try {
     const keyResp = await pushFetch(base, { method: 'GET' });
+    // The server says push has no VAPID keys yet - a setup problem, not a
+    // failure the user can retry around, so it gets its own reason.
+    if (keyResp.status === 503) return { ok: false, reason: 'not-configured' };
     if (!keyResp.ok) return { ok: false, reason: 'http', message: `key HTTP ${keyResp.status}` };
     const { publicKey } = await keyResp.json();
     if (typeof publicKey !== 'string' || publicKey.length < 40) return { ok: false, reason: 'http', message: 'bad VAPID key' };

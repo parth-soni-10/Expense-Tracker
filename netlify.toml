@@ -9,15 +9,20 @@
 
 [build]
   publish = "."
-  # Eight guardrails, all pure-Node and fast:
+  # Nine guardrails, all pure-Node and fast:
   #   check-netlify-config — THIS file is shaped the way Netlify's schema
   #                          requires (see the note on the scheduled function
   #                          below), every scheduled function it names exists,
-  #                          and every guard in this list is actually wired in
+  #                          every guard in this list is actually wired in, CI
+  #                          runs the same suite, and every env var the
+  #                          functions read appears in the README's install table
   #   check-sw-shell      — every sw.js SHELL entry exists on disk
   #   check-image-hygiene — the roster-OCR code has no way to persist the photo
   #   check-csp-hashes    — every inline boot script is hashed in the CSP below
   #                         (a miss is invisible locally: no CSP is sent there)
+  #   check-freshness     — a deploy always reaches the device: every app asset
+  #                         revalidates, the worker stays network-first, and no
+  #                         404 rule can match a file the app itself loads
   #   test-tesco          — the pay/tax engine still matches the workbook's
   #                         own cached figures, so a pay change can't ship silently
   #   test-sync           — the sync contract still round-trips the full state
@@ -26,7 +31,7 @@
   #                         resurrect data on hostile input
   #   test-reminder-push  — the push payload still matches the RFC 8291 vector,
   #                         so a reminder can't silently stop being decryptable
-  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/test-integrity.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-reminder-push.mjs"
+  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/test-integrity.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-reminder-push.mjs"
 
   # Pin the build runtime. scripts/test-tesco.mjs imports tesco.js — a plain
   # .js browser module, and this repo has no package.json (no-build model), so
@@ -56,6 +61,48 @@
 [functions."reminders-send"]
   schedule = "*/15 * * * *"
 
+# `publish = "."` is what keeps this a zero-build site — and it also means the
+# deploy serves everything in the repo. The repository is private; the site is
+# not, so without these rules the guard scripts, the sync proxy's source (its
+# validation logic and env var names) and the docs are all downloadable.
+#
+# `force = true` is required: Netlify prefers an existing file over a redirect
+# otherwise, and every path here IS an existing file. `to` names a page we
+# deliberately do not ship, so Netlify answers with its own 404 body and the
+# catch-all security headers. check-freshness.mjs asserts that no rule here can
+# match a file the app loads, so this can never black-hole the app itself.
+[[redirects]]
+  from = "/scripts/*"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/netlify/*"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/.github/*"
+  to = "/404.html"
+  status = 404
+  force = true
+
+# README, CLAUDE.md, AGENTS.md and any future doc — one rule, not a list.
+[[redirects]]
+  from = "/*.md"
+  to = "/404.html"
+  status = 404
+  force = true
+
+# The local dev server script.
+[[redirects]]
+  from = "/serve.sh"
+  to = "/404.html"
+  status = 404
+  force = true
+
 # Multiple `[[headers]]` blocks (note the DOUBLE brackets — this is TOML
 # array-of-tables form) so each rule stands on its own. Single `[headers]`
 # is "extend this table" — last declaration wins, and we lose every other rule.
@@ -81,6 +128,33 @@
   for = "/*.css"
   [headers.values]
     Content-Type = "text/css; charset=utf-8"
+    Cache-Control = "no-cache, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+
+[[headers]]
+  for = "/"
+  [headers.values]
+    Content-Type = "text/html; charset=utf-8"
+    Cache-Control = "no-cache, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+
+# Self-hosted fonts (see @font-face in styles.css). Covered explicitly rather
+# than left to the platform default: this is the class of file a browser will
+# happily keep for a year if nothing says otherwise, and a stale font is
+# invisible until it is the wrong glyph.
+[[headers]]
+  for = "/fonts/*"
+  [headers.values]
+    Cache-Control = "no-cache, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+
+# The roster-OCR language model. Explicit Content-Type for the same reason as
+# the wasm rule below, and no-cache so a model swap is never masked: the 2.9 MB
+# revalidates as a cheap 304 rather than being re-downloaded.
+[[headers]]
+  for = "/vendor/tesseract/*.gz"
+  [headers.values]
+    Content-Type = "application/gzip"
     Cache-Control = "no-cache, must-revalidate"
     X-Content-Type-Options = "nosniff"
 
@@ -149,4 +223,4 @@
     X-Frame-Options = "DENY"
     Cross-Origin-Opener-Policy = "same-origin"
     Cross-Origin-Resource-Policy = "same-origin"
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-rQpWdpfO3jew1iL5zZ98vGEJgNo+qkd+3CxRBjXKHX0=' 'sha256-D2LzLLViPue4ETfCdLrasOjw6uXTHzgIw0+qHJWBrQY=' 'sha256-pKNS52PZ3v76TT3jH+prU69ajXz9OUzty+4lmTKzpVQ=' 'sha256-ZL/v8fWbS7Fj5A65sCiiFXqwLIgSYaIPlzRmrBe3qYc=' 'sha256-Tcie8lUtWw9EUeiQ+I8ykdJCQwFFJC8hxZPGmniSwLA='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' data:; font-src 'self'; connect-src 'self' https: http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-rQpWdpfO3jew1iL5zZ98vGEJgNo+qkd+3CxRBjXKHX0=' 'sha256-D2LzLLViPue4ETfCdLrasOjw6uXTHzgIw0+qHJWBrQY=' 'sha256-dtIg9U8JSsmLRDU6OgsK4CDDi2w92H8NwG52SeuprU0=' 'sha256-ZL/v8fWbS7Fj5A65sCiiFXqwLIgSYaIPlzRmrBe3qYc=' 'sha256-Tcie8lUtWw9EUeiQ+I8ykdJCQwFFJC8hxZPGmniSwLA='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' data:; font-src 'self'; connect-src 'self' https: http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
