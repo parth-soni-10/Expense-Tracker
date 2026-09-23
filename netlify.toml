@@ -9,7 +9,7 @@
 
 [build]
   publish = "."
-  # Nine guardrails, all pure-Node and fast:
+  # Ten guardrails, all pure-Node and fast:
   #   check-netlify-config — THIS file is shaped the way Netlify's schema
   #                          requires (see the note on the scheduled function
   #                          below), every scheduled function it names exists,
@@ -27,11 +27,15 @@
   #                         own cached figures, so a pay change can't ship silently
   #   test-sync           — the sync contract still round-trips the full state
   #                         (stubbed GitHub API; no network, no token)
+  #   test-profiles       — profiles stay isolated: every storage key is
+  #                         namespaced, a delete removes all of them, and a
+  #                         profile's cloud password never falls back to the
+  #                         default one
   #   test-integrity      — the storage/merge paths cannot lose, corrupt or
   #                         resurrect data on hostile input
   #   test-reminder-push  — the push payload still matches the RFC 8291 vector,
   #                         so a reminder can't silently stop being decryptable
-  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/test-integrity.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-reminder-push.mjs"
+  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-reminder-push.mjs"
 
   # Pin the build runtime. scripts/test-tesco.mjs imports tesco.js — a plain
   # .js browser module, and this repo has no package.json (no-build model), so
@@ -89,9 +93,26 @@
   status = 404
   force = true
 
-# README, CLAUDE.md, AGENTS.md and any future doc — one rule, not a list.
+# The docs, one rule each — deliberately NOT a `*.md` glob. A redirect path
+# takes an asterisk only as a trailing splat, so the `from = "/*.md"` rule that
+# stood here matched nothing and the live site served these three with a 200.
+# (The [[headers]] globs below are another engine and do accept a mid-path `*`:
+# `/*.js` is what puts no-cache on /vendor/sweetalert2.min.js.) check-freshness
+# now fails the build when a published doc has no rule.
 [[redirects]]
-  from = "/*.md"
+  from = "/README.md"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/CLAUDE.md"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/vendor/README.md"
   to = "/404.html"
   status = 404
   force = true

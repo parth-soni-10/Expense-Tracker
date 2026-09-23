@@ -22,6 +22,7 @@
    ============================================================ */
 
 import { uid, downloadText } from './storage.js';
+import { getActiveProfileId } from './profiles.js';
 
 // ---------- constants ----------
 export const TESCO_RATE_DEFAULTS = Object.freeze({
@@ -1386,7 +1387,18 @@ let ratesPanelOpen = false;
 // screenTesco(), so a background sync poll or an update toast rebuilding the
 // screen would otherwise throw away a parse the user is still reviewing. A
 // scan takes seconds and several reads, so that window is real.
-let scanState = null;   // { parsed, picked, note }
+let scanState = null;   // { parsed, picked, note, profileId }
+
+/**
+ * A roster read belongs to the profile that took it. The slot above is
+ * module-level (one card at a time), so switching profiles would otherwise
+ * hand the next person the previous one's row — names and shift times from
+ * someone else's sheet. Same rule as staleResponse() in app.js: stamp the
+ * result with its owner and drop it when that is not who is active now.
+ */
+export function scanSlotForProfile(slot, profileId) {
+  return slot && slot.profileId === profileId ? slot : null;
+}
 // Which lists are unfolded. Same reason again: render() re-invokes screenTesco(),
 // so a flag declared in there would reset the instant it was toggled — the
 // "show all" button would repaint straight back to the collapsed state.
@@ -1639,6 +1651,10 @@ export function screenTesco(ctx) {
   // engine scans the photo top-down and stops at the row carrying the name
   // (see ocrRosterRow), which is what makes an angled or glare-lit photo work.
   function buildScanCard() {
+    // Whoever this card is being built for owns anything it shows: a read made
+    // under another profile is dropped here rather than restored.
+    const ownerProfileId = getActiveProfileId() || 'personal';
+    scanState = scanSlotForProfile(scanState, ownerProfileId);
     let busy = false;
     let file = null;          // memory only: dropped when the card re-renders
     const canvas = $('canvas', { class: 'tesco-scan-preview', 'aria-hidden': 'true' });
@@ -1701,7 +1717,9 @@ export function screenTesco(ctx) {
             : `No row named “${name}” was read — pick your row below and fix anything the scanner misread.`;
         // Held so a rebuild mid-review reopens the same row instead of nothing.
         const matched = parsed.rows.findIndex(r => r.matches);
-        scanState = { parsed, picked: matched >= 0 ? matched : null, note };
+        // Stamped with the card's owner, not with whoever is active when the
+        // read finishes: a switch mid-scan must not mark it as theirs.
+        scanState = { parsed, picked: matched >= 0 ? matched : null, note, profileId: ownerProfileId };
         renderResult(parsed);
       } catch (err) {
         note = err && err.message ? err.message : 'Scan failed.';

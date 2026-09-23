@@ -11,7 +11,7 @@
  * Network-first: every request tries the network and only falls back to a
  * cached copy when offline. It never serves stale content while online.
  */
-const CACHE = 'cents-v18';
+const CACHE = 'cents-v19';
 const SHELL = [
   '/',
   '/index.html',
@@ -22,6 +22,7 @@ const SHELL = [
   '/storage.js',
   '/sync.js',
   '/sync-merge.js',
+  '/profiles.js',
   '/reminders.js',
   '/tesco.js',
   '/manifest.json',

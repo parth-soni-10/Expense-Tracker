@@ -24,7 +24,8 @@
    The issue path is protected by the same constant-time compare,
    failure sleep, and per-IP throttle as sync.mjs.
 
-   Required env vars: same as sync.mjs (GITHUB_TOKEN, APP_PASSWORD).
+   Required env vars: same as sync.mjs (GITHUB_TOKEN, plus the
+   profile's own password: APP_PASSWORD, or APP_PASSWORD_<ID>).
    Blobs need no configuration inside Netlify Functions; the store
    falls back to in-memory outside the Netlify runtime.
    ============================================================ */
@@ -32,6 +33,7 @@
 import { createHash } from 'node:crypto';
 import { issueSetupToken, redeemSetupToken, SETUP_TOKEN_TTL_MS } from './lib/tokens.mjs';
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
+import { resolveProfileForAuth, profileAuthMessage } from './lib/profiles.mjs';
 import { getStore } from './lib/store.mjs';
 
 // In-memory sliding-window throttle: 15 failed issue attempts per IP per 5 min.
@@ -40,7 +42,7 @@ const failureThrottle = createFailureThrottle({ windowMs: 5 * 60 * 1000, max: 15
 function corsHeaders(request) {
   const origin = request.headers.get('origin');
   const cors = {
-    'Access-Control-Allow-Headers': 'Content-Type, X-Cents-Password, X-Cents-Setup-Token',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Cents-Password, X-Cents-Setup-Token, X-Cents-Profile',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Max-Age': '86400',
     'Cache-Control': 'no-store',
@@ -68,11 +70,9 @@ export default async (request, _context) => {
   if (request.method === 'OPTIONS') return ok({}, 200, cors);
   if (request.method !== 'POST') return err('Method not allowed', 405, cors);
 
-  const expected = process.env.APP_PASSWORD;
-  if (!expected) return err('APP_PASSWORD env var not set on the function', 500, cors);
-  if (expected.length < 8) {
-    return err('APP_PASSWORD must be at least 8 characters - set a stronger password in Netlify env', 500, cors);
-  }
+  const profile = resolveProfileForAuth(request);
+  if (!profile.ok) return err(profileAuthMessage(profile), 500, cors);
+  const expected = profile.expected;
   const secret = process.env.GITHUB_TOKEN;
   if (!secret) return err('GITHUB_TOKEN env var not set on the function', 500, cors);
 
@@ -122,7 +122,15 @@ export default async (request, _context) => {
       // has been recorded.
       return err('Could not verify setup token - try again', 503, cors);
     }
-    return ok({ password: redeemed.password }, 200, cors);
+    // The profile id rides back so a second device adopts the same id —
+    // and therefore the same cloud file — instead of guessing a slug. The tab
+    // policy rides with it, so an account invited by the owner arrives already
+    // configured with the tabs they allowed.
+    return ok({
+      password: redeemed.password,
+      profile: redeemed.profileId,
+      ...(redeemed.tabs ? { tabs: redeemed.tabs } : {}),
+    }, 200, cors);
   }
   if (password) {
     const throttle = failureThrottle.check(request);
@@ -143,7 +151,7 @@ export default async (request, _context) => {
       return err('Bad app password', 401, cors);
     }
     return ok({
-      token: issueSetupToken(secret, expected),
+      token: issueSetupToken(secret, expected, profile.id),
       expiresInDays: Math.round(SETUP_TOKEN_TTL_MS / (24 * 60 * 60 * 1000)),
     }, 200, cors);
   }

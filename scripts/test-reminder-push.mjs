@@ -89,6 +89,8 @@ const subscription = {
 // ---------- env + fresh in-memory store per run ----------
 process.env.VAPID_SUBJECT = 'mailto:test@example.com';
 process.env.APP_PASSWORD = 'test-password-123';
+process.env.APP_PASSWORD_SAM = 'sam-password-123';
+delete process.env.APP_PASSWORD_KATE;
 const { generateVapidKeys, encryptPayload } = await import('../netlify/functions/lib/webpush.mjs');
 const keys = generateVapidKeys();
 process.env.VAPID_PUBLIC_KEY = keys.publicKey;
@@ -213,6 +215,60 @@ check('test-push-sent', testResp.status === 200 && received.length === 1 && rece
 // ---------- 10. test push rejects a wrong password ----------
 const foreign = await call(pushHandler, 'PUT', { endpoint: subscription.endpoint }, { 'X-Cents-Password': 'wrong-password' });
 check('test-push-auth-rejected', foreign.status === 401);
+
+// ---------- 11. two profiles, one device ----------
+// One browser has ONE push subscription shared by every profile, so the two
+// profiles' schedules are stored as separate records against that endpoint.
+// Each profile keeps its own reminder and its own credential, and neither can
+// reach or silence the other's.
+await call(pushHandler, 'POST', {
+  subscription, time: '20:00', zone: 'UTC',
+}, { 'X-Cents-Password': 'test-password-123' });
+const samSubscribe = await call(pushHandler, 'POST', {
+  subscription, profileName: 'Sam', time: '07:30', zone: 'Europe/Dublin',
+}, { 'X-Cents-Password': 'sam-password-123', 'X-Cents-Profile': 'sam' });
+check('a second profile stores its own record', samSubscribe.status === 200);
+const bothKeys = (await store.list('push:')).map(k => k.key);
+check('records are keyed per profile, not per device',
+  bothKeys.some(k => k.endsWith(':personal')) && bothKeys.some(k => k.endsWith(':sam')), bothKeys.join(', '));
+
+received.length = 0;
+const samTest = await call(pushHandler, 'PUT', { endpoint: subscription.endpoint },
+  { 'X-Cents-Password': 'sam-password-123', 'X-Cents-Profile': 'sam' });
+check('a profile can test its own subscription', samTest.status === 200 && received.length === 1);
+check('the test push names that profile', received[0]?.body === 'Push works for Sam.', received[0]?.body);
+
+received.length = 0;
+await call(pushHandler, 'PUT', { endpoint: subscription.endpoint }, { 'X-Cents-Password': 'test-password-123' });
+check('the default profile tests its own record', received[0]?.body === 'Push is working.', received[0]?.body);
+
+// The dispatcher delivers whatever each record carries, so a profile with
+// push off simply has no record — it does not follow another profile's time.
+const nowUtc = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+await call(pushHandler, 'POST', { subscription, time: nowUtc, zone: 'UTC' }, { 'X-Cents-Password': 'test-password-123' });
+await call(pushHandler, 'POST', { subscription, profileName: 'Sam', time: nowUtc, zone: 'UTC' },
+  { 'X-Cents-Password': 'sam-password-123', 'X-Cents-Profile': 'sam' });
+received.length = 0;
+await sendHandler(null, {});
+check('both profiles are delivered, one push each', received.length === 2, `delivered ${received.length}`);
+check('each push names the right profile',
+  received.some(r => r.body === "Log today's spending while it's fresh.")
+  && received.some(r => r.body === 'Quick tally for Sam — it takes a minute.'),
+  JSON.stringify(received.map(r => r.body)));
+
+const samDelete = await call(pushHandler, 'DELETE', { subscription },
+  { 'X-Cents-Password': 'sam-password-123', 'X-Cents-Profile': 'sam' });
+const afterSamDelete = (await store.list('push:')).map(k => k.key);
+check('unsubscribing one profile removes only its record',
+  samDelete.status === 200 && !afterSamDelete.some(k => k.endsWith(':sam')) && afterSamDelete.some(k => k.endsWith(':personal')),
+  afterSamDelete.join(', '));
+check('a profile id cannot be used with another profile\u2019s password',
+  (await call(pushHandler, 'DELETE', { subscription }, { 'X-Cents-Password': 'test-password-123', 'X-Cents-Profile': 'sam' })).status === 401);
+const noEnvProfile = await call(pushHandler, 'POST', { subscription, time: '20:00', zone: 'UTC' },
+  { 'X-Cents-Password': 'guessing-a-password', 'X-Cents-Profile': 'kate' });
+check('a profile with no env var cannot subscribe', noEnvProfile.status === 500, `got ${noEnvProfile.status}`);
+check('and it is not silently served by the default password',
+  (await call(pushHandler, 'POST', { subscription, time: '20:00', zone: 'UTC' }, { 'X-Cents-Password': 'test-password-123', 'X-Cents-Profile': 'kate' })).status === 500);
 
 fakePushServer.close();
 await new Promise(r => setTimeout(r, 50)); // let in-flight sockets drain

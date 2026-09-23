@@ -12,6 +12,7 @@
  * Also wired into the Netlify build command (netlify.toml).
  */
 import {
+  scanSlotForProfile,
   paidHours, parseHM, fmtHM, shiftPay, simulateTax, r2,
   weekStartOf, payDateOf, buildPayWeeks, monthSummary, lifetimeTotals,
   payslipTotal, parseTimeCell, parseRosterWords, isSunday, nameMatches, ocrStripRanges, ocrInkBands, ocrPickBand, ocrFlatField,
@@ -437,6 +438,19 @@ ok('a partial cell pass keeps the reads it never covered',
 ok('a row too garbled to parse still gets its cells',
   parseRosterWords([{ text: 'Parth', x0: 10, y0: 210, x1: 98, y1: 240, confidence: 93 }], new Date(), { name: 'parth', cells: readCells, cellsComplete: true })
     .rows.map(r => [r.name, r.matches, r.cells.length]), [['parth', true, 1]]);
+
+// ---------- the roster read is owned by the profile that took it ----------
+// A scan of someone's sheet holds their name and their shift times. The slot
+// holding it is module-level, so a profile switch must not carry it across; the
+// same rule as app.js's staleResponse() for cloud answers.
+const slot = (profileId) => ({ profileId, parsed: { rows: [{ name: 'parth' }] } });
+ok('a scan taken by this profile is restored',
+  scanSlotForProfile(slot('sam'), 'sam')?.parsed.rows.length, 1);
+ok('a scan taken by another profile is dropped',
+  scanSlotForProfile(slot('personal'), 'sam'), null);
+ok('a scan with no owner (an older build) is dropped rather than shown',
+  scanSlotForProfile({ parsed: { rows: [{ name: 'parth' }] } }, 'sam'), null);
+ok('an empty slot stays empty', scanSlotForProfile(null, 'sam'), null);
 
 // ---------- report ----------
 if (fails.length) {

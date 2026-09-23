@@ -2,12 +2,13 @@
    Expense Tracker - editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #balances | #insights
    ============================================================ */
-import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, takeStorageNotice } from './storage.js';
-import { CATEGORIES, METHODS } from './seed.js';
+import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, takeStorageNotice, loadStateFor, patchProfileSettings } from './storage.js';
+import { CATEGORIES, METHODS, TABS, HIDEABLE_TABS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential } from './settings.js';
-import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken } from './sync.js';
+import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
 import { mergeStates } from './sync-merge.js';
-import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, sendTestPush, updateReminderPushTime } from './reminders.js';
+import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfile, setActiveProfileId, getActiveProfileId, hasSessionChoice, nsKey, profileEnvName, isAdminProfile, setProfileIcon } from './profiles.js';
+import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime } from './reminders.js';
 import { screenTesco, monthSummary, TESCO_RATE_DEFAULTS, weekStartOf, shiftPay, r2 } from './tesco.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
@@ -791,6 +792,505 @@ function lockApp() {
   showPinLock();
 }
 
+// ================= Profiles (Netflix-style) =================
+// Profiles are device-local spaces with separate entries, balances, PINs and
+// cloud files. The gate below decides what the user meets first: a single
+// profile boots straight into the classic flow (lock or onboarding); a tab
+// that has already answered "who's tracking?" lands on that profile's lock;
+// a fresh visit with several profiles meets the picker. "Who are you?" then
+// "PIN?" — in that order, so nobody is ever asked for a PIN before an identity.
+
+/** "sam-p" -> "Sam P" — the display name to offer for an adopted profile. */
+function profileNameFromId(id) {
+  const words = String(id).split('-').filter(Boolean);
+  return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ') || 'Profile';
+}
+
+function initialOf(name) {
+  return String(name || '?').trim().charAt(0).toUpperCase() || '?';
+}
+
+// ---------- profile pictures ----------
+// Inline SVG glyphs on a colour derived from the profile id: no image files, so
+// there is nothing extra to fetch before the picker can paint and nothing for
+// the service worker to cache-bust. Like the name, the choice lives on the
+// device registry (profiles.js) — it is picked before unlock and never syncs.
+const AVATAR_ART = {
+  cat: '<path d="M5.5 9.5V4l3.6 3M18.5 9.5V4l-3.6 3"/><circle cx="12" cy="13" r="6.2"/><path d="M9.6 12.4v.02M14.4 12.4v.02M10.2 16c1.1.7 2.5.7 3.6 0M5.8 13.5H3.2M20.8 13.5h-2.6"/>',
+  dog: '<circle cx="12" cy="12.5" r="6.2"/><path d="M6.2 7.4C4.2 7.6 3 9.2 3 11.2s1.2 3.2 3.2 3.4M17.8 7.4c2 .2 3.2 1.8 3.2 3.8s-1.2 3.2-3.2 3.4"/><circle cx="12" cy="15" r="1.8"/><path d="M12 17v2.2"/>',
+  bear: '<circle cx="7.2" cy="6.8" r="2.6"/><circle cx="16.8" cy="6.8" r="2.6"/><circle cx="12" cy="13.4" r="6.4"/><circle cx="12" cy="15" r="2.4"/><path d="M10.4 11.4v.02M13.6 11.4v.02"/>',
+  fox: '<path d="M4.6 5.2l3.3 4.5M19.4 5.2l-3.3 4.5"/><path d="M12 20.6c3.6 0 6.5-2.9 6.5-6.5S15.6 6.2 12 6.2 5.5 10.2 5.5 14.1 8.4 20.6 12 20.6z"/><path d="M9.7 12.8v.02M14.3 12.8v.02M12 16.6l1.6-1.3H10.4z"/>',
+  robot: '<path d="M12 2.8v3"/><rect x="4.8" y="5.8" width="14.4" height="12.4" rx="3"/><path d="M2.6 10.8v3M21.4 10.8v3M9.5 10.8v.02M14.5 10.8v.02M9.8 14.8h4.4"/>',
+  ghost: '<path d="M6 20.4V11.6a6 6 0 0112 0v8.8l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4z"/><path d="M10 11.2v.02M14 11.2v.02"/>',
+  rocket: '<path d="M12 2.8c2.6 1.9 3.8 5.1 3.8 8.5l2.4 3.2-2.8.4-.9 3.1-2.5-1.7-2.5 1.7-.9-3.1-2.8-.4 2.4-3.2c0-3.4 1.2-6.6 3.8-8.5z"/><circle cx="12" cy="9.6" r="1.7"/>',
+  star: '<path d="M12 3.4l2.7 5.5 6 .9-4.35 4.24L17.4 20l-5.4-2.85L6.6 20l1.05-5.96L3.3 9.8l6-.9z"/>',
+  heart: '<path d="M12 20.4S4.6 15.8 4.6 10.9A4.1 4.1 0 0112 8.2a4.1 4.1 0 017.4 2.7c0 4.9-7.4 9.5-7.4 9.5z"/>',
+  bolt: '<path d="M13.4 2.6L5.4 13.2h5.6L10.6 21.4l8-10.6h-5.6z"/>',
+  moon: '<path d="M20.4 14.6A8.6 8.6 0 019.4 3.6a8.6 8.6 0 1011 11z"/>',
+  football: '<circle cx="12" cy="12" r="8.2"/><path d="M12 8.4l3.2 2.3-1.2 3.7h-4L8.8 10.7z"/>',
+  gamepad: '<rect x="2.4" y="7.6" width="19.2" height="9.4" rx="4.4"/><path d="M7.4 10.4v3.6M5.6 12.2h3.6M15.8 11.6v.02M18 14v.02"/>',
+  music: '<path d="M9.4 17.6V6.4l8.6-2v11.2"/><circle cx="6.8" cy="17.8" r="2.6"/><circle cx="15.4" cy="15.6" r="2.6"/>',
+  pizza: '<path d="M12 20.6L4.4 6.2a16 16 0 0115.2 0z"/><circle cx="12" cy="11" r="1"/><circle cx="9.4" cy="15.4" r="1"/><circle cx="14.6" cy="15.4" r="1"/>',
+  crown: '<path d="M3.6 17.6L2.6 7.4l5 3.4L12 5.4l4.4 5.4 5-3.4-1 10.2z"/><path d="M4.6 20.4h14.8"/>',
+  smile: '<circle cx="12" cy="12" r="8.2"/><path d="M8.6 13.6a4.6 4.6 0 006.8 0M9.6 9.6v.02M14.4 9.6v.02"/>',
+  flower: '<circle cx="12" cy="12" r="2.6"/><circle cx="12" cy="6" r="2.4"/><circle cx="17.2" cy="9.8" r="2.4"/><circle cx="15.2" cy="15.8" r="2.4"/><circle cx="8.8" cy="15.8" r="2.4"/><circle cx="6.8" cy="9.8" r="2.4"/>',
+};
+// Eight background hues, all dark enough to carry a white glyph in either
+// theme. Which one a profile gets is derived from its id, so the colour is
+// stable across devices and changing the picture never changes the colour.
+const AVATAR_COLORS = ['#35B877', '#4C7DF0', '#B8862B', '#C2547A', '#7C5CE0', '#2E8C9E', '#B5543A', '#5E8C3F'];
+function avatarColor(profileId) {
+  let hash = 0;
+  for (const ch of String(profileId)) hash = (hash * 31 + ch.charCodeAt(0)) % 9973;
+  return AVATAR_COLORS[hash % AVATAR_COLORS.length];
+}
+function avatarGlyph(icon) {
+  const art = AVATAR_ART[icon];
+  return art ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${art}</svg>` : null;
+}
+/** The avatar for a profile: its chosen picture, or its initial when none is
+ *  set (or when the stored id is not one this build draws). Both wear the same
+ *  profile-derived colour, so picking a picture never changes it. */
+function profileAvatar(profile, px = 34) {
+  const style = `width:${px}px;height:${px}px;font-size:${Math.max(9, Math.round(px * 0.38))}px;`
+    + `background:${avatarColor(profile?.id)};color:#fff;`;
+  const art = avatarGlyph(profile?.icon);
+  const box = { class: 'profile-avatar', 'aria-hidden': 'true', style };
+  return art ? $('span', { ...box, innerHTML: art }) : $('span', box, initialOf(profile?.name));
+}
+
+/** Pick a picture for one profile. The admin can do this for anyone; a user's
+ *  own entry point is the picker, which only ever edits the active profile. */
+function openAvatarPicker(profile, onPicked = null) {
+  if (document.querySelector('.avatar-mgr-bg')) return;
+  const bg = $('div', { class: 'modal-bg avatar-mgr-bg', onClick: ev => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Picture for ${profile.name}`, style: 'max-width:440px;' });
+  const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); };
+  const onKey = ev => { if (ev.key === 'Escape' && isTopModal(bg)) { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+
+  const pick = (icon) => {
+    const r = setProfileIcon(profile.id, icon);
+    if (r.error) { toast(r.error); return; }
+    close();
+    toast(icon ? `Picture updated for ${profile.name}.` : `${profile.name} shows their initial again.`);
+    render();
+    if (onPicked) onPicked();
+  };
+
+  // The initial is the selection whenever no picture is drawn — including an id
+  // this build does not know (it would otherwise show nothing selected).
+  const showing = avatarGlyph(profile.icon) ? profile.icon : null;
+  const grid = $('div', { class: 'avatar-grid', role: 'group', 'aria-label': 'Pictures' });
+  grid.append($('button', {
+    type: 'button', class: 'avatar-choice' + (showing ? '' : ' on'),
+    'aria-label': `Initial for ${profile.name}`, 'aria-pressed': String(!showing),
+    onClick: () => pick(null),
+  }, $('span', { class: 'profile-avatar', 'aria-hidden': 'true', style: `background:${avatarColor(profile.id)};color:#fff;` }, initialOf(profile.name))));
+  for (const id of Object.keys(AVATAR_ART)) {
+    const on = showing === id;
+    grid.append($('button', {
+      type: 'button', class: 'avatar-choice' + (on ? ' on' : ''),
+      'aria-label': id, 'aria-pressed': String(on), onClick: () => pick(id),
+    }, $('span', { class: 'profile-avatar', 'aria-hidden': 'true', style: `background:${avatarColor(profile.id)};color:#fff;`, innerHTML: avatarGlyph(id) })));
+  }
+
+  modal.append(
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' },
+      $('h2', { class: 'serif', style: 'font-size:24px;font-weight:400;' }, 'Choose a picture'),
+      $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
+    $('p', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, `Shown next to ${profile.name} on this device.`),
+    grid,
+  );
+  bg.appendChild(modal);
+  stackModal(bg);
+  grid.querySelector('.avatar-choice')?.focus();
+}
+
+/** Toggle one tab for one user. The setting is written into the TARGET's own
+ *  document (patching it preserves their entries), so it syncs with their data
+ *  rather than living only on this device. The dashboard is not in
+ *  HIDEABLE_TABS, so a user can never be left with an empty nav. */
+function setProfileTab(profile, route, visible, isCurrent, redraw) {
+  const current = isCurrent ? enabledTabs() : loadStateFor(profile.id).settings.enabledTabs;
+  const next = TABS.filter(id => (id === route ? visible : current.includes(id)));
+  if (isCurrent) {
+    state.settings.enabledTabs = next;
+    persist();
+    render();
+    redraw();
+    return;
+  }
+  if (!patchProfileSettings(profile.id, { enabledTabs: next })) {
+    toast('Could not save that change on this device.');
+    return;
+  }
+  toast(`${titleFor(route)} ${visible ? 'shown to' : 'hidden from'} ${profile.name}.`);
+  redraw();
+  sendTabPolicy(profile, next);
+}
+
+// ---------- inviting someone to their own account ----------
+/** Why an invite could not be minted, in the terms of the screen the owner
+ *  would go and fix it on. The server's own message already names the exact
+ *  env var for a missing account credential, so it is passed through. */
+function inviteFailure(r) {
+  if (r.reason === 'not_configured') return 'Turn on Cloud sync first (\u2630 \u2192 Cloud sync) - an invite is minted with the owner\u2019s password.';
+  if (r.reason === 'invalid_endpoint') return 'Cloud sync points somewhere without the invite function - check the URL.';
+  if (r.reason === 'auth') return 'The password in Cloud sync is not the owner\u2019s password - invites need APP_PASSWORD.';
+  if (r.reason === 'network') return 'Could not reach the server - check your connection.';
+  return r.message || 'Could not create that invite.';
+}
+
+/** Mint and show a single-use invite link for one account. The link carries
+ *  the account's current tab policy, so what is set here is what that person
+ *  gets on their phone the moment they open it. */
+async function openInviteDialog(profile, tabs) {
+  toast(`Creating an invite for ${profile.name}\u2026`);
+  const r = await syncIssueProfileInvite(profile.id, tabs);
+  if (!r.ok) { toast(inviteFailure(r)); return; }
+  const link = `${location.origin}${location.pathname}?centsSync=${encodeURIComponent(r.token)}`;
+  const field = $('input', {
+    type: 'text', readonly: true, value: link, 'aria-label': `Invite link for ${profile.name}`,
+    style: 'width:100%;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:ui-monospace,monospace;padding:10px 12px;font-size:11px;box-sizing:border-box;',
+  });
+  const note = $('p', { class: 'muted', style: 'font-size:12px;min-height:16px;margin:8px 0 0;' });
+  const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Invite ${profile.name}`, style: 'max-width:460px;' });
+  const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); };
+  const onKey = ev => { if (ev.key === 'Escape' && isTopModal(bg)) { ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      note.textContent = 'Link copied. Send it to them directly.';
+    } catch {
+      field.select();
+      note.textContent = 'Press Ctrl/Cmd+C to copy the selected link.';
+    }
+  };
+
+  modal.append(
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' },
+      $('h2', { class: 'serif', style: 'font-size:24px;font-weight:400;' }, `Invite ${profile.name}`),
+      $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
+    $('p', { class: 'muted', style: 'font-size:12px;line-height:1.5;' },
+      `Opening this on their phone adds the \u201c${profile.id}\u201d account there, with its own password, and switches to it. Their entries stay on their device and in their own cloud copy - this device keeps only the account itself.`),
+    field,
+    $('p', { class: 'muted', style: 'font-size:12px;line-height:1.5;margin:10px 0 0;' },
+      (r.expiresInDays ? `Single use, expires in ${r.expiresInDays} days. ` : 'Single use. ')
+      + (r.tabs?.length ? `Carries these tabs: ${r.tabs.map(titleFor).join(', ')}.` : 'No tab restriction is set for them yet.')),
+    $('div', { style: 'display:flex;gap:8px;margin-top:16px;' },
+      $('button', { type: 'button', class: 'btn btn-primary', style: 'flex:1;', onClick: copy }, 'Copy link'),
+      $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Done')),
+    note,
+  );
+  bg.appendChild(modal);
+  stackModal(bg);
+  field.focus();
+  field.select();
+}
+
+/** Send an account's tab policy to its own cloud file, so the phone that person
+ *  actually uses picks it up on its next sync. Reports what happened rather
+ *  than claiming success: an account that has never synced has no document to
+ *  carry a policy, and its next invite link carries one instead. */
+async function sendTabPolicy(profile, tabs) {
+  const r = await syncPushProfilePolicy(profile.id, tabs);
+  if (r.ok && r.applied) { toast(`Tab settings sent to ${profile.name}'s device.`); return; }
+  if (r.ok && r.pending) { toast(`${profile.name} has not synced yet - the next invite link carries these tabs.`); return; }
+  // No cloud in use at all: there is nothing to send, and the local copy is
+  // the whole story.
+  if (r.reason === 'not_configured' || r.reason === 'invalid_endpoint') return;
+  toast(`Saved here. Not sent to ${profile.name} yet${r.message ? ` - ${r.message}` : '.'}`);
+}
+
+/** Name dialog for create/rename. window.prompt is unreliable inside an
+ *  installed mobile web app, so this is the app's own modal (and Enter works). */
+function askProfileName(title, initial = '') {
+  return new Promise(resolve => {
+    let settled = false;
+    const input = $('input', {
+      type: 'text', maxlength: '24', value: initial, autocomplete: 'off',
+      'aria-label': 'Profile name', placeholder: 'Name',
+      style: 'width:100%;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:12px 14px;font-size:15px;outline:none;box-sizing:border-box;',
+    });
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKey, true);
+      bg.remove();
+      resolve(value == null ? null : String(value).trim());
+    };
+    const form = $('form', { onSubmit: (ev) => { ev.preventDefault(); finish(input.value); }, style: 'display:flex;flex-direction:column;gap:14px;' },
+      $('h2', { class: 'serif', style: 'font-size:24px;font-weight:400;margin:0;' }, title),
+      input,
+      $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' },
+        $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => finish(null) }, 'Cancel'),
+        $('button', { type: 'submit', class: 'btn btn-primary' }, 'Save')),
+    );
+    const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) finish(null); } },
+      $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title, style: 'max-width:400px;' }, form));
+    const onKey = (ev) => { if (ev.key === 'Escape' && isTopModal(bg)) { ev.preventDefault(); finish(null); } };
+    document.addEventListener('keydown', onKey, true);
+    stackModal(bg);
+    input.focus();
+    input.select();
+  });
+}
+
+/** Switch to another profile in this same tab — the boot sequence minus the
+ *  document reload.
+ *
+ *  The app resolves exactly ONE profile into module-level state at boot, so a
+ *  switch re-resolves the few things that are read once: the document itself,
+ *  the allowed-category set derived from it, the PIN session and the sync
+ *  boot. Everything else — the undo journal, reminders, balances, budgets, the
+ *  tab policy — already reads through the active profile's namespace on
+ *  demand, so it follows the switch for free. The new profile opens on its own
+ *  lock, which is also where its cloud copy is pulled from.
+ *
+ *  In-flight cloud answers are the one real hazard a reload never had: sync.js
+ *  stamps each response with the profile it spoke for, and staleResponse()
+ *  drops anything that arrives for the profile we just left. */
+function switchToProfile(id) {
+  if (id === (getActiveProfileId() || 'personal')) return;
+  if (!setActiveProfileId(id)) { toast('That profile could not be opened.'); return; }
+  loadProfileIntoApp();
+}
+
+/** Re-resolve the active profile into the running app — the part of boot that
+ *  the persisted registry cannot defer. */
+function loadProfileIntoApp() {
+  // Whatever this was triggered from — the picker, the Admin panel, the menu —
+  // goes away with it, exactly as a reload would have cleared it. Toasts too:
+  // they are mounted on document.body, outside the mount that gets rebuilt, and
+  // an Undo toast captured the live undo closure of the profile being left —
+  // tapping it after a switch would write that profile's entries into this one.
+  closeAppMenu();
+  closePinOverlay();
+  for (const el of document.querySelectorAll('.modal-bg, .swal2-container, .toast-host')) el.remove();
+  cancelScheduledSyncPush();
+  stopSyncPolling();
+  state = loadState();
+  updateAllowedCategories([...CATEGORIES, ...(state.settings.customCategories || [])].map(c => c.id));
+  clearBalanceCaches();
+  pinUnlocked = false;
+  // In-memory state that belongs to the profile we are leaving. `_lastAction`
+  // is the important one: it holds a live undo closure over the previous
+  // profile's entries, and lastUndoDescriptor() prefers it over the journal —
+  // so leaving it set would offer to undo one person's entry inside another's
+  // document.
+  _lastAction = null;
+  lastRenderedRoute = null;
+  rejectedRevision = null;
+  syncRevision = 0;
+  syncBootStarted = false;   // this profile needs its own boot sync
+  sessionSyncFailed = false;
+  render();
+  showProfileEntry();
+  window.scrollTo({ top: 0 });
+}
+
+/** The surface the active profile opens on: first-run setup, or its lock. */
+function showProfileEntry() {
+  if (needsOnboarding()) showOnboarding();
+  else showPinLock();
+}
+
+function showProfilePicker({ cancellable = false } = {}) {
+  if (document.querySelector('.profile-picker-bg')) return;
+  const profiles = listProfiles();
+  const active = getActiveProfileId();
+
+  const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); };
+  const onKey = ev => { if (ev.key === 'Escape' && cancellable) { ev.preventDefault(); close(); } };
+
+  const grid = $('div', { class: 'profile-grid', role: 'list' });
+  for (const p of profiles) {
+    grid.append($('button', {
+      type: 'button', class: 'profile-tile' + (p.id === active ? ' current' : ''), role: 'listitem',
+      'aria-label': `Open ${p.name}`, onClick: () => {
+        if (p.id !== active) { switchToProfile(p.id); return; }
+        // Re-opening the current profile → its lock (data is already loaded).
+        close();
+        if (needsOnboarding()) showOnboarding();
+        else showPinLock();
+      },
+    },
+      profileAvatar(p, 64),
+      $('span', { class: 'profile-name' }, p.name),
+      p.id === active ? $('span', { class: 'profile-current-tag' }, 'Current') : null,
+    ));
+  }
+
+  const card = $('div', { class: 'modal profile-picker', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Choose a profile', style: 'max-width:420px;text-align:center;' },
+    $('div', { class: 'serif', style: 'font-size:30px;margin-bottom:2px;' }, 'cents.'),
+    $('p', { class: 'eyebrow', style: 'margin:0 0 18px;' }, 'Who\'s tracking?'),
+    grid,
+    // Your own picture. Anyone may change theirs; the admin can change anyone's
+    // from the Admin panel.
+    $('button', { type: 'button', class: 'btn-link', style: 'margin-top:18px;width:100%;text-align:center;', onClick: () => {
+      const current = activeProfile();
+      openAvatarPicker(current, () => {
+        // Redraw the picker in place so the tile shows the new picture.
+        document.querySelector('.profile-picker-bg')?.remove();
+        showProfilePicker({ cancellable });
+      });
+    } }, 'Change picture'),
+    // Managing users is the owner's job: a user opening this picker only picks.
+    isAdminProfile(getActiveProfileId()) ? $('button', { type: 'button', class: 'btn-link', style: 'margin-top:12px;width:100%;text-align:center;', onClick: () => {
+      close();
+      openAdminPanel(() => {
+        // Redraw in place so adds/renames/deletes are reflected without a
+        // reload. Only dropping to a single profile needs a real reboot.
+        document.querySelector('.profile-picker-bg')?.remove();
+        if (listProfiles().length > 1) showProfilePicker({ cancellable });
+        // Down to one profile there is nothing to pick, so this is the lock
+        // again — without the setup-link pass boot would also have done.
+        else { render(); showProfileEntry(); }
+      });
+    } }, 'Manage users') : null,
+  );
+  const bg = $('div', { class: 'modal-bg profile-picker-bg', style: 'z-index:10002;background:rgba(0,0,0,.82);' }, card);
+  if (cancellable) {
+    bg.addEventListener('click', ev => { if (ev.target === bg) close(); });
+    document.addEventListener('keydown', onKey, true);
+  }
+  document.body.appendChild(bg);
+  bg.querySelector('.profile-tile')?.focus();
+}
+
+// Boot gate: stash any setup link first (it configures a profile after
+// unlock), then several profiles meet the picker, one profile goes straight
+// to its lock/onboarding.
+function showProfileGate() {
+  applySetupLinkIfPresent();
+  if (listProfiles().length > 1 && !hasSessionChoice()) { showProfilePicker({ cancellable: false }); return; }
+  if (needsOnboarding()) showOnboarding();
+  else if (hasPinLock()) showPinLock();
+}
+
+// ---------- admin panel: the people you share cents. with, and their tabs ----------
+// Only the owner's profile ("personal" - the one whose password is the site's
+// APP_PASSWORD) can open this. Everyone else could otherwise un-hide their own
+// tabs or delete the studio's owner. Two things it decides: who has an account,
+// and which tabs each of them may open. Tabs live in the PERSON's own document,
+// so a restriction travels with their data to their own device instead of
+// existing only here.
+//
+// Honest scope: a UI policy, not a security boundary. Hiding a tab keeps the app
+// tidy for the person using it, it does not keep a determined one out — and
+// anyone holding a device reads everything on it.
+function openAdminPanel(onChanged = null) {
+  if (!isAdminProfile(getActiveProfileId())) { toast('Only the owner can manage users.'); return; }
+  if (document.querySelector('.profile-mgr-bg')) return;
+  const bg = $('div', { class: 'modal-bg profile-mgr-bg', onClick: ev => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Admin', tabindex: '-1', style: 'max-width:480px;' });
+  const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); if (onChanged) onChanged(); };
+  const onKey = ev => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onKey, true);
+  bg.appendChild(modal); stackModal(bg);
+
+  const draw = () => {
+    const profiles = listProfiles();
+    const active = getActiveProfileId();
+    const rows = $('div', { style: 'display:flex;flex-direction:column;gap:8px;margin:18px 0;' });
+    for (const p of profiles) {
+      const isCurrent = p.id === active;
+      const owner = isAdminProfile(p.id);
+      const tabs = isCurrent ? enabledTabs() : loadStateFor(p.id).settings.enabledTabs;
+      // The cloud credential is named, not implied: a second profile syncs only
+      // once its own env var exists, and this is where the user finds out.
+      const note = [
+        owner ? 'Owner' : null,
+        isCurrent ? 'open now' : null,
+        owner ? null : `Cloud password: ${profileEnvName(p.id)}`,
+      ].filter(Boolean).join(' · ');
+
+      const chips = $('div', { class: 'admin-tabs', role: 'group', 'aria-label': `Tabs ${p.name} can open` });
+      for (const route of HIDEABLE_TABS) {
+        const on = tabs.includes(route);
+        chips.append($('button', {
+          type: 'button', class: 'admin-tab' + (on ? ' on' : ''), 'aria-pressed': String(on),
+          'aria-label': `${titleFor(route)} for ${p.name}: ${on ? 'shown' : 'hidden'}`,
+          onClick: () => setProfileTab(p, route, !on, isCurrent, draw),
+        }, titleFor(route)));
+      }
+
+      rows.append($('div', { class: 'admin-card' },
+        $('div', { class: 'profile-row', style: 'border:none;padding:0;' },
+          profileAvatar(p, 34),
+          $('span', { class: 'profile-row-main' },
+            $('span', { class: 'profile-row-name' }, p.name),
+            note ? $('span', { class: 'profile-row-note' }, note) : null),
+          $('span', { class: 'profile-row-actions' },
+            !isCurrent ? $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => switchToProfile(p.id) }, 'Open') : null,
+            // An invite is how this person gets their account onto their own
+            // phone. The owner profile has no invite: it is this device.
+            !owner ? $('button', { type: 'button', class: 'btn btn-ghost', 'aria-label': `Invite ${p.name}`, onClick: () => openInviteDialog(p, tabs) }, 'Invite') : null,
+            $('button', { type: 'button', class: 'btn btn-ghost', 'aria-label': `Picture for ${p.name}`, onClick: () => openAvatarPicker(p, draw) }, 'Picture'),
+            $('button', { type: 'button', class: 'btn btn-ghost', 'aria-label': `Rename ${p.name}`, onClick: async () => {
+              const name = await askProfileName('Rename profile', p.name);
+              if (name == null) return;
+              const r = renameProfile(p.id, name);
+              if (r.error) { toast(r.error); return; }
+              draw();
+            } }, 'Rename'),
+            // The owner profile is not deletable: it holds the site password
+            // and the base cloud file, and removing it would leave nobody able
+            // to open this panel again.
+            !owner ? $('button', { type: 'button', class: 'btn btn-danger', 'aria-label': `Delete ${p.name}`, onClick: async () => {
+              const confirmed = await swalConfirm({
+                title: `Delete ${p.name}?`,
+                text: 'Every entry, balance, PIN and setting stored on this device for that profile is removed, and its reminder is switched off. A copy already synced to the cloud is not touched.',
+                confirmButtonText: 'Delete', danger: true,
+              });
+              if (!confirmed) return;
+              // Silence the profile's push reminder BEFORE its settings are gone;
+              // otherwise the server keeps waking this phone for a profile that
+              // no longer exists here.
+              await unsubscribePushForProfile(p.id);
+              const r = deleteProfile(p.id);
+              if (r.error) { toast(r.error); return; }
+              // Deleting the profile you are using moves the active id to the
+              // owner, so the running app has to be re-resolved for it.
+              if (isCurrent) { loadProfileIntoApp(); return; }
+              draw();
+            } }, 'Delete') : null),
+        ),
+        $('div', { class: 'admin-tabs-label' }, 'Tabs'),
+        chips,
+      ));
+    }
+
+    modal.replaceChildren(
+      $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' },
+        $('h2', { class: 'serif', style: 'font-size:28px;font-weight:400;' }, 'Admin'),
+        $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
+      $('p', { class: 'muted', style: 'font-size:12px;line-height:1.5;' },
+        'People you share cents. with. Everyone opens their own account on their own phone and sees only their own entries, balances and PIN. A tab you switch off is hidden for that person everywhere their profile goes, on every device they sync it to.'),
+      $('p', { class: 'muted', style: 'font-size:12px;line-height:1.5;' },
+        'To put an account on someone else\'s phone, tap Invite and send them the link. It is single-use and expires, and whoever holds it can read and write that account\'s data — so send it to them directly.'),
+      rows,
+      $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' },
+        $('button', { type: 'button', class: 'btn btn-primary', onClick: async () => {
+          const name = await askProfileName('New profile name');
+          if (name == null) return;
+          const r = createProfile(name);
+          if (r.error) { toast(r.error); return; }
+          toast(r.profile.id === 'personal'
+            ? `Profile "${r.profile.name}" created.`
+            : `Profile "${r.profile.name}" created. To sync it, set ${profileEnvName(r.profile.id)} in Netlify env vars.`);
+          draw();
+        } }, 'Add profile')),
+    );
+  };
+  draw();
+  modal.focus();
+}
+
 // ---------- daily reminder settings ----------
 function openReminderSettings() {
   const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
@@ -873,7 +1373,7 @@ function openReminderSettings() {
         $('h2', { class: 'serif', style: 'font-size:28px;font-weight:400;' }, 'Daily reminder'),
         $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
       $('p', { class: 'muted', style: 'font-size:12px;line-height:1.5;' },
-        'A nudge to upload your transactions - at your local time.'),
+        'A nudge to upload your transactions - for this profile only, at your local time.'),
       enabledRow,
       $('div', { style: 'display:flex;align-items:center;gap:12px;margin-bottom:18px;' },
         $('span', { class: 'muted', style: 'font-size:12px;' }, 'Time'), timeInput),
@@ -882,7 +1382,7 @@ function openReminderSettings() {
       $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' },
         $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => {
           patchReminderSettings({ lastFiredDate: null });
-          const payload = showReminderNotification();
+          const payload = showReminderNotification(activeProfile().name);
           toast(`Test reminder: ${payload.body}`);
         } }, 'Test now')),
     );
@@ -897,6 +1397,20 @@ function openReminderSettings() {
 function isTopModal(bg) {
   const bgs = document.querySelectorAll('.modal-bg');
   return bgs.length > 0 && bgs[bgs.length - 1] === bg;
+}
+
+// Append a modal so that it paints above the one it was opened from. Equal
+// z-indexes fall back to DOM order, which works only while every modal shares
+// the same z-index — and three do not on purpose: the lock, onboarding and the
+// profile picker sit above the app (10000-10002). A modal opened from one of
+// those would land underneath it and read as a dead button (the picker's own
+// "Change picture" did exactly that), so each new modal is lifted one step
+// above the topmost open one.
+function stackModal(bg) {
+  const top = [...document.querySelectorAll('.modal-bg')].pop();
+  const above = Number.parseInt(top ? getComputedStyle(top).zIndex : '', 10);
+  if (Number.isFinite(above)) bg.style.zIndex = String(above + 1);
+  document.body.appendChild(bg);
 }
 
 function openPinSettings() {
@@ -1073,10 +1587,20 @@ function adoptState(raw) {
   updateAllowedCategories(allCategories().map(c => c.id));
 }
 
+// A cloud response that arrives after the user switched profiles belongs to
+// the profile we left (sync.js stamps each pull with the one it spoke for).
+// Applying it would copy one person's file into another's document, or write
+// one profile's SHA into another's sync settings, so every apply point checks
+// this first.
+function staleResponse(r) {
+  return !!r && !!r.profile && r.profile !== (getActiveProfileId() || 'personal');
+}
+
 // Fold a pull result into local state. Never discards data. Returns
 // 'adopted' (cloud merged in), 'pushed' (local kept, push queued),
 // 'error' (nothing changed).
 async function applyReconcile(r, { quiet = false, boot = false } = {}) {
+  if (staleResponse(r)) return 'stale';
   if (!r.ok) {
     patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
     notifySyncChange();
@@ -1222,6 +1746,8 @@ async function confirmPendingSetupLink() {
     ? 'this site'
     : pending.endpoint;
   let secret = pending.secret;
+  let linkProfileId = null;
+  let linkTabs = null;
   if (pending.isToken) {
     const r = await syncExchangeSetupToken(pending.secret, pending.endpoint);
     if (!r.ok) {
@@ -1241,7 +1767,32 @@ async function confirmPendingSetupLink() {
       }
     } else {
       secret = r.password;
+      linkProfileId = r.profileId;
+      linkTabs = r.tabs || null;
     }
+  }
+  // A link minted on another device names the profile it belongs to. If this
+  // device does not have that profile, adopt it — same id, so the same cloud
+  // file — rather than pointing the active profile at someone else's data.
+  if (linkProfileId && linkProfileId !== getActiveProfileId()) {
+    const label = profileNameFromId(linkProfileId);
+    const adopt = await swalConfirm({
+      title: `Add profile "${label}"?`,
+      text: `This link belongs to the "${linkProfileId}" profile. This device will add it, switch to it and sync it - anyone with the link can read and write that profile's data.`,
+      confirmButtonText: 'Add profile',
+      cancelButtonText: 'Cancel',
+    });
+    if (!adopt) { toast('Sync link ignored.'); return; }
+    const created = createProfile(label, { id: linkProfileId });
+    if (created.error) { toast(created.error); return; }
+    if (!setActiveProfileId(linkProfileId)) { toast('That profile could not be opened.'); return; }
+    // Written AFTER the switch, so the password lands on the adopted profile.
+    // The link carries the tab policy the owner set for this account, applied
+    // here so the account arrives configured rather than wide open.
+    if (linkTabs?.length) patchProfileSettings(linkProfileId, { enabledTabs: linkTabs });
+    patchSyncSettings({ endpoint: pending.endpoint, password: secret, enabled: true, lastError: null, lastErrorAt: null });
+    loadProfileIntoApp(); // resolves the adopted profile and pulls its cloud copy on unlock
+    return;
   }
   const ok = await swalConfirm({
     title: 'Enable cloud sync?',
@@ -1314,8 +1865,13 @@ async function doPushNow(message) {
     // serialization/UI failure cannot leave automatic sync permanently locked.
     const payload = cloudPayload();
     const s = getSyncSettings();
+    const profile = getActiveProfileId() || 'personal';
     setSyncPulsing(true);
     let r = await syncPush(payload, { sha: s.lastSha, message });
+    // Those bytes went to the profile we spoken for above; if a switch happened
+    // while the request was in flight, none of the bookkeeping below describes
+    // the profile that is active now.
+    if (profile !== (getActiveProfileId() || 'personal')) return;
     if (r.ok) {
       rejectedRevision = null;
       if (revision !== syncRevision) {
@@ -1374,6 +1930,7 @@ async function resolveConflictAndPush() {
   syncExclusive = true;
   try {
     const r = await syncPull();
+    if (staleResponse(r)) return;
     if (!r.ok) {
       patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
       if (!sessionSyncFailed) {
@@ -1600,10 +2157,6 @@ subscribeSync(renderSyncIndicator);
 
 // ---------- utilities ----------
 const METHOD_BY_ID = new Map(METHODS.map(method => [method.id, method]));
-let categoryCacheState = null;
-let categoryCacheCustoms = null;
-let categoryCacheLength = -1;
-let categoryCache = [];
 
 function methodShort(id) {
   const method = METHOD_BY_ID.get(id);
@@ -1616,13 +2169,7 @@ function methodLabel(id) {
 
 /** Merge built-in categories with user-added custom ones. */
 function allCategories() {
-  const customs = state.settings.customCategories || [];
-  if (categoryCacheState === state && categoryCacheCustoms === customs && categoryCacheLength === customs.length) return categoryCache;
-  categoryCacheState = state;
-  categoryCacheCustoms = customs;
-  categoryCacheLength = customs.length;
-  categoryCache = [...CATEGORIES, ...customs];
-  return categoryCache;
+  return [...CATEGORIES, ...(state.settings.customCategories || [])];
 }
 function categoryLabel(id) {
   return allCategories().find(category => category.id === id)?.label || id;
@@ -1662,35 +2209,24 @@ function appendMethodOptions(select, ids, selectedId) {
   if (ids.length && !ids.includes(selectedId)) select.value = ids[0];
 }
 const MAX_BALANCE = 1_000_000;
-let balanceCheckpointCacheState = null;
-let balanceCheckpointCache = null;
-let balanceAtCacheState = null;
-const balanceAtCache = new Map();
 
-// Memoized full-dataset sort + id→index so the History screen's per-row
-// balance walk doesn't re-sort everything once per row.
-let liveSortedEntriesState = null;
-let liveSortedEntriesCache = null;
-let liveSortedIndexState = null;
-let liveSortedIndexCache = null;
-function liveSortedEntries() {
-  if (liveSortedEntriesState === state.entries && liveSortedEntriesCache) return liveSortedEntriesCache;
-  liveSortedEntriesState = state.entries;
-  liveSortedEntriesCache = [...state.entries].sort((a, b) => a.date.localeCompare(b.date)
+// The History screen asks for a running balance per row. Three passes keep that
+// linear rather than per-row quadratic, and they are the only caches left on
+// this path. All three are keyed to the live `state.entries` array, so they
+// cannot outlive the data they describe; anything that mutates the array in
+// place instead of replacing it calls clearBalanceCaches() (see below).
+
+// One sort and one id→index map per dataset, instead of re-sorting the whole
+// ledger once per row.
+let sortedViewCache = null;
+function sortedView() {
+  if (sortedViewCache && sortedViewCache.source === state.entries) return sortedViewCache;
+  const ordered = [...state.entries].sort((a, b) => a.date.localeCompare(b.date)
     || ((a.createdAt || '')).localeCompare(b.createdAt || '')
     || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return liveSortedEntriesCache;
+  sortedViewCache = { source: state.entries, ordered, index: new Map(ordered.map((e, i) => [e.id, i])) };
+  return sortedViewCache;
 }
-function liveSortedIndex() {
-  if (liveSortedIndexState === state.entries && liveSortedIndexCache) return liveSortedIndexCache;
-  liveSortedIndexState = state.entries;
-  liveSortedIndexCache = new Map(liveSortedEntries().map((e, i) => [e.id, i]));
-  return liveSortedIndexCache;
-}
-// Per-entry balance cache keyed to the current state object, so each History
-// row computes its running balance once instead of once per rendered field.
-let balanceForEntryCacheState = null;
-const balanceForEntryCache = new Map();
 
 // One-pass running balance per method for the book-balance path. Rows before
 // (or without) a reconciliation checkpoint anchor to the book baseline, and
@@ -1708,7 +2244,7 @@ function liveRunningBalances() {
   const checkpoints = getBalanceCheckpoints();
   const map = new Map();
   const totals = new Map(); // methodId -> running total, seeded with the book baseline
-  const ordered = liveSortedEntries();
+  const ordered = sortedView().ordered;
   for (const entry of ordered) {
     if (entry.type === 'note' || !BALANCE_METHOD_IDS.includes(entry.method)) continue;
     const methodId = entry.method;
@@ -1751,7 +2287,7 @@ function checkpointRunningBalances(methodId, checkpoint) {
   const cpTime = checkpoint.at
     ? Date.parse(checkpoint.at)
     : Date.parse(`${checkpoint.date}T23:59:59.999Z`);
-  const ordered = liveSortedEntries();
+  const ordered = sortedView().ordered;
   // Pass 1: the constant historical-effect subtraction applied to every row.
   let oldTotal = 0;
   for (const candidate of ordered) {
@@ -1781,32 +2317,18 @@ function checkpointRunningBalances(methodId, checkpoint) {
 }
 
 function clearBalanceCaches() {
-  balanceCheckpointCacheState = null;
-  balanceCheckpointCache = null;
-  balanceAtCacheState = null;
-  balanceAtCache.clear();
-  liveSortedEntriesState = null;
-  liveSortedEntriesCache = null;
-  liveSortedIndexState = null;
-  liveSortedIndexCache = null;
-  balanceForEntryCacheState = null;
-  balanceForEntryCache.clear();
+  sortedViewCache = null;
   runningBalanceState = null;
   runningBalanceMap = null;
   cpRunCacheState = null;
   cpRunCache.clear();
-  categoryCacheState = null;
-  categoryCacheCustoms = null;
-  categoryCacheLength = -1;
-  categoryCache = [];
 }
 
+/** The reconciliation checkpoints, normalized to one array per balance method.
+ *  Reading it is a handful of array references, so it is not worth caching. */
 function getBalanceCheckpoints() {
-  if (balanceCheckpointCacheState === state && balanceCheckpointCache) return balanceCheckpointCache;
   const configured = state.settings.balanceCheckpoints || {};
-  balanceCheckpointCache = Object.fromEntries(BALANCE_METHOD_IDS.map(id => [id, Array.isArray(configured[id]) ? configured[id] : []]));
-  balanceCheckpointCacheState = state;
-  return balanceCheckpointCache;
+  return Object.fromEntries(BALANCE_METHOD_IDS.map(id => [id, Array.isArray(configured[id]) ? configured[id] : []]));
 }
 const EMPTY_BALANCE_CHECKPOINTS = Object.fromEntries(BALANCE_METHOD_IDS.map(id => [id, []]));
 function checkpointsForEntries(entries, checkpointsByMethod) {
@@ -1900,16 +2422,6 @@ function supportingTotalsDelta(entry, methodId, targetDate, checkpoint) {
 }
 function balanceAtForEntries(entries, methodId, targetDate = today(), checkpointsByMethod = null) {
   const checkpoints = checkpointsForEntries(entries, checkpointsByMethod);
-  const cacheable = entries === state.entries && checkpoints === getBalanceCheckpoints();
-  const cacheKey = `${methodId}|${targetDate}`;
-  if (cacheable) {
-    if (balanceAtCacheState !== state) {
-      balanceAtCache.clear();
-      balanceAtCacheState = state;
-    } else if (balanceAtCache.has(cacheKey)) {
-      return balanceAtCache.get(cacheKey);
-    }
-  }
   const checkpoint = checkpointFor(methodId, targetDate, checkpoints);
   const startBalance = checkpoint?.balance || 0;
   // A dated checkpoint is authoritative for the balance at the moment it was
@@ -1919,7 +2431,6 @@ function balanceAtForEntries(entries, methodId, targetDate = today(), checkpoint
     if (!checkpoint) return total + (entry.date <= targetDate ? balanceDelta(entry, methodId) : 0);
     return total + entryDeltaAfterCheckpoint(entry, methodId, targetDate, checkpoint);
   }, startBalance);
-  if (cacheable) balanceAtCache.set(cacheKey, balance);
   return balance;
 }
 /** Balance at the end of a date, using the latest end-of-day checkpoint. */
@@ -2252,24 +2763,10 @@ const fmt = (n) => {
   return `${sign}€${Math.abs(n).toFixed(2)}`;
 };
 
-// ---------- count-up animation ----------
-// Animates a number element from its previous rendered value to a new target.
-// A keyed cache lets repeated renders glide between values instead of flashing.
-const _countCache = new Map();
+
+// Render-time motion preference. Read once: the donut draw-in is the one
+// animation left, and it falls back to the final frame when it is set.
 const _reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-function countUp(el, target, key, { format = fmt, duration = 600 } = {}) {
-  const prev = _countCache.has(key) ? _countCache.get(key) : null;
-  _countCache.set(key, target);
-  if (prev === null || prev === target || _reduceMotion) { el.textContent = format(target); return; }
-  const start = performance.now();
-  const tick = (now) => {
-    const t = Math.min(1, (now - start) / duration);
-    const eased = 1 - Math.pow(1 - t, 3);
-    el.textContent = format(prev + (target - prev) * eased);
-    if (t < 1) requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-}
 
 // Whole days from today until an ISO date; negative = in the past.
 function daysUntil(iso) {
@@ -2308,10 +2805,14 @@ function catTotalsForEntries(entries) {
  *  schema change. */
 function isBalanceAdjustmentEntry(entry) {
   if (!entry || typeof entry.details !== 'string') return false;
-  const short = methodShort(entry.method);
-  return entry.details === `${short} load`
-    || entry.details === `${short} withdrawal`
-    || entry.details === `${short} spend`;
+  // Compared case-insensitively: the balance editor writes "Aldi withdrawal"
+  // and the magic field title-cases the same phrase to "Aldi Withdrawal", and
+  // both describe the same adjustment - one of them must not count as spending.
+  const details = entry.details.trim().toLowerCase();
+  const short = methodShort(entry.method).toLowerCase();
+  return details === `${short} load`
+    || details === `${short} withdrawal`
+    || details === `${short} spend`;
 }
 function isSpendingEntry(entry) {
   return entry.type === 'expense' && !entry.transferId && !isBalanceAdjustmentEntry(entry);
@@ -2430,13 +2931,14 @@ function balanceForEntry(entry, entries = state.entries, checkpointsByMethod = n
     const value = cpMap.get(entry.id);
     if (value !== undefined) return value;
   }
-  const ordered = usingLiveState
-    ? liveSortedEntries()
+  const sorted = usingLiveState ? sortedView() : null;
+  const ordered = sorted
+    ? sorted.ordered
     : [...entries].sort((a, b) => a.date.localeCompare(b.date)
       || ((a.createdAt || '')).localeCompare(b.createdAt || '')
       || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const targetIndex = usingLiveState
-    ? (liveSortedIndex().get(entry.id) ?? -1)
+  const targetIndex = sorted
+    ? (sorted.index.get(entry.id) ?? -1)
     : ordered.findIndex(candidate => candidate.id === entry.id);
   if (targetIndex < 0) return 0;
   let balance = useBookBalance ? (baseline?.balance || 0) : checkpoint.balance;
@@ -2462,20 +2964,6 @@ function balanceForEntry(entry, entries = state.entries, checkpointsByMethod = n
     if (oldIncluded) balance -= balanceDelta(historical, entry.method);
   }
   return balance;
-}
-
-/** balanceForEntry with a per-state memo, so History rows compute each running
- *  balance once even when multiple fields need it. */
-function cachedBalanceForEntry(entry) {
-  if (!entry || !BALANCE_METHOD_IDS.includes(entry.method)) return 0;
-  if (balanceForEntryCacheState !== state) {
-    balanceForEntryCacheState = state;
-    balanceForEntryCache.clear();
-  }
-  if (balanceForEntryCache.has(entry.id)) return balanceForEntryCache.get(entry.id);
-  const value = balanceForEntry(entry);
-  balanceForEntryCache.set(entry.id, value);
-  return value;
 }
 
 /** Gift card balance: loading adds, spending subtracts, with reconciliation checkpoints. */
@@ -2667,14 +3155,17 @@ function cashTotalFromCoins() {
   return computeCashTotal({ ...COINS_DEFAULT, ...(state.settings.coins || {}) });
 }
 
+// Net euro move to cash from one entry (credit adds, expense subtracts).
+function cashDeltaOf(entry) {
+  if (!entry || entry.type === 'note' || entry.method !== 'Cash' || entry.type === 'transfer') return 0;
+  return entry.type === 'credit' ? Number(entry.amount) || 0 : -(Number(entry.amount) || 0);
+}
+
 /** Net euro move to cash from every cash-tagged entry (credit adds, expense
  *  subtracts) - the running ledger on top of the reconciled base. */
 function sumCashDeltas() {
   let sum = 0;
-  for (const e of state.entries) {
-    if (e.type === 'note' || e.method !== 'Cash' || e.type === 'transfer') continue;
-    sum += e.type === 'credit' ? e.amount : -e.amount;
-  }
+  for (const e of state.entries) sum += cashDeltaOf(e);
   return sum;
 }
 
@@ -2702,12 +3193,15 @@ function ensureCashCoins() {
   }
 }
 
-/** A new cash entry exists: hand the coin counter over to the calculator so it
- *  follows the cash balance. Anchors `cashBase` to the counted cash first so a
- *  first cash payment subtracts from what is actually in hand. */
-function cashAutoFollow() {
+/** The coin counter hands over to the calculator: anchor `cashBase` so the cash
+ *  balance equals the counted coins at the moment *before* the change being
+ *  made, then let the ledger carry it. `appliedDelta` is the signed cash delta
+ *  of that change (negative when paying cash, positive when deleting a payment);
+ *  subtracting it is what makes the payment itself move the balance, instead of
+ *  being swallowed by its own anchor. */
+function cashAutoFollow(appliedDelta = 0) {
   if (state.settings.coinsManual === false) return;
-  state.settings.cashBase = Math.round((cashTotalFromCoins() - sumCashDeltas()) * 100) / 100;
+  state.settings.cashBase = Math.round((cashTotalFromCoins() - (sumCashDeltas() - appliedDelta)) * 100) / 100;
   state.settings.coinsManual = false;
 }
 
@@ -2792,7 +3286,7 @@ function payRecurringOn(rec, dateStr) {
   while (rec.nextDate <= dateStr && guard++ < 12) {
     rec.nextDate = advanceRecurringDate(rec.nextDate, rec.frequency, rec.dayOfMonth);
   }
-  if (entry.method === 'Cash') cashAutoFollow();
+  if (entry.method === 'Cash') cashAutoFollow(cashDeltaOf(entry));
   persist();
   trackAction(() => {
     state.entries = state.entries.filter(e => e.id !== entry.id);
@@ -3203,7 +3697,10 @@ function parseNaturalLanguage(text) {
     // numbers win; quantity counts ("2 coffees", "2x") lose.
     // Currency words are word-bounded so "euro" never matches the prefix of
     // a word like "eurovision" (which would otherwise swallow it as text).
-    const numRe = /(?:€|£|\$|euros?\b|eur\b)?\s*(\d+(?:[.,]\d{1,2})?)\s*(?:€|£|\$|euros?\b|eur\b)?/gi;
+    // Grouped thousands are captured whole ("1,200", "1,234.56") so a comma
+    // used as a thousands separator is never mistaken for a decimal point,
+    // which used to read "rent 1,200" as €1.20.
+    const numRe = /(?:€|£|\$|euros?\b|eur\b)?\s*(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)\s*(?:€|£|\$|euros?\b|eur\b)?/gi;
     const candidates = [];
     let m;
     while ((m = numRe.exec(raw)) !== null) {
@@ -3243,6 +3740,22 @@ function parseNaturalLanguage(text) {
     if (/\b(?:aldi|aldi'?s)\b/.test(lower)) return 'AG';
     return null;
   };
+  // Which tracked method a fragment of the sentence names ("...from Revolut",
+  // "...to Aldi"). Same vocabulary as the source detector, plus the cards - an
+  // explicit transfer can land on a gift card just as a load can.
+  const detectMethodIn = (fragment) => {
+    if (/\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+(?:account|pot|fund)\b|\bfrom\s+savings\b/.test(fragment)) return 'RS';
+    if (/\brevolut\b/.test(fragment)) return 'Revolut';
+    if (/\baib\b|\bbank\b|current account/.test(fragment)) return 'AIB';
+    if (/\bcash\b|notes|wallet|pocket/.test(fragment)) return 'Cash';
+    if (/\b(?:tesco|tesco'?s)\b/.test(fragment)) return 'TG';
+    if (/\b(?:lidl|lidl'?s)\b/.test(fragment)) return 'LG';
+    if (/\b(?:aldi|aldi'?s)\b/.test(fragment)) return 'AG';
+    return null;
+  };
+  // A gift-card load's funding source is an *account* (a card never funds a
+  // card), so this stays brand-free - "bought a Tesco giftcard worth 24 euros"
+  // must fall back to the primary account, not read Tesco as its own source.
   const detectSource = () => {
     if (/\brevolut\s+savings\b|\brs(?:\s+account)?\b|\bsavings\s+(?:account|pot|fund)\b|\bfrom\s+savings\b/.test(lower)) return 'RS';
     if (/\brevolut\b/.test(lower)) return 'Revolut';
@@ -3291,6 +3804,17 @@ function parseNaturalLanguage(text) {
   // "pint of Guinness" keeps its meaning.
   const details = cleanMagicDescription(raw, amountText);
   const guessed = parseReceiptLine(details);
+  // An explicit transfer between two tracked methods - "transfer 50 from AIB
+  // to Revolut". Requiring both ends (and a transfer verb) keeps shopping
+  // phrasing out: "rent 850 from AIB" has no destination and stays an expense.
+  if (/\b(?:transfer(?:red|ring|s)?|moved?|sent)\b/.test(lower)) {
+    const toPart = lower.match(/\b(?:to|into|onto)\s+([^,;]+)$/);
+    const from = detectSource();
+    const to = toPart ? detectMethodIn(toPart[1]) : null;
+    if (from && to && from !== to) {
+      return { date, type: 'transfer', transfer: { from, to }, amount, details, category: 'misc', method: to };
+    }
+  }
   if (isTransferToCard) {
     // Move the value from the payment account into the gift card. `method` is
     // kept (the card) so the preview/chips render; addMagic uses `transfer`
@@ -3773,12 +4297,30 @@ function computeDataHealth(entries) {
 }
 
 // ---------- router ----------
-const ROUTES = ['dashboard', 'add', 'history', 'balances', 'tesco', 'insights'];
+const ROUTES = TABS;
 const isNarrow = () => typeof window !== 'undefined' && window.innerWidth < 640;
 const isTiny = () => typeof window !== 'undefined' && window.innerWidth < 480;
+// Which tabs THIS profile may open. The admin (see openAdminPanel) sets it per
+// user in that user's own document, so the setting travels with their data.
+function enabledTabs() {
+  const list = state?.settings?.enabledTabs;
+  return Array.isArray(list) ? list : ROUTES;
+}
+function tabVisible(route) {
+  // The dashboard is never hidden (storage forces it back in): it is where the
+  // app lands and the only screen that reaches every other one.
+  return route === 'dashboard' || enabledTabs().includes(route);
+}
 function currentRoute() {
   const r = (location.hash || '#dashboard').slice(1).split('?')[0];
-  return ROUTES.includes(r) ? r : 'dashboard';
+  if (ROUTES.includes(r) && tabVisible(r)) return r;
+  // A hidden tab is unreachable by URL too: a bookmark or a stale link must not
+  // be a way around the admin's setting. Landing on the dashboard keeps the app
+  // coherent instead of rendering a screen with no nav entry back to it.
+  if (ROUTES.includes(r)) {
+    try { history.replaceState(null, '', location.pathname + '#dashboard'); } catch { /* history unavailable */ }
+  }
+  return 'dashboard';
 }
 window.addEventListener('hashchange', render);
 
@@ -3832,12 +4374,29 @@ function renderHeader() {
       $('a', { href: '#dashboard', class: 'logo-wordmark', style: 'font-family:"Space Grotesk",sans-serif;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
     $('nav', { class: 'nav', 'aria-label': 'Primary', style: locked ? 'display:none;' : '' },
-      ...ROUTES.map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : null },
+      ...ROUTES.filter(tabVisible).map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : null },
         $('span', { class: 'nav-link-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', balances: 'wallet', tesco: 'briefcase', insights: 'chart' }[r]] || MENU_ICONS.home }),
         titleFor(r))),
     ),
     $('div', { class: 'header-actions', style: locked ? 'display:none;' : '' },
-      $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Space Grotesk",sans-serif;font-size:14px;color:var(--muted);' }),      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
+      // Profile chip: quick "who am I" + tap to switch. Hidden with a single
+      // profile to keep the header clean for solo users.
+      listProfiles().length > 1 ? $('button', { type: 'button', class: 'profile-chip', title: 'Switch profile', 'aria-label': `Switch profile (current: ${activeProfile().name})`, onClick: () => showProfilePicker({ cancellable: true }) },
+        profileAvatar(activeProfile(), 22),
+        $('span', { class: 'profile-chip-name' }, activeProfile().name)) : null,
+      $('span', { id: 'sync-indicator', style: 'display:inline-flex;align-items:center;gap:7px;font-family:"Space Grotesk",sans-serif;font-size:14px;color:var(--muted);' }),
+      // The owner's way in to the people they share with. It sits in the header
+      // rather than only in the menu, because it is the thing an owner reaches
+      // for after signing in — and the menu row below stays for discoverability.
+      isAdminProfile(getActiveProfileId()) ? $('button', {
+        type: 'button', class: 'admin-trigger', title: 'Admin - people and tabs', 'aria-label': 'Admin - people and tabs',
+        onClick: () => openAdminPanel(),
+      },
+        $('span', { 'aria-hidden': 'true', innerHTML: MENU_ICONS.user }),
+        // Wide enough screens get the word, so the button doesn't read as a
+        // second profile chip sitting next to the real one.
+        $('span', { class: 'admin-trigger-label', 'aria-hidden': 'true' }, 'Admin')) : null,
+      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
          const wasDark = document.documentElement.dataset.theme === 'dark';
          toggleDarkMode();
          event.currentTarget.setAttribute('aria-pressed', String(!wasDark));
@@ -3882,6 +4441,7 @@ const MENU_ICONS = {
   back: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 6 9 12 15 18"/></svg>',
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
   download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+  photo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><circle cx="8.6" cy="10" r="1.7"/><path d="M3.5 17l5-4.6 4.2 3.8 3.1-2.4 4.7 4"/></svg>',
 };
 
 // Full stroke-icon set - Lucide-style 24px grid, currentColor, 1.9 stroke.
@@ -3925,10 +4485,11 @@ function iconSpan(name, cls = '', style) {
   return s;
 }
 
-function menuRowEl({ icon, label, onClick = null, chevron = false, active = false, danger = false, check = false }) {
-  return $('button', { type: 'button', class: 'menu-row' + (active ? ' active' : '') + (danger ? ' danger' : ''), onClick },
+function menuRowEl({ icon, label, note = null, cls = '', onClick = null, chevron = false, active = false, danger = false, check = false }) {
+  return $('button', { type: 'button', class: 'menu-row' + (active ? ' active' : '') + (danger ? ' danger' : '') + (cls ? ' ' + cls : ''), onClick },
     $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[icon] || MENU_ICONS.home }),
-    $('span', { class: 'menu-row-label' }, label),
+    note ? $('span', { class: 'menu-row-main' }, $('span', { class: 'menu-row-label' }, label), $('span', { class: 'menu-row-note' }, note))
+      : $('span', { class: 'menu-row-label' }, label),
     check ? $('span', { class: 'menu-row-check', 'aria-hidden': 'true', innerHTML: MENU_ICONS.check }) : null,
     chevron ? $('span', { class: 'menu-row-chevron', 'aria-hidden': 'true', innerHTML: MENU_ICONS.chevron }) : null,
   );
@@ -3960,7 +4521,15 @@ function buildMenuLevel(id) {
   const list = $('div', { class: 'menu-list' });
   if (id === 'root') {
     const route = currentRoute();
-    ROUTES.forEach(r => list.append($('a', { href: `#${r}`, class: 'menu-row' + (r === route ? ' active' : ''), 'aria-current': r === route ? 'page' : null, onClick: closeAppMenu },
+    // The owner's way in to the people they share with sits at the very top of
+    // the sidebar: it is the one thing an owner reaches for after signing in,
+    // and as a row further down the list it was easy to miss.
+    const owner = isAdminProfile(getActiveProfileId());
+    if (owner) {
+      list.append(menuRowEl({ icon: 'user', cls: 'admin-row', label: 'Admin', note: 'People & tab access', chevron: true, onClick: () => { closeAppMenu(); openAdminPanel(); } }));
+      list.append($('div', { class: 'menu-sep' }));
+    }
+    ROUTES.filter(tabVisible).forEach(r => list.append($('a', { href: `#${r}`, class: 'menu-row' + (r === route ? ' active' : ''), 'aria-current': r === route ? 'page' : null, onClick: closeAppMenu },
       $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', balances: 'wallet', tesco: 'briefcase', insights: 'chart' }[r]] || MENU_ICONS.home }),
       $('span', { class: 'menu-row-label' }, titleFor(r)),
     )));
@@ -3969,6 +4538,13 @@ function buildMenuLevel(id) {
     if (canInstallApp()) {
       list.append(menuRowEl({ icon: 'download', label: 'Install app', onClick: () => { closeAppMenu(); promptInstall(); } }));
     }
+    // For everyone else the picker is only a way to switch accounts.
+    if (!owner) {
+      list.append(menuRowEl({ icon: 'user', label: 'Switch profile', chevron: true, onClick: () => { closeAppMenu(); showProfilePicker({ cancellable: true }); } }));
+    }
+    // Your own picture, wherever you are — the lock-screen picker is the only
+    // other way in, and it is behind the lock.
+    list.append(menuRowEl({ icon: 'photo', label: 'Profile picture', onClick: () => { closeAppMenu(); openAvatarPicker(activeProfile()); } }));
     list.append(menuRowEl({ icon: 'clock', label: 'Daily reminder', onClick: () => { closeAppMenu(); openReminderSettings(); } }));
     list.append(menuRowEl({ icon: 'appearance', label: 'Appearance', chevron: true, onClick: () => menuDrill('appearance') }));
     list.append(menuRowEl({ icon: 'lock', label: 'Privacy & security', chevron: true, onClick: () => menuDrill('privacy') }));
@@ -4559,11 +5135,7 @@ function screenDashboard() {
       ),
       $('div', { style: 'text-align:right;flex-shrink:0;' },
         $('div', { class: 'eyebrow' }, 'Net worth'),
-        (() => {
-          const el = $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(lastVal));
-          countUp(el, lastVal, 'dash-networth');
-          return el;
-        })(),
+        $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(lastVal)),
       ),
     ));
   }
@@ -4577,11 +5149,9 @@ function screenDashboard() {
       )
     : null;
 
-  // Hero - the monthly total and balance count up from their previous values
+  // Hero - the monthly total and the balance
   const heroTotalEl = $('span', { class: 'serif' }, fmt(expenseSum));
-  countUp(heroTotalEl, expenseSum, 'dash-total');
   const heroBalanceEl = $('span', { class: 'display-num', style: `font-size:13px;color:${runningBalance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(runningBalance));
-  countUp(heroBalanceEl, runningBalance, 'dash-balance');
   screen.appendChild($('div', { class: 'page-title-row dashboard-hero' },
     $('div', null,
       $('div', { class: 'eyebrow' }, monthLabel(key)),
@@ -4601,10 +5171,10 @@ function screenDashboard() {
         e.target.style.borderColor = 'var(--line)';
         if (!commitBudget(e.target.value)) { e.target.value = String(budget || ''); toast('Enter a non-negative number.'); }
       }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
-      $('a', { href: '#add', class: 'btn btn-primary' },
+      tabVisible('add') ? $('a', { href: '#add', class: 'btn btn-primary' },
         $('span', { class: 'btn-new-icon', style: 'margin-right:6px;', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line class="icon-plus-h" x1="5" y1="12" x2="19" y2="12"/><line class="icon-plus-v" x1="12" y1="5" x2="12" y2="19"/></svg>' }),
         'New entry',
-      ),
+      ) : null,
       resyncBtn,
     ),
   ));
@@ -4613,8 +5183,14 @@ function screenDashboard() {
   // drops below €5 it shows here on the home screen with a tap-through to the
   // Balances screen to top it up. Swipe it away on touch like a phone
   // notification; it re-arms once the card is topped back up.
+  // Only a card that has actually been used can be "running low": a brand-new
+  // account legitimately sits at €0.00, and alerting on every untouched card
+  // would greet a fresh install with two warnings about money it never had.
+  const giftCardUsed = (id) => state.entries.some(e => e.method === id)
+    || (state.settings.balanceCheckpoints?.[id] || []).length > 0;
   const lowGiftCards = ['TG', 'LG']
-    .map(id => ({ id, label: methodShort(id), balance: computeGiftCardBalance(state.entries, id).balance }));
+    .map(id => ({ id, label: methodShort(id), balance: computeGiftCardBalance(state.entries, id).balance }))
+    .filter(card => giftCardUsed(card.id));
   for (const card of lowGiftCards) {
     if (card.balance >= 5) setAlertDismissed(`gift-low:${card.id}`, false);
   }
@@ -4630,8 +5206,9 @@ function screenDashboard() {
       ),
       // One tap per card lands straight in that card's pre-focused load
       // editor on Balances - the whole top-up flow is two taps from home.
-      ...lowGiftVisible.map(card =>
-        $('a', { href: `#balances?load=${card.id}`, class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;flex-shrink:0;' }, `Top up ${card.label}`)),
+      // The top-up flow lives on the Balances tab, so the buttons go with it.
+      ...(tabVisible('balances') ? lowGiftVisible.map(card =>
+        $('a', { href: `#balances?load=${card.id}`, class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;flex-shrink:0;' }, `Top up ${card.label}`)) : []),
     );
     screen.appendChild(giftCard);
     attachSwipeDismiss(giftCard, () => {
@@ -4679,11 +5256,7 @@ function screenDashboard() {
     screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:${isNarrow() ? '22px' : '32px'};` },
       $('div', { class: 'row between' },
         $('span', { class: 'eyebrow' }, 'Spent of budget'),
-        (() => {
-          const el = $('span', { class: 'serif budget-pct-anim', style: 'font-size:22px;' }, `${pct.toFixed(1)}%`);
-          countUp(el, pct, 'dash-budget-pct', { format: v => `${v.toFixed(1)}%` });
-          return el;
-        })(),
+        $('span', { class: 'serif budget-pct-anim', style: 'font-size:22px;' }, `${pct.toFixed(1)}%`),
       ),
       $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 20px;' },
         $('div', { class: 'budget-bar-fill', style: `height:100%;width:${pct}%;background:${pct > 90 ? 'var(--negative)' : 'var(--accent)'};transition:width .5s cubic-bezier(0.2,0.8,0.2,1);border-radius:99px;` }),
@@ -4713,7 +5286,7 @@ function screenDashboard() {
   // Only rendered once there are shifts, so it never clutters the dashboard
   // for anyone who isn't on a Tesco rota.
   const tescoShifts = (state.tesco && state.tesco.shifts) || [];
-  if (tescoShifts.length) {
+  if (tescoShifts.length && tabVisible('tesco')) {
     const tescoRates = { ...TESCO_RATE_DEFAULTS, ...(state.settings.tescoRates || {}) };
     const tescoMonth = monthSummary(tescoShifts, (state.tesco && state.tesco.payslips) || [], tescoRates, now.getFullYear(), now.getMonth());
     screen.appendChild($('a', { href: '#tesco', class: 'card', style: 'display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;margin-bottom:24px;' },
@@ -4924,7 +5497,7 @@ function screenDashboard() {
   const recentCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};overflow-x:auto;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('span', { class: 'eyebrow' }, 'Recent'),
-      $('a', { href: '#history', class: 'btn-link' }, 'See all ', iconSpan('arrow-right', 'sm')),
+      tabVisible('history') ? $('a', { href: '#history', class: 'btn-link' }, 'See all ', iconSpan('arrow-right', 'sm')) : null,
     ),
     recent.length === 0
       ? $('div', { class: 'empty' }, emptyIcon('chart'), ' No entries yet.')
@@ -4953,7 +5526,7 @@ function screenDashboard() {
         $('div', { class: 'eyebrow' }, 'Bank account balances'),
         $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current end-of-day balances; transaction history stays unchanged.'),
       ),
-      $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage ', iconSpan('arrow-right', 'sm')),
+      tabVisible('balances') ? $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage ', iconSpan('arrow-right', 'sm')) : null,
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
       ...renderAccountBalanceRows({ secondaryFor }),
@@ -4967,7 +5540,7 @@ function screenDashboard() {
         $('div', { class: 'eyebrow' }, 'Gift card balances'),
         $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current provider balances without adding a fake transaction. Totals show recorded activity, or post-reconciliation adjustments when a checkpoint exists.'),
       ),
-      $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage ', iconSpan('arrow-right', 'sm')),
+      tabVisible('balances') ? $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage ', iconSpan('arrow-right', 'sm')) : null,
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },     ...GIFT_CARD_IDS.map(id => {
          const m = METHODS.find(x => x.id === id);
@@ -5035,7 +5608,7 @@ function screenDashboard() {
           }),
         ),
   );
-  screen.appendChild(payCard);
+  if (tabVisible('tesco')) screen.appendChild(payCard);
 
   return screen;
 }
@@ -5612,7 +6185,7 @@ function screenAdd() {
     const prevCoinsManual = state.settings.coinsManual;
     state.entries.push(...entries);
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
-    if (entries.some(e => e.method === 'Cash')) cashAutoFollow();
+    if (entries.some(e => e.method === 'Cash')) cashAutoFollow(entries.reduce((sum, e) => sum + cashDeltaOf(e), 0));
     const ids = entries.map(e => e.id);
     trackAction(() => {
       state.entries = state.entries.filter(e => !ids.includes(e.id));
@@ -5997,7 +6570,7 @@ function screenHistory() {
       const isCredit = e.type === 'credit';
       const isTransfer = !!e.transferId;
       const totalAmount = isGroup ? Math.round(legs.reduce((sum, l) => sum + l.amount, 0) * 100) / 100 : e.amount;
-      const rowBalance = cachedBalanceForEntry(legs[0]);
+      const rowBalance = balanceForEntry(legs[0]);
       const rowType = isNote ? 'note-row' : isCredit ? 'income-row' : 'expense-row';
       const openRow = () => {
         if (isGroup) {
@@ -6042,7 +6615,6 @@ function screenHistory() {
   c.appendChild(tableWrap);
 
   const histSumEl = $('span', { class: 'display-num', style: 'font-size:30px;' }, fmt(expenseSum));
-  countUp(histSumEl, expenseSum, 'hist-sum');
   c.appendChild($('div', { class: 'summary-row' },
     $('span', { class: 'eyebrow' }, 'Monthly sum · expenses'),
     histSumEl,
@@ -6106,7 +6678,7 @@ function screenBalances() {
   c.appendChild($('div', { class: 'page-title-row' },
     $('h1', { class: 'page-title' }, 'Balances'),
     $('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;justify-content:flex-end;' },
-      $('a', { href: '#history', class: 'btn btn-ghost', style: 'padding:8px 14px;font-size:12px;' }, 'Transaction history'),
+      tabVisible('history') ? $('a', { href: '#history', class: 'btn btn-ghost', style: 'padding:8px 14px;font-size:12px;' }, 'Transaction history') : null,
       $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:8px 14px;font-size:12px;', onClick: reconcileAll }, 'Reconcile all'),
     ),
   ));
@@ -6281,7 +6853,7 @@ function screenInsights() {
   }
 
   c.appendChild($('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px;margin-bottom:32px;' },
-    statCard('Average / month', avg, 'ins-avg'),
+    statCard('Average / month', avg),
     statCard('Top method', topMethodEntry ? `${(methodShort(topMethodEntry[0]))} · ${fmt(topMethodEntry[1])}` : '-'),
     statCard('Entries', String(recent.filter(isSpendingEntry).length)),
     statCard('Categories active', String(new Set(recent.filter(isSpendingEntry).map(e => e.category)).size)),
@@ -6456,9 +7028,8 @@ function screenInsights() {
 
   return c;
 }
-function statCard(label, value, countKey) {
-  const numEl = $('div', { class: 'display-num', style: 'font-size:30px;margin-top:8px;' }, typeof value === 'number' && countKey ? '' : value);
-  if (countKey && typeof value === 'number') countUp(numEl, value, countKey);
+function statCard(label, value) {
+  const numEl = $('div', { class: 'display-num', style: 'font-size:30px;margin-top:8px;' }, value);
   return $('div', { class: 'card', style: 'padding:20px 16px;' },
     $('div', { class: 'eyebrow' }, label),
     numEl,
@@ -6971,7 +7542,7 @@ function openLegEditor(leg) {
     const before = { ...current };
     current.method = sel.value;
     current.amount = Math.round(amount * 100) / 100;
-    if (current.method === 'Cash' || before.method === 'Cash') cashAutoFollow();
+    if (current.method === 'Cash' || before.method === 'Cash') cashAutoFollow(cashDeltaOf(current) - cashDeltaOf(before));
     persist();
     trackAction(() => {
       const back = state.entries.find(x => x.id === current.id && x.splitId === splitId);
@@ -7073,7 +7644,7 @@ function openSplitEditor(legs) {
       .concat(newLegs);
     if (removedLegs.length) tombstoneIds(removedLegs.map(x => x.id));
     state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    if (newLegs.some(l => l.method === 'Cash') || removedLegs.some(l => l.method === 'Cash')) cashAutoFollow();
+    if (newLegs.some(l => l.method === 'Cash') || removedLegs.some(l => l.method === 'Cash')) cashAutoFollow(newLegs.reduce((sum, l) => sum + cashDeltaOf(l), 0) - before.reduce((sum, l) => sum + cashDeltaOf(l), 0));
     persist();
     trackAction(() => {
       state.entries = state.entries.filter(x => x.splitId !== splitId).concat(before);
@@ -7440,7 +8011,7 @@ function dashboardPulse(key, expenseSum, runningBalance) {
     comparison.previous > 0 ? $('div', { class: 'pulse-footnote muted' },
       `${comparison.difference <= 0 ? 'Down' : 'Up'} ${fmt(Math.abs(comparison.difference))} from ${monthLabel(comparison.previousKey)}.`,
     ) : null,
-    $('a', { href: '#insights', class: 'btn-link', style: 'margin-top:10px;font-size:13px;' }, 'See details ', iconSpan('arrow-right', 'sm')),
+    tabVisible('insights') ? $('a', { href: '#insights', class: 'btn-link', style: 'margin-top:10px;font-size:13px;' }, 'See details ', iconSpan('arrow-right', 'sm')) : null,
   );
 }
 
@@ -7551,7 +8122,7 @@ function attachSwipeDismiss(el, onDismiss) {
 // and never sync. An alert
 // stays dismissed while its condition holds and re-arms automatically once the
 // condition clears, so a genuinely new event notifies again.
-const ALERT_DISMISS_KEY = () => 'cents-dismissed-alerts';
+const ALERT_DISMISS_KEY = () => nsKey('alerts');
 function readAlertDismissals() {
   try { return JSON.parse(localStorage.getItem(ALERT_DISMISS_KEY())) || {}; } catch { return {}; }
 }
@@ -7754,14 +8325,15 @@ function _render() {
       $('span', { class: 'tab-icon-outline', innerHTML: set.outline }),
       $('span', { class: 'tab-icon-filled', innerHTML: set.filled }),
     );
-  };    const tabItems = [
+  };
+  const tabItems = [
     { id: 'dashboard', label: 'Home' },
     { id: 'add', label: 'Add' },
     { id: 'history', label: 'History' },
     { id: 'balances', label: 'Balances' },
     { id: 'tesco', label: 'Tesco' },
     { id: 'insights', label: 'Insights' },
-  ];
+  ].filter(t => tabVisible(t.id));
   main.appendChild($('nav', { class: 'bottom-tab-bar', 'aria-label': 'Mobile navigation' },
     ...tabItems.map(t => $('a', { href: `#${t.id}`, class: 'bottom-tab', 'aria-current': t.id === route2 ? 'page' : null },
       tabIconSVG(t.id),
@@ -8009,9 +8581,7 @@ window.addEventListener('DOMContentLoaded', () => {
       target.scrollIntoView({ block: 'start' });
     });
   }
-  applySetupLinkIfPresent();
-  if (needsOnboarding()) showOnboarding();
-  else if (hasPinLock()) showPinLock();
+  showProfileGate();
   render();
   // Anything the storage layer could not do (an unreadable document) is
   // reported once the UI is up; raiseNotice defers it behind any overlay.

@@ -23,10 +23,18 @@
    crypto/expiry — consumption tracking lives in the function.
 
    Format: t2.<iv-b64url>.<ciphertext-b64url>.<tag-b64url>
-   plaintext = JSON { p: <password>, e: <expiry epoch ms> }
+   plaintext = JSON { p: <password>, e: <expiry epoch ms>, i: <profile id>,
+                       t: <enabled tabs, optional> }
+
+   `i` is what makes a link usable on a SECOND device holding the same
+   profiles: the receiving device adopts the id (and with it the cloud file
+   data-<id>.json and the APP_PASSWORD_<ID> credential) instead of asking the
+   user to retype a name and hope the slug matches. Tokens minted before this
+   field existed simply redeem as the default profile.
    ============================================================ */
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { DEFAULT_PROFILE, isProfileId } from './profiles.mjs';
 
 export const SETUP_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const TOKEN_PREFIX = 't2.';
@@ -39,18 +47,37 @@ function keyFromSecret(secret) {
   return createHash('sha256').update(String(secret)).digest();
 }
 
-/** Mint an encrypted setup token for the given password. */
-export function issueSetupToken(secret, password, now = Date.now()) {
+/** Tab routes a policy in a token may name. Bounded and shape-checked here so
+ *  a token can never carry anything but tab names (the receiving device
+ *  filters them again against its own list). */
+const TAB_RE = /^[a-z]{1,16}$/;
+export function cleanTabs(value) {
+  if (!Array.isArray(value)) return null;
+  const out = [...new Set(value.filter(v => typeof v === 'string' && TAB_RE.test(v)))].slice(0, 12);
+  return out.length ? out : null;
+}
+
+/** Mint an encrypted setup token for the given password.
+ *  `tabs` rides along so an account's tab policy reaches the device that
+ *  adopts it — the owner sets it before sending the link, and the link carries
+ *  it, rather than depending on the cloud file already existing. */
+export function issueSetupToken(secret, password, profileId = DEFAULT_PROFILE, now = Date.now(), tabs = null) {
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv('aes-256-gcm', keyFromSecret(secret), iv);
-  const payload = JSON.stringify({ p: String(password), e: now + SETUP_TOKEN_TTL_MS });
+  const policy = cleanTabs(tabs);
+  const payload = JSON.stringify({
+    p: String(password),
+    e: now + SETUP_TOKEN_TTL_MS,
+    i: isProfileId(profileId) ? profileId : DEFAULT_PROFILE,
+    ...(policy ? { t: policy } : {}),
+  });
   const ciphertext = Buffer.concat([cipher.update(payload, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `${TOKEN_PREFIX}${iv.toString('base64url')}.${ciphertext.toString('base64url')}.${tag.toString('base64url')}`;
 }
 
 /** Redeem a setup token.
- *  Returns { ok: true, password } when authentic and unexpired,
+ *  Returns { ok: true, password, profileId, tabs } when authentic and unexpired,
  *  { ok: false, expired: true } when authentic but past its expiry,
  *  { ok: false, expired: false } when invalid (tampered / wrong key /
  *  malformed). The expired/invalid distinction lets the caller tell a
@@ -94,5 +121,10 @@ export function redeemSetupToken(secret, token, now = Date.now()) {
     return { ok: false, expired: false };
   }
   if (payload.e <= now) return { ok: false, expired: true };
-  return { ok: true, password: payload.p };
+  return {
+    ok: true,
+    password: payload.p,
+    profileId: isProfileId(payload.i) ? payload.i : DEFAULT_PROFILE,
+    tabs: cleanTabs(payload.t),
+  };
 }

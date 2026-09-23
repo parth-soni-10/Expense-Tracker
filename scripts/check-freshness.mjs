@@ -79,6 +79,9 @@ const revalidates = cc => /no-cache|no-store|max-age=0/i.test(cc);
 const APP_EXT = new Set(['.js', '.css', '.html', '.json', '.png', '.woff2', '.wasm', '.gz']);
 const SKIP_DIRS = new Set(['node_modules', 'scripts', 'netlify', 'testing', 'screenshots']);
 const assets = new Set(['/']);
+// Docs are published too (`publish = "."`), and they carry the install steps
+// and the env var names, so each one needs a 404 rule of its own (part 5).
+const docs = new Set();
 const rootDir = fileURLToPath(root);
 (function walk(dir) {
   for (const name of readdirSync(dir)) {
@@ -86,9 +89,11 @@ const rootDir = fileURLToPath(root);
     const full = join(dir, name);
     if (statSync(full).isDirectory()) {
       if (!SKIP_DIRS.has(name)) walk(full);
-    } else if (APP_EXT.has(extname(name))) {
-      assets.add('/' + relative(rootDir, full).split(sep).join('/'));
+      continue;
     }
+    const path = '/' + relative(rootDir, full).split(sep).join('/');
+    if (APP_EXT.has(extname(name))) assets.add(path);
+    else if (extname(name) === '.md') docs.add(path);
   }
 })(rootDir);
 
@@ -145,12 +150,32 @@ const notFoundRules = toml
 if (!notFoundRules.some(r => r.status === 404)) {
   fail('netlify.toml 404s no non-app path, but `publish = "."` serves the whole repo — the guard scripts, the function sources and the docs would all be downloadable from the live site.');
 }
+// A [[redirects]] `from` is a DIFFERENT engine from a [[headers]] `for`: an
+// asterisk is valid only as a trailing splat ("It's not possible to use an
+// asterisk as a wildcard in the middle of a path"), so `from = "/*.md"`
+// matches nothing at all. `matches` above models the headers glob and cannot
+// see that — which is how a `/*.md` rule shipped, passed this file, and left
+// README.md, CLAUDE.md and vendor/README.md downloadable with a 200.
+const redirectMatches = (pattern, path) =>
+  pattern.endsWith('*') ? path.startsWith(pattern.slice(0, -1)) : pattern === path;
+
 for (const r of notFoundRules) {
+  if (r.pattern.includes('*') && !r.pattern.endsWith('*')) {
+    fail(`netlify.toml 404s "${r.pattern}", which Netlify can never match: a redirect path takes an asterisk ` +
+      'only as a trailing splat, so a mid-path one makes the rule a silent no-op. Write one rule per path.');
+  }
   for (const path of assets) {
     if (matches(r.pattern, path)) {
       fail(`netlify.toml 404s "${r.pattern}", which matches the app asset ${path} — with force it wins over the real file, so the app would break in production only.`);
     }
   }
+}
+
+const uncoveredDocs = [...docs].filter(path =>
+  !notFoundRules.some(r => r.status === 404 && redirectMatches(r.pattern, path)));
+if (uncoveredDocs.length) {
+  fail(`${uncoveredDocs.join(', ')} ships but no [[redirects]] rule 404s it. Add one rule per doc — a ` +
+    '`*.md` glob cannot match Netlify.');
 }
 
 if (problems.length) {
@@ -160,4 +185,5 @@ if (problems.length) {
 }
 console.log(`check-freshness: OK — ${assets.size} published app asset(s), each revalidating; ` +
   `${notFoundRules.length} non-app path(s) 404'd, none of them an app file; ` +
+  `${docs.size} doc(s) 404'd; ` +
   'the worker is network-first and its script is never served from cache.');

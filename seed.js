@@ -21,9 +21,22 @@ export const METHODS = [
   { id: 'Cash',    label: 'Cash on hand' },
 ];
 
+/* The app's tabs, in canonical order. One source of truth: app.js routes the
+   screen with it and storage.js validates settings.enabledTabs against it. */
+export const TABS = ['dashboard', 'add', 'history', 'balances', 'tesco', 'insights'];
+
+// Which tabs an admin can hide from a user. The dashboard is deliberately not
+// in this list: it is the landing page and the app's only hub, so hiding it
+// would leave nowhere to land and no way back for the person it was hidden
+// from (the Admin panel itself lives in the menu, not in a tab).
+export const HIDEABLE_TABS = ['add', 'history', 'balances', 'tesco', 'insights'];
+
 export const SEED_SETTINGS = {
   monthlyBudget: 1100,
   currency: '€',
+  // Tabs this profile may open. Admin-controlled (see the Admin panel); a
+  // document written before this existed simply shows every tab.
+  enabledTabs: [...TABS],
   // Euro amount of Tesco paper vouchers on hand - never part of any balance.
   tescoVouchers: 0,
   // Cash-on-hand ledger: `cashBase` is the starting cash balance and cash

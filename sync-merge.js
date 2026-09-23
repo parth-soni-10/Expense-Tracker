@@ -164,6 +164,12 @@ function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresher) {
     // tescoWeekNos is per-week too: a week number typed on either device
     // survives, and the fresher side wins a clash for the same week.
     tescoWeekNos: { ...(older.tescoWeekNos || {}), ...(newer.tescoWeekNos || {}) },
+    // enabledTabs is a POLICY, not a collection: unioning it would let any
+    // device that still lists a tab re-grant it after the admin hid it. The
+    // fresher side wins outright — with the fallback for a side that predates
+    // the feature and so carries no list at all (that must not read as
+    // "everything visible" and undo a restriction).
+    enabledTabs: Array.isArray(newer.enabledTabs) ? newer.enabledTabs : older.enabledTabs,
     deletedEntryIds,
   };
 }

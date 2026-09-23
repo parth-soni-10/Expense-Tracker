@@ -2,13 +2,19 @@
    Storage layer — localStorage CRUD + JSON export/import
    Strict validation: NaN amounts and empty dates are filtered.
    UUID fallback for older browsers / file:// previews.
-   ============================================================ */
-import { SEED_SETTINGS } from './seed.js';
-import { getPrivacyPin, setPrivacyPin } from './settings.js';
 
-const KEY = () => 'expense-tracker:v1';
-// Where an UNREADABLE stored document is parked instead of being lost.
-const QUARANTINE_KEY = () => 'expense-tracker:unreadable';
+   Every key here is namespaced per profile by profiles.js, so one
+   profile's document can never be read or overwritten by another.
+   ============================================================ */
+import { SEED_SETTINGS, TABS } from './seed.js';
+import { getPrivacyPin, setPrivacyPin } from './settings.js';
+import { nsKey } from './profiles.js';
+
+const KEY = () => nsKey('state');
+// Where an UNREADABLE stored document is parked instead of being lost. Kept
+// per profile: a corrupt document belongs to the profile that wrote it, and
+// one profile's boot must never overwrite the copy another needs.
+const QUARANTINE_KEY = () => nsKey('quarantine');
 // A one-shot message the UI shows after boot (see takeStorageNotice).
 let storageNotice = null;
 
@@ -24,14 +30,10 @@ export function unreadableBackup() {
   try { return localStorage.getItem(QUARANTINE_KEY()); } catch { return null; }
 }
 
-// The reverse migration for the removed multi-profile feature is gone. It was
-// written against cents:p/<id>/<base> keys, but its id lookup read the wrong
-// path segment (`split('/')[2]` is the field name, not the profile id), so it
-// could never restore anything — it only ever planted its own "migrated" flag.
-// Any device that has loaded the app since profiles were removed has that flag,
-// which makes the shim permanently inert; its only remaining power was to
-// overwrite live keys with stale profile-scoped copies. Stray cents:p/* keys are
-// now simply ignored, and nothing on a live install can be replaced by one.
+// The first run after the profiles upgrade moves the legacy global keys into
+// the "personal" profile (profiles.js). The legacy document is authoritative:
+// it is what every device has been reading and syncing since profiles were
+// last absent, so it deliberately overwrites any older cents:p/personal/* copy.
 
 export const uid = () =>
   (globalThis.crypto?.randomUUID?.())
@@ -441,6 +443,16 @@ function normalizeTesco(raw) {
   return out;
 }
 
+/** Which tabs a profile may open. Canonical order, unknown ids dropped, and
+ *  the dashboard is always present — it is the landing page, so a document
+ *  that hid it (or a typo'd list that removed everything) would strand the
+ *  user on a blank screen with no navigation. */
+function normalizeEnabledTabs(raw) {
+  if (!Array.isArray(raw)) return [...TABS];
+  const kept = TABS.filter(id => id === 'dashboard' || raw.includes(id));
+  return kept;
+}
+
 export function validateState(s) {
   if (!s || !Array.isArray(s.entries)) return defaultState();
   const out = { ...s };
@@ -509,6 +521,7 @@ export function validateState(s) {
     categoryBudgets: normalizeCategoryBudgets(rawSettings.categoryBudgets, CATEGORIES_OK),
     tescoRates: normalizeTescoRates(safeSettings.tescoRates),
     tescoWeekNos: normalizeWeekNos(safeSettings.tescoWeekNos),
+    enabledTabs: normalizeEnabledTabs(safeSettings.enabledTabs),
   };
   out.tesco = normalizeTesco(s.tesco);
   out.schemaVersion = 2;
@@ -611,6 +624,30 @@ export function saveState(state) {
   }
 }
 
+/** Read a specific profile's document as this device holds it.
+ *  The Admin panel is the only place one profile reads another's. */
+export function loadStateFor(profileId) {
+  try { return validateState(JSON.parse(localStorage.getItem(nsKey('state', profileId)) || 'null')); }
+  catch { return defaultState(); }
+}
+
+/** Apply a settings patch to another profile's document, leaving the rest of
+ *  it untouched. Bumps the change stamp so the patched profile (on any device)
+ *  keeps the new value through the next merge. Returns false if the write
+ *  failed, so the caller can say so instead of pretending it worked. */
+export function patchProfileSettings(profileId, patch) {
+  const next = loadStateFor(profileId);
+  next.settings = { ...next.settings, ...patch };
+  next.lastLocalChangeAt = new Date().toISOString();
+  try {
+    localStorage.setItem(nsKey('state', profileId), JSON.stringify(next));
+    return true;
+  } catch (e) {
+    console.warn('Failed to update another profile\u2019s settings:', e);
+    return false;
+  }
+}
+
 export function resetToBlank() {
   // Create the deletion tombstone before the first write. This prevents a
   // reload/crash between clearing the data and recording the reset from
@@ -654,7 +691,7 @@ export function exportJSON(state) {
 // write a small journal — the removed entries — to storage. On boot, app.js
 // offers to restore them. The journal is intentionally kept out of the synced
 // state: it is a per-device safety net, never part of the cloud payload.
-const UNDO_KEY = () => 'cents-undo-journal';
+const UNDO_KEY = () => nsKey('undo');
 export function saveUndoJournal(journal) {
   try { localStorage.setItem(UNDO_KEY(), JSON.stringify(journal)); }
   catch (e) { console.warn('Failed to save undo journal:', e); }

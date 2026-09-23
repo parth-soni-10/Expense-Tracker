@@ -13,11 +13,15 @@
         when the app is closed. Desktop is intentionally excluded:
         there the app lives in a tab and the in-app scheduler above
         is the right surface. See reminders-push.mjs.
+
+   Every key and the fire state ("last fired" date) are namespaced per
+   profile, so each user is reminded about their own data.
    ============================================================ */
 
 import { getSyncSettings } from './settings.js';
+import { nsKey, activeProfile, getActiveProfileId } from './profiles.js';
 
-const KEY = () => 'cents:reminder';
+const KEY = () => nsKey('reminder');
 
 function normalize(raw) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
@@ -80,9 +84,11 @@ export async function requestNotificationPermission() {
 
 /** Show the reminder now: system notification (if allowed) + a callback the
  *  app uses for its in-app toast. Safe to call while locked. */
-export function showReminderNotification() {
+export function showReminderNotification(profileName = null) {
   const title = 'cents. — time to upload your transactions';
-  const body = 'Log today\'s spending while it\'s fresh.';
+  const body = profileName
+    ? `Quick tally for ${profileName} — it takes a minute.`
+    : 'Log today\'s spending while it\'s fresh.';
   if (notificationPermission() === 'granted') {
     try {
       const n = new Notification(title, { body, tag: 'cents-daily-reminder', renotify: true });
@@ -103,7 +109,9 @@ export function onReminderFired(fn) {
 }
 
 function fire() {
-  const payload = showReminderNotification();
+  let profileName = null;
+  try { profileName = activeProfile().name; } catch { /* registry unavailable */ }
+  const payload = showReminderNotification(profileName);
   for (const fn of listeners) { try { fn(payload); } catch { /* listener error never breaks the loop */ } }
 }
 
@@ -140,6 +148,11 @@ export function startReminderScheduler() {
 // into someone's store.
 
 const PUSH_TIMEOUT_MS = 12000;
+
+/** Auth headers for the push functions: this profile's password + its id. */
+function profileHeaders(password) {
+  return { 'X-Cents-Password': password, 'X-Cents-Profile': getActiveProfileId() || 'personal' };
+}
 
 function pushEndpoint(syncEndpoint) {
   if (typeof syncEndpoint !== 'string' || !syncEndpoint) return null;
@@ -212,14 +225,17 @@ export async function subscribeReminderPush() {
       });
     }
     const subJson = sub.toJSON();
+    let profileName = null;
+    try { profileName = activeProfile().name; } catch { /* registry unavailable */ }
     const resp = await pushFetch(base, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Cents-Password': sync.password,
+        ...profileHeaders(sync.password),
       },
       body: JSON.stringify({
         subscription: subJson,
+        profileName,
         time: getReminderSettings().time,
         zone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
       }),
@@ -243,10 +259,7 @@ export async function unsubscribeReminderPush() {
       if (base) {
         await pushFetch(base, {
           method: 'DELETE',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Cents-Password': sync.password,
-          },
+          headers: { 'Content-Type': 'application/json', ...profileHeaders(sync.password) },
           body: JSON.stringify({ subscription: { endpoint: s.pushEndpoint } }),
         }).catch(() => {}); // best effort — the local unsubscribe matters most
       }
@@ -272,7 +285,7 @@ export async function sendTestPush() {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        'X-Cents-Password': sync.password,
+        ...profileHeaders(sync.password),
       },
       body: JSON.stringify({ endpoint: s.pushEndpoint }),
     });
@@ -293,4 +306,30 @@ export async function updateReminderPushTime() {
   const s = getReminderSettings();
   if (!s.pushSubscribed) return { ok: true, skipped: true };
   return subscribeReminderPush(); // POST overwrites the stored record
+}
+
+/**
+ * Drop the stored push record for ANY profile id, using that profile's own
+ * namespaced sync + reminder settings. Called before a profile is deleted:
+ * its subscription would otherwise keep waking this device for a profile
+ * that no longer exists. Best effort — the local delete is what matters.
+ */
+export async function unsubscribePushForProfile(profileId) {
+  let sync = null;
+  let reminder = null;
+  try { sync = JSON.parse(localStorage.getItem(nsKey('sync', profileId)) || 'null'); } catch { sync = null; }
+  try { reminder = JSON.parse(localStorage.getItem(nsKey('reminder', profileId)) || 'null'); } catch { reminder = null; }
+  const endpoint = reminder?.pushEndpoint;
+  const base = endpoint && sync?.endpoint ? pushEndpoint(sync.endpoint) : null;
+  if (!base || !sync?.password) return { ok: false, reason: 'not-subscribed' };
+  try {
+    const resp = await pushFetch(base, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'X-Cents-Password': sync.password, 'X-Cents-Profile': profileId },
+      body: JSON.stringify({ subscription: { endpoint } }),
+    });
+    return { ok: resp.ok, reason: resp.ok ? null : `http ${resp.status}` };
+  } catch (e) {
+    return { ok: false, reason: 'network', message: e?.message || 'unsubscribe failed' };
+  }
 }

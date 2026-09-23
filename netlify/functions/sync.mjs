@@ -15,8 +15,17 @@
      APP_PASSWORD    any string the client sends in X-Cents-Password
                      (must be at least 8 characters)
 
+   Profiles: the client sends X-Cents-Profile (<profile-id>, a short
+   slug). The password is resolved per profile — APP_PASSWORD for the
+   default "personal" id, APP_PASSWORD_<ID> for any other, with NO
+   fallback between them — and the cloud file becomes data-<id>.json.
+   Two profiles therefore never share a password or a file, so one
+   profile's credential cannot read another's data. A profile whose
+   env var is missing is refused with the name to set, rather than
+   silently sharing the owner's password.
+
    Auth hardening:
-     * APP_PASSWORD is compared in constant time.
+     * the resolved password is compared in constant time.
      * Failed attempts are throttled per client IP (in-memory,
        best-effort — resets on cold start) and each failure sleeps
        500ms to slow brute force.
@@ -26,6 +35,8 @@
    ============================================================ */
 
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
+import { resolveProfileForAuth, profileAuthMessage, cloudFileFor } from './lib/profiles.mjs';
+import { ghFetch, ghConfig, decodeBase64, encodeBase64 } from './lib/gh.mjs';
 
 function corsHeaders(request) {
   const origin = request.headers.get('origin');
@@ -45,7 +56,7 @@ const ok = (body, status = 200, cors = {}) => new Response(
 );
 const err = (msg, status = 400, cors = {}) => ok({ error: msg, code: status }, status, cors);
 
-const GH_API = 'https://api.github.com';
+
 // Netlify's hard cap for synchronous function request payloads is 6 MB, so
 // the platform rejects anything larger regardless of this guard. 5 MB was
 // too tight for a couple of 2 MB base64 audio notes; 6 MB is the real ceiling.
@@ -254,47 +265,13 @@ function validIncomingState(content) {
   return true;
 }
 
-async function ghFetch(path, opts = {}) {
-  const token = process.env.GITHUB_TOKEN;
-  if (!token) throw new Error('GITHUB_TOKEN env var not set on the function');
-  const url = path.startsWith('http') ? path : `${GH_API}${path}`;
-  return fetch(url, {
-    ...opts,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'cents-app',
-      ...(opts.headers || {}),
-    },
-  });
-}
-
-function cfg() {
-  return {
-    owner:  process.env.REPO_OWNER,
-    repo:   process.env.REPO_NAME,
-    branch: process.env.REPO_BRANCH || 'main',
-    file:   (process.env.REPO_FILE || 'data.json').replace(/^\/+/, ''),
-  };
-}
-
-function decodeBase64(b64) {
-  return Buffer.from(b64, 'base64').toString('utf8');
-}
-function encodeBase64(s) {
-  return Buffer.from(s, 'utf8').toString('base64');
-}
-
 export default async (request, _context) => {
   const cors = corsHeaders(request);
   if (request.method === 'OPTIONS') return ok({}, 200, cors);
 
-  const expected = process.env.APP_PASSWORD;
-  if (!expected) return err('APP_PASSWORD env var not set on the function', 500, cors);
-  if (expected.length < 8) {
-    return err('APP_PASSWORD must be at least 8 characters - set a stronger password in Netlify env', 500, cors);
-  }
+  const profile = resolveProfileForAuth(request);
+  if (!profile.ok) return err(profileAuthMessage(profile), 500, cors);
+  const expected = profile.expected;
 
   const throttle = failureThrottle.check(request);
   if (!throttle.ok) {
@@ -315,7 +292,9 @@ export default async (request, _context) => {
     return err('Bad app password', 401, cors);
   }
 
-  const { owner, repo, branch, file } = cfg();
+  const config = ghConfig();
+  const { owner, repo, branch } = config;
+  const file = cloudFileFor(profile.id, config.file);
   if (!owner || !repo) return err('REPO_OWNER / REPO_NAME env vars not set on the function', 500, cors);
 
   try {

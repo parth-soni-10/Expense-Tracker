@@ -17,6 +17,8 @@
 const REPO = new URL('..', import.meta.url).href.replace(/\/$/, '');
 
 process.env.APP_PASSWORD = 'test-password-1234';
+process.env.APP_PASSWORD_SAM = 'sam-password-123456';
+delete process.env.APP_PASSWORD_KATE;
 process.env.GITHUB_TOKEN = 'stub-token';
 process.env.REPO_OWNER = 'stub-owner';
 process.env.REPO_NAME = 'stub-repo';
@@ -24,26 +26,35 @@ process.env.REPO_BRANCH = 'main';
 process.env.REPO_FILE = 'data.json';
 
 // ---- stub the GitHub Contents API the function talks to ----
-let stored = null, sha = null;
+// One entry per FILE, so a request for another profile's document cannot be
+// mistaken for this one's: the whole point of the profile tests below.
+const clouds = new Map();
+const fileOf = url => (/\/contents\/([^?]+)/.exec(String(url)) || [, '?'])[1].split('/').map(decodeURIComponent).join('/');
 globalThis.fetch = async (url, opts = {}) => {
   const method = opts.method || 'GET';
   const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
+  const file = fileOf(url);
   if (method === 'GET') {
-    if (!stored) return new Response('not found', { status: 404 });
-    return json({ content: Buffer.from(stored, 'utf8').toString('base64'), sha });
+    if (!clouds.has(file)) return new Response('not found', { status: 404 });
+    return json({ content: Buffer.from(clouds.get(file), 'utf8').toString('base64'), sha: 'sha-' + clouds.get(file).length });
   }
   if (method === 'PUT') {
-    stored = Buffer.from(JSON.parse(opts.body).content, 'base64').toString('utf8');
-    sha = 'sha-' + stored.length;
-    return json({ content: { sha }, commit: { sha: 'c1' } });
+    const stored = Buffer.from(JSON.parse(opts.body).content, 'base64').toString('utf8');
+    clouds.set(file, stored);
+    return json({ content: { sha: 'sha-' + stored.length }, commit: { sha: 'c1' } });
   }
   return new Response('unexpected ' + method, { status: 500 });
 };
+const stored = () => clouds.get('data.json') || null;
 
 const { default: handler } = await import(REPO + '/netlify/functions/sync.mjs');
-const call = (method, body, password = 'test-password-1234') => handler(new Request('https://cents.test/.netlify/functions/sync', {
+const call = (method, body, password = 'test-password-1234', profile = null) => handler(new Request('https://cents.test/.netlify/functions/sync', {
   method,
-  headers: { 'content-type': 'application/json', 'x-cents-password': password },
+  headers: {
+    'content-type': 'application/json',
+    'x-cents-password': password,
+    ...(profile ? { 'x-cents-profile': profile } : {}),
+  },
   body: body ? JSON.stringify(body) : undefined,
 }), {});
 
@@ -88,6 +99,102 @@ const huge = await call('PUT', { content: { version: 2, entries: [], settings: {
 const hugeText = await huge.text();
 check('a body over 6 MB is refused with an actionable message', huge.status === 413 && /audio notes/.test(hugeText), `got ${huge.status} ${hugeText.slice(0, 120)}`);
 
+// ---- profiles: one profile cannot reach another's document ---------------
+// A second profile syncs to its own file with its own password, and neither
+// credential works on the other profile. The shared-password fallback that
+// this replaces made APP_PASSWORD a master key for every profile.
+const samState = { version: 2, entries: [{ id: 'sam-1', date: '2026-09-21', type: 'expense', method: 'AIB', category: 'gro', amount: 4, details: '', note: '' }], settings: { monthlyBudget: 321 } };
+const samPut = await call('PUT', { content: samState }, 'sam-password-123456', 'sam');
+check('a profile writes with its own password', samPut.status === 200, `got ${samPut.status} ${(await samPut.text()).slice(0, 140)}`);
+check('a profile writes to its own cloud file', clouds.has('data-sam.json') && JSON.parse(clouds.get('data-sam.json')).settings.monthlyBudget === 321);
+check('and leaves the default profile\u2019s file alone', !stored().includes('sam-1'));
+const samGet = await call('GET', null, 'sam-password-123456', 'sam');
+const samDoc = await samGet.json();
+check('a profile reads back only its own document', samDoc?.content?.settings?.monthlyBudget === 321, JSON.stringify(samDoc?.content?.settings));
+check('the default profile is a different document', !stored().includes('321'));
+
+const sharedOnProfile = await call('GET', null, 'test-password-1234', 'sam');
+check('the default password is refused for another profile (401)', sharedOnProfile.status === 401, `got ${sharedOnProfile.status}`);
+const profileOnDefault = await call('GET', null, 'sam-password-123456');
+check("a profile's password is refused for the default profile (401)", profileOnDefault.status === 401, `got ${profileOnDefault.status}`);
+const noEnv = await call('GET', null, 'whatever-password', 'kate');
+const noEnvText = await noEnv.text();
+check('a profile with no env var is refused, not shared', noEnv.status === 500, `got ${noEnv.status}`);
+check('and the refusal names the env var to set', /APP_PASSWORD_KATE/.test(noEnvText), noEnvText.slice(0, 160));
+const hostile = await call('GET', null, 'test-password-1234', '../../etc/passwd');
+check('a hostile profile header falls back to the default profile, not a path', hostile.status === 200, `got ${hostile.status}`);
+
+// ---- profiles-admin: the owner invites an account, and sets its tabs -----
+// One deployed site, shared with friends. The owner must be able to hand out an
+// account (and control which tabs it opens) WITHOUT ever signing in as that
+// person or holding their entries — so this endpoint is the only place where
+// the owner's credential can touch another account's cloud file, and it must
+// touch nothing but the tab policy.
+const { default: adminHandler } = await import(REPO + '/netlify/functions/profiles-admin.mjs');
+const { redeemSetupToken } = await import(REPO + '/netlify/functions/lib/tokens.mjs');
+const admin = (payload, password = 'test-password-1234') => adminHandler(new Request('https://cents.test/.netlify/functions/profiles-admin', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', 'x-cents-password': password },
+  body: JSON.stringify(payload ?? {}),
+}), {});
+
+const invited = await admin({ action: 'invite', profile: 'sam', enabledTabs: ['dashboard', 'add', 'insights'] });
+check('the owner can mint an invite for another account', invited.status === 200, `got ${invited.status} ${(await invited.text()).slice(0, 160)}`);
+const inviteBody = await (await admin({ action: 'invite', profile: 'sam', enabledTabs: ['dashboard', 'add', 'insights'] })).json();
+const redeemedInvite = redeemSetupToken('stub-token', inviteBody.token);
+check('the invite carries that account\u2019s own password',
+  redeemedInvite.ok && redeemedInvite.password === 'sam-password-123456', JSON.stringify(redeemedInvite && { ok: redeemedInvite.ok }));
+check('and names the account it belongs to', redeemedInvite.profileId === 'sam', redeemedInvite.profileId);
+check('and carries the tab policy set before sending it',
+  JSON.stringify(redeemedInvite.tabs) === JSON.stringify(['dashboard', 'add', 'insights']), JSON.stringify(redeemedInvite.tabs));
+
+const asFriend = await admin({ action: 'invite', profile: 'sam' }, 'sam-password-123456');
+check('a friend\u2019s own password cannot mint invites (401)', asFriend.status === 401, `got ${asFriend.status}`);
+const badAction = await admin({ action: 'wipe', profile: 'sam' });
+check('an unknown action is refused (400)', badAction.status === 400, `got ${badAction.status}`);
+const hostileTarget = await admin({ action: 'invite', profile: '../../etc/passwd' });
+check('a hostile account id is refused, not used as a path (400)', hostileTarget.status === 400, `got ${hostileTarget.status}`);
+const noEnvInvite = await admin({ action: 'invite', profile: 'kate' });
+const noEnvInviteText = await noEnvInvite.text();
+check('inviting an account with no credential is refused (500)', noEnvInvite.status === 500, `got ${noEnvInvite.status}`);
+check('and the refusal names the env var to set', /APP_PASSWORD_KATE/.test(noEnvInviteText), noEnvInviteText.slice(0, 160));
+
+// The policy write: it must land in that account's file, preserve every entry,
+// and change ONLY settings.enabledTabs.
+const samBefore = JSON.parse(clouds.get('data-sam.json'));
+const policy = await admin({ action: 'policy', profile: 'sam', enabledTabs: ['dashboard', 'history'] });
+check('the owner can write an account\u2019s tab policy', policy.status === 200, `got ${policy.status}`);
+const policyBody = await policy.json();
+check('and it reports the write as applied', policyBody.applied === true, JSON.stringify(policyBody));
+const samAfter = JSON.parse(clouds.get('data-sam.json'));
+check('the policy lands in that account\u2019s own file',
+  JSON.stringify(samAfter.settings.enabledTabs) === JSON.stringify(['dashboard', 'history']), JSON.stringify(samAfter.settings.enabledTabs));
+check('the entries are left exactly as they were',
+  JSON.stringify(samAfter.entries) === JSON.stringify(samBefore.entries), JSON.stringify(samAfter.entries));
+// Everything but the policy and the freshness stamp is byte-identical: the
+// stamp is what makes the receiving device keep this policy over its own older
+// copy, and it is the only other field this endpoint may add.
+const stripStamp = d => { const { lastLocalChangeAt, ...rest } = d; return rest; };
+const stripEnabled = d => ({ ...d, settings: (() => { const { enabledTabs, ...s } = d.settings; return s; })() });
+check('and nothing else in that document is touched',
+  JSON.stringify(stripEnabled(stripStamp(samAfter))) === JSON.stringify(stripEnabled(stripStamp(samBefore))),
+  JSON.stringify(stripEnabled(stripStamp(samAfter))));
+check('the default profile\u2019s file is untouched by any of it', !stored().includes('enabledTabs'));
+
+// The account the owner is inviting may never have synced. There is no document
+// to carry a policy then, which is not an error — the next invite carries it.
+const pending = await admin({ action: 'policy', profile: 'kate', enabledTabs: ['dashboard'] });
+check('a policy for a never-synced account is refused before the env check', pending.status === 500, `got ${pending.status}`);
+process.env.APP_PASSWORD_KATE = 'kate-password-12345';
+const pending2 = await admin({ action: 'policy', profile: 'kate', enabledTabs: ['dashboard'] });
+const pendingBody = await pending2.json();
+check('with a credential but no cloud copy it reports pending, not failure',
+  pending2.status === 200 && pendingBody.pending === true, `${pending2.status} ${JSON.stringify(pendingBody)}`);
+check('and it does not invent a cloud file for them', !clouds.has('data-kate.json'));
+const badTabs = await admin({ action: 'policy', profile: 'kate', enabledTabs: 'all' });
+check('a malformed tab list is refused (400)', badTabs.status === 400, `got ${badTabs.status}`);
+delete process.env.APP_PASSWORD_KATE;
+
 // ---- the client's half of that contract ---------------------------------
 // The retry logic keys off the failure CLASS, so the class must follow the
 // status: 409/422 means the cloud moved and a pull+merge+retry helps, while
@@ -105,7 +212,7 @@ mem.set('cents:syncSettings', JSON.stringify({
   endpoint: 'https://cents.test/.netlify/functions/sync',
   password: 'test-password-1234',
 }));
-const { syncPush } = await import(REPO + '/sync.js');
+const { syncPull, syncPush } = await import(REPO + '/sync.js');
 const tiny = { version: 2, entries: [], settings: {} };
 const clientCalls = [];
 let clientBody = { error: 'server said no' };
@@ -128,6 +235,18 @@ clientStatus = 200;
 clientBody = { conflict: true };
 const raced = await syncPush(tiny);
 check("the function's conflict flag maps to 'conflict'", raced.ok === false && raced.reason === 'conflict', raced.reason);
+
+// A pull names the profile it spoke for, so a response that lands after the
+// user switched profiles can be dropped instead of merged into the wrong
+// document (app.js: staleResponse).
+clientStatus = 200;
+clientBody = { content: { version: 2, entries: [], settings: {} }, sha: 'abc' };
+const stamped = await syncPull();
+check('a successful pull names its profile', stamped.ok === true && stamped.profile === 'personal', `profile=${stamped.profile}`);
+clientStatus = 401;
+clientBody = { error: 'nope' };
+const refused = await syncPull();
+check('a refused pull names its profile too', refused.ok === false && refused.profile === 'personal', `profile=${refused.profile}`);
 
 clientCalls.length = 0;
 const oversized = await syncPush({ version: 2, entries: [{ id: 'n1', audioData: 'data:audio/webm;base64,' + 'A'.repeat(7 * 1024 * 1024) }], settings: {} });

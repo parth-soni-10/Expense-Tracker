@@ -11,11 +11,19 @@
    or the platform's 6 MB request cap - so retrying the same bytes cannot
    succeed and the caller must surface it instead of looping.
 
-   The proxy hides the GitHub PAT; only the password the user set
-   as APP_PASSWORD is sent in the X-Cents-Password header.
+   The proxy hides the GitHub PAT; only the profile's password is sent
+   in the X-Cents-Password header.
+
+   Profiles: the active profile's id rides along in the
+   X-Cents-Profile header. The proxy resolves it to a per-profile
+   password (APP_PASSWORD_<ID>; APP_PASSWORD for the default id) and a
+   per-profile cloud file (data-<id>.json), so two profiles on one
+   device never see each other's entries or balances in the cloud
+   either.
    ============================================================ */
 
 import { getSyncSettings, patchSyncSettings, isValidEndpoint } from './settings.js';
+import { getActiveProfileId, profileEnvName } from './profiles.js';
 
 const TIMEOUT_MS = 12000;
 
@@ -48,7 +56,7 @@ function oversizeMessage(content) {
 const HINT_BY_STATUS = {
   400: ' - bad request, check endpoint',
   404: ' - endpoint not found, check URL',
-  500: ' - server error, check Netlify env vars (GITHUB_TOKEN, REPO_OWNER, REPO_NAME, APP_PASSWORD)',
+  500: ' - server error, check Netlify env vars (GITHUB_TOKEN, REPO_OWNER, REPO_NAME, and this profile\'s app password)',
   502: ' - gateway error, function crashed - check Netlify function logs & env vars',
   503: ' - function unavailable, may be cold-starting - retry',
 };
@@ -67,6 +75,7 @@ async function authedFetch(init = {}) {
   }
   const headers = new Headers(init.headers || {});
   headers.set('X-Cents-Password', s.password);
+  headers.set('X-Cents-Profile', getActiveProfileId() || 'personal');
   if (init.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
 
   let resp;
@@ -79,15 +88,23 @@ async function authedFetch(init = {}) {
     let serverErr = '';
     try { serverErr = (await resp.json()).error || ''; } catch {}
     patchSyncSettings({ lastError: serverErr || 'auth failed', lastErrorAt: new Date().toISOString() });
-    return { ok: false, reason: 'auth', status: 401, message: serverErr ? `${serverErr} - check Netlify env APP_PASSWORD` : 'auth failed - check Netlify env APP_PASSWORD' };
+    // Name the credential this PROFILE uses, not the default one: a second
+    // profile with the default password is refused by design.
+    const envName = profileEnvName(getActiveProfileId() || 'personal');
+    return { ok: false, reason: 'auth', status: 401, message: serverErr ? `${serverErr} - check Netlify env ${envName}` : `auth failed - check Netlify env ${envName}` };
   }
   return { ok: true, resp };
 }
 
-/** GET the cloud file. Returns content + sha + lastModifiedAt, or { content: null } if no file yet. */
+/** GET the cloud file. Returns content + sha + lastModifiedAt, or { content: null } if no file yet.
+ *
+ *  The result names the profile it was fetched for. A response can land after
+ *  the user switched profiles, and merging one person's file into another's
+ *  document is the worst thing this app could do — so the caller checks. */
 export async function syncPull() {
+  const profile = getActiveProfileId() || 'personal';
   const r = await authedFetch({ method: 'GET' });
-  if (!r.ok) return r;
+  if (!r.ok) return { ...r, profile };
   let body;
   try { body = await r.resp.json(); }
   catch { return { ok: false, reason: 'http', message: 'invalid JSON from proxy' }; }
@@ -95,6 +112,7 @@ export async function syncPull() {
   if (body?.malformed) return { ok: false, reason: 'http', message: 'malformed cloud data' };
   return {
     ok: true,
+    profile,
     content: body.content,
     sha: body.sha,
     branch: body.branch,
@@ -129,7 +147,7 @@ export async function syncTestConnection(endpoint, password) {
   try {
     resp = await withTimeout(fetch(candidateEndpoint, {
       method: 'GET',
-      headers: { 'X-Cents-Password': password },
+      headers: { 'X-Cents-Password': password, 'X-Cents-Profile': getActiveProfileId() || 'personal' },
       cache: 'no-store',
     }), TIMEOUT_MS);
   } catch (e) {
@@ -138,7 +156,8 @@ export async function syncTestConnection(endpoint, password) {
   if (resp.status === 401) {
     let serverErr = '';
     try { serverErr = (await resp.json()).error || ''; } catch {}
-    return { ok: false, reason: 'auth', status: 401, message: serverErr ? `${serverErr} - check Netlify env APP_PASSWORD` : 'auth failed - check Netlify env APP_PASSWORD' };
+    const envName = profileEnvName(getActiveProfileId() || 'personal');
+    return { ok: false, reason: 'auth', status: 401, message: serverErr ? `${serverErr} - check Netlify env ${envName}` : `auth failed - check Netlify env ${envName}` };
   }
   if (!resp.ok) {
     let msg = '';
@@ -173,7 +192,7 @@ export async function syncIssueSetupToken() {
   try {
     resp = await withTimeout(fetch(url, {
       method: 'POST',
-      headers: { 'X-Cents-Password': s.password, 'Content-Type': 'application/json' },
+      headers: { 'X-Cents-Password': s.password, 'X-Cents-Profile': getActiveProfileId() || 'personal', 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
       cache: 'no-store',
     }), TIMEOUT_MS);
@@ -234,7 +253,66 @@ export async function syncExchangeSetupToken(token, endpointOverride = null) {
   if (!body || typeof body.password !== 'string' || !body.password) {
     return { ok: false, reason: 'http', message: 'malformed setup token response' };
   }
-  return { ok: true, password: body.password };
+  return {
+    ok: true,
+    password: body.password,
+    // Which profile this password belongs to, so the receiving device can
+    // adopt the same id (and therefore the same cloud file) instead of
+    // guessing a slug from a name.
+    profileId: typeof body.profile === 'string' && body.profile ? body.profile : null,
+    // The tab policy the link carried, applied by the adopting device.
+    tabs: Array.isArray(body.tabs) ? body.tabs.filter(t => typeof t === 'string') : null,
+  };
+}
+
+/** Derive the sibling profiles-admin function URL from the sync endpoint. */
+function adminEndpoint(endpoint) {
+  return setupTokenEndpoint(endpoint)?.replace(/\/setup-token$/, '/profiles-admin') || null;
+}
+
+/** Owner-only administration: mint an invite for one account, or write that
+ *  account's tab policy into its cloud file. Both are authorised by the
+ *  owner's own password — a friend's password is refused server-side, and the
+ *  owner's is refused on that account's own data path. */
+async function postAdmin(payload, { expectTabs = false } = {}) {
+  const s = getSyncSettings();
+  if (!s.endpoint || !s.password) return { ok: false, reason: 'not_configured' };
+  const url = adminEndpoint(s.endpoint);
+  if (!url) return { ok: false, reason: 'invalid_endpoint' };
+  let resp;
+  try {
+    resp = await withTimeout(fetch(url, {
+      method: 'POST',
+      headers: { 'X-Cents-Password': s.password, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+    }), TIMEOUT_MS);
+  } catch (e) {
+    return { ok: false, reason: 'network', message: e?.message || 'fetch failed' };
+  }
+  let body = null;
+  try { body = await resp.json(); } catch { /* fall through to the status */ }
+  if (!resp.ok) {
+    return { ok: false, reason: resp.status === 401 ? 'auth' : 'http', status: resp.status, message: body?.error || `HTTP ${resp.status}` };
+  }
+  if (!body || body.error) return { ok: false, reason: 'http', message: body?.error || 'malformed admin response' };
+  if (expectTabs && (typeof body.token !== 'string' || body.token.length < 20)) {
+    return { ok: false, reason: 'http', message: 'malformed invite response' };
+  }
+  return { ok: true, ...body };
+}
+
+/** Mint an invite link for one account. `tabs` is the policy the link carries. */
+export function syncIssueProfileInvite(profileId, tabs = null) {
+  return postAdmin({ action: 'invite', profile: profileId, enabledTabs: tabs || undefined }, { expectTabs: true });
+}
+
+/** Write an account's tab policy into its cloud file (for an account that is
+ *  not on this device, or whose copy here is not the one that syncs).
+ *  Returns { pending: true } when that account has not synced yet — there is
+ *  no document to carry the policy, and the next invite does instead. */
+export function syncPushProfilePolicy(profileId, tabs) {
+  return postAdmin({ action: 'policy', profile: profileId, enabledTabs: tabs });
 }
 
 /** Status string used by the header indicator. Pure function over settings. */

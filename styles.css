@@ -174,7 +174,7 @@ body:has(#screen) .skip-link { display: block; }
    ring on it would only ever be noise — every operable control keeps one. */
 .screen:focus { outline: none; }
 .btn, .pill, .nav-link, .bottom-tab, .menu-row, .menu-back, .menu-close, .cal-day, .history-action-btn,
-.footer-action, .dark-toggle, .menu-trigger, .heat-cell, .history-row, .btn-link {
+.footer-action, .dark-toggle, .menu-trigger, .admin-trigger, .heat-cell, .history-row, .btn-link {
   -webkit-user-select: none; user-select: none;
 }
 body {
@@ -531,7 +531,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 }
 
 /* Dark toggle + menu trigger — glass circles */
-.dark-toggle, .menu-trigger {
+.dark-toggle, .menu-trigger, .admin-trigger {
   display: inline-flex; align-items: center; justify-content: center;
   width: 40px; height: 40px;
   border: 1px solid var(--line);
@@ -545,9 +545,17 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
      the circles would only re-blur two tiny regions every scroll frame. */
   transition: transform 0.14s var(--ease-out), background 0.15s, border-color 0.15s, box-shadow 0.2s;
 }
-.dark-toggle:hover, .menu-trigger:hover { background: var(--bg-deep); box-shadow: var(--shadow-sm); }
-.dark-toggle:active, .menu-trigger:active { transform: scale(0.9); }
-.dark-toggle svg { display: block; width: 17px; height: 17px; }
+.dark-toggle:hover, .menu-trigger:hover, .admin-trigger:hover { background: var(--bg-deep); box-shadow: var(--shadow-sm); }
+.dark-toggle:active, .menu-trigger:active, .admin-trigger:active { transform: scale(0.9); }
+.dark-toggle svg, .admin-trigger svg { display: block; width: 17px; height: 17px; }
+
+/* The owner's admin shortcut names itself once the header has room for the
+   word; on phones it stays a circle to keep the header one line. */
+.admin-trigger-label { display: none; font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+@media (min-width: 640px) {
+  .admin-trigger { width: auto; padding: 0 13px 0 11px; gap: 7px; border-radius: 999px; }
+  .admin-trigger-label { display: inline; }
+}
 .dark-toggle .icon-moon svg { fill: currentColor; }
 .dark-toggle .icon-sun svg { stroke: currentColor; }
 
@@ -1686,6 +1694,16 @@ html.modal-open { overflow: hidden; }
 .menu-row.active .menu-row-icon { background: transparent; color: var(--accent); }
 
 .menu-row-label { flex: 1; min-width: 0; }
+
+/* A row with a subtitle (label above, note under it) — used by the Admin row. */
+.menu-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.menu-row-main .menu-row-label { flex: none; }
+.menu-row-note { font-size: 11.5px; font-weight: 400; color: var(--muted); }
+
+/* The owner's shortcut to the people they share with. Tinted so it reads as the
+   one row that is about the account rather than about the money. */
+.menu-row.admin-row { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--hairline-a); }
+.menu-row.admin-row .menu-row-icon { background: transparent; color: var(--accent); }
 .menu-row-check { color: var(--accent); display: grid; place-items: center; }
 .menu-row-check svg { width: 15px; height: 15px; }
 .menu-row-chevron {
@@ -2075,3 +2093,126 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   .tesco-celledit-row { gap: 4px; }
   .tesco-celledit-row .tesco-in { padding: 6px 8px; }
 }
+
+/* ============================================================
+   Profiles — Netflix-style picker, header chip, manager rows.
+   Sharp 12px cards, ledger-precise: consistent with the app's
+   radius system; avatar initials in display font on emerald.
+   ============================================================ */
+.profile-avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 64px; height: 64px; border-radius: 12px;
+  background: var(--accent); color: #fff;
+  font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 24px;
+  letter-spacing: 0.02em;
+  flex: none;
+}
+.profile-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 14px; justify-items: center;
+}
+.profile-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  background: transparent; border: 1px solid transparent; border-radius: 12px;
+  padding: 12px 8px 10px; cursor: pointer; color: inherit; font: inherit;
+  transition: transform 0.12s var(--ease-out), border-color 0.12s var(--ease-out), background-color 0.12s var(--ease-out);
+}
+.profile-tile:hover, .profile-tile:focus-visible {
+  transform: translateY(-2px); border-color: var(--line); background: var(--card);
+}
+.profile-tile:active { transform: translateY(0) scale(0.98); }
+.profile-tile .profile-name { font-size: 13px; font-weight: 500; max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-tile .profile-current-tag {
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--accent); font-weight: 600;
+}
+.profile-chip {
+  display: inline-flex; align-items: center; gap: 7px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--ink);
+  padding: 4px 12px 4px 4px; cursor: pointer; font: inherit; font-size: 13px; font-weight: 500;
+  transition: background-color 0.12s var(--ease-out), border-color 0.12s var(--ease-out), transform 0.1s var(--ease-out);
+}
+.profile-chip:hover { background: var(--card); border-color: var(--muted); }
+.profile-chip:active { transform: scale(0.97); }
+.profile-chip .profile-chip-name { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- Profile picker + manager: phone polish ---- */
+/* Picker: center the Manage profiles text link (btn-link is an inline-flex
+   button, so text-align alone leaves the flex item at flex-start) and give it
+   a real touch height — a text link is 25px tall otherwise. */
+.profile-picker .btn-link { text-align: center; width: 100%; justify-content: center; min-height: 44px; }
+/* Manager rows: wrap gracefully on narrow screens. Name truncates on one
+   line; action buttons keep legible tap targets without crushing the name
+   column. */
+.profile-row {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 10px 12px;
+}
+.profile-row .profile-row-main {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.profile-row .profile-row-name {
+  font-weight: 600; font-size: 14px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.profile-row .profile-row-note { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.profile-row .profile-row-actions { display: flex; gap: 6px; flex: none; }
+.profile-row .profile-row-actions .btn { padding: 6px 10px; font-size: 12px; min-height: 40px; }
+
+/* ---- Avatars: an inline SVG glyph on a profile-derived colour ---- */
+/* The glyph is a child <svg> with no width/height of its own, so the box has to
+   size it — otherwise it renders at the SVG default of 300x150. */
+.profile-avatar svg { width: 58%; height: 58%; display: block; }
+.avatar-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+  gap: 10px; margin-top: 16px;
+}
+.avatar-choice {
+  padding: 0; border: 2px solid transparent; border-radius: 14px;
+  background: transparent; cursor: pointer; line-height: 0; aspect-ratio: 1;
+  transition: transform 0.12s var(--ease-out), border-color 0.12s var(--ease-out);
+}
+.avatar-choice:hover { transform: translateY(-2px); }
+.avatar-choice.on { border-color: var(--accent); }
+.avatar-choice:focus-visible { outline: none; border-color: var(--accent); }
+.avatar-choice .profile-avatar { width: 100%; height: 100%; font-size: 22px; }
+
+/* ---- Admin panel: one card per user, tabs as on/off chips ---- */
+.admin-card {
+  display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px;
+}
+.admin-tabs-label {
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600;
+}
+.admin-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-tab {
+  font: inherit; font-size: 12px; font-weight: 500;
+  /* 44px is the touch minimum; these are the primary control of this panel. */
+  min-height: 44px; padding: 0 14px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  transition: background-color 0.12s var(--ease-out), border-color 0.12s var(--ease-out), color 0.12s var(--ease-out), transform 0.1s var(--ease-out);
+}
+.admin-tab:hover { border-color: var(--muted); }
+.admin-tab:active { transform: scale(0.97); }
+.admin-tab.on {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--ink);
+  font-weight: 600;
+}
+@media (max-width: 480px) {
+  /* Stack actions under the name instead of squeezing it to ellipsis. */
+  .profile-row { flex-wrap: wrap; }
+  .profile-row .profile-row-main { flex: 1 1 calc(100% - 44px); }
+  .profile-row .profile-row-actions { flex: 1 1 100%; margin-left: 44px; }
+  /* Stacked full-width rows are the primary touch target on a phone. */
+  .profile-row .profile-row-actions .btn { flex: 1; min-height: 44px; }
+}
+

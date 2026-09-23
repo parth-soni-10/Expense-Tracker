@@ -33,6 +33,11 @@ class MemoryStorage {
 }
 
 globalThis.localStorage = new MemoryStorage();
+globalThis.sessionStorage = new MemoryStorage();
+
+// The live document lives under the ACTIVE PROFILE's namespace
+// (profiles.js), which resolves to "personal" on a device with no registry.
+const LIVE_KEY = 'cents:p/personal/state';
 
 const { validateState, loadState, saveState } = await import('../storage.js');
 const { mergeStates } = await import('../sync-merge.js');
@@ -120,10 +125,10 @@ if (looksLikeState(hostileOut)) {
 
 // ------------------------------------- 3. unreadable storage is not erased
 const corruptBytes = '{"entries":[{"id":"keep-me"';
-localStorage = new MemoryStorage({ 'expense-tracker:v1': corruptBytes });
+localStorage = new MemoryStorage({ [LIVE_KEY]: corruptBytes });
 const corruptLoad = noThrow('loadState(corrupt)', () => loadState());
 check('corrupt load still returns a usable state', looksLikeState(corruptLoad));
-const backupKey = [...localStorage.map.keys()].find(k => k !== 'expense-tracker:v1');
+const backupKey = [...localStorage.map.keys()].find(k => k !== LIVE_KEY);
 check('corrupt payload preserved for recovery', !!backupKey, `keys: ${[...localStorage.map.keys()].join(', ')}`);
 check('preserved copy is byte-identical to what was stored', !backupKey || localStorage.getItem(backupKey) === corruptBytes);
 
@@ -135,27 +140,25 @@ localStorage = new MemoryStorage({}, { failWrites: true });
 const failedWrite = noThrow('saveState(quota exceeded)', () => saveState({ entries: [], settings: {} }));
 check('saveState reports failure when storage rejects the write', failedWrite === false, `returned ${String(failedWrite)}`);
 
-// ------------------------------------- 5. legacy profile keys cannot clobber
-// The reverse migration runs once, at import time, so observing it needs its
-// own module instance (Node keys modules by URL, query string included).
+// ------------------------------------- 5. one profile cannot read another
+// Namespacing is the whole isolation story, so assert it here rather than in
+// prose: another profile's document is never the active one's, and an unknown
+// profile's keys are left exactly where they are.
+const { nsKey, getActiveProfileId } = await import('../profiles.js');
 const liveEntry = { id: 'live', date: '2026-09-20', type: 'expense', method: 'AIB', category: 'gro', amount: 1, details: '', note: '', createdAt: '2026-09-20T10:00:00.000Z' };
 const liveState = JSON.stringify({ entries: [liveEntry], settings: { monthlyBudget: 1100 } });
-const staleProfile = JSON.stringify({ entries: [], settings: { monthlyBudget: 999 } });
-localStorage = new MemoryStorage({ 'expense-tracker:v1': liveState, 'cents:p/p9/state': staleProfile });
-const migrating = await import('../storage.js?migration-check');
-const afterMigration = noThrow('loadState(with stale profile keys)', () => migrating.loadState());
-check('live entries survive a stale profile copy', !!afterMigration && afterMigration.entries.some(e => e.id === 'live'),
-  'the profile-scoped copy replaced the live document');
-check('live budget survives a stale profile copy', (afterMigration?.settings?.monthlyBudget) === 1100,
-  `budget became ${afterMigration?.settings?.monthlyBudget}`);
-// Stray profile-scoped keys must be inert: they belong to a removed feature and
-// are never a source of truth for the live document.
-localStorage = new MemoryStorage({ 'cents:p/p9/state': staleProfile });
-const ignoring = await import('../storage.js?ignores-profiles');
-const ignored = noThrow('loadState(profile keys only)', () => ignoring.loadState());
-check('stray profile keys do not become the live state', looksLikeState(ignored) && ignored.entries.length === 0,
-  `entries: ${ignored?.entries?.length}`);
-check('stray profile keys are left untouched', localStorage.getItem('cents:p/p9/state') === staleProfile);
+const otherProfile = JSON.stringify({ entries: [], settings: { monthlyBudget: 999 } });
+check('the active profile namespaces the live document', nsKey('state') === LIVE_KEY, nsKey('state'));
+check('another profile gets its own document key', nsKey('state', 'sam') === 'cents:p/sam/state', nsKey('state', 'sam'));
+localStorage = new MemoryStorage({ [LIVE_KEY]: liveState, 'cents:p/sam/state': otherProfile });
+check('a second profile is not the active one', getActiveProfileId() === 'personal', getActiveProfileId());
+const activeLoad = noThrow('loadState(with a second profile present)', () => loadState());
+check('a second profile never replaces the active document',
+  (activeLoad?.settings?.monthlyBudget) === 1100, `budget became ${activeLoad?.settings?.monthlyBudget}`);
+check('the second profile is left untouched', localStorage.getItem('cents:p/sam/state') === otherProfile);
+check('every namespaced base is distinct per profile',
+  ['state', 'sync', 'privacy', 'bio', 'undo', 'alerts', 'reminder', 'quarantine']
+    .every(base => nsKey(base, 'sam') !== nsKey(base, 'personal') && nsKey(base, 'sam').startsWith('cents:p/sam/')));
 
 // ------------------------------------------------- 6. merge never loses data
 const entry = (id, amount, updatedAt) => ({
@@ -238,6 +241,34 @@ const keptIds = overflow.tesco.deletedShiftIds || [];
 check('over the cap the newest tombstones are the ones kept',
   keptIds.length === 2500 && keptIds[keptIds.length - 1] === 's02999' && !keptIds.includes('s00000'),
   `${keptIds.length} kept, newest ${keptIds[keptIds.length - 1]}`);
+
+// ------------------------------------- 6b. admin-controlled tab visibility
+// enabledTabs is a policy, not a collection: unioning it would let any device
+// still listing a tab re-grant it after the admin hid it, and the dashboard can
+// never be removed (it is the landing page and the only hub).
+check('a document with no list shows every tab',
+  validateState({ entries: [], settings: {} }).settings.enabledTabs.length === 6);
+check('the dashboard survives a list that omits it',
+  validateState({ entries: [], settings: { enabledTabs: ['add'] } }).settings.enabledTabs.join() === 'dashboard,add',
+  JSON.stringify(validateState({ entries: [], settings: { enabledTabs: ['add'] } }).settings.enabledTabs));
+check('unknown tab ids are dropped and the order is canonical',
+  validateState({ entries: [], settings: { enabledTabs: ['insights', 'nope', 'dashboard', 'add'] } }).settings.enabledTabs.join() === 'dashboard,add,insights');
+check('a hostile enabledTabs value cannot empty the nav',
+  validateState({ entries: [], settings: { enabledTabs: 'all' } }).settings.enabledTabs.length === 6);
+
+const restricted = stateOf([], { enabledTabs: ['dashboard', 'add'] }, { lastLocalChangeAt: '2026-09-20T14:00:00.000Z' });
+const unrestricted = stateOf([], { enabledTabs: ['dashboard', 'add', 'history', 'balances', 'tesco', 'insights'] }, { lastLocalChangeAt: '2026-09-20T10:00:00.000Z' });
+check('a tab restriction wins the merge from the fresher side',
+  (mergeStates(unrestricted, restricted).settings.enabledTabs || []).join() === 'dashboard,add',
+  JSON.stringify(mergeStates(unrestricted, restricted).settings.enabledTabs));
+check('and is not undone when the older side is the local one',
+  (mergeStates(restricted, unrestricted).settings.enabledTabs || []).join() === 'dashboard,add');
+// A device that has not seen this feature writes no list at all; that must not
+// read as "everything visible" and re-open the tab the admin closed.
+const preFeature = stateOf([], {}, { lastLocalChangeAt: '2026-09-20T16:00:00.000Z' });
+check('a document without the list cannot re-open a hidden tab',
+  (mergeStates(restricted, preFeature).settings.enabledTabs || []).join() === 'dashboard,add',
+  JSON.stringify(mergeStates(restricted, preFeature).settings.enabledTabs));
 
 // ------------------------------------------------- 7. Tesco engine and CSV
 const rates = { normal: 14.44, specialMultiplier: 1.5, pensionPct: 1.5, payeCredit: 76.93, payeCutoff: 846.15, payeRateLow: 20, payeRateHigh: 40, prsiRate: 4.2 };
