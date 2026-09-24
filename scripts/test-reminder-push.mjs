@@ -92,6 +92,11 @@ process.env.VAPID_SUBJECT = 'mailto:test@example.com';
 process.env.APP_PASSWORD = 'test-password-123';
 process.env.APP_PASSWORD_SAM = 'sam-password-123';
 delete process.env.APP_PASSWORD_KATE;
+// The fake push service below is http://localhost, and reminders-push accepts a
+// loopback endpoint only when this is set — the exception is opt-in precisely so
+// that no deploy accepts one (see validSubscription). Check 2b pins the opt-in
+// in both directions, so it can never quietly become the default again.
+process.env.CENTS_TEST_LOCALHOST_PUSH = '1';
 const { generateVapidKeys, encryptPayload, pushSend, vapidSeed } = await import('../netlify/functions/lib/webpush.mjs');
 const keys = generateVapidKeys();
 process.env.VAPID_PUBLIC_KEY = keys.publicKey;
@@ -183,6 +188,35 @@ check('unconfigured-push-503', unconfigured.status === 503 && /VAPID_PUBLIC_KEY/
 // ---------- 2. auth required ----------
 const unauth = await call(pushHandler, 'POST', { subscription }, { 'X-Cents-Password': 'wrong-password' });
 check('auth-required', unauth.status === 401);
+
+// ---------- 2b. the loopback exception is opt-in, and private hosts stay out --
+// The endpoint is client-supplied and the server POSTs to it, so this is the
+// line between a push destination and a way to aim the function at something
+// else. It used to accept any http://localhost unconditionally, in production.
+delete process.env.CENTS_TEST_LOCALHOST_PUSH;
+const loopbackNoOptIn = await call(pushHandler, 'POST', { subscription, time: '20:00', zone: 'UTC' });
+check('a loopback endpoint is refused without the harness opt-in', loopbackNoOptIn.status === 400, `got ${loopbackNoOptIn.status}`);
+process.env.CENTS_TEST_LOCALHOST_PUSH = '1';
+const metadata = await call(pushHandler, 'POST', {
+  subscription: { ...subscription, endpoint: 'https://169.254.169.254/latest/meta-data/' }, time: '20:00', zone: 'UTC',
+});
+check('a metadata address is refused even over https', metadata.status === 400, `got ${metadata.status}`);
+const privateNet = await call(pushHandler, 'POST', {
+  subscription: { ...subscription, endpoint: 'https://10.1.2.3/hook' }, time: '20:00', zone: 'UTC',
+});
+check('a private-network address is refused over https', privateNet.status === 400, `got ${privateNet.status}`);
+// A trailing dot is the same host, fully qualified — the first thing worth
+// trying against a name-based check.
+const dotted = await call(pushHandler, 'POST', {
+  subscription: { ...subscription, endpoint: 'https://localhost./hook' }, time: '20:00', zone: 'UTC',
+});
+check('a fully-qualified loopback name is refused', dotted.status === 400, `got ${dotted.status}`);
+// The fix must not cost push itself: a real service's host is still accepted,
+// and is removed again so the store this suite counts later stays clean.
+const publicPush = { ...subscription, endpoint: 'https://fcm.googleapis.com/fcm/send/abc123' };
+const accepted = await call(pushHandler, 'POST', { subscription: publicPush, time: '20:00', zone: 'UTC' });
+check('a real push service endpoint is still accepted', accepted.status === 200, `got ${accepted.status}`);
+await call(pushHandler, 'DELETE', { subscription: publicPush });
 
 // ---------- 3. subscribe (stored, normalized time) ----------
 const subResp = JSON.parse(await text(await call(pushHandler, 'POST', {

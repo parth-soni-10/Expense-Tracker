@@ -75,13 +75,52 @@ function legacyEndpointKey(endpoint) {
   return PUSH_PREFIX + createHash('sha256').update(String(endpoint)).digest('hex');
 }
 
+/** Loopback, private-network or metadata addresses — never a push destination. */
+function isLocalOrPrivateHostname(hostname) {
+  // The trailing dot is a fully-qualified name for the same host
+  // (`https://localhost./` resolves to loopback), so it is stripped before the
+  // comparison rather than left as a way around it.
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (host === 'localhost' || host.endsWith('.localhost')
+    || host.endsWith('.local') || host.endsWith('.internal')) return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    const [a, b] = host.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || a >= 224
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168)
+      || (a === 169 && b === 254);
+  }
+  if (host.includes(':')) { // IPv6 literal
+    return host === '::1' || /^f[cd]/.test(host) || /^fe[89ab]/.test(host)
+      || /^::ffff:(127\.|10\.|192\.168\.)/.test(host);
+  }
+  return false;
+}
+
 function validSubscription(sub) {
   if (!sub || typeof sub !== 'object' || Array.isArray(sub)) return false;
-  // Real push services are always https; localhost http is allowed so the
-  // integration harness (scripts/test-reminder-push.mjs) can run a fake
-  // push service locally.
   if (typeof sub.endpoint !== 'string' || sub.endpoint.length > 2000) return false;
-  if (!/^https:\/\//.test(sub.endpoint) && !/^http:\/\/localhost(:\d+)?\//.test(sub.endpoint)) return false;
+  let url;
+  try { url = new URL(sub.endpoint); } catch { return false; }
+  // The endpoint is client-supplied and the server POSTs to it, so this decides
+  // whether a stored subscription is a push destination or a way to make the
+  // function fetch something else. Real push services are https on a public
+  // host, and both are required — a deploy can then never be aimed at the
+  // runtime's own loopback (the Lambda runtime API answers there), a private
+  // network, or a metadata address.
+  //
+  // One exception, asked for explicitly: the integration harness runs a fake
+  // push service on http://localhost and sets CENTS_TEST_LOCALHOST_PUSH itself
+  // (scripts/test-reminder-push.mjs, documented in the README's testing
+  // section). It is unset on a deploy, which is the whole point — this used to
+  // be an unconditional localhost allowance, so every deploy accepted an
+  // endpoint pointing at its own host, from any authenticated account.
+  const testLoopback = process.env.CENTS_TEST_LOCALHOST_PUSH === '1';
+  if (url.protocol !== 'https:') {
+    if (!(testLoopback && url.protocol === 'http:' && url.hostname === 'localhost')) return false;
+  } else if (isLocalOrPrivateHostname(url.hostname)) {
+    return false;
+  }
   const keys = sub.keys;
   if (!keys || typeof keys !== 'object' || Array.isArray(keys)) return false;
   if (typeof keys.p256dh !== 'string' || keys.p256dh.length < 40 || keys.p256dh.length > 400) return false;

@@ -8,6 +8,15 @@ testing/
 # Defensive: if npm dependencies are ever reintroduced, keep them off the site.
 node_modules/
 
+# Data-shaped artefacts must never be served, even committed by accident: an
+# exported CSV or a pulled cloud copy is somebody's real spending, and
+# `publish = "."` would publish it at the same URL as the app. check-freshness
+# catches anything else that ships without a 404 rule, but these are worth
+# excluding outright because they are what a person would add by hand.
+*.csv
+*.xlsx
+data*.json
+
 # Standard noise
 .DS_Store
 *.log

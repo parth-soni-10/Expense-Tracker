@@ -113,6 +113,8 @@ node scripts/test-cloud.mjs            # Blobs is the primary, GitHub the mirror
 node scripts/test-reminder-push.mjs    # the push payload still matches the RFC 8291 vector
 ```
 
+`scripts/test-reminder-push.mjs` runs a fake push service on `http://localhost`, and `reminders-push` refuses loopback, private-network and metadata endpoints unless `CENTS_TEST_LOCALHOST_PUSH=1` is set — the harness sets it for its own run. **Never set it in Netlify**: with it, any account could store a subscription pointing at the function runtime's own localhost.
+
 `.github/workflows/guards.yml` runs the same suite on every push, on the same Node version the deploy uses. That matters for one specific reason: Netlify parses `netlify.toml` *before* it runs the build command, so a broken config can never be reported by a predeploy guard — the only signal is a failed deploy. CI is the earliest place it can be caught.
 
 If you edit one of the inline scripts in `index.html`, re-hash it in the CSP in `netlify.toml`: `check-csp-hashes` prints the exact hash to paste, and the browser would otherwise refuse to run that script in production only (no CSP is sent locally).
