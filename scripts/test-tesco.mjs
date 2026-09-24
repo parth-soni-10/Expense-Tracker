@@ -18,7 +18,9 @@ import {
   payslipTotal, parseTimeCell, parseRosterWords, isSunday, nameMatches, ocrStripRanges, ocrInkBands, ocrPickBand, ocrFlatField,
   TESCO_RATE_DEFAULTS,
   tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf,
+  storedShift, storedPayslip,
 } from '../tesco.js';
+import { validateState } from '../storage.js';
 
 let pass = 0;
 const fails = [];
@@ -203,7 +205,11 @@ ok('the Sunday closes its week (newest first)', sunRow, 5);
 ok('the Sunday is hour-and-a-half paid', cells(sunRow).slice(6, 9), ['7.25', 'Special', '157.04']);
 ok('the Sunday carries the week: gross/tax/pension/net', cells(sunRow).slice(10, 14), ['550.53', '63.85', '8.26', '478.42']);
 ok('Received? marks the week whose payslip exists', cells(sunRow)[9], 'Yes');
-ok('Final Bank Pay is what the payslip left (550.53 − 72.11)', cells(sunRow)[14], '478.42');
+// Final Bank Pay is typed from a bank statement, so a week that recorded no
+// net exports a blank cell — the engine still derives received as gross − tax
+// (asserted above), but a derived figure written here would come back on the
+// next import looking like one the bank confirmed.
+ok('Final Bank Pay stays blank while no net was recorded', cells(sunRow)[14], '');
 ok('a mid-week row carries no weekly figures', cells(1).slice(10, 15), ['', '', '', '', '']);
 ok('the week column is the app’s ISO week', cells(sunRow)[2], String(isoWeekNumber('2026-09-20')));
 ok('a pay week shares one week number, as the sheet groups it',
@@ -221,33 +227,88 @@ ok('rows are CRLF-terminated for Excel', csv.endsWith('\r\n'), true);
 const withTax = tescoCsv(weekShifts, payslips, null);
 ok('a tax table follows the shift table', withTax.includes(`\r\n\r\n${TESCO_CSV_PAYSLIP_HEADER.join(',')}`), true);
 const taxRows = tescoCsv(weekShifts, [payslips[0]], null).trim().split('\r\n').slice(-1)[0].split(',');
-ok('a tax row carries the week, pay date and the four figures', taxRows, ['2026-09-20', '2026-10-01', '33.18', '7.55', '23.12', '8.26', '']);
-ok('a blank net column is empty, not nought', taxRows[6], '');
+const rowTotal = row => (Number(row[3]) + Number(row[4]) + Number(row[5]) + Number(row[6])).toFixed(2);
+ok('a tax row carries the week start, pay date, week, four figures and total', taxRows,
+  ['2026-09-20', '2026-10-01', String(isoWeekNumber('2026-09-20')), '33.18', '7.55', '23.12', '8.26', '72.11']);
+ok('a tax row totals its own four figures', taxRows[7], rowTotal(taxRows));
 const bankRow = tescoCsv(weekShifts, [banked], null).trim().split('\r\n').slice(-1)[0].split(',');
-ok('the tax row carries the net that landed when it is known', bankRow[6], '600.00');
-ok('and the week row carries the same figure', cells(lines.findIndex(l => l.startsWith('2026-09-20')))[14], '478.42');
+ok('a net that landed leaves the tax row’s own figures alone', bankRow[7], rowTotal(bankRow));
+ok('and the week row stays blank beside it', cells(lines.findIndex(l => l.startsWith('2026-09-20')))[14], '');
 ok('the stored net reaches the shift table’s Final Bank Pay',
   tescoCsv(weekShifts, [banked], null).trim().split('\r\n').find(l => l.startsWith('2026-09-20')).split(',')[14], '600.00');
 ok('an entered net round-trips', parseTescoCsv(tescoCsv(weekShifts, [banked], null)).payslips[0].bankPay, 600);
-ok('a blank net round-trips as unknown', 'bankPay' in parseTescoCsv(csv).payslips[0], false);
+ok('a week with no recorded net round-trips as no net', parseTescoCsv(csv).payslips[0].bankPay, undefined);
 ok('a second pay run keeps its own date in the file',
   tescoCsv(weekShifts, [payslips[1]], null).includes('2026-09-12,'), true);
-// A payslip is exported against its pay week's Sunday, which is how the app
-// already reads it (the 12 Sep refund belongs to the week starting the 6th).
+// A payslip keeps the date the sheet typed for its row (the 12 Sep refund is
+// its own row in the sheet's tax table) rather than the Sunday the engine
+// groups it by — the file has to be able to write back what the sheet says.
 ok('every payslip survives the round trip', parseTescoCsv(withTax).payslips, [
-  { weekStart: '2026-08-23', paye: 10, usc: 0, prsi: 0, futureFund: 0 },
-  { weekStart: '2026-09-06', paye: -56.08, usc: 0, prsi: 0, futureFund: 0 },
-  { weekStart: '2026-09-20', paye: 33.18, usc: 7.55, prsi: 23.12, futureFund: 8.26 },
+  { weekStart: '2026-08-23', paye: 10, usc: 0, prsi: 0, futureFund: 0, weekNo: isoWeekNumber('2026-08-23') },
+  { weekStart: '2026-09-12', paye: -56.08, usc: 0, prsi: 0, futureFund: 0, weekNo: isoWeekNumber('2026-09-06') },
+  // No net was recorded for this week, so none comes back: an absent one stays
+  // unknown rather than being filled in with gross − tax.
+  { weekStart: '2026-09-20', paye: 33.18, usc: 7.55, prsi: 23.12, futureFund: 8.26, weekNo: isoWeekNumber('2026-09-20') },
 ]);
 ok('tax rows are never read as shifts', parseTescoCsv(withTax).shifts.length, weekShifts.length);
-ok('a payslip week snaps to its Sunday', parseTescoCsv('Week Start Date,Pay Date,PAYE,USC,PRSI,Future Fund\r\n2026-09-23,2026-10-04,5,1,2,3').payslips,
-  [{ weekStart: '2026-09-20', paye: 5, usc: 1, prsi: 2, futureFund: 3 }]);
+// A row keeps its own date, and the engine is what snaps it to the week's
+// Sunday when it groups — so a Wednesday pay run still lands in its week.
+const wednesday = parseTescoCsv('Week Start Date,Pay Date,PAYE,USC,PRSI,Future Fund\r\n2026-09-23,2026-10-04,5,1,2,3').payslips;
+ok('a payslip keeps its own date', wednesday, [{ weekStart: '2026-09-23', paye: 5, usc: 1, prsi: 2, futureFund: 3 }]);
+ok('and the engine snaps it onto the week', buildPayWeeks([], wednesday, null)[0].weekStart, weekStartOf('2026-09-23'));
 ok('a tax table alone still imports', parseTescoCsv('Week Start Date,Pay Date,PAYE,USC,PRSI,Future Fund\r\n2026-09-20,2026-10-01,33.18,7.55,23.12,8.26').shifts.length, 0);
 // The sheet holds two pay runs inside one week (USC on the Sunday and the
-// Friday) — the same week's tax, so they add up into one payslip.
-ok('two pay runs in one week add into one payslip',
+// Friday). Each keeps its own row and its own typed date — folding them into
+// one dropped a row from the file — and buildPayWeeks adds them up for the
+// week (asserted above as 'two pay runs in one week both count').
+ok('two pay runs in one week keep their own rows',
   parseTescoCsv('Week Start Date,Pay Date,PAYE,USC,PRSI,Future Fund\r\n2025-12-07,2025-12-18,0,0.70,0,0\r\n2025-12-12,2025-12-23,0,0.56,0,0').payslips,
-  [{ weekStart: '2025-12-07', paye: 0, usc: 1.26, prsi: 0, futureFund: 0 }]);
+  [{ weekStart: '2025-12-07', paye: 0, usc: 0.7, prsi: 0, futureFund: 0 },
+   { weekStart: '2025-12-12', paye: 0, usc: 0.56, prsi: 0, futureFund: 0 }]);
+
+// ---------- import: a row keeps its own hours, pay and week ----------
+// The sheet's older rows were worked at rates that have since changed (14.02
+// against today's 14.44) and its older blocks break a shift differently, so a
+// row's own figures beat both the clock-derived hours and the rate card.
+const legacy = parseTescoCsv('Date,Start Time,End Time,Hours,Normal or Special,Total,Description\r\n'
+  + '2025-12-23,07:00,15:00,6.00,Normal,84.12,Break doesnt count\r\n').shifts;
+ok('a row imports its own hours and pay', legacy, [
+  { date: '2025-12-23', start: '07:00', end: '15:00', hours: 6, gross: 84.12, special: false, note: 'Break doesnt count' },
+]);
+const own = shiftPay(legacy[0], null);
+ok('and is paid what the row said, not today\u2019s rate', [own.hours, own.gross, own.rate], [6, 84.12, 14.02]);
+const card = shiftPay({ date: '2025-12-23', start: '07:00', end: '15:00' }, null);
+ok('while a row with no stated pay uses the rate card', [card.hours, card.gross], [7, 101.08]);
+ok('a bank holiday row counts as special',
+  shiftPay(parseTescoCsv('Date,Start Time,End Time,Hours,Normal or Special,Total\r\n2026-08-03,07:00,15:00,7.00,BH,202.16\r\n').shifts[0], null).special, true);
+
+// The stored shape, shared by the CSV import and the tab's add path.
+ok('a week off with no clock times is stored, not dropped',
+  storedShift({ date: '2026-06-28', start: null, end: null, hours: 20, gross: 288.8, note: 'Full Week off pay', special: false }, 'x', 'T'),
+  { id: 'x', date: '2026-06-28', start: '', end: '', hours: 20, gross: 288.8, note: 'Full Week off pay', special: false, createdAt: 'T' });
+ok('a row with neither times nor hours is refused', storedShift({ date: '2026-06-28', start: null, end: null }, 'x', 'T'), null);
+ok('so is a row with no usable date', storedShift({ date: 'nope', start: '07:00', end: '15:00' }, 'x', 'T'), null);
+ok('a payslip row keeps its own date and week number',
+  storedPayslip({ weekStart: '2025-12-12', paye: 0, usc: 0.56, prsi: 0, futureFund: 0, weekNo: 43 }, 'y', 'T'),
+  { id: 'y', weekStart: '2025-12-12', paye: 0, usc: 0.56, prsi: 0, futureFund: 0, weekNo: 43, createdAt: 'T' });
+
+// And the save/load boundary keeps all of it: a reload must not silently drop
+// the row's own figures or the no-times row.
+const saved = validateState({ entries: [], tesco: {
+  shifts: [storedShift(legacy[0], 'a', 'T'), storedShift({ date: '2026-06-28', start: null, end: null, hours: 20, gross: 288.8, bankPay: 316.99, note: 'Full Week off pay' }, 'b', 'T')],
+  payslips: [storedPayslip({ weekStart: '2025-12-12', paye: 0, usc: 0.56, weekNo: 43 }, 'y', 'T')],
+} }).tesco;
+ok('storage keeps a row\u2019s own hours, pay, net and week number',
+  [saved.shifts.length, saved.shifts[0].hours, saved.shifts[0].gross, saved.shifts[1].hours, saved.shifts[1].bankPay, saved.payslips[0].weekNo],
+  [2, 6, 84.12, 20, 316.99, 43]);
+
+// A week's net is normally edited on its payslip, and the sheet types it on the
+// week's shift row. A week with no payslip of its own must still record it
+// rather than dropping the figure, and a payslip that does record one wins.
+const rowNet = [{ id: 'a', date: '2025-12-22', start: '09:00', end: '17:30', bankPay: 360.40 }];
+ok('a net on a shift row counts when no payslip records one', buildPayWeeks(rowNet, [], null)[0].bankPaid, 360.4);
+ok('and a payslip\u2019s own net wins over the row\u2019s',
+  buildPayWeeks(rowNet, [{ id: 'p', weekStart: '2025-12-21', paye: 0, usc: 0, prsi: 0, futureFund: 0, bankPay: 400 }], null)[0].bankPaid, 400);
 
 const back = parseTescoCsv(csv);
 ok('the export reads back clean', [back.shifts.length, back.skipped, back.error], [5, 0, null]);

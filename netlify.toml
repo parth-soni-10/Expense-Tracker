@@ -9,7 +9,7 @@
 
 [build]
   publish = "."
-  # Ten guardrails, all pure-Node and fast:
+  # Twelve guardrails, all pure-Node and fast:
   #   check-netlify-config — THIS file is shaped the way Netlify's schema
   #                          requires (see the note on the scheduled function
   #                          below), every scheduled function it names exists,
@@ -23,10 +23,17 @@
   #   check-freshness     — a deploy always reaches the device: every app asset
   #                         revalidates, the worker stays network-first, and no
   #                         404 rule can match a file the app itself loads
+  #   check-icon-refs     — every icon name app.js looks up exists in the map it
+  #                         reads (`$` drops a non-string `innerHTML` in silence,
+  #                         so a miss renders an empty element, not an error:
+  #                         the header's admin circle shipped blank that way)
   #   test-tesco          — the pay/tax engine still matches the workbook's
   #                         own cached figures, so a pay change can't ship silently
   #   test-sync           — the sync contract still round-trips the full state
   #                         (stubbed GitHub API; no network, no token)
+  #   test-cloud          — the document store is Blobs-primary with a GitHub
+  #                         mirror: reads migrate, the version token decides
+  #                         conflicts, a failed mirror can't fail a save
   #   test-profiles       — profiles stay isolated: every storage key is
   #                         namespaced, a delete removes all of them, and a
   #                         profile's cloud password never falls back to the
@@ -35,7 +42,7 @@
   #                         resurrect data on hostile input
   #   test-reminder-push  — the push payload still matches the RFC 8291 vector,
   #                         so a reminder can't silently stop being decryptable
-  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-reminder-push.mjs"
+  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/check-icon-refs.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-cloud.mjs && node scripts/test-reminder-push.mjs"
 
   # Pin the build runtime. scripts/test-tesco.mjs imports tesco.js — a plain
   # .js browser module, and this repo has no package.json (no-build model), so

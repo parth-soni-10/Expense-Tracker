@@ -1,10 +1,11 @@
 /* ============================================================
-   Netlify Function v2 — GitHub sync proxy for cents.
+   Netlify Function v2 — cloud sync proxy for cents.
 
-   Reads/writes a single JSON file in a configured GitHub repo via
-   the Contents API, gated by an admin password sent via the
-   X-Cents-Password header. The PAT itself lives only in this
-   function's environment, never in the client bundle.
+   Holds each profile's JSON document in Netlify Blobs and mirrors it
+   into a configured GitHub repo. Gated by an admin password sent via
+   the X-Cents-Password header; the PAT itself lives only in this
+   function's environment, never in the client bundle. lib/cloud.mjs
+   owns the storage model (primary, mirror, version tokens, migration).
 
    Required env vars:
      GITHUB_TOKEN    fine-grained PAT, repo contents: read+write
@@ -18,8 +19,9 @@
    Profiles: the client sends X-Cents-Profile (<profile-id>, a short
    slug). The password is resolved per profile — APP_PASSWORD for the
    default "personal" id, APP_PASSWORD_<ID> for any other, with NO
-   fallback between them — and the cloud file becomes data-<id>.json.
-   Two profiles therefore never share a password or a file, so one
+   fallback between them — and the document is kept under that id,
+   privately in Netlify Blobs and mirrored to data-<id>.json.
+   Two profiles therefore never share a password or a document, so one
    profile's credential cannot read another's data. A profile whose
    env var is missing is refused with the name to set, rather than
    silently sharing the owner's password.
@@ -36,12 +38,17 @@
 
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
 import { resolveProfileForAuth, profileAuthMessage, cloudFileFor } from './lib/profiles.mjs';
-import { ghFetch, ghConfig, decodeBase64, encodeBase64 } from './lib/gh.mjs';
+import { ghConfig } from './lib/gh.mjs';
+import { readCloudDoc, writeCloudDoc, CloudError } from './lib/cloud.mjs';
 
 function corsHeaders(request) {
   const origin = request.headers.get('origin');
   const cors = {
-    'Access-Control-Allow-Headers': 'Content-Type, X-Cents-Password, X-Cents-Setup-Token',
+    // X-Cents-Profile belongs here: the client sends it on every call, and a
+    // cross-origin endpoint (a self-hosted sync domain) is preflighted, which
+    // same-origin requests never are — so omitting it made sync work only when
+    // the endpoint was on this origin. Same list as setup-token and reminders-push.
+    'Access-Control-Allow-Headers': 'Content-Type, X-Cents-Password, X-Cents-Setup-Token, X-Cents-Profile',
     'Access-Control-Allow-Methods': 'GET, PUT, POST, OPTIONS',
     'Access-Control-Max-Age': '86400',
     'Cache-Control': 'no-store',
@@ -294,41 +301,30 @@ export default async (request, _context) => {
 
   const config = ghConfig();
   const { owner, repo, branch } = config;
-  const file = cloudFileFor(profile.id, config.file);
   if (!owner || !repo) return err('REPO_OWNER / REPO_NAME env vars not set on the function', 500, cors);
 
   try {
     // ---------- READ ----------
     if (request.method === 'GET') {
-      const r = await ghFetch(`/repos/${owner}/${repo}/contents/${encodeURIComponent(file)}?ref=${encodeURIComponent(branch)}`);
-      if (r.status === 404) return ok({ content: null, sha: null, branch }, 200, cors);
-      if (!r.ok) {
-        const text = await r.text();
-        console.error('cents sync: github read failed', r.status, text.slice(0, 400));
-        return err('Reading the cloud copy failed', r.status, cors);
-      }
-      const j = await r.json();
-      const text = decodeBase64(j.content || '');
-      let parsed = null;
-      let malformed = false;
-      try {
-        parsed = text.trim() ? JSON.parse(text) : null;
-        malformed = !!text.trim() && !validIncomingState(parsed);
-      } catch {
-        malformed = true;
-      }
+      const doc = await readCloudDoc(profile.id, config);
+      if (!doc.exists) return ok({ content: null, sha: null, branch }, 200, cors);
+      // The same judgement as before: a document that cannot be parsed (its
+      // content stays null) or that the client-side validator would refuse is
+      // reported, so the client stops instead of merging half a file.
+      const malformed = !validIncomingState(doc.content);
       return ok({
-        content: parsed,
+        content: doc.content,
         malformed,
-        sha: j.sha,
+        // Opaque to the client, exactly like the git sha it replaces: it only
+        // echoes this back on the next write. See lib/cloud.mjs.
+        sha: doc.version,
         branch,
-        size: j.size,
-        // Contents API responses usually omit commit timestamps. The client
-        // stores its edit timestamp in the validated document, so use that as
-        // a safe fallback for local-vs-cloud freshness checks.
-        lastModifiedAt: j.updated_at || j.commit?.author?.date || parsed?.lastLocalChangeAt || null,
-        commitSha: j.commit?.sha || null,
-        path: j.path || file,
+        // Whatever timestamp the store that answered knows. The client stores
+        // its edit timestamp in the validated document, so that is the fallback
+        // for local-vs-cloud freshness checks.
+        lastModifiedAt: doc.updatedAt,
+        commitSha: doc.commitSha,
+        path: cloudFileFor(profile.id, config.file),
       }, 200, cors);
     }
 
@@ -361,38 +357,29 @@ export default async (request, _context) => {
       if (typeof branchParam !== 'string' || branchParam.length > 200 || !/^(?!.*\.\.)[A-Za-z0-9._/-]+$/.test(branchParam)) {
         return err('Body.branch is invalid', 400, cors);
       }
-      const encoded = encodeBase64(JSON.stringify(incoming, null, 2));
-
-      const putBody = { message: msg, content: encoded, branch: branchParam };
-      if (sha) putBody.sha = sha;
-
-      const r = await ghFetch(
-        `/repos/${owner}/${repo}/contents/${encodeURIComponent(file)}`,
-        { method: 'PUT', body: JSON.stringify(putBody) }
-      );
-
-      if (r.status === 409) {
-        return ok({ conflict: true, status: r.status }, 200, cors);
-      }
-      if (!r.ok) {
-        const text = await r.text();
-        console.error('cents sync: github write failed', r.status, text.slice(0, 400));
-        return err('Saving to the cloud failed', r.status, cors);
-      }
-
-      const j = await r.json();
-      return ok({
-        sha: j.content?.sha || null,
-        commit: j.commit?.sha || null,
+      const result = await writeCloudDoc(profile.id, config, {
+        content: incoming,
+        expectedVersion: sha,
+        message: msg,
         branch: branchParam,
-        lastModifiedAt: j.commit?.author?.date || j.content?.updated_at || null,
+      });
+      if (result.conflict) return ok({ conflict: true, status: 409 }, 200, cors);
+      if (result.error) return err(result.error, 502, cors);
+
+      return ok({
+        sha: result.version,
+        commit: result.commitSha,
+        branch: branchParam,
+        lastModifiedAt: result.updatedAt,
       }, 200, cors);
     }
 
     return err('Method not allowed', 405, cors);
   } catch (e) {
-    // Never echo internals to the client — log the real cause server-side so
-    // it stays diagnosable without leaking GitHub/error detail to the caller.
+    // A store that could not be reached is a real, reportable failure with the
+    // store's own status; anything else is an internal fault we log rather than
+    // describe, so GitHub/error detail never reaches the caller.
+    if (e instanceof CloudError) return err(e.message, e.status || 502, cors);
     console.error('cents sync: unexpected error', e?.message || e);
     return err('Unexpected sync error', 500, cors);
   }

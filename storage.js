@@ -377,6 +377,15 @@ function tescoMoney(v) {
   return Math.round(n * 100) / 100;
 }
 
+/** A row's own hours or pay, when the file stated one — undefined when it did
+ *  not or the figure is unusable, so the engine falls back to deriving it. */
+function tescoStated(v, max) {
+  if (v == null || v === '') return undefined;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0 || n > max) return undefined;
+  return Math.round(n * 100) / 100;
+}
+
 // Normalize the Tesco Pay block. Unknown/corrupt shapes fall back to empty
 // collections, never throw — this data rides in the same state document as
 // entries and must tolerate hand-edited or legacy cloud files.
@@ -390,13 +399,26 @@ function normalizeTesco(raw) {
       const id = typeof s.id === 'string' && s.id && s.id.length <= 200 ? s.id : uid();
       if (seen.has(id)) continue;
       if (!TESCO_DATE_RE.test(String(s.date || '')) || Number.isNaN(Date.parse(s.date))) continue;
-      if (!TESCO_TIME_RE.test(String(s.start || '')) || !TESCO_TIME_RE.test(String(s.end || ''))) continue;
+      const start = TESCO_TIME_RE.test(String(s.start || '')) ? s.start : '';
+      const end = TESCO_TIME_RE.test(String(s.end || '')) ? s.end : '';
+      // A shift needs clock times OR its own hours. The sheet books a full week
+      // off with hours and no times at all, and requiring both dropped that row
+      // — and the week's bank pay with it.
+      const hours = tescoStated(s.hours, 168);
+      if (!start && hours === undefined) continue;
+      const gross = tescoStated(s.gross, 100000);
+      const bankPay = tescoStated(s.bankPay, 100000);
       seen.add(id);
       out.shifts.push({
         id,
         date: s.date,
-        start: s.start,
-        end: s.end,
+        start,
+        end,
+        // The row's own hours, pay and net, where the file stated them: see
+        // shiftPay and buildPayWeeks.
+        ...(hours === undefined ? {} : { hours }),
+        ...(gross === undefined ? {} : { gross }),
+        ...(bankPay === undefined ? {} : { bankPay }),
         note: typeof s.note === 'string' ? s.note.slice(0, 120) : '',
         special: !!s.special,
         createdAt: typeof s.createdAt === 'string' ? s.createdAt : undefined,
@@ -412,9 +434,14 @@ function normalizeTesco(raw) {
       if (seenSlip.has(id)) continue;
       if (!TESCO_DATE_RE.test(String(p.weekStart || '')) || Number.isNaN(Date.parse(p.weekStart))) continue;
       seenSlip.add(id);
+      // The week number the row itself carries. A week's own record is per row,
+      // not per week: the sheet's tax table numbers two rows in one Sun→Sat week
+      // differently when it had two pay runs.
+      const weekNo = Math.trunc(Number(p.weekNo));
       out.payslips.push({
         id,
         weekStart: p.weekStart,
+        ...(weekNo >= 1 && weekNo <= 53 ? { weekNo } : {}),
         paye: tescoMoney(p.paye),
         usc: tescoMoney(p.usc),
         prsi: tescoMoney(p.prsi),

@@ -14,6 +14,8 @@
  * Run: node scripts/test-sync.mjs
  * Also wired into the Netlify build command (netlify.toml).
  */
+import { readFileSync } from 'node:fs';
+
 const REPO = new URL('..', import.meta.url).href.replace(/\/$/, '');
 
 process.env.APP_PASSWORD = 'test-password-1234';
@@ -98,6 +100,28 @@ check('missing password rejected (401)', noAuth.status === 401, `got ${noAuth.st
 const huge = await call('PUT', { content: { version: 2, entries: [], settings: {}, pad: 'x'.repeat(6 * 1024 * 1024) } });
 const hugeText = await huge.text();
 check('a body over 6 MB is refused with an actionable message', huge.status === 413 && /audio notes/.test(hugeText), `got ${huge.status} ${hugeText.slice(0, 120)}`);
+
+// ---- the preflight has to allow what the client actually sends -----------
+// A cross-origin endpoint (the self-hosted sync domain the CSP allows) is
+// preflighted; a same-origin one never is. So a header missing from the
+// allow-list breaks sync only for people pointing the app at their own domain,
+// which is invisible on the default deployment — X-Cents-Profile was missing
+// here while the client sent it on every single call. The names are read out of
+// sync.js so this cannot drift from the client, and anything the client sends
+// that the list omits fails the build.
+const clientHeaders = [...new Set([
+  ...[...readFileSync(new URL('../sync.js', import.meta.url), 'utf8').matchAll(/X-Cents-[A-Za-z-]+/g)].map(m => m[0]),
+  'Content-Type',
+])];
+const preflight = await handler(new Request('https://cents.test/.netlify/functions/sync', {
+  method: 'OPTIONS', headers: { origin: 'https://self-hosted.example' },
+}), {});
+const allowed = (preflight.headers.get('access-control-allow-headers') || '').toLowerCase();
+const missing = clientHeaders.filter(h => !allowed.includes(h.toLowerCase()));
+check('the preflight allows every header the client sends', preflight.status === 200 && missing.length === 0, missing.join(', '));
+check('and reflects the caller\u2019s origin rather than granting any',
+  preflight.headers.get('access-control-allow-origin') === 'https://self-hosted.example'
+  && preflight.headers.get('vary') === 'Origin', String(preflight.headers.get('access-control-allow-origin')));
 
 // ---- profiles: one profile cannot reach another's document ---------------
 // A second profile syncs to its own file with its own password, and neither

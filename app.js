@@ -848,15 +848,26 @@ function avatarGlyph(icon) {
   const art = AVATAR_ART[icon];
   return art ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${art}</svg>` : null;
 }
-/** The avatar for a profile: its chosen picture, or its initial when none is
- *  set (or when the stored id is not one this build draws). Both wear the same
- *  profile-derived colour, so picking a picture never changes it. */
-function profileAvatar(profile, px = 34) {
-  const style = `width:${px}px;height:${px}px;font-size:${Math.max(9, Math.round(px * 0.38))}px;`
-    + `background:${avatarColor(profile?.id)};color:#fff;`;
-  const art = avatarGlyph(profile?.icon);
-  const box = { class: 'profile-avatar', 'aria-hidden': 'true', style };
+/** One avatar box for a profile, wearing the profile-derived colour so that
+ *  picking a picture never changes it. `icon` is explicit because the picker
+ *  draws every choice for one profile.
+ *
+ *  A glyph that is missing for any reason falls back to the initial, because
+ *  `$` silently skips a non-string `innerHTML` (it will not write the word
+ *  "undefined" into an element) and what a missed lookup leaves behind is a
+ *  blank disc. Every avatar in the app is built here so no surface can. */
+function avatarBox(profile, icon, sizeStyle = '') {
+  const art = avatarGlyph(icon);
+  const box = { class: 'profile-avatar', 'aria-hidden': 'true',
+    style: `${sizeStyle}background:${avatarColor(profile?.id)};color:#fff;` };
   return art ? $('span', { ...box, innerHTML: art }) : $('span', box, initialOf(profile?.name));
+}
+
+/** The avatar for a profile at a fixed size, for the chip, the tiles and the
+ *  admin rows. */
+function profileAvatar(profile, px = 34) {
+  return avatarBox(profile, profile?.icon,
+    `width:${px}px;height:${px}px;font-size:${Math.max(9, Math.round(px * 0.38))}px;`);
 }
 
 /** Pick a picture for one profile. The admin can do this for anyone; a user's
@@ -886,13 +897,13 @@ function openAvatarPicker(profile, onPicked = null) {
     type: 'button', class: 'avatar-choice' + (showing ? '' : ' on'),
     'aria-label': `Initial for ${profile.name}`, 'aria-pressed': String(!showing),
     onClick: () => pick(null),
-  }, $('span', { class: 'profile-avatar', 'aria-hidden': 'true', style: `background:${avatarColor(profile.id)};color:#fff;` }, initialOf(profile.name))));
+  }, avatarBox(profile, null)));
   for (const id of Object.keys(AVATAR_ART)) {
     const on = showing === id;
     grid.append($('button', {
       type: 'button', class: 'avatar-choice' + (on ? ' on' : ''),
       'aria-label': id, 'aria-pressed': String(on), onClick: () => pick(id),
-    }, $('span', { class: 'profile-avatar', 'aria-hidden': 'true', style: `background:${avatarColor(profile.id)};color:#fff;`, innerHTML: avatarGlyph(id) })));
+    }, avatarBox(profile, id)));
   }
 
   modal.append(
@@ -4392,7 +4403,10 @@ function renderHeader() {
         type: 'button', class: 'admin-trigger', title: 'Admin - people and tabs', 'aria-label': 'Admin - people and tabs',
         onClick: () => openAdminPanel(),
       },
-        $('span', { 'aria-hidden': 'true', innerHTML: MENU_ICONS.user }),
+        // ICONS, not MENU_ICONS: the person glyph is one of the extras ICONS
+        // adds, and `$` skips a non-string `innerHTML` — so reading the smaller
+        // map left this circle with no icon inside it at all.
+        $('span', { 'aria-hidden': 'true', innerHTML: ICONS.user }),
         // Wide enough screens get the word, so the button doesn't read as a
         // second profile chip sitting next to the real one.
         $('span', { class: 'admin-trigger-label', 'aria-hidden': 'true' }, 'Admin')) : null,
@@ -4487,7 +4501,9 @@ function iconSpan(name, cls = '', style) {
 
 function menuRowEl({ icon, label, note = null, cls = '', onClick = null, chevron = false, active = false, danger = false, check = false }) {
   return $('button', { type: 'button', class: 'menu-row' + (active ? ' active' : '') + (danger ? ' danger' : '') + (cls ? ' ' + cls : ''), onClick },
-    $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[icon] || MENU_ICONS.home }),
+    // ICONS is the full set (`{ ...MENU_ICONS, …extras }`); looking a name up in
+    // the smaller map silently swapped in the home glyph for the extras.
+    $('span', { class: 'menu-row-icon', 'aria-hidden': 'true', innerHTML: ICONS[icon] || ICONS.home }),
     note ? $('span', { class: 'menu-row-main' }, $('span', { class: 'menu-row-label' }, label), $('span', { class: 'menu-row-note' }, note))
       : $('span', { class: 'menu-row-label' }, label),
     check ? $('span', { class: 'menu-row-check', 'aria-hidden': 'true', innerHTML: MENU_ICONS.check }) : null,
@@ -8295,7 +8311,7 @@ function _render() {
     case 'history':  screen.appendChild(screenHistory()); break;
     case 'balances': screen.appendChild(screenBalances()); break;
     case 'tesco':    screen.appendChild(screenTesco({
-      getState: () => state, $, iconSpan, toast, persist, render, trackAction, swalConfirm, fmt,
+      getState: () => state, $, iconSpan, toast, persist, render, trackAction, swalConfirm, fmt, stackModal, isTopModal,
     })); break;
     case 'insights': screen.appendChild(screenInsights()); break;
     default:         screen.appendChild(screenDashboard());

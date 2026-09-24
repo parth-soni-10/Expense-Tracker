@@ -16,7 +16,7 @@ A calm, private expense tracker that runs right in your browser. No app store, n
 - **Never miss a bill** — rent, subscriptions, and paydays as recurring reminders, with one-tap marking done.
 - **Undo anything** — every action can be undone, even after a reload.
 - **Stay private** — the app opens locked (default PIN `100901`); on your phone you can unlock with fingerprint or Face ID instead.
-- **Tesco Pay tab** — log your shifts (or photograph the roster and let it read them), and the app works out paid hours, Sunday pay, weekly gross, an Irish PAYE/USC/PRSI/pension estimate, and tracks the tax on each payslip. The home screen shows this month's hours, anticipated pay and received pay at a glance. **Export CSV** writes the whole table out in the workbook's own columns — the shifts, then the tax table below them — and **Import CSV** reads one back (dates, times, the special flag, notes, payslip tax and week numbers; hours, pay and the estimate are recalculated). Each week's number is the sheet's own count and can be edited on the week card.
+- **Tesco Pay tab** — log your shifts, or point the camera at the roster and let it read them (**Scan from camera** on the Add-shift card, or **Use camera** beside *Choose roster photo*: one shot, or a **live read** that keeps taking frames until your shifts are found). The photo is decoded to a canvas, read and dropped — nothing is written to storage, cache or state — and the app works out paid hours, Sunday pay, weekly gross, an Irish PAYE/USC/PRSI/pension estimate, and tracks the tax on each payslip. The home screen shows this month's hours, anticipated pay and received pay at a glance. **Export CSV** writes the whole table out in the workbook's own columns — the shifts, then the tax table below them — and **Import CSV** reads one back (dates, times, the special flag, notes, payslip tax and week numbers; hours, pay and the estimate are recalculated). Each week's number is the sheet's own count and can be edited on the week card.
 - **Daily reminder** — a nudge to upload your transactions at a time you choose (default 20:00). While the app is open it's a notification; on **mobile** (installed PWA or phone browser) with **Cloud sync on** you can also enable **push**, which reaches you even when cents. is fully closed.
 
 ## Getting started
@@ -29,7 +29,7 @@ A calm, private expense tracker that runs right in your browser. No app store, n
 ## Privacy & optional sync
 
 - **By default, everything stays on your device.** Your data lives in your browser's local storage; nothing is sent anywhere.
-- **Optional cloud sync** — want the same data on your phone and laptop? Sync keeps a copy in a **private GitHub repo that only you control**. Your login token never touches the browser. Set it up in **☰ → Cloud sync**.
+- **Optional cloud sync** — want the same data on your phone and laptop? Sync holds the account's document in **Netlify Blobs** and mirrors it into a **private GitHub repo that only you control** — a readable backup, and the way back if the site's stored data is ever lost. Your login token never touches the browser. Set it up in **☰ → Cloud sync**.
 
 ### Profiles — sharing cents. with friends
 
@@ -39,7 +39,7 @@ cents. is built to be shared: you keep one deployed site, and everyone who uses 
 
 Every profile also gets a **picture**: pick one from **☰ → Profile picture** (or **Change picture** on the “Who's tracking?” screen) — eighteen icons, or keep the initial. It is drawn as an inline icon on a colour derived from the profile, so there are no image files to download and the colour stays put when the picture changes. Like the name, the picture lives on the device and does not sync — the admin can set it for anyone from the Admin panel.
 
-Each account writes its own `data-<name>.json` in the cloud and needs **its own Netlify variable** (`Sam` → `APP_PASSWORD_SAM`); an account with no variable still works, but locally only — it is never handed the default password, which is what keeps accounts from reading each other. The Admin panel names the exact variable to create.
+Each account keeps its own document in the cloud — private, in Netlify Blobs, mirrored to `data-<name>.json` — and needs **its own Netlify variable** (`Sam` → `APP_PASSWORD_SAM`); an account with no variable still works, but locally only — it is never handed the default password, which is what keeps accounts from reading each other. The Admin panel names the exact variable to create.
 
 A **setup link** (**☰ → Cloud sync → Create link**) carries the account with it: send it to your friend and, opened on their phone, it offers to add that account with the same name and password instead of asking them to retype either. That is how someone gets their own copy on their own device.
 
@@ -72,16 +72,16 @@ The optional sync and push features need a few environment variables in Netlify 
 | `APP_PASSWORD_<NAME>` | Optional — one per person you share with (**☰ → Admin → Add profile**). `Sam` becomes `APP_PASSWORD_SAM`; the app names the exact variable in the Admin panel. An account with no variable stays local: it is never granted the default password, so the accounts stay isolated from each other. |
 | `GITHUB_TOKEN` | Fine-grained GitHub token with **contents: read and write**, for the data repo only. It never leaves the function. |
 | `REPO_OWNER` | Owner of the data repo — your GitHub username or org. |
-| `REPO_NAME` | The **private** repo the synced copy lives in. |
+| `REPO_NAME` | The **private** repo each account's copy is mirrored into. |
 | `REPO_BRANCH` | Optional — branch the data file lives on. Default `main`. |
-| `REPO_FILE` | Optional — path of the data file in that repo. Default `data.json`. |
+| `REPO_FILE` | Optional — path of the mirrored data file in that repo. Default `data.json`. |
 | `VAPID_PUBLIC_KEY` | Web Push keys for the closed-app daily reminder. Both are required before the app will offer push — generate them once with `node scripts/generate-vapid-keys.mjs`. |
 | `VAPID_PRIVATE_KEY` | Keep it secret; it never ships in the page. |
 | `VAPID_SUBJECT` | Optional — contact string for the push service, e.g. `mailto:you@example.com`. |
 
 The build also pins `NODE_VERSION = "22"` in `netlify.toml` — the guard scripts import the app's browser modules as ES modules, and Node 18 would parse them as CommonJS and fail the deploy.
 
-Push subscriptions live in Netlify Blobs; the scheduled function that dispatches reminders runs every 15 minutes and fires each device at its chosen local time.
+Each account's synced document lives in Netlify Blobs, with the GitHub file written alongside it as a mirror on every save. The first read of an account that is not there yet is served *from* the mirror and then seeds Blobs, so an existing site upgrades without losing anything; after that the mirror is only ever written. Push subscriptions live in Blobs too.
 
 ## Run it locally
 
@@ -95,19 +95,21 @@ or any simple static server, e.g. `python -m http.server 8080` — then open the
 
 ## Checks
 
-Nine pure-Node guardrails run in the Netlify build command and **block the deploy when one fails**. `run-guards.mjs` runs all nine in build order — that single command is also what CI calls:
+Twelve pure-Node guardrails run in the Netlify build command and **block the deploy when one fails**. `run-guards.mjs` runs all twelve in build order — that single command is also what CI calls:
 
 ```
-node scripts/run-guards.mjs            # all ten, in build order
+node scripts/run-guards.mjs            # all twelve, in build order
 node scripts/check-netlify-config.mjs  # netlify.toml's shape, its scheduled functions, the CI wiring, the env-var docs below
 node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
 node scripts/check-image-hygiene.mjs   # the roster photo can never be persisted
 node scripts/check-csp-hashes.mjs      # every inline boot script is hashed in the CSP
 node scripts/check-freshness.mjs       # every app asset revalidates; no 404 rule can hit an app file
+node scripts/check-icon-refs.mjs       # every icon lookup resolves (a miss renders an empty element, silently)
 node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or resurrect data
 node scripts/test-profiles.mjs         # profiles stay isolated, and their cloud credentials never fall back
 node scripts/test-tesco.mjs            # the pay/tax engine still matches the workbook's figures
 node scripts/test-sync.mjs             # the sync contract still round-trips all state
+node scripts/test-cloud.mjs            # Blobs is the primary, GitHub the mirror, and the version token decides conflicts
 node scripts/test-reminder-push.mjs    # the push payload still matches the RFC 8291 vector
 ```
 

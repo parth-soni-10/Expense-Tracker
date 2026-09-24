@@ -1166,6 +1166,22 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   }
 }
 
+@media (min-width: 1000px) and (max-width: 1249px) {
+  /* The one-line header needs ~1238px: brand, six nav links and the action
+     cluster (which is `flex-shrink: 0`). The nav is `flex: 1`, and a flex
+     item's default `min-width: auto` refuses to compress past its own content,
+     so between the desktop layout starting at 1000px and the width the links
+     actually need, nothing could give and the whole page scrolled sideways.
+     Below it the nav takes its own scrollable line, the same shape the phone
+     layout already uses. */
+  .app-header { flex-wrap: wrap; }
+  .app-header .nav {
+    order: 3; flex-basis: 100%; justify-content: flex-start;
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .app-header .nav::-webkit-scrollbar { display: none; }
+}
+
 @media (max-width: 999px) {
   .app-header { flex-wrap: wrap; gap: 12px; padding-bottom: 18px; margin-bottom: 28px; }
   .app-header .nav {
@@ -1840,7 +1856,7 @@ body::before, body::after { display: none; }
 /* Headings never leave one word stranded on its own line, and body copy keeps
    its last line from a single orphan. Both are hints — a browser that does not
    support them lays the text out exactly as before. */
-h1, h2, h3, h4, .pulse-status, .empty-state-title { text-wrap: balance; }
+h1, h2, h3, h4, .pulse-status { text-wrap: balance; }
 p, li, .muted { text-wrap: pretty; }
 body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 .serif {

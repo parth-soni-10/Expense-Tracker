@@ -34,9 +34,10 @@
    ============================================================ */
 
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
-import { isProfileId, passwordEnvName, DEFAULT_PROFILE, profileAuthMessage, cloudFileFor } from './lib/profiles.mjs';
+import { isProfileId, passwordEnvName, DEFAULT_PROFILE, profileAuthMessage } from './lib/profiles.mjs';
 import { issueSetupToken, SETUP_TOKEN_TTL_MS, cleanTabs } from './lib/tokens.mjs';
-import { ghFetch, ghConfig, decodeBase64, encodeBase64, contentsPath } from './lib/gh.mjs';
+import { ghConfig } from './lib/gh.mjs';
+import { readCloudDoc, writeCloudDoc, CloudError } from './lib/cloud.mjs';
 
 const failureThrottle = createFailureThrottle({ windowMs: 5 * 60 * 1000, max: 15 });
 
@@ -120,62 +121,48 @@ export default async (request, _context) => {
 
     return err('Body.action must be "invite" or "policy"', 400, cors);
   } catch (e) {
-    // Never echo internals to the caller; log so it stays diagnosable.
+    // An unreachable store is a real, reportable failure with its own status;
+    // anything else is an internal fault we log rather than describe.
+    if (e instanceof CloudError) return err(e.message, e.status || 502, cors);
     console.error('cents profiles-admin: unexpected error', e?.message || e);
     return err('Unexpected error', 500, cors);
   }
 };
 
-/** Merge a tab policy into an account's cloud file, preserving everything else.
- *  Retries once on a sha conflict, since a conflict here just means the account
- *  pushed in between. */
+/** Merge a tab policy into an account's cloud document, preserving everything
+ *  else. Retries once on a version conflict, since a conflict here just means
+ *  the account pushed in between. */
 async function applyPolicy({ target, tabs, cors }) {
   const config = ghConfig();
   if (!config.owner || !config.repo) return err('REPO_OWNER / REPO_NAME env vars not set on the function', 500, cors);
-  const file = cloudFileFor(target, config.file);
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const read = await ghFetch(contentsPath({ ...config, file }));
-    if (read.status === 404) {
+    const doc = await readCloudDoc(target, config);
+    if (!doc.exists) {
       // Nothing synced yet: there is no document to carry a policy. The owner's
       // next invite carries it instead, which is why this is not an error.
       return ok({ ok: true, profile: target, pending: true }, 200, cors);
     }
-    if (!read.ok) {
-      console.error('cents profiles-admin: read failed', read.status, (await read.text()).slice(0, 200));
-      return err('Reading that account\'s cloud copy failed', read.status, cors);
+    if (!doc.content || typeof doc.content !== 'object' || Array.isArray(doc.content)) {
+      return err('That account\'s cloud copy is not readable JSON', 409, cors);
     }
-    const j = await read.json();
-    let doc;
-    try { doc = JSON.parse(decodeBase64(j.content || '')); }
-    catch { return err('That account\'s cloud copy is not readable JSON', 409, cors); }
-    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return err('That account\'s cloud copy is not an object', 409, cors);
 
+    const settings = doc.content.settings;
     const next = {
-      ...doc,
-      settings: { ...(doc.settings && typeof doc.settings === 'object' && !Array.isArray(doc.settings) ? doc.settings : {}), enabledTabs: tabs },
+      ...doc.content,
+      settings: { ...(settings && typeof settings === 'object' && !Array.isArray(settings) ? settings : {}), enabledTabs: tabs },
       // Stamped like a local edit, so the receiving device keeps this policy
       // rather than treating its own older copy as the newer side.
       lastLocalChangeAt: new Date().toISOString(),
     };
 
-    const write = await ghFetch(
-      `/repos/${config.owner}/${config.repo}/contents/${encodeURIComponent(file)}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({
-          message: `cents: tab policy for ${target}`,
-          content: encodeBase64(JSON.stringify(next, null, 2)),
-          branch: config.branch,
-          sha: j.sha,
-        }),
-      },
-    );
-    if (write.status === 409) continue; // someone pushed in between - re-read and retry
-    if (!write.ok) {
-      console.error('cents profiles-admin: write failed', write.status, (await write.text()).slice(0, 200));
-      return err('Saving that account\'s tab policy failed', write.status, cors);
-    }
+    const write = await writeCloudDoc(target, config, {
+      content: next,
+      expectedVersion: doc.version,
+      message: `cents: tab policy for ${target}`,
+    });
+    if (write.conflict) continue; // the account pushed in between - re-read and retry
+    if (write.error) return err(write.error, 502, cors);
     return ok({ ok: true, profile: target, applied: true, tabs }, 200, cors);
   }
   return err('That account synced while the policy was being written - try again', 409, cors);

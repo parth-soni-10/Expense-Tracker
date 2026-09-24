@@ -51,6 +51,21 @@ const WEEK_START_DOW = 0;
 // and the 50% overlap means no line is ever cut in half.
 const OCR_STRIP_H = 0.5;    // each strip covers half the photo's height
 const OCR_STRIP_COUNT = 3;  // starts at 0 / 25% / 50%, so the strips overlap by half
+// The camera path feeds the same reader as a chosen file, so a captured frame
+// is held to the same working budget and backed by the same promise.
+const CAMERA_MAX_EDGE = 2000;     // longest side of a captured frame, as a file
+const CAMERA_LIVE_ATTEMPTS = 12;  // frames a live read takes before it gives up
+
+// Why the camera path cannot run, or null when it can. Checked before the
+// stream is opened so the modal can explain the absence instead of failing
+// silently: getUserMedia is missing outside a secure context (a plain-HTTP
+// LAN address) and on older browsers.
+function cameraSupport() {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices
+    || typeof navigator.mediaDevices.getUserMedia !== 'function') return 'unsupported';
+  if (globalThis.isSecureContext === false) return 'insecure';
+  return null;
+}
 
 // ---------- small helpers ----------
 // Currency rounding, half away from zero — matches Excel's ROUND(). The
@@ -101,14 +116,34 @@ export function isOvernight(startMin, endMin) { return endMin <= startMin; }
 // ---------- engine: pay & tax ----------
 export function isSunday(dateStr) { return isoToUtcMidnight(dateStr).getUTCDay() === 0; }
 
+/** Is this a number a row could state as its own hours? Empty, a non-number,
+ *  a negative or an absurd figure all mean "not stated". */
+export function statedHours(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= 168 ? r2(n) : null;
+}
+
 export function shiftPay(shift, rates) {
   const R = { ...TESCO_RATE_DEFAULTS, ...rates };
   const start = parseHM(shift.start), end = parseHM(shift.end);
-  if (start == null || end == null) return null;
-  const hours = paidHours(start, end);
+  // A row's own hours win over its clock times. The sheet states them, and its
+  // ladder is not the only rule in play: two rows book a full week off with no
+  // times at all (20 h), and its older blocks break a shift differently. So an
+  // imported row keeps the hours it was paid for; only a shift typed in the app
+  // has none stated and derives them.
+  const own = statedHours(shift.hours);
+  const hours = own != null ? own : (start == null || end == null ? null : paidHours(start, end));
+  if (hours == null) return null;
   const special = !!shift.special || isSunday(shift.date);
-  const rate = r2(special ? R.normal * R.specialMultiplier : R.normal);
-  return { hours, special, rate, gross: r2(hours * rate) };
+  // Likewise a row's own pay, where the file states one: the sheet's older rows
+  // were worked at rates that have since changed (€14.02/€21.03 against today's
+  // €14.44/€21.66), and one bank holiday is a straight 2×. Recomputing those at
+  // today's rate would silently rewrite what was actually paid.
+  const card = r2(special ? R.normal * R.specialMultiplier : R.normal);
+  const paid = shift.gross == null || !Number.isFinite(Number(shift.gross)) ? null : r2(shift.gross);
+  const gross = paid == null ? r2(hours * card) : paid;
+  return { hours, special, rate: hours > 0 ? r2(gross / hours) : card, gross };
 }
 
 // The spreadsheet's Potential Tax formula, ported 1:1 (all €/week figures).
@@ -214,11 +249,15 @@ export function buildPayWeeks(shifts, payslips, rates) {
     // importer has always summed them.
     w.payslip = w.payslips[w.payslips.length - 1] || null;
     w.paid = r2(w.payslips.reduce((sum, p) => sum + payslipTotal(p), 0));
-    const banked = w.payslips.filter(p => p.bankPay != null && Number.isFinite(Number(p.bankPay)));
     // The sheet's Final Bank Pay, typed from a bank statement: the net that
     // actually landed, which no formula here can derive (holiday pay, a refund
-    // or a correction are all reasons it differs from gross − tax).
-    w.bankPaid = banked.length ? r2(banked.reduce((sum, p) => sum + Number(p.bankPay), 0)) : null;
+    // or a correction are all reasons it differs from gross − tax). The sheet
+    // keeps it on the week's shift row; the tab edits it on the payslip, which
+    // therefore wins where one records a net — otherwise a week carrying the net
+    // on its shift row alone (no payslip of its own) would drop the figure.
+    const finite = list => list.filter(x => x.bankPay != null && Number.isFinite(Number(x.bankPay)));
+    const netted = finite(w.payslips).length ? finite(w.payslips) : finite(w.shifts);
+    w.bankPaid = netted.length ? r2(netted.reduce((sum, p) => sum + Number(p.bankPay), 0)) : null;
     // One pass at the user's rates, so a week's totals always agree with the
     // per-shift rows the tab prints under them and with monthSummary above.
     const pays = w.shifts.map(s => shiftPay(s, rates)).filter(Boolean);
@@ -278,7 +317,12 @@ const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frid
 // The sheet keeps its actual tax figures in a second table (the Summary's
 // "Total tax paid" block), so the file carries one too: the shift table above,
 // the tax table below it.
-export const TESCO_CSV_PAYSLIP_HEADER = Object.freeze(['Week Start Date', 'Pay Date', 'PAYE', 'USC', 'PRSI', 'Future Fund', 'Final Bank Pay']);
+// These are the sheet's own columns for that table — the pay week's number and
+// the row's total included, so every cell of the sheet's table is in the file.
+// Final Bank Pay is not one of them: the sheet carries the week's net on that
+// week's own shift row (column 15 above). A file that keeps a bank column here
+// anyway (this app exported one for a while) still imports: read by name.
+export const TESCO_CSV_PAYSLIP_HEADER = Object.freeze(['Week Start Date', 'Pay Date', 'Week', 'PAYE', 'USC', 'PRSI', 'Future Fund', 'Total']);
 
 // A field is quoted only when it has to be, so the file stays readable — and a
 // note containing a comma survives the round trip.
@@ -292,9 +336,13 @@ export const TESCO_CSV_PAYSLIP_HEADER = Object.freeze(['Week Start Date', 'Pay D
 // for one. csvUnquote() strips the apostrophe back off on import, so the round
 // trip through this app is lossless.
 const CSV_FORMULA_PREFIX = /^\s*[+\-=@]/;
+// A plain number, negative included. Guarded separately from formula text: the
+// apostrophe that defuses "=SUM(A1)" would turn a -56.08 tax refund into text,
+// which Excel and any database load then read as a string instead of a value.
+const CSV_PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
 function csvCell(v) {
   let s = v == null ? '' : String(v);
-  if (CSV_FORMULA_PREFIX.test(s)) s = `'${s}`;
+  if (!CSV_PLAIN_NUMBER.test(s) && CSV_FORMULA_PREFIX.test(s)) s = `'${s}`;
   return /[",\n\r]|^\s|\s$/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 /** Reverse of csvCell's apostrophe guard — the one field it can land on.
@@ -334,11 +382,11 @@ export function tescoCsv(shifts, payslips, rates, weekNos) {
     if (w && carrier.get(ws) === s.date) {
       const sim = simulateTax(w.gross, rates);
       row.push(csvNum(w.gross), csvNum(sim.tax), csvNum(sim.pension), csvNum(sim.net),
-        // The sheet's Final Bank Pay is typed from a bank statement. Where the
-        // week's payslip recorded its net, that is what landed; otherwise the
-        // app exports what should have (gross minus the tax it recorded) rather
-        // than inventing a number.
-        w.payslip ? csvNum(w.bankPaid != null ? w.bankPaid : w.gross - w.paid) : '');
+        // The sheet's Final Bank Pay is typed from a bank statement, so only a
+        // figure that was actually recorded is written. Exporting a derived
+        // gross − tax there would come back on the next import looking like a
+        // figure the bank confirmed.
+        w.bankPaid != null ? csvNum(w.bankPaid) : '');
     } else {
       row.push('', '', '', '', '');
     }
@@ -349,11 +397,13 @@ export function tescoCsv(shifts, payslips, rates, weekNos) {
   if (slips.length) {
     lines.push('', TESCO_CSV_PAYSLIP_HEADER.join(','));
     for (const p of slips) {
-      // The stored week start, not the snapped one: a second pay run inside the
-      // same Sun → Sat week keeps its own date, the way the sheet's tax table
-      // holds two rows for it. The import snaps both back onto the week.
+      // The date the sheet typed for this row, not the snapped Sunday: a second
+      // pay run inside the same Sun → Sat week keeps its own date, the way the
+      // sheet's tax table holds two rows for it. The engine still groups (and
+      // derives the pay date) by the week's Sunday.
       const ws = weekStartOf(p.weekStart);
-      lines.push([p.weekStart, payDateOf(ws), csvNum(p.paye), csvNum(p.usc), csvNum(p.prsi), csvNum(p.futureFund), csvNum(p.bankPay)].map(csvCell).join(','));
+      const rowWeek = p.weekNo != null ? p.weekNo : weekNumberOf(ws, weekNos);
+      lines.push([p.weekStart, payDateOf(ws), rowWeek, csvNum(p.paye), csvNum(p.usc), csvNum(p.prsi), csvNum(p.futureFund), csvNum(payslipTotal(p))].map(csvCell).join(','));
     }
   }
   return `${lines.join('\r\n')}\r\n`;
@@ -394,6 +444,13 @@ function csvDate(raw) {
   if (!m) return null;
   return `${m[3].length === 2 ? 2000 + +m[3] : +m[3]}-${pad2(+m[2])}-${pad2(+m[1])}`;
 }
+/** A numeric cell, or null when it holds no number at all (0 stays 0). */
+function csvNumber(raw) {
+  const s = String(raw == null ? '' : raw).replace(/[^\d.-]/g, '');
+  if (s === '' || !Number.isFinite(Number(s))) return null;
+  return Number(s);
+}
+
 function csvTime(raw) {
   const s = String(raw == null ? '' : raw).trim();
   const m = /^(\d{1,2}):(\d{2})/.exec(s);
@@ -407,9 +464,11 @@ function csvTime(raw) {
 
 // Reads back anything this engine exports plus a plain Excel "Save as CSV" of
 // the sheet. Columns are matched by header name, so reordering, extra columns
-// and the sheet's empty leading column all work. Only the inputs are imported —
-// the computed columns (hours, gross, tax, pension, net, bank pay) are derived
-// from the times and the rate card, never trusted from the file.
+// and the sheet's empty leading column all work. Hours, gross, tax and pension
+// are derived from the times and the rate card, never trusted from the file —
+// but Final Bank Pay is: the sheet types it off a bank statement, and holiday
+// pay, a refund or a correction are all reasons it disagrees with gross − tax,
+// so it is carried through rather than recomputed away.
 export function parseTescoCsv(text) {
   const rows = csvRows(String(text || ''));
   const norm = r => r.map(h => String(h).trim().toLowerCase());
@@ -426,11 +485,22 @@ export function parseTescoCsv(text) {
 
   const shifts = [];
   const weekNos = {};
+  // A week's net from the shift table's Final Bank Pay column, by week start.
+  const weekBank = new Map();
   let skipped = 0;
   if (shiftHead >= 0) {
     const head = norm(rows[shiftHead]);
     const iDate = at(head, 'date', 'effective date'), iStart = at(head, 'start time'), iEnd = at(head, 'end time');
     const iSpecial = at(head, 'normal or special', 'type'), iNote = at(head, 'description', 'note');
+    // The row's own hours and pay, kept on the row (see shiftPay): the sheet's
+    // older rows were worked at rates that have since changed, and two rows book
+    // a full week off with hours and no clock times.
+    const iHours = at(head, 'hours');
+    const iTotal = at(head, 'total');
+    // The sheet's Final Bank Pay, read here and put on the week's payslip below
+    // — the sheet keeps a week's net on that week's own shift row, and the tax
+    // table has no column for it.
+    const iBank = at(head, 'final bank pay', 'net paid');
     // The file's own week number, so a sheet's hand-typed count comes across
     // with the shifts instead of being replaced by the ISO number.
     const iWeekNo = at(head, 'week');
@@ -438,14 +508,30 @@ export function parseTescoCsv(text) {
     const end = slipHead > shiftHead ? slipHead : rows.length;
     for (const r of rows.slice(shiftHead + 1, end)) {
       const date = csvDate(r[iDate]), start = csvTime(r[iStart]), end = csvTime(r[iEnd]);
-      if (!date || !dateOk(date) || start == null || end == null) { skipped++; continue; }
+      const stated = iHours < 0 ? null : csvNumber(r[iHours]);
+      const paid = iTotal < 0 ? null : csvNumber(r[iTotal]);
+      const banked = iBank < 0 ? null : csvNumber(r[iBank]);
+      if (!date || !dateOk(date)) { skipped++; continue; }
+      // No times at all is only unusable when the row states no hours either —
+      // a "full week off" row has no times but does have its hours, and dropping
+      // it silently lost the row and the week's bank pay with it.
+      if ((start == null || end == null) && stated == null) { skipped++; continue; }
       shifts.push({
         date, start, end,
-        special: /^s/i.test(String(r[iSpecial] == null ? '' : r[iSpecial]).trim()),
+        ...(stated == null ? {} : { hours: stated }),
+        ...(paid == null ? {} : { gross: paid }),
+        // The row's own net, which the week's figure is read off below. Kept on
+        // the row as well: the sheet types it there, and a week whose figures sit
+        // on a row with no payslip of its own would otherwise lose the figure.
+        ...(banked == null ? {} : { bankPay: banked }),
+        // "Special" and the sheet's "BH" for a bank holiday both mean the
+        // premium rate; anything else (blank included) is a normal shift.
+        special: /^(s|bh)/i.test(String(r[iSpecial] == null ? '' : r[iSpecial]).trim()),
         note: iNote < 0 ? '' : csvUnquote(String(r[iNote] == null ? '' : r[iNote]).trim()).slice(0, 120),
       });
       const no = iWeekNo < 0 ? 0 : Math.trunc(Number(String(r[iWeekNo] == null ? '' : r[iWeekNo]).trim()));
       if (Number.isFinite(no) && no >= 1 && no <= 53) weekNos[weekStartOf(date)] = no;
+      if (banked != null) weekBank.set(weekStartOf(date), banked);
     }
   }
 
@@ -453,35 +539,97 @@ export function parseTescoCsv(text) {
   if (slipHead >= 0) {
     const head = norm(rows[slipHead]);
     const iWeek = at(head, 'week start date', 'week start', 'date');
-    // One payslip per pay week: the sheet can hold two pay runs inside one week
-    // (a correction, say), and those are the same week's tax, so they add up
-    // rather than one silently replacing the other.
-    const fields = [['paye', 'paye'], ['usc', 'usc'], ['prsi', 'prsi'], ['futureFund', 'future fund']];
+    const iPaye = at(head, 'paye'), iUsc = at(head, 'usc'), iPrsi = at(head, 'prsi'), iFund = at(head, 'future fund');
     const iBank = at(head, 'final bank pay', 'net paid');
-    const byWeek = new Map();
+    // The sheet's own Week count, kept per row. Deriving it from the date put a
+    // different number on a couple of rows than the sheet shows, which is
+    // exactly the kind of missing value this file is checked for.
+    const iWeekNo = at(head, 'week');
+    // One payslip per row, not per week: the sheet's tax table holds two rows
+    // when a week had two pay runs (a correction, say), and folding them into
+    // one lost a row from the file's own round trip. The engine still adds
+    // them up for a week's total (buildPayWeeks).
+    const seen = new Set();
     for (const r of rows.slice(slipHead + 1)) {
       const ws = csvDate(r[iWeek]);
       if (!ws || !dateOk(ws)) { skipped++; continue; }
       const cell = i => i < 0 ? 0 : (Number(String(r[i] == null ? '' : r[i]).replace(/[^\d.-]/g, '')) || 0);
-      const week = weekStartOf(ws);
-      let draft = byWeek.get(week);
-      if (!draft) {
-        draft = { weekStart: week, paye: 0, usc: 0, prsi: 0, futureFund: 0 };
-        byWeek.set(week, draft);
+      // The row's own date, not the week's Sunday: the sheet's tax table holds
+      // two rows for one week when it had two pay runs (a correction, say), and
+      // snapping both to the Sunday merged them, losing a row's figures.
+      // buildPayWeeks snaps it for grouping, so the week still adds up.
+      const draft = { weekStart: ws, paye: cell(iPaye), usc: cell(iUsc), prsi: cell(iPrsi), futureFund: cell(iFund) };
+      if (iWeekNo >= 0) {
+        const no = csvNumber(r[iWeekNo]);
+        if (no != null && no >= 1 && no <= 53) draft.weekNo = no;
       }
-      for (const [key, col] of fields) draft[key] += cell(head.indexOf(col));
-      // The net that reached the bank. A blank cell must stay "not known" so
-      // the week keeps falling back to gross − tax, and two runs in one week
-      // add up the way their tax figures do.
+      // The net that reached the bank. A blank cell stays "not known" so the
+      // week keeps falling back to gross − tax.
       if (iBank >= 0) {
         const raw = String(r[iBank] == null ? '' : r[iBank]).replace(/[^\d.-]/g, '');
         const n = Number(raw);
-        if (raw !== '' && Number.isFinite(n)) draft.bankPay = (draft.bankPay || 0) + n;
+        if (raw !== '' && Number.isFinite(n)) draft.bankPay = n;
       }
+      // Re-importing the same file must not double a run, so an identical row
+      // is skipped rather than appended.
+      const key = JSON.stringify(draft);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      payslips.push(draft);
     }
-    payslips.push(...byWeek.values());
+    // A week's net lands on one of its payslips — the week's figure is the
+    // week's, and buildPayWeeks adds a week's payslips up, so carrying it once
+    // keeps that total right. A run that recorded its own net keeps its own.
+    const carried = new Set();
+    for (const p of payslips) {
+      const ws = weekStartOf(p.weekStart);
+      if (p.bankPay != null || carried.has(ws) || !weekBank.has(ws)) continue;
+      p.bankPay = weekBank.get(ws);
+      carried.add(ws);
+    }
   }
   return { shifts, payslips, weekNos, skipped, error: null };
+}
+
+// ---------- import: what a parsed row becomes once it is stored ----------
+// Shared by the CSV import and the tab's own add path, so the two can never
+// drift and the rules are testable. Both keep a row's own hours and pay (see
+// shiftPay), and neither drops a row that has no clock times — the sheet books
+// a week off that way, and dropping it also lost the week's bank pay.
+export function storedShift(s, id, at) {
+  if (!dateOk(s.date)) return null;
+  const start = parseHM(s.start), end = parseHM(s.end);
+  const hours = statedHours(s.hours);
+  if ((start == null || end == null) && hours == null) return null;
+  const money = v => (v == null || !Number.isFinite(Number(v)) ? null : r2(v));
+  const gross = money(s.gross), bankPay = money(s.bankPay);
+  return {
+    id, date: s.date,
+    start: start == null ? '' : fmtHM(start),
+    end: end == null ? '' : fmtHM(end),
+    ...(hours == null ? {} : { hours }),
+    ...(gross == null ? {} : { gross }),
+    ...(bankPay == null ? {} : { bankPay }),
+    note: String(s.note || '').slice(0, 120),
+    special: !!s.special,
+    createdAt: at,
+  };
+}
+
+// The row's own date and week number, not the snapped Sunday: the sheet's tax
+// table holds two rows for a week that had two pay runs, and keying by the week
+// merged them. buildPayWeeks snaps the date for grouping, so the week still adds
+// up — while the export writes back the date the sheet actually holds.
+export function storedPayslip(p, id, at) {
+  const no = Math.trunc(Number(p.weekNo));
+  const bank = p.bankPay == null || !Number.isFinite(Number(p.bankPay)) ? null : r2(p.bankPay);
+  return {
+    id, weekStart: p.weekStart,
+    paye: +p.paye || 0, usc: +p.usc || 0, prsi: +p.prsi || 0, futureFund: +p.futureFund || 0,
+    ...(no >= 1 && no <= 53 ? { weekNo: no } : {}),
+    ...(bank == null ? {} : { bankPay: bank }),
+    createdAt: at,
+  };
 }
 
 // ---------- OCR: text parsing (pure, Node-testable) ----------
@@ -1406,7 +1554,7 @@ let showAllWeeks = false;
 let showAllSlips = false;
 
 export function screenTesco(ctx) {
-  const { $, iconSpan, toast, persist, render, trackAction, swalConfirm, fmt } = ctx;
+  const { $, iconSpan, toast, persist, render, trackAction, swalConfirm, fmt, stackModal, isTopModal } = ctx;
   const state = () => ctx.getState();
   const t = state().tesco || { shifts: [], payslips: [] };
   const rates = { ...TESCO_RATE_DEFAULTS, ...(state().settings.tescoRates || {}) };
@@ -1448,6 +1596,11 @@ export function screenTesco(ctx) {
       $('div', { class: 'tesco-stat-value' }, value),
     );
   }
+
+  // The camera lives in the roster-scan card, which owns the name and the
+  // first-column date a read needs. The Add-shift card only reaches it through
+  // this hook, so there is one implementation and two entry points.
+  let openRosterCamera = null;
 
   // ----- add shift -----
   screen.appendChild(buildAddCard());
@@ -1493,6 +1646,15 @@ export function screenTesco(ctx) {
       $('div', { class: 'tesco-card-title' }, 'Add shift', iconSpan('plus', 'md')),
       $('div', { class: 'tesco-form-row' }, dateIn, startIn, endIn),
       $('div', { class: 'tesco-form-row' }, noteIn, addBtn),
+      // The photo route, from the card you add shifts in: one tap opens the
+      // camera, reads the roster and offers the shifts it found for review.
+      $('div', { class: 'tesco-form-row', style: 'align-items:center;gap:10px;flex-wrap:wrap;' },
+        $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => {
+          if (openRosterCamera) openRosterCamera();
+          else toast('Open the roster scan card to use the camera.');
+        } }, 'Scan from camera'),
+        $('span', { class: 'muted', style: 'font-size:11px;' }, 'Takes a photo of the roster — the image is never saved.'),
+      ),
       preview,
     );
   }
@@ -1502,9 +1664,10 @@ export function screenTesco(ctx) {
   // owns the key set, so one set can span a whole import.
   function freshShifts(list, seen) {
     const out = [];
+    const at = new Date().toISOString();
     for (const s of list) {
-      if (!dateOk(s.date) || parseHM(s.start) == null || parseHM(s.end) == null) continue;
-      const draft = { id: uid(), date: s.date, start: fmtHM(parseHM(s.start)), end: fmtHM(parseHM(s.end)), note: String(s.note || '').slice(0, 120), special: !!s.special, createdAt: new Date().toISOString() };
+      const draft = storedShift(s, uid(), at);
+      if (!draft) continue;
       const key = `${draft.date}|${draft.start}|${draft.end}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -1512,19 +1675,16 @@ export function screenTesco(ctx) {
     }
     return out;
   }
-  // A payslip is keyed by its week, so importing an overlapping file can never
-  // duplicate a week's tax (or overwrite figures you typed by hand).
+  // A payslip is keyed by the row's own date, so importing an overlapping file
+  // can never duplicate a row — and a week that had two pay runs keeps both.
   function freshSlips(list, seen) {
     const out = [];
+    const at = new Date().toISOString();
     for (const p of list) {
-      const ws = weekStartOf(p.weekStart);
-      if (!dateOk(ws) || seen.has(ws)) continue;
-      seen.add(ws);
-      out.push({
-        id: uid(), weekStart: ws, paye: +p.paye || 0, usc: +p.usc || 0, prsi: +p.prsi || 0, futureFund: +p.futureFund || 0,
-        bankPay: Number.isFinite(Number(p.bankPay)) && p.bankPay != null ? +p.bankPay : undefined,
-        createdAt: new Date().toISOString(),
-      });
+      const draft = storedPayslip(p, uid(), at);
+      if (!draft || !dateOk(draft.weekStart) || seen.has(draft.weekStart)) continue;
+      seen.add(draft.weekStart);
+      out.push(draft);
     }
     return out;
   }
@@ -1565,7 +1725,7 @@ export function screenTesco(ctx) {
   function importTesco(list, slips, numbers) {
     const before = snapshot();
     const fresh = freshShifts(list, new Set(before.shifts.map(s => `${s.date}|${s.start}|${s.end}`)));
-    const freshTax = freshSlips(slips, new Set(before.payslips.map(p => weekStartOf(p.weekStart))));
+    const freshTax = freshSlips(slips, new Set(before.payslips.map(p => p.weekStart)));
     // The file's week numbers fill in only what is not already known, so a week
     // you numbered by hand is never overwritten by an older file.
     const weekNosNext = { ...before.weekNos };
@@ -1665,7 +1825,7 @@ export function screenTesco(ctx) {
     });
     const weekIn = $('input', { type: 'date', value: weekStartOf(todayIso()), 'aria-label': 'First column date', class: 'tesco-in' });
     const readBtn = $('button', { type: 'button', class: 'btn btn-primary', style: 'display:none;', onClick: () => run() }, 'Read my shifts');
-    const status = $('div', { class: 'muted', style: 'font-size:12px;' }, 'Photo of the weekly roster — processed in memory, never stored.');
+    const status = $('div', { class: 'muted', style: 'font-size:12px;' }, 'Photo or camera shot of the weekly roster — processed in memory, never stored.');
     const bar = $('div', { class: 'tesco-progress', style: 'display:none;' }, $('div', { class: 'tesco-progress-fill' }));
     const resultBox = $('div', { style: 'margin-top:12px;' });
     const input = $('input', { type: 'file', accept: 'image/*', class: 'tesco-file', 'aria-label': 'Roster photo' });
@@ -1729,6 +1889,179 @@ export function screenTesco(ctx) {
         busy = false;
       }
     }
+
+    // ---------- camera capture ----------
+    // The roster photo can be taken here instead of picked from the gallery.
+    // A frame is drawn to a scratch canvas, encoded to a Blob and handed to the
+    // same reader a chosen file goes to, so the promise holds on this path too:
+    // nothing is written to storage, the canvas is zeroed and the stream's
+    // tracks are stopped the moment the modal closes — including when a render
+    // replaces the screen underneath the open camera. "Live read" keeps taking
+    // frames until the sheet in front of the lens parses into shifts, then stops
+    // itself and hands the read to the reviewer.
+    function openRosterCameraNow() {
+      const video = $('video', {
+        playsinline: true, autoplay: true, muted: true, 'aria-label': 'Camera preview',
+        style: 'width:100%;height:240px;object-fit:cover;background:#000;border-radius:10px;display:block;',
+      });
+      const shot = $('canvas', { 'aria-hidden': 'true' });   // scratch only: never mounted
+      const status = $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;min-height:36px;margin-top:10px;' },
+        'Fill the frame with the sheet, then Capture — or start a live read and let it find your shifts.');
+      const liveBtn = $('button', { type: 'button', class: 'btn btn-ghost', 'aria-pressed': 'false' }, 'Live read');
+      const captureBtn = $('button', { type: 'button', class: 'btn btn-primary' }, 'Capture');
+      const cancelBtn = $('button', { type: 'button', class: 'btn btn-ghost' }, 'Cancel');
+      const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) finish(); } });
+      bg.appendChild($('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Scan roster with the camera', style: 'max-width:520px;' },
+        $('div', { class: 'tesco-card-title' }, 'Scan the roster'),
+        video,
+        status,
+        $('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;' }, captureBtn, liveBtn, cancelBtn),
+      ));
+      stackModal(bg);
+
+      let stream = null;
+      let live = false;
+      let busy = false;
+      let closed = false;
+      const stopStream = () => {
+        if (stream) { for (const track of stream.getTracks()) track.stop(); stream = null; }
+        video.srcObject = null;
+        shot.width = 0; shot.height = 0;
+      };
+      // A render (a sync poll landing, a toast repaint) rebuilds the screen and
+      // drops this modal with it. Without this the camera light would stay on.
+      const watcher = new MutationObserver(() => { if (!bg.isConnected) stopStream(); });
+      watcher.observe(document.body, { childList: true });
+      function finish() {
+        if (closed) return;
+        closed = true;
+        live = false;
+        stopStream();
+        watcher.disconnect();
+        document.removeEventListener('keydown', onKey, true);
+        bg.remove();
+      }
+      function onKey(ev) { if (ev.key === 'Escape' && isTopModal(bg)) { ev.preventDefault(); finish(); } }
+      document.addEventListener('keydown', onKey, true);
+
+      // One frame as a File that lives only as long as the read it feeds.
+      async function grabFrame() {
+        const w = video.videoWidth, h = video.videoHeight;
+        if (!w || !h) return null;   // the stream has not produced a picture yet
+        const scale = Math.min(1, CAMERA_MAX_EDGE / Math.max(w, h));
+        shot.width = Math.max(1, Math.round(w * scale));
+        shot.height = Math.max(1, Math.round(h * scale));
+        shot.getContext('2d').drawImage(video, 0, 0, shot.width, shot.height);
+        const blob = await new Promise(res => shot.toBlob(res, 'image/jpeg', 0.92));
+        shot.width = 0;
+        shot.height = 0;
+        return blob ? new File([blob], 'roster-camera.jpg', { type: 'image/jpeg' }) : null;
+      }
+      // True once a read has produced cells the user can review.
+      const readSomething = () => !!(scanState && scanState.parsed
+        && scanState.parsed.rows.some(r => r.cells && r.cells.length));
+
+      // The frame MUST be taken from a live video: stopping the stream or
+      // detaching the element first leaves nothing to read.
+      async function readLiveFrame() {
+        const frame = await grabFrame();
+        if (!frame) {
+          status.textContent = 'The camera is still warming up — hold still a moment and press Capture again.';
+          return false;
+        }
+        await load(frame);
+        await run();
+        return readSomething();
+      }
+
+      const nameMissing = () => {
+        if (nameIn.value.trim()) return false;
+        toast('Type your name as it appears on the roster first — your row is found by name.');
+        nameIn.focus();
+        return true;
+      };
+
+      captureBtn.addEventListener('click', async () => {
+        if (busy) return;
+        if (nameMissing()) { finish(); return; }
+        busy = true;
+        const frame = await grabFrame();
+        busy = false;
+        if (!frame) { status.textContent = 'The camera is still warming up — hold still a moment and press Capture again.'; return; }
+        finish();                   // camera off before the slow part
+        await load(frame);
+        await run();
+      });
+
+      liveBtn.addEventListener('click', async () => {
+        if (live) { live = false; setLiveUi(); status.textContent = 'Live read stopped — press Capture to take a frame.'; return; }
+        if (nameMissing()) { finish(); return; }
+        live = true;
+        setLiveUi();
+        liveLoop();
+      });
+      function setLiveUi() {
+        liveBtn.setAttribute('aria-pressed', String(live));
+        liveBtn.textContent = live ? 'Stop live read' : 'Live read';
+        liveBtn.classList.toggle('btn-primary', live);
+        liveBtn.classList.toggle('btn-ghost', !live);
+      }
+      async function liveLoop() {
+        for (let attempt = 1; live && attempt <= CAMERA_LIVE_ATTEMPTS; attempt++) {
+          status.textContent = `Live read ${attempt} of ${CAMERA_LIVE_ATTEMPTS} — hold the whole sheet in frame and keep it flat.`;
+          busy = true;
+          const read = await readLiveFrame().catch(() => false);
+          busy = false;
+          if (!live) return;
+          if (read) {
+            finish();
+            toast('Shifts read from the camera — check them before adding.');
+            return;
+          }
+          await new Promise(r => setTimeout(r, 600));
+        }
+        if (!live) return;
+        live = false;
+        setLiveUi();
+        status.textContent = 'No shifts read — keep the whole sheet in the frame with the row of names in view, or press Capture.';
+      }
+
+      // The stream is opened last, so a permission refusal leaves a modal that
+      // says why and points at the gallery path rather than a dead black box.
+      const support = cameraSupport();
+      if (support) {
+        status.textContent = support === 'insecure'
+          ? 'The camera needs a secure (HTTPS) connection — use Choose photo instead.'
+          : 'The camera is not available in this browser — use Choose photo instead.';
+        captureBtn.disabled = true;
+        liveBtn.disabled = true;
+        return;
+      }
+      navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
+        audio: false,
+      }).then(s => {
+        if (closed) { for (const track of s.getTracks()) track.stop(); return; }
+        stream = s;
+        video.srcObject = s;
+        video.muted = true;
+        video.playsInline = true;
+        const played = video.play();
+        if (played && played.catch) played.catch(() => {});
+      }).catch(err => {
+        const reason = err && err.name;
+        status.textContent = reason === 'NotAllowedError' ? 'Camera permission was refused — allow it for this site, or use Choose photo.'
+          : reason === 'NotFoundError' || reason === 'OverconstrainedError' ? 'No camera found on this device — use Choose photo.'
+          : reason === 'NotReadableError' ? 'The camera is busy in another app — close it and try again.'
+          : 'Could not start the camera — use Choose photo instead.';
+        captureBtn.disabled = true;
+        liveBtn.disabled = true;
+      });
+    }
+    openRosterCamera = () => {
+      if (document.querySelector('[role="dialog"][aria-label="Scan roster with the camera"]')) return;
+      openRosterCameraNow();
+    };
 
     // Every scan ends here: the pixels are already zeroed by ocrStripWords, this
     // removes the (now empty) preview chrome and says so plainly, so "the photo
@@ -1826,7 +2159,10 @@ export function screenTesco(ctx) {
         $('label', { class: 'tesco-numfield' }, $('span', null, 'Your name'), nameIn),
       ),
       $('div', { class: 'tesco-form-row tesco-form-row-spread' },
-        $('label', { class: 'btn btn-ghost tesco-filelabel' }, file ? 'Choose another' : 'Choose roster photo', input),
+        $('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;' },
+          $('label', { class: 'btn btn-ghost tesco-filelabel' }, file ? 'Choose another' : 'Choose roster photo', input),
+          $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => openRosterCameraNow() }, 'Use camera'),
+        ),
         status,
       ),
       wrap,
@@ -1919,16 +2255,21 @@ export function screenTesco(ctx) {
 
   function shiftRow(s) {
     const p = shiftPay(s, rates);
+    // A booked week off has hours and no clock times; show that rather than a
+    // mangled "–" range.
+    const times = s.start && s.end
+      ? `${s.start}–${s.end}${isOvernight(parseHM(s.start), parseHM(s.end)) ? '+1' : ''}`
+      : 'week off';
     const row = $('div', { class: 'tesco-shiftrow' },
       $('span', { class: 'tesco-shift-day' }, weekdayShort(s.date)),
-      $('span', { class: 'tesco-shift-time' }, `${s.start}–${s.end}${isOvernight(parseHM(s.start), parseHM(s.end)) ? '+1' : ''}`),
+      $('span', { class: 'tesco-shift-time' }, times),
       // Badge the *computed* rate type: a Sunday shift is special even when the
       // stored flag was never set by hand.
       p && p.special ? $('span', { class: 'tesco-chip' }, 'special') : null,
       $('span', { class: 'muted', style: 'font-size:11px;' }, `${p ? p.hours : '?'}h`),
       $('span', { class: 'tesco-shift-amt' }, p ? fmt(p.gross) : '—'),
       $('button', { type: 'button', class: 'icon-btn tesco-del', title: 'Delete shift', 'aria-label': 'Delete shift', onClick: async () => {
-        if (await swalConfirm({ title: 'Delete shift?', text: `${prettyDate(s.date)} ${s.start}–${s.end}`, danger: true, confirmButtonText: 'Delete' })) deleteShift(s.id);
+        if (await swalConfirm({ title: 'Delete shift?', text: `${prettyDate(s.date)} ${times}`, danger: true, confirmButtonText: 'Delete' })) deleteShift(s.id);
       } }, '×'),
     );
     return row;
@@ -2081,10 +2422,11 @@ export function screenTesco(ctx) {
   }
 
   // ================= import / export =================
-  // The workbook's own table out, and the same table back in. Import reads the
-  // inputs off the file and lets the engine recompute the rest, so a sheet whose
-  // older rows were built with a superseded formula can't smuggle its wrong
-  // hours or tax back into the app.
+  // The workbook's own table out, and the same table back in. A shift row keeps
+  // the hours and pay it was paid for (see shiftPay) — the sheet's older rows
+  // were worked at rates that have since changed — while the week's own totals
+  // stay derived from the rows, so they cannot disagree with the shifts above
+  // them.
   function buildDataCard() {
     // No FileReader: file.text() is the whole read, and the input is cleared the
     // moment it hands over — nothing keeps a reference to the file.
@@ -2103,7 +2445,7 @@ export function screenTesco(ctx) {
         title: 'Import from CSV?',
         text: `${counts.join(' and ')} read from “${file.name}”`
           + (parsed.skipped ? `, ${parsed.skipped} row${parsed.skipped > 1 ? 's' : ''} skipped` : '')
-          + '. Dates, times, the special flag, notes and payslip tax come in; hours, pay and the tax estimate are recalculated.',
+          + '. Each row brings its own hours and pay, the special flag and your notes; a week\u2019s totals and tax estimate are worked out from the rows.',
         confirmButtonText: 'Import',
       });
       if (ok) importTesco(parsed.shifts, parsed.payslips, parsed.weekNos);
