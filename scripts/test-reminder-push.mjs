@@ -3,6 +3,7 @@
  * Local integration harness for the reminder push pipeline.
  *
  *   0. the ciphertext against RFC 8291's own published test vector
+ *   0b. the VAPID seed this repo generates is always signable
  *   1-10. browser subscribe → server store → scheduled dispatch → delivery
  *         to a FAKE local push service → dead-subscription pruning →
  *         unsubscribe
@@ -91,7 +92,7 @@ process.env.VAPID_SUBJECT = 'mailto:test@example.com';
 process.env.APP_PASSWORD = 'test-password-123';
 process.env.APP_PASSWORD_SAM = 'sam-password-123';
 delete process.env.APP_PASSWORD_KATE;
-const { generateVapidKeys, encryptPayload } = await import('../netlify/functions/lib/webpush.mjs');
+const { generateVapidKeys, encryptPayload, pushSend, vapidSeed } = await import('../netlify/functions/lib/webpush.mjs');
 const keys = generateVapidKeys();
 process.env.VAPID_PUBLIC_KEY = keys.publicKey;
 process.env.VAPID_PRIVATE_KEY = keys.privateKey;
@@ -132,6 +133,36 @@ check('rfc8291-test-vector', vectorBody ===
   'DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIg'
   + 'Dll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVB'
   + 'St2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN');
+
+// ---------- 0b. the key material this repo generates ----------
+// Node's ECDH.getPrivateKey() never left-pads: a P-256 key whose leading byte
+// is zero comes back a byte short (84 of 20,000 keys, measured), so
+// generateVapidKeys() used to hand out a 42-character seed that the signing
+// code in the same module refused with "bad VAPID private key length". Nothing
+// in the environment was involved, which is exactly why it looked like a
+// deploy-only failure: the build drew such a key and died inside a scheduled
+// run. Both halves are pinned here — a seed in that short shape still signs,
+// and the generator never emits one.
+const droppedZero = Buffer.alloc(31, 7).toString('base64url'); // 42 chars: the shape a dropped zero byte produces
+const droppedZeroSign = await pushSend(subscription, { title: 'cents. — test reminder', body: 'key padding' }, {
+  subject: 'mailto:test@example.com', publicKey: keys.publicKey, privateKey: droppedZero,
+}).then(
+  r => r.ok === true,
+  e => e.message, // a throw here IS the regression; report it instead of dying
+);
+check('a seed whose leading zero byte was dropped still signs', droppedZeroSign === true, droppedZeroSign);
+check('the short form is left-padded to the curve size',
+  vapidSeed(droppedZero).length === 32 && vapidSeed(droppedZero)[0] === 0,
+  `${vapidSeed(droppedZero).length} bytes`);
+check('a full-length seed passes through unchanged',
+  vapidSeed(keys.privateKey).equals(Buffer.from(keys.privateKey, 'base64url')));
+check('a public key pasted as the private key is still refused',
+  (() => { try { vapidSeed(keys.publicKey); return false; } catch { return true; } })());
+let unpadded = 0;
+for (let i = 0; i < 3000; i += 1) {
+  if (Buffer.from(generateVapidKeys().privateKey, 'base64url').length !== 32) unpadded += 1;
+}
+check('every generated key is already a full-length seed', unpadded === 0, `${unpadded} of 3000 unpadded`);
 
 // ---------- 1. GET returns the VAPID public key ----------
 const keyResp = await call(pushHandler, 'GET');

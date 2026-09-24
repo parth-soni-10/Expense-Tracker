@@ -13,6 +13,10 @@
      pushSend(sub, payload, vapid) -> { ok } | { ok:false, gone }
        gone=true means the subscription is dead (404/410 or
        malformed keys) and the caller should delete it.
+     vapidSeed(privateKey) -> Buffer
+       The one place that decides whether key material is a
+       usable P-256 seed — read the note on it before tightening
+       the length check.
      encryptPayload(sub, payloadUtf8, deterministic)
        Exported for the RFC 8291 test-vector check in
        scripts/test-reminder-push.mjs. Production only ever goes
@@ -23,6 +27,44 @@
 import { createECDH, createCipheriv, createHmac, createPrivateKey, createSign, randomBytes } from 'node:crypto';
 
 const b64url = (buf) => Buffer.from(buf).toString('base64url');
+
+// P-256: the private key is one scalar of at most 32 bytes.
+const SEED_BYTES = 32;
+
+/**
+ * A 32-byte P-256 private key, from either raw bytes or its base64url form.
+ *
+ * The short form is ACCEPTED, not rejected, and that is the whole point of
+ * this function existing. Node's ECDH.getPrivateKey() does not left-pad a
+ * scalar, so a key whose leading byte is zero comes back one byte short — 84
+ * of 20,000 generated keys, measured — and the base64url of that is 42
+ * characters instead of 43. Left-padding with a zero restores exactly the
+ * same number (a dropped leading zero byte never carried information), so a
+ * key in that shape is a valid key, not a corrupt one.
+ *
+ * Getting this wrong is not a small bug: generateVapidKeys() writes keys
+ * through here, so a strict length check means this module refuses to sign
+ * with a key this module itself just produced. That shipped, and it cost a
+ * deploy: the push guard draws a fresh key pair on every run, one run drew a
+ * key of this shape, and the build died inside the scheduled dispatcher with
+ * "bad VAPID private key length" — an error naming nothing that pointed at the
+ * generator. An operator who pastes such a key into VAPID_PRIVATE_KEY hits the
+ * same wall, at send time, on every reminder.
+ *
+ * Anything longer than a seed is still refused loudly: the usual way to get
+ * one is pasting VAPID_PUBLIC_KEY (65 bytes) into the private variable, and
+ * silently truncating that would sign with a number nobody chose.
+ */
+export function vapidSeed(key) {
+  const seed = Buffer.isBuffer(key)
+    ? key
+    : (typeof key === 'string' && key.length ? Buffer.from(key, 'base64url') : null);
+  if (!seed) throw new Error('VAPID_PRIVATE_KEY is not set');
+  if (seed.length > SEED_BYTES) {
+    throw new Error(`bad VAPID private key length: ${seed.length} bytes, but a P-256 private key is a ${SEED_BYTES}-byte base64url seed (is VAPID_PUBLIC_KEY in the private variable?)`);
+  }
+  return seed.length === SEED_BYTES ? seed : Buffer.concat([Buffer.alloc(SEED_BYTES - seed.length), seed]);
+}
 
 function endpointAudience(endpoint) {
   try {
@@ -46,8 +88,7 @@ function vapidAuthorization({ audience, subject, publicKey, privateKey, expirySe
   // ES256 = ECDSA P-256/SHA-256; node emits DER, Web Push wants raw r||s.
   // JWK private EC keys require the public coordinates too, so derive the
   // point from the 32-byte seed first.
-  const seed = Buffer.from(privateKey, 'base64url');
-  if (seed.length !== 32) throw new Error('bad VAPID private key length');
+  const seed = vapidSeed(privateKey);
   const derive = createECDH('prime256v1');
   derive.setPrivateKey(seed);
   const point = derive.getPublicKey(); // 0x04 || X(32) || Y(32)
@@ -135,8 +176,10 @@ export function generateVapidKeys() {
   const ecdh = createECDH('prime256v1');
   ecdh.generateKeys();
   // Public key: raw uncompressed point (65 bytes) — exactly the form
-  // browsers take as applicationServerKey. Private: raw 32-byte seed.
-  return { publicKey: b64url(ecdh.getPublicKey()), privateKey: b64url(ecdh.getPrivateKey()) };
+  // browsers take as applicationServerKey. Private: the seed, padded to its
+  // full 32 bytes (see vapidSeed) — unpadded, this function would hand out a
+  // 42-character key that the signing code below it refuses.
+  return { publicKey: b64url(ecdh.getPublicKey()), privateKey: b64url(vapidSeed(ecdh.getPrivateKey())) };
 }
 
 export async function pushSend(subscription, payloadObject, vapid) {
