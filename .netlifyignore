@@ -17,6 +17,16 @@ node_modules/
 *.xlsx
 data*.json
 
+# Running convert-tesco-csv.py can leave Python's bytecode cache behind.
+# convert-tesco-csv.py itself is covered by its own 404 rule in netlify.toml
+# (the same treatment serve.sh gets), so check-freshness can still account for
+# it — and ocr-harness.html is served the same way: it is opened from a laptop
+# against a local http server, with the real pipeline and synthetic roster
+# photos, and never from the deploy.
+__pycache__/
+*.pyc
+ocr-harness.html
+
 # Standard noise
 .DS_Store
 *.log

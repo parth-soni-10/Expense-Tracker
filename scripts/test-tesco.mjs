@@ -11,14 +11,18 @@
  * Run: node scripts/test-tesco.mjs
  * Also wired into the Netlify build command (netlify.toml).
  */
+import { readFileSync } from 'node:fs';
 import {
   scanSlotForProfile,
   paidHours, parseHM, fmtHM, shiftPay, simulateTax, r2,
   weekStartOf, payDateOf, buildPayWeeks, monthSummary, lifetimeTotals,
   payslipTotal, parseTimeCell, parseRosterWords, isSunday, nameMatches, ocrStripRanges, ocrInkBands, ocrPickBand, ocrFlatField,
   TESCO_RATE_DEFAULTS,
-  tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf,
-  storedShift, storedPayslip,
+  tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf, payslipWeekNumberOf,
+  parseShiftText, shiftPreviewLine,
+  storedShift, storedPayslip, applyShiftEdit,
+  rosterColumnBounds, parseCellTokens,
+  pageSkew, dedupeWords, columnAnchors, resolveColumnDates, ocrEstimateTilt, ocrAutoContrast,
 } from '../tesco.js';
 import { validateState } from '../storage.js';
 
@@ -187,6 +191,43 @@ ok('both sides of a year reset are kept', [
 ok('counting back past a reset falls back to ISO, not to nought',
   weekNumberOf('2026-02-22', { '2026-09-20': 30 }), isoWeekNumber('2026-02-22'));
 ok('a corrupt stored value is ignored', weekNumberOf('2026-09-20', { '2026-09-20': 'x' }), isoWeekNumber('2026-09-20'));
+
+// ---------- payslips: the week number and pay date the card prints ----------
+// The payslips card names the week each row belongs to — a display, since the
+// week card owns the value — and the day the money lands, so a row can be
+// matched against the paper payslip and against a bank statement.
+ok('a payslip takes the number of the week it falls in',
+  payslipWeekNumberOf({ id: 'p', weekStart: '2026-09-20' }, {}), isoWeekNumber('2026-09-20'));
+ok('and follows a number typed on the week card',
+  payslipWeekNumberOf({ id: 'p', weekStart: '2026-09-20' }, { '2026-09-20': 30 }), 30);
+// The sheet's tax table carries its own Week column, so a number that arrived
+// with the row — imported, or typed on a second pay run inside the same Sun →
+// Sat week — is the row's own and outranks the week's derived number.
+ok('a number the row itself carries wins over the week card',
+  payslipWeekNumberOf({ id: 'p', weekStart: '2026-09-20', weekNo: 41 }, { '2026-09-20': 30 }), 41);
+ok('a second pay run in one week still shows that week’s number',
+  payslipWeekNumberOf({ id: 'q', weekStart: '2026-09-19', weekNo: 41 }, {}), 41);
+ok('and snaps to the week when the row carries no number',
+  payslipWeekNumberOf({ id: 'q', weekStart: '2026-09-19' }, {}), isoWeekNumber('2026-09-13'));
+ok('an out-of-range number the row carries is ignored',
+  payslipWeekNumberOf({ id: 'p', weekStart: '2026-09-20', weekNo: 54 }, { '2026-09-20': 30 }), 30);
+ok('a payslip with no usable date prints no number rather than a guess',
+  payslipWeekNumberOf({ id: 'p' }, {}), null);
+
+// The pay date is the week's Sunday + 11 days, and the weekday is the point of
+// the formula: the money lands on a Thursday. The user's own example — the week
+// of 13 Sep 2026 paying on 24 Sep 2026 — is pinned first, then a whole year of
+// pay weeks, so the Thursday claim can't be a coincidence of one date.
+ok('the week starting Sun 13 Sep 2026 pays on Thu 24 Sep 2026', payDateOf('2026-09-13'), '2026-09-24');
+const sundays = [];
+for (let d = Date.UTC(2026, 0, 1); d < Date.UTC(2026, 11, 31); d += 86400000) {
+  const ws = weekStartOf(new Date(d).toISOString().slice(0, 10));
+  if (sundays[sundays.length - 1] !== ws) sundays.push(ws);
+}
+ok('a whole year of pay weeks, every one paying on the Thursday',
+  [...new Set(sundays.map(iso => new Date(`${payDateOf(iso)}T00:00:00Z`).getUTCDay()))], [4]);
+ok('and each exactly 11 days after its week start',
+  [...new Set(sundays.map(iso => (Date.parse(`${payDateOf(iso)}T00:00:00Z`) - Date.parse(`${iso}T00:00:00Z`)) / 86400000))], [11]);
 
 // ---------- CSV: the workbook's columns, out and back ----------
 // The reference document's Data sheet, header and all. The weekly figures ride
@@ -453,6 +494,78 @@ ok('a mark too small to be a glyph is not a line', ocrInkBands([9, 0, 0, 0, 0, 0
 ok('a cell takes the line nearest its row', ocrPickBand(ink, 14, 4).cy, 15);
 ok('a cell never jumps to the row above or below', ocrPickBand(ink, 0, 3), null);
 
+// ---------- the grid: one day per column, by bounds rather than by proximity ----
+// A roster is a grid, so a word belongs to the column whose bounds hold its
+// centre. Word-to-word proximity is what lost a real roster: the sheet's column
+// rules come back as "|" and "=" tokens parked exactly on the cell boundary and
+// the name column ends a word-gap left of the first day, so a gap merge welded
+// them into "07:00-15:00 = OFF" and "Parth Sharma 07:00-15:00" — neither a shift
+// nor a name — and dropped the days on both sides of every rule.
+const bounds = rosterColumnBounds([{ cx: 100 }, { cx: 200 }, { cx: 300 }]);
+ok('each column runs halfway to its neighbour',
+  bounds.map(b => b.map(Math.round)), [[50, 150], [150, 250], [250, 350]]);
+ok('the end columns are extrapolated by half a pitch',
+  rosterColumnBounds([{ cx: 100 }, { cx: 200 }]).map(b => b.map(Math.round)), [[50, 150], [150, 250]]);
+// A lone column has no neighbour to measure a pitch against, so its bounds stay
+// at its own centre rather than inventing a width for it.
+ok('one column on its own keeps its centre inside degenerate bounds',
+  (() => { const [x0, x1] = rosterColumnBounds([{ cx: 100 }])[0]; return x0 <= 100 && x1 >= 100 && x1 - x0 <= 2; })(), true);
+ok('no columns, no bounds', rosterColumnBounds([]), []);
+
+// ---------- one cell's words, however the engine mangled them ----------
+const toks = (...spec) => spec.map(([text, x0, x1, confidence = 90]) => ({ text, x0, x1, confidence }));
+const cellOf = (tokens, gap = 12) => {
+  const p = parseCellTokens(tokens, gap);
+  return p ? `${fmtHM(p.startMin)}-${fmtHM(p.endMin)}` : null;
+};
+ok('a cell that came back whole', cellOf(toks(['07:00-15:00', 10, 160])), '07:00-15:00');
+ok('a range the engine split into pieces is put back together',
+  cellOf(toks(['07:00', 10, 60], ['-', 62, 74], ['15:00', 76, 130])), '07:00-15:00');
+// The rule line the engine reads as a character, parked on the cell boundary.
+ok('a rule fragment riding along in the cell is not the cell',
+  cellOf(toks(['07:00-15:00', 10, 160], ['=', 166, 172])), '07:00-15:00');
+ok('and a rest word beside a shift does not hide it',
+  cellOf(toks(['|', 4, 8], ['12:00-20:00', 12, 170])), '12:00-20:00');
+// Two overlapping strips both cover the row, so the same cell arrives twice, on
+// top of itself. Concatenating the two reads made "07:00-15:0007:00-15:00".
+ok('a cell read twice by overlapping strips is one shift',
+  cellOf(toks(['07:00-15:00', 10, 160, 91], ['07:00-15:00', 11, 161, 62])), '07:00-15:00');
+ok('the more confident of the two reads is the one kept',
+  parseCellTokens(toks(['08:00-16:00', 10, 160, 40], ['09:00-17:00', 11, 161, 95])).raw, '09:00-17:00');
+ok('one range among noise is still the cell’s shift',
+  cellOf(toks(['07:00-15:00 stock', 10, 260])), '07:00-15:00');
+// Two days in one column means the grid is wrong, and neither reading can be
+// trusted to be this day's — so neither is guessed at.
+ok('two ranges in one cell are refused, not guessed between',
+  cellOf(toks(['07:00-15:00', 10, 160], ['09:00-17:00', 200, 350])), null);
+ok('a rest word is not a shift', cellOf(toks(['OFF', 10, 60])), null);
+ok('an empty cell is not a shift', cellOf([]), null);
+ok('a cell of pure punctuation is not a shift', cellOf(toks(['|', 10, 20], ['=', 40, 50])), null);
+
+// ---------- a real engine read of a real page ----------
+// The words below are tesseract.js 5.1.1's own output for a roster page (see the
+// fixture's `note`): a clean render, so everything in this list is the engine's
+// or the grid's doing — the rules as "|"/"=" on the boundaries, the middle rows
+// read twice by two overlapping strips, a cell read as " 10:00-16:00" with 8%
+// confidence. Pinning the parse against it is what keeps the read that a real
+// photo needs from being "tidied" back into losing days.
+const fixture = JSON.parse(readFileSync(new URL('./fixtures/roster-words.json', import.meta.url), 'utf8'));
+const fixtureWords = fixture.words.map(([text, x0, y0, x1, y1, confidence]) => ({ text, x0, y0, x1, y1, confidence }));
+const read = parseRosterWords(fixtureWords, new Date(Date.UTC(2026, 8, 25)), { name: 'Parth' });
+const mine = read.rows.find(r => r.matches);
+ok('the whole page of staff rows is read', read.rows.length, 7);
+ok('the row the typed name matched is the one flagged', mine ? mine.name : null, 'Parth Sharma');
+ok('its shifts land on the days their columns sit under',
+  mine ? mine.cells.map(c => c.date) : null, Object.keys(fixture.expected.cells));
+ok('with the times the page states',
+  mine ? mine.cells.map(c => `${fmtHM(c.startMin)}-${fmtHM(c.endMin)}`) : null,
+  Object.values(fixture.expected.cells).map(([a, b]) => `${fmtHM(a)}-${fmtHM(b)}`));
+ok('the days off are left off, not guessed at', mine ? mine.cells.length : -1, 4);
+ok('a day is never read onto two columns at once',
+  mine ? new Set(mine.cells.map(c => c.date)).size === mine.cells.length : false, true);
+ok('every row keeps its own name',
+  read.rows.map(r => r.name).includes('Sean Murphy'), true);
+
 // ---------- the flat-field view of a cell ----------
 // A photo's glare is a brightness gradient across the sheet, and a cell read
 // against a threshold fitted to the whole crop loses the glyphs on its bright
@@ -490,12 +603,17 @@ ok('a cell never jumps to the row above or below', ocrPickBand(ink, 0, 3), null)
 // ---------- cell-pass reads own the row they belong to ----------
 const readCells = [{ date: '2026-09-20', weekday: 0, startMin: 0, endMin: 300, raw: 'x', confidence: 92, dupe: false }];
 const withCells = (cells, cellsComplete) => parseRosterWords(tilted, new Date(Date.UTC(2026, 8, 22)), { name: 'parth', cells, cellsComplete });
-ok('a complete cell pass owns the matched row',
-  withCells(readCells, true).rows.find(r => r.matches).cells.map(c => c.date), ['2026-09-20']);
-ok('its read replaces the strip read for that day',
-  withCells(readCells, true).rows.find(r => r.matches).cells.map(c => fmtHM(c.endMin)), ['05:00']);
-ok('a partial cell pass keeps the reads it never covered',
-  withCells(readCells, false).rows.find(r => r.matches).cells.map(c => c.date), ['2026-09-20', '2026-09-23']);
+ok('a cell-pass read wins the day it read',
+  withCells(readCells, true).rows.find(r => r.matches).cells.map(c => c.date), ['2026-09-20', '2026-09-23']);
+ok('and that day carries the cell pass’s figure',
+  withCells(readCells, true).rows.find(r => r.matches).cells.map(c => fmtHM(c.endMin)), ['05:00', '22:00']);
+// The merge is per day, so a day the pass could not read keeps what the strip
+// pass already had. Replacing the row wholesale meant one failed crop deleted a
+// shift that had been read correctly — on the day that mattered.
+ok('a day the cell pass could not read keeps the strip read',
+  withCells(readCells, true).rows.find(r => r.matches).cells.map(c => c.date).includes('2026-09-23'), true);
+ok('so covering the whole grid or only part of it reads the same',
+  JSON.stringify(withCells(readCells, true).rows) === JSON.stringify(withCells(readCells, false).rows), true);
 ok('a row too garbled to parse still gets its cells',
   parseRosterWords([{ text: 'Parth', x0: 10, y0: 210, x1: 98, y1: 240, confidence: 93 }], new Date(), { name: 'parth', cells: readCells, cellsComplete: true })
     .rows.map(r => [r.name, r.matches, r.cells.length]), [['parth', true, 1]]);
@@ -512,6 +630,285 @@ ok('a scan taken by another profile is dropped',
 ok('a scan with no owner (an older build) is dropped rather than shown',
   scanSlotForProfile({ parsed: { rows: [{ name: 'parth' }] } }, 'sam'), null);
 ok('an empty slot stays empty', scanSlotForProfile(null, 'sam'), null);
+
+// ---------- quick entry: a shift typed as a sentence ----------
+// The grammar the Tesco tab's magic entry promises. Today is pinned to Thursday
+// 24 Sep 2026 — the Thursday a payslip lands on — so every weekday relative to
+// it is checkable by hand: the Monday before it is the 21st, the Friday 18th.
+const QUICK_DAY = '2026-09-24';
+const quick = text => parseShiftText(text, QUICK_DAY);
+const oneQuick = text => quick(text).shifts[0];
+
+ok('mon 8-4 → the Monday before, 08:00-16:00',
+  oneQuick('mon 8-4'), { date: '2026-09-21', start: '08:00', end: '16:00', special: false, note: '' });
+ok('yesterday takes the day before the pinned today',
+  oneQuick('yesterday 12:30-20:15'), { date: '2026-09-23', start: '12:30', end: '20:15', special: false, note: '' });
+ok('sat 9-5 keeps the words after it as the note',
+  oneQuick('sat 9-5 stock take'), { date: '2026-09-19', start: '09:00', end: '17:00', special: false, note: 'stock take' });
+ok('sun 10-4 lands on the Sunday (the engine makes it special itself)',
+  oneQuick('sun 10-4').date, '2026-09-20');
+ok('an end earlier than the start is an overnight shift, not a broken one',
+  [oneQuick('fri 20:00-01:00').date, oneQuick('fri 20:00-01:00').start, oneQuick('fri 20:00-01:00').end],
+  ['2026-09-18', '20:00', '01:00']);
+ok('no date at all means today',
+  [oneQuick('8-4').date, oneQuick('8-4').start, oneQuick('8-4').end], ['2026-09-24', '08:00', '16:00']);
+ok('4-9pm teaches the start which half of the day it is',
+  [oneQuick('4-9pm').start, oneQuick('4-9pm').end], ['16:00', '21:00']);
+ok('8am-4 teaches the end instead',
+  [oneQuick('8am-4').start, oneQuick('8am-4').end], ['08:00', '16:00']);
+ok('both halves stated are honoured (8pm-4am stays overnight)',
+  [oneQuick('8pm-4am').start, oneQuick('8pm-4am').end], ['20:00', '04:00']);
+ok('0800-1630 is a 24-hour clock',
+  [oneQuick('mon 0800-1630').start, oneQuick('mon 0800-1630').end], ['08:00', '16:30']);
+ok('8.30-16.30 is a clock too',
+  [oneQuick('mon 8.30-16.30').start, oneQuick('mon 8.30-16.30').end], ['08:30', '16:30']);
+ok('13/09 8-4 → the September the 13th, signed off special',
+  [oneQuick('13/09 8-4 special').date, oneQuick('13/09 8-4 special').special, oneQuick('13/09 8-4 special').note],
+  ['2026-09-13', true, '']);
+ok('a spelled month, day first', oneQuick('13 Sep 2026 9-5').date, '2026-09-13');
+ok('a spelled month, month first', oneQuick('Sep 13 9-5').date, '2026-09-13');
+ok('a full date with its year', oneQuick('13/09/2026 9-5').date, '2026-09-13');
+ok('an ISO date', oneQuick('2026-09-13 8-4').date, '2026-09-13');
+ok('last friday is the one already gone', oneQuick('last fri 9-5').date, '2026-09-18');
+ok('next monday is the one coming', oneQuick('next mon 8-4').date, '2026-09-28');
+ok('a bank holiday marks itself', oneQuick('bh sun 10-4').special, true);
+ok('hours without times book a week off',
+  [oneQuick('week off 7h').hours, oneQuick('week off 7h').start, oneQuick('week off 7h').end, oneQuick('week off 7h').note],
+  [7, '', '', 'week off']);
+ok('hours work on a named day too', [oneQuick('mon 7h').date, oneQuick('mon 7h').hours], ['2026-09-21', 7]);
+ok('one line per shift; a semicolon separates too',
+  quick('mon 8-4; tue 9-5').shifts.map(s => s.date), ['2026-09-21', '2026-09-22']);
+ok('a bad line never costs the good ones beside it',
+  [quick('mon 8-4\nbrunch\ntue 9-5').shifts.length, quick('mon 8-4\nbrunch\ntue 9-5').problems.length], [2, 1]);
+ok('nothing typed is not an error',
+  [quick('   ').shifts.length, quick('').problems.length], [0, 0]);
+ok('times are required', /no times/.test(quick('brunch').problems[0].error), true);
+ok('times and hours together are refused', /both times and hours/.test(quick('mon 8-4 7h').problems[0].error), true);
+ok('an impossible clock is refused', quick('mon 25:00-26:00').problems.length, 1);
+ok('two ranges on one line are refused, not guessed between',
+  /two sets of times/.test(quick('mon 8-4 tue 9-5').problems[0].error), true);
+ok('a date that does not exist is named back',
+  /"32\/13" is not a date/.test(quick('32/13 8-4').problems[0].error), true);
+// The parser's output is only useful if the app's own validator accepts it.
+const quickStored = storedShift(oneQuick('mon 8-4 stock take'), 'q1', '2026-09-24T10:00:00.000Z');
+ok('what it parses is what the app stores',
+  [quickStored.date, quickStored.start, quickStored.end, quickStored.note, quickStored.special],
+  ['2026-09-21', '08:00', '16:00', 'stock take', false]);
+ok('and a week-off row survives storage with its hours',
+  storedShift(oneQuick('week off 7h'), 'q2', '2026-09-24T10:00:00.000Z').hours, 7);
+ok('what it parses pays what the week card will show (7h × €14.44)',
+  shiftPay(oneQuick('mon 8-4'), null).gross, 101.08);
+
+// The preview is the only thing standing between a mis-read line and the pay
+// record, so what it promises is pinned too. € here is app.js's fmt, which the
+// card passes in: two decimals, a real minus sign for a negative.
+const money = n => `${n < 0 ? '−' : ''}€${Math.abs(n).toFixed(2)}`;
+const previewOf = text => shiftPreviewLine(oneQuick(text), shiftPay(oneQuick(text), null), money);
+ok('a clock-times line reads back as the week card will price it',
+  previewOf('mon 8-4 stock take'),
+  'Mon 21 Sep · 08:00–16:00 · 7h · normal €14.44/h → €101.08 · stock take');
+ok('an overnight line is marked as running into the next day',
+  previewOf('fri 20:00-01:00'), 'Fri 18 Sep · 20:00–01:00 +1 · 5h · normal €14.44/h → €72.20');
+ok('a Sunday is previewed at the Sunday rate',
+  previewOf('13/09 9-5 special'), 'Sun 13 Sep · 09:00–17:00 · 7h · special €21.66/h → €151.62');
+// The regression this helper exists for: a stated-hours row priced fine and so
+// took the clock-times branch, printing "Thu 24 Sep · – +1 · 7h".
+ok('a booked week off states its hours instead of an empty range',
+  previewOf('week off 7h'),
+  'Thu 24 Sep · 7h stated, no clock times · normal €14.44/h → €101.08 · week off');
+ok('a line with no date previews the day it will be stored on',
+  previewOf('8-4').startsWith('Thu 24 Sep · 08:00–16:00 ·'), true);
+ok('and no note leaves no trailing separator',
+  previewOf('mon 8-4').endsWith('→ €101.08'), true);
+
+// ---------- editing a stored shift ----------
+// A hand edit is validated by the importer's own rules (storedShift), so the two
+// paths cannot drift: every rejection below is a row the CSV import would also
+// have refused to write.
+const editBase = storedShift({ date: '2026-09-17', start: '07:00', end: '15:00' }, 'e1', '2026-09-01T00:00:00.000Z');
+const edited = (fields, others = []) => applyShiftEdit(editBase, fields, others);
+const editOf = (fields, others = []) => { const r = edited(fields, others); return r.ok ? r.shift : null; };
+
+ok('an edit rewrites the fields it is given',
+  (() => { const r = edited({ date: '2026-09-19', start: '09:00', end: '17:30', note: 'stock take', special: true });
+    return [r.ok, r.shift.date, r.shift.start, r.shift.end, r.shift.note, r.shift.special]; })(),
+  [true, '2026-09-19', '09:00', '17:30', 'stock take', true]);
+// The id is what sync unions on: a new one here would leave the old row alive on
+// the other device and bring it back on the next merge.
+ok('and keeps the row’s own id and creation date',
+  (() => { const r = edited({ note: 'x' }); return [r.shift.id, r.shift.createdAt]; })(),
+  ['e1', '2026-09-01T00:00:00.000Z']);
+ok('fields left alone keep their stored values',
+  (() => { const s = editOf({ note: 'x' }); return [s.date, s.start, s.end]; })(),
+  ['2026-09-17', '07:00', '15:00']);
+
+ok('a date the importer would refuse is refused here',
+  (() => { const r = edited({ date: '17/09/2026' }); return [r.ok, r.field, r.error]; })(),
+  [false, 'date', 'Enter the date as YYYY-MM-DD.']);
+ok('a time that will not parse is named by its own field',
+  (() => { const r = edited({ start: '7am' }); return [r.ok, r.field]; })(), [false, 'start']);
+ok('an end past midnight is not a clock time',
+  (() => { const r = edited({ end: '25:00' }); return [r.ok, r.field]; })(), [false, 'end']);
+ok('hours that are not a number are refused',
+  (() => { const r = edited({ hours: 'lots' }); return [r.ok, r.field]; })(), [false, 'hours']);
+// With the times gone a row needs stated hours — the week-off state — and the
+// field to fix is the one that is missing, not the one that was cleared.
+ok('a row with neither times nor hours is refused at the field that is blank',
+  (() => { const r = edited({ start: '', end: '' }); return [r.ok, r.field]; })(), [false, 'start']);
+ok('and a half-filled range points at the other end',
+  (() => { const r = edited({ end: '' }); return [r.ok, r.field]; })(), [false, 'end']);
+
+// A booked week off: hours and no clock times, exactly as the sheet stores it.
+ok('a week off survives the edit with its hours',
+  (() => { const s = editOf({ start: '', end: '', hours: '7' }); return [s.start, s.end, s.hours]; })(),
+  ['', '', 7]);
+// Blanking hours has to REMOVE the key: an inherited one keeps out-ranking the
+// clock times in shiftPay, so fixing the times would leave the pay untouched.
+ok('blanking hours hands pricing back to the clock times',
+  (() => { const s = editOf({ hours: '' }); return ['hours' in s, shiftPay(s, null).hours]; })(),
+  [false, 7]);
+ok('while an imported row keeps the hours the sheet paid it for',
+  applyShiftEdit({ ...editBase, hours: 6 }, { note: 'x' }, []).shift.hours, 6);
+
+// The row's own pay outranks hours × rate, so it is editable: blanking it is how
+// a corrected shift stops paying the old amount.
+ok('a stated pay is kept and rounded like the importer rounds it',
+  editOf({ gross: '99.999' }).gross, 100);
+ok('blanking it goes back to hours × rate',
+  (() => { const s = editOf({ gross: '' }); return ['gross' in s, shiftPay(s, null).gross]; })(),
+  [false, 101.08]);
+ok('a pay that is not a number is refused at its own field',
+  (() => { const r = edited({ gross: 'abc' }); return [r.ok, r.field]; })(), [false, 'gross']);
+
+// The key freshShifts dedupes on: an edit must not be a back door into the
+// duplicate state an import refuses to create.
+ok('editing a row onto another row’s day and times is refused',
+  (() => { const r = edited({ start: '08:00', end: '16:00' }, ['2026-09-17|08:00|16:00']); return [r.ok, r.field]; })(),
+  [false, 'date']);
+ok('but the same times on another day are not', edited({ date: '2026-09-18' }).ok, true);
+
+ok('a note is trimmed and capped like an imported one',
+  (() => { const s = editOf({ note: '   stock take   ' }); return [s.note, editOf({ note: 'x'.repeat(200) }).note.length]; })(),
+  ['stock take', 120]);
+// Sunday is special by rule, so ticking the box is not what makes it pay as one
+// — and the edit must not write a flag that contradicts a stored one.
+ok('a Sunday pays special without the flag being written',
+  (() => { const s = editOf({ date: '2026-09-20' }); return [s.special, shiftPay(s, null).special, shiftPay(s, null).gross]; })(),
+  [false, true, 151.62]);
+
+// ---------- the sheet's own geometry ----------
+// The tilt of the page, taken from the words: a line written at 2.5° has to come
+// back as 2.5°, because that number is what the photo is rotated back by.
+const lineOf = (slope, n = 14, gap = 120) => Array.from({ length: n }, (_, i) => ({
+  text: 'x' + i, x0: i * gap, x1: i * gap + 60, y0: 400 + slope * i * gap, y1: 430 + slope * i * gap,
+}));
+near('pageSkew reads a level line as level', pageSkew(lineOf(0), 30), 0, 0.004);
+near('pageSkew reads a 1° line', pageSkew(lineOf(Math.tan(1 * Math.PI / 180)), 30), 0.01746, 0.004);
+near('pageSkew reads a 3° line', pageSkew(lineOf(Math.tan(3 * Math.PI / 180)), 30), 0.05241, 0.004);
+// A row that is torn in two (one strip read half of it) must not drag the page:
+// the median over every pair cannot be moved by a minority on another line.
+ok('one word on the wrong line does not move the page',
+  Math.abs(pageSkew([...lineOf(0.05), { text: 'junk', x0: 1600, x1: 1700, y0: 120, y1: 150 }], 30) - 0.05) < 0.02, true);
+
+// The same word twice: the two overlapping strips both read the row it sits on.
+const dupes = dedupeWords([
+  { text: '07:00-15:00', x0: 100, x1: 240, y0: 500, y1: 530, confidence: 70 },
+  { text: '07:00-15:00', x0: 104, x1: 243, y0: 502, y1: 532, confidence: 92 },
+  { text: '07:00-15:00', x0: 100, x1: 240, y0: 740, y1: 770, confidence: 90 },
+]);
+ok('a double read collapses to one word', dupes.length, 2);
+ok('and the copy kept is the confident one', dupes[0].confidence, 92);
+ok('the same text on the next row is a different word', dupes[1].y0, 740);
+ok('punctuation is not merged across a row either',
+  dedupeWords([{ text: '|', x0: 10, x1: 12, y0: 100, y1: 140 }, { text: '|', x0: 500, x1: 502, y0: 100, y1: 140 }]).length, 2);
+
+// The header: which columns a page describes, and which of its numbers are
+// furniture. A title's date range must never become a day of the week.
+const headerRow = (phrases, cy) => ({ cy, phrases: phrases.map(ph => (typeof ph === 'string' ? { text: ph, x0: 0, x1: 40, confidence: 90 } : { confidence: 90, ...ph })) });
+const dayNames = ['Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Mon'].map((t, i) => ({ text: t, x0: 400 + i * 180, x1: 460 + i * 180 }));
+const dateTokens = ['22-Sep', '23-Sep', '24-Sep', '25-Sep', '26-Sep', '27-Sep', '28-Sep'].map((t, i) => ({ text: t, x0: 400 + i * 180, x1: 500 + i * 180 }));
+const titleRow = headerRow([
+  { text: 'Week', x0: 60, x1: 100 }, { text: '39', x0: 110, x1: 130 },
+  { text: '22/09/2026', x0: 300, x1: 450 }, { text: '28/09/2026', x0: 490, x1: 640 },
+  { text: 'Store', x0: 680, x1: 730 }, { text: '3021', x0: 740, x1: 790 },
+], 240);
+const today = new Date(Date.UTC(2026, 8, 25));
+const fullHeader = [titleRow, headerRow(dayNames, 360), headerRow(dateTokens, 420)];
+const grid = columnAnchors(fullHeader, today, 90);
+ok('a title date range does not become a column', grid.cols.length, 7);
+ok('so the first column keeps its own day', grid.cols[0].cx, 430);
+ok('and its own date', grid.cols[0].date.toISOString().slice(0, 10), '2026-09-22');
+ok('the week start is left to the date row', grid.weekStart, null);
+// The date row lost (small print, glare): the title's range still says which week.
+const lostDates = columnAnchors([titleRow, headerRow(dayNames, 360)], today, 90);
+ok('without a date row the title carries the week', lostDates.weekStart.toISOString().slice(0, 10), '2026-09-22');
+ok('and no title date is read as a column', lostDates.cols.length, 7);
+// A misread date token and the column's own day name cannot both be right.
+const skewed = resolveColumnDates([
+  { cx: 100, date: new Date(Date.UTC(2026, 8, 22)), weekday: 2 },
+  { cx: 200, date: new Date(Date.UTC(2026, 8, 27)), weekday: 3 },
+  { cx: 300, weekday: 4 },
+], today);
+ok('a date that fights its day name is dropped', skewed.map(c => c.date.toISOString().slice(0, 10)), ['2026-09-22', '2026-09-23', '2026-09-24']);
+// The day-name-only case is what put a whole week a day late: today IS in the
+// week being read, so the grid belongs to the week containing today.
+const namesOnly = resolveColumnDates([
+  { cx: 100, weekday: 2 }, { cx: 200, weekday: 3 }, { cx: 300, weekday: 4 },
+  { cx: 400, weekday: 5 }, { cx: 500, weekday: 6 }, { cx: 600, weekday: 0 }, { cx: 700, weekday: 1 },
+], today);
+ok('day names alone land in the week containing today', namesOnly.map(c => c.date.toISOString().slice(0, 10)),
+  ['2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25', '2026-09-26', '2026-09-27', '2026-09-28']);
+// Today is a fortnight before the sheet: the nearest week is the NEXT one, not
+// the one that has already gone.
+const before = new Date(Date.UTC(2026, 8, 13));
+ok('a sheet for a week not yet started reads forwards',
+  resolveColumnDates([{ cx: 100, weekday: 2 }, { cx: 200, weekday: 3 }], before).map(c => c.date.toISOString().slice(0, 10)),
+  ['2026-09-15', '2026-09-16']);
+// …and one whose days are already behind us stays in the week it belongs to
+// rather than jumping a week ahead: today is Thursday, the sheet's Tue/Wed are
+// two days gone, and next week's would be five days away.
+ok('a sheet for the week just gone reads backwards',
+  resolveColumnDates([{ cx: 100, weekday: 2 }, { cx: 200, weekday: 3 }], new Date(Date.UTC(2026, 8, 24))).map(c => c.date.toISOString().slice(0, 10)),
+  ['2026-09-22', '2026-09-23']);
+ok('a title range anchors the series when no date row survived',
+  resolveColumnDates([{ cx: 100 }, { cx: 200 }, { cx: 300 }], today, new Date(Date.UTC(2026, 8, 22))).map(c => c.date.toISOString().slice(0, 10)),
+  ['2026-09-22', '2026-09-23', '2026-09-24']);
+
+// The photo's own levelling: ink on a level page stacks into one row of the
+// projection, and the angle that stacks it best is the angle to undo.
+function stripedPage(w, h, deg) {
+  const grey = new Uint8Array(w * h).fill(255);
+  const t = deg * Math.PI / 180, sin = Math.sin(t), cos = Math.cos(t);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const dx = x - w / 2, dy = y - h / 2;
+      const sy = -dx * sin + dy * cos + h / 2;      // the row on the sheet this pixel shows
+      const sx = dx * cos + dy * sin + w / 2;
+      if (sx < w * 0.08 || sx > w * 0.92) continue;
+      const band = (sy - 40) % 48;
+      if (sy > 40 && band >= 0 && band < 14) grey[y * w + x] = 20;
+    }
+  }
+  return grey;
+}
+for (const deg of [0, 1, -2.5, 4]) {
+  const w = 320, h = 460;
+  near(`ocrEstimateTilt finds a ${deg}° page`, ocrEstimateTilt(stripedPage(w, h, deg), w, h) * 180 / Math.PI, deg, 0.3);
+}
+// A photo that is already exposed is left alone: stretching it would only
+// amplify the JPEG's ringing around every thin stroke.
+const white = new Uint8Array(4 * 400).fill(250);
+for (let i = 0; i < 40; i++) { white[i * 4] = white[i * 4 + 1] = white[i * 4 + 2] = 20; }
+const whiteCopy = Uint8Array.from(white);
+ocrAutoContrast(white);
+ok('a white-paper photo is not stretched', [...white.slice(0, 40)], [...whiteCopy.slice(0, 40)]);
+// A sheet shot in shadow: its paper is grey, and the stretch is what gives the
+// engine the contrast its binariser needs.
+const shadowed = new Uint8Array(4 * 400).fill(170);
+for (let i = 0; i < 40; i++) { shadowed[i * 4] = shadowed[i * 4 + 1] = shadowed[i * 4 + 2] = 90; }
+ocrAutoContrast(shadowed);
+ok('a shadowed photo is stretched to full range',
+  [shadowed[200 * 4], shadowed[10 * 4]], [255, 0]);
 
 // ---------- report ----------
 if (fails.length) {

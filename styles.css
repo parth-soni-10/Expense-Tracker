@@ -231,6 +231,18 @@ body::after {
 h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
 a { color: inherit; text-decoration: none; }
 button { font-family: inherit; cursor: pointer; }
+/* Bare icon buttons (a row's edit/delete). Without this the browser's own
+   chrome showed through — a grey outset box in the middle of a monochrome card —
+   because the class carried no rule at all. Colour is left to the caller so the
+   destructive one can still turn red on hover. */
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 2px; border: none; border-radius: 6px;
+  background: transparent; color: var(--muted); line-height: 1;
+  transition: background-color 0.12s var(--ease-out), color 0.12s var(--ease-out);
+}
+.icon-btn:hover { background: color-mix(in srgb, var(--line) 60%, transparent); }
+.icon-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* Display font - Space Grotesk - the cents. brand voice */
 .serif {
@@ -423,6 +435,19 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   font-weight: 500;
   transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.12s var(--ease-out);
 }
+/* The live parse chips. The Add tab's magic field styles its own inline; the
+   Tesco tab's shift field reuses them from here, so the two teach the same
+   visual language with one definition. */
+.magic-detect-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.magic-detect-chip-on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.tesco-magic-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+
 .magic-chip:hover { border-color: var(--accent); color: var(--accent); }
 .magic-chip:active { transform: scale(0.97); }
 .magic-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -2071,18 +2096,49 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   display: flex; align-items: center; gap: 8px; margin-top: 8px;
   padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius);
 }
-.tesco-del { font-size: 16px; line-height: 1; opacity: 0.5; }
-.tesco-del:hover { opacity: 1; color: var(--negative); }
+.tesco-shift-actions { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.tesco-del { font-size: 16px; }
+.tesco-del:hover { color: var(--negative); }
+/* Muted at rest (the app's treatment for the secondary action in a row) and the
+   accent on hover, so the pencil reads as the row's one live control. */
+.tesco-edit:hover { color: var(--accent); }
+/* The edit sheet: one row per pair of fields, so the order never shuffles, with
+   the date and the note across the full width. The 116px basis is a time
+   control's own minimum — below it the native clock icon is the first thing to
+   go — so on a very narrow phone a pair wraps to a field per row rather than
+   squeezing one under its own width. */
+.tesco-edit-sheet { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.tesco-edit-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.tesco-edit-field { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); flex: 1 1 116px; min-width: 0; }
+.tesco-edit-field .tesco-in { width: 100%; }
+.tesco-edit-field-wide { flex: 1 1 100%; }
+.tesco-edit-bad { border-color: var(--negative); }
+.tesco-edit-actions { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
 .tesco-payslip {
   border-top: 1px solid var(--line); padding: 10px 0;
 }
 .tesco-payslip:first-of-type { border-top: none; }
+.tesco-payslip-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+/* The row's week number: a display, not a field — the week card owns the value,
+   and the number is what ties this row to the payslip it transcribes. */
+.tesco-payslip-wk { font-variant-numeric: tabular-nums; }
 .tesco-payslip-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .tesco-numfield { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--muted); }
 .tesco-derived { font-size: 11px; color: var(--accent); font-variant-numeric: tabular-nums; }
+/* The label line is a row so a derived figure can sit beside its label ("Sunday
+   × = €21.66/h") instead of on a line of its own under the input — that extra
+   line made the cell taller than the one beside it, and the grid's rows were
+   then spaced 30px, 10px, 10px. `nowrap` keeps the hint on the line at 320px,
+   where the cell is at its narrowest. */
+.tesco-numfield-label { display: flex; align-items: baseline; gap: 6px; }
+.tesco-numfield-label .tesco-derived { white-space: nowrap; }
 .tesco-payslip-foot { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+/* "Tax paid" and its figure travel together at the right of the row: the auto
+   margin belongs to the pair, so the label can never drift away from the number
+   it names (and the delete button stays outside it). */
+.tesco-payslip-tax { margin-left: auto; display: inline-flex; align-items: baseline; gap: 6px; }
 .tesco-payslip-total {
-  margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600; font-size: 13px;
+  font-variant-numeric: tabular-nums; font-weight: 600; font-size: 13px;
 }
 .tesco-totals {
   display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline;
@@ -2092,7 +2148,15 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 .tesco-totals-sum { margin-left: auto; color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
 .tesco-rates { margin-top: 4px; }
 .tesco-rates summary { cursor: pointer; font-size: 12px; color: var(--muted); }
-.tesco-rates-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+/* A grid, not a wrapping flex row: wrapping broke the six fields 4+2 on a
+   tablet and 5+1 just below the width where all six fit, and a cell sized to
+   its own contents came out 30px wider than its neighbours once its label line
+   carried the derived Sunday figure. `minmax(0, 1fr)` is what stops a cell's
+   content from deciding its width. Six columns need 6 x 114px — the Sunday
+   label line's own width — plus five 10px gaps, hence the 950 threshold. */
+.tesco-rates-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+@media (min-width: 640px) { .tesco-rates-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 950px) { .tesco-rates-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
 
 @media (max-width: 639px) {
   .tesco-stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
@@ -2100,14 +2164,25 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   .tesco-in-date { width: 132px; }
   .tesco-numfield { flex: 1 1 40%; }
   .tesco-in-num { width: 100%; }
-  /* Shift rows hold day + times + badge + hours + amount + delete; tighten the
-     fixed columns so the row never overflows its card on a narrow phone. */
-  .tesco-shiftrow { gap: 6px; font-size: 11.5px; }
+  /* Shift rows hold day + times + badge + hours + amount + edit + delete;
+     tighten the fixed columns so the row never overflows its card on a narrow
+     phone. The gap is 5px, not 6: a badge row needs the extra pixel of
+     headroom at 320px for the delete button to stay fully inside the card. */
+  .tesco-shiftrow { gap: 5px; font-size: 11.5px; }
   .tesco-shift-day { width: 26px; }
   .tesco-shift-time { min-width: 68px; }
   .tesco-shift-amt { font-size: 12px; }
   .tesco-celledit-row { gap: 4px; }
   .tesco-celledit-row .tesco-in { padding: 6px 8px; }
+}
+
+/* Below 360 a shift row cannot hold day + times + badge + hours + amount + the
+   action group, and the group is the part that would be cut off. Wrapping it
+   onto its own line keeps both buttons reachable; the auto margin is what holds
+   it to the right edge rather than at the start of the wrapped line. */
+@media (max-width: 359px) {
+  .tesco-shiftrow { flex-wrap: wrap; }
+  .tesco-shift-actions { margin-left: auto; }
 }
 
 /* ============================================================

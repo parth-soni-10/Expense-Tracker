@@ -51,6 +51,9 @@ const WEEK_START_DOW = 0;
 // and the 50% overlap means no line is ever cut in half.
 const OCR_STRIP_H = 0.5;    // each strip covers half the photo's height
 const OCR_STRIP_COUNT = 3;  // starts at 0 / 25% / 50%, so the strips overlap by half
+// Pixels handed to the engine in one recognition, on any path: 12 MP is where a
+// phone-size decode stays quick, and every scale below is chosen to land here.
+const OCR_WORK_PIXELS = 12e6;
 // The camera path feeds the same reader as a chosen file, so a captured frame
 // is held to the same working budget and backed by the same promise.
 const CAMERA_MAX_EDGE = 2000;     // longest side of a captured frame, as a file
@@ -214,6 +217,19 @@ export function weekNumberOf(weekStart, weekNos) {
     }
   }
   return isoWeekNumber(weekStart);
+}
+
+// The week number a payslip row prints. A number the payslip carries itself —
+// typed on the sheet's tax table, or imported from its Week column — wins,
+// because that is the number printed on the payslip the row is transcribing.
+// Otherwise it is the week's own number, derived exactly as the week card above
+// derives it, so the two cards never disagree. Null when the row has no usable
+// date at all, which the caller renders as "no number" rather than a guess.
+export function payslipWeekNumberOf(p, weekNos) {
+  const own = Math.trunc(Number(p && p.weekNo));
+  if (Number.isFinite(own) && own >= 1 && own <= 53) return own;
+  const start = p && dateOk(p.weekStart) ? weekStartOf(p.weekStart) : null;
+  return start ? weekNumberOf(start, weekNos) : null;
 }
 
 export function isoWeekNumber(dateStr) {
@@ -616,6 +632,77 @@ export function storedShift(s, id, at) {
   };
 }
 
+// ---------- editing: what a hand edit may change on a stored shift ----------
+// One shift's fields, validated by the same rules `storedShift` applies to a
+// row arriving from a file — the two must agree, or a hand edit could write a
+// row the importer would have refused. Returns `{ ok: true, shift }` or
+// `{ ok: false, field, error }`, so the edit sheet can point at the field that
+// is wrong and the harness can pin every rule without a DOM.
+//
+// `others` holds the rest of the tab's shifts as `date|start|end` keys, the same
+// key `freshShifts` dedupes on: editing a row onto another row's day and times
+// is refused for the same reason an import of it would be.
+//
+// The row keeps its id and createdAt. Sync unions shifts by id, so minting a new
+// id here would resurrect the old row from the other device on the next merge.
+export function applyShiftEdit(shift, fields, others = []) {
+  const base = shift && typeof shift === 'object' ? shift : {};
+  const f = fields && typeof fields === 'object' ? fields : {};
+  const pick = key => (key in f ? f[key] : base[key]);
+
+  const date = String(pick('date') ?? '').trim();
+  if (!dateOk(date)) return { ok: false, field: 'date', error: 'Enter the date as YYYY-MM-DD.' };
+
+  const rawStart = String(pick('start') ?? '').trim();
+  const rawEnd = String(pick('end') ?? '').trim();
+  const start = rawStart ? parseHM(rawStart) : null;
+  const end = rawEnd ? parseHM(rawEnd) : null;
+  if (rawStart && start == null) return { ok: false, field: 'start', error: 'Start time should read like 08:00.' };
+  if (rawEnd && end == null) return { ok: false, field: 'end', error: 'End time should read like 16:00.' };
+
+  // Blank means "not stated", which is a real state: a booked week off has
+  // hours and no clock times, and an imported row's hours are its own.
+  const rawHours = pick('hours');
+  const blankHours = rawHours === '' || rawHours == null;
+  const hours = blankHours ? null : statedHours(rawHours);
+  if (!blankHours && hours == null) return { ok: false, field: 'hours', error: 'Hours should be a number between 0 and 168.' };
+
+  const hasTimes = start != null && end != null;
+  if (!hasTimes && hours == null) {
+    return { ok: false, field: start == null ? 'start' : 'end', error: 'Add both clock times, or state the hours for a week off.' };
+  }
+
+  // A row's own pay wins over hours × rate (see shiftPay), which is how the
+  // sheet's older rates survive an import. The same rule means fixing the times
+  // of such a row would leave its old figure silently in place, so a stated pay
+  // is editable here — blank it to go back to hours × rate.
+  const rawGross = pick('gross');
+  const blankGross = rawGross === '' || rawGross == null;
+  let gross = null;
+  if (!blankGross) {
+    const n = Number(rawGross);
+    if (!Number.isFinite(n) || n < 0) return { ok: false, field: 'gross', error: 'Pay should be a number €0 or more, or blank to use hours × rate.' };
+    gross = r2(n);
+  }
+
+  const next = {
+    ...base,
+    date,
+    start: start == null ? '' : fmtHM(start),
+    end: end == null ? '' : fmtHM(end),
+    note: String(pick('note') ?? '').slice(0, 120).trim(),
+    special: !!pick('special'),
+  };
+  // Blanking a field has to remove the key, not just omit it from the spread:
+  // an inherited `hours` would keep out-ranking the clock times in shiftPay.
+  if (hours == null) delete next.hours; else next.hours = hours;
+  if (gross == null) delete next.gross; else next.gross = gross;
+
+  const key = `${next.date}|${next.start}|${next.end}`;
+  if (others.includes(key)) return { ok: false, field: 'date', error: 'Another shift on that day already covers the same times.' };
+  return { ok: true, shift: next };
+}
+
 // The row's own date and week number, not the snapped Sunday: the sheet's tax
 // table holds two rows for a week that had two pay runs, and keying by the week
 // merged them. buildPayWeeks snaps the date for grouping, so the week still adds
@@ -630,6 +717,276 @@ export function storedPayslip(p, id, at) {
     ...(bank == null ? {} : { bankPay: bank }),
     createdAt: at,
   };
+}
+
+// ---------- quick entry: a shift typed as a sentence ----------
+// The Tesco tab's magic entry: one shift per line, written the way the shift is
+// remembered rather than the way a form wants it — "mon 8-4 stock take",
+// "yesterday 12:30-20:15", "fri 20:00-01:00", "week off 7h". Pure text → rows,
+// so the harness can pin the grammar the way it pins the spreadsheet's
+// arithmetic, and the card can show exactly what it is about to add.
+//
+// Two decisions carry the grammar, and both are about not guessing:
+//
+//   1. A full date is taken out of the line first, then the time range. "13-09"
+//      is indistinguishable from a shift running 13:00 → 09:00, so a dashed
+//      date must carry its year ("13-09-2026") and a partial date is written
+//      with slashes or dots ("13/09"). Paying a day at the wrong time is worse
+//      than asking for a clearer line, so an unclear one is asked about.
+//   2. A range with no am/pm is read as a 12-hour clock when that lands the end
+//      after the start ("8-4" is 08:00 → 16:00) and as an overnight shift when
+//      it cannot ("20-1" is 20:00 → 01:00). One unambiguous half of the day
+//      ("8am-4", "4-9pm") teaches the other half which half it means.
+const WEEKDAY_INDEX = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+const MONTH_INDEX = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+// One end of a time range: 8, 08:30, 8.30, 0800, 1630, noon, midnight, 4pm.
+// Longest numeric form first: '1630' must read as 16:30 rather than as the hour
+// 16 followed by a stray '30' left behind in the note.
+const TIME_ATOM = "(\\d{3,4}|\\d{1,2}(?:[:.]\\d{2})?|noon|midday|midnight)\\s*(a\\.?m\\.?|p\\.?m\\.?)?";
+const TIME_RANGE_RE = new RegExp(`${TIME_ATOM}\\s*(?:-|–|—|to|until|till)\\s*${TIME_ATOM}`, 'gi');
+const HOURS_RE = /\b(\d{1,3}(?:[.,]\d{1,2})?)\s*(?:h|hr|hrs|hours)\b/i;
+const SPECIAL_RE = /\b(special|bh|bank\s*holiday|double\s*time|time\s*and\s*a\s*half)\b/i;
+const WEEKDAY_RE = /\b(last|next)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday|sun|mon|tues|tue|weds|wed|thurs|thur|thu|fri|sat)\b/i;
+const NAMED_DAY_RE = /\b(today|tonight|yesterday|yday)\b/i;
+const SPELLED_DAY_FIRST = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3,9})\b/i;
+const SPELLED_MONTH_FIRST = /\b([a-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?\b/i;
+const SHORT_DATE_RE = /\b(\d{1,2})[\/.]\s?(\d{1,2})\b/;
+
+function isoFromParts(year, month, day) {
+  if (!(year >= 2000 && year <= 2100) || !(month >= 1 && month <= 12) || !(day >= 1 && day <= 31)) return null;
+  const iso = `${year}-${pad2(month)}-${pad2(day)}`;
+  return dateOk(iso) ? iso : null;
+}
+
+function isoAddDays(iso, days) {
+  const d = isoToUtcMidnight(iso);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Day-first is the sheet's own order, so it is the default; a part over 12 can
+// only be the day, which settles the other way round without being asked.
+function dayMonth(first, second) {
+  return first > 12 || second > 12 ? { day: Math.max(first, second), month: Math.min(first, second) }
+    : { day: first, month: second };
+}
+
+/** A date that names its own year, so nothing about it can be read as a time
+ *  range: the ISO form, and any three-part form whose last part is four digits.
+ *  Taken out of the line before the range is looked for. */
+function readDatedYear(text, today) {
+  const iso = /(\d{4})-(\d{1,2})-(\d{1,2})/.exec(text);
+  if (iso) return { matched: iso[0], iso: isoFromParts(+iso[1], +iso[2], +iso[3]), token: iso[0] };
+  const full = /(\d{1,2})[.\/\-](\d{1,2})[.\/\-](\d{4})/.exec(text);
+  if (full) {
+    const { day, month } = dayMonth(+full[1], +full[2]);
+    return { matched: full[0], iso: isoFromParts(+full[3], month, day), token: full[0] };
+  }
+  return null;
+}
+
+/** The date a line names, with the text that named it (so it can be taken out
+ *  of the line) and the token to report when something date-shaped is not a
+ *  date. Called once the time range has been lifted out, which is what makes a
+ *  dashed partial date ("13-09") safe to read here. */
+function readShiftDate(text, today) {
+  const year = /\b(20\d{2})\b/.exec(text);
+  const dated = readDatedYear(text, today);
+  if (dated) return dated;
+  const dashed = /(\d{1,2})[.\-](\d{1,2})[.\-](\d{2,4})/.exec(text);
+  if (dashed) {
+    const { day, month } = dayMonth(+dashed[1], +dashed[2]);
+    const yy = +dashed[3];
+    return { matched: dashed[0], iso: isoFromParts(yy < 100 ? 2000 + yy : yy, month, day), token: dashed[0] };
+  }
+  const slash = SHORT_DATE_RE.exec(text);
+  if (slash) {
+    const { day, month } = dayMonth(+slash[1], +slash[2]);
+    const y = year ? +year[1] : new Date(`${today}T00:00:00Z`).getUTCFullYear();
+    return { matched: slash[0], iso: isoFromParts(y, month, day), token: slash[0] };
+  }
+  const named = NAMED_DAY_RE.exec(text);
+  if (named) {
+    const word = named[1].toLowerCase();
+    return { matched: named[0], iso: isoAddDays(today, word === 'yesterday' || word === 'yday' ? -1 : 0) };
+  }
+  for (const [pattern, monthAt] of [[SPELLED_DAY_FIRST, 2], [SPELLED_MONTH_FIRST, 1]]) {
+    const m = pattern.exec(text);
+    if (!m) continue;
+    const month = MONTH_INDEX[m[monthAt].slice(0, 3).toLowerCase()];
+    if (!month) continue;
+    const day = +(monthAt === 2 ? m[1] : m[2]);
+    const y = year ? +year[1] : new Date(`${today}T00:00:00Z`).getUTCFullYear();
+    return { matched: m[0], iso: isoFromParts(y, month, day), token: m[0] };
+  }
+  const weekday = WEEKDAY_RE.exec(text);
+  if (weekday) {
+    const target = WEEKDAY_INDEX[weekday[2].slice(0, 3).toLowerCase()];
+    const from = isoToUtcMidnight(today).getUTCDay();
+    const relative = (weekday[1] || '').toLowerCase();
+    // A weekday on its own is the one just gone (or today); "last" skips today,
+    // "next" reaches forwards.
+    if (relative === 'next') return { matched: weekday[0], iso: isoAddDays(today, ((target - from + 7) % 7) || 7) };
+    let back = (from - target + 7) % 7;
+    if (relative === 'last' && back === 0) back = 7;
+    return { matched: weekday[0], iso: isoAddDays(today, -back) };
+  }
+  return null;
+}
+
+/** Minutes past midnight for one end of a range, or null when it is not a time. */
+function clockMinutes(token, meridiem) {
+  if (!token) return null;
+  const word = token.toLowerCase();
+  if (word === 'noon' || word === 'midday') return 12 * 60;
+  if (word === 'midnight') return 0;
+  let hour, minute = 0;
+  if (/^\d{3,4}$/.test(token)) { hour = +token.slice(0, -2); minute = +token.slice(-2); }
+  else {
+    const m = /^(\d{1,2})(?:[:.](\d{2}))?$/.exec(token);
+    if (!m) return null;
+    hour = +m[1];
+    minute = m[2] ? +m[2] : 0;
+  }
+  if (minute > 59 || hour > 23) return null;
+  const half = (meridiem || '').replace(/\./g, '').toLowerCase();
+  if (half === 'pm' && hour < 12) hour += 12;
+  if (half === 'am' && hour === 12) hour = 0;
+  return hour * 60 + minute;
+}
+
+/** A whole range in minutes past midnight, reading it the way it was written. */
+function shiftRange(a, am, b, bm) {
+  let start = clockMinutes(a, am);
+  let end = clockMinutes(b, bm);
+  if (start == null || end == null) return null;
+  const otherHalf = half => (half === 'pm' ? 'am' : 'pm');
+  const halfOf = raw => (raw || '').replace(/\./g, '').toLowerCase();
+  if (am && !bm) {
+    // The end follows the start's half of the day when that reads forwards, and
+    // the other half when it does not ("8am-4" is a morning start, an afternoon
+    // end). Both halves stated are taken as written: "8pm-4am" is overnight.
+    const same = clockMinutes(b, halfOf(am));
+    const other = clockMinutes(b, otherHalf(halfOf(am)));
+    if (same != null && same > start) end = same;
+    else if (other != null && other > start) end = other;
+  } else if (bm && !am) {
+    const same = clockMinutes(a, halfOf(bm));
+    const other = clockMinutes(a, otherHalf(halfOf(bm)));
+    if (same != null && same < end) start = same;
+    else if (other != null && other < end) start = other;
+  } else if (!am && !bm) {
+    // No half of the day stated anywhere: "8-4" can only be a daytime shift,
+    // while "20-1" can only be the overnight one it looks like.
+    const hour = /^(\d{1,2})/.exec(b);
+    if (end <= start && start <= 12 * 60 && hour && +hour[1] <= 12) end += 12 * 60;
+  }
+  return { start, end };
+}
+
+/**
+ * Read one shift per line. Returns the rows that are ready to store and, for
+ * every line that is not, why — a bad line never costs the good ones beside it.
+ */
+export function parseShiftText(text, today) {
+  const day = dateOk(today) ? today : todayIso();
+  const shifts = [];
+  const problems = [];
+  String(text || '').split(/\r?\n|;/).forEach((raw, index) => {
+    const line = raw.trim();
+    if (!line) return;
+    const fail = error => problems.push({ line: index + 1, text: line, error });
+    let rest = ` ${line} `;
+    const take = matched => { rest = rest.replace(matched, ' '); };
+
+    // A date that carries its year first, so the range scan below cannot read
+    // part of it as a shift ("8.30-16.30" is a range; a date is not).
+    let date = readDatedYear(rest, day);
+    if (date) {
+      if (!date.iso) { fail(`"${date.token}" is not a date`); return; }
+      take(date.matched);
+    }
+
+    // Every range-looking token, so two of them ("13-09 8-4") are reported
+    // rather than one silently winning.
+    const ranges = [...rest.matchAll(TIME_RANGE_RE)];
+    if (ranges.length > 1) {
+      fail('two sets of times on one line — write one shift per line (a dashed date needs its year: 13/09)');
+      return;
+    }
+    let start = null, end = null;
+    if (ranges.length === 1) {
+      const [whole, a, am, b, bm] = ranges[0];
+      const pair = shiftRange(a, am, b, bm);
+      if (!pair) { fail(`"${whole.trim()}" is not a pair of times`); return; }
+      ({ start, end } = pair);
+      take(whole);
+    }
+
+    // The rest of the date shapes — now that no time range is left to confuse
+    // them, a partial dashed date is readable here too.
+    if (!date) {
+      date = readShiftDate(rest, day);
+      if (date) {
+        if (date.token && !date.iso) { fail(`"${date.token}" is not a date`); return; }
+        take(date.matched);
+      }
+    }
+
+    const hoursText = HOURS_RE.exec(rest);
+    let hours = null;
+    if (hoursText) {
+      hours = r2(parseFloat(hoursText[1].replace(',', '.')));
+      if (!(hours > 0) || hours > 24) { fail(`"${hoursText[0]}" is not a number of hours`); return; }
+      take(hoursText[0]);
+    }
+    if (start == null && hours == null) {
+      fail("no times — try 'mon 8-4', or state the hours for a week off ('mon 7h')");
+      return;
+    }
+    if (start != null && hours != null) {
+      fail('both times and hours — keep one of them');
+      return;
+    }
+
+    const specialMatch = SPECIAL_RE.exec(rest);
+    if (specialMatch) take(specialMatch[0]);
+    const note = rest.replace(/[\s,;·|]+/g, ' ').replace(/^[\s\-–—:]+|[\s\-–—:]+$/g, '').slice(0, 120);
+    shifts.push({
+      date: date ? date.iso : day,
+      start: start == null ? '' : fmtHM(start),
+      end: end == null ? '' : fmtHM(end),
+      ...(hours == null ? {} : { hours }),
+      special: !!specialMatch,
+      note,
+    });
+  });
+  return { shifts, problems };
+}
+
+/**
+ * One line of quick entry's preview: what the row will be, in the units the
+ * week card will show it in. `pay` is shiftPay's answer for `shift` (or null),
+ * `money` the app's currency formatter. Module scope and string-only so the
+ * harness can pin it — the card used to branch on whether the shift priced at
+ * all, which sent a stated-hours row (a booked week off) down the clock-times
+ * branch and printed an empty range: "Thu 24 Sep · – +1 · 7h".
+ */
+export function shiftPreviewLine(shift, pay, money) {
+  const bits = [`${weekdayShort(shift.date)} ${prettyDate(shift.date)}`];
+  if (shift.start && shift.end) {
+    const over = isOvernight(parseHM(shift.start), parseHM(shift.end)) ? ' +1' : '';
+    bits.push(`${shift.start}–${shift.end}${over}`);
+    if (pay) bits.push(`${pay.hours}h`);
+  } else {
+    bits.push(`${pay ? pay.hours : shift.hours}h stated, no clock times`);
+  }
+  if (pay) bits.push(`${pay.special ? 'special' : 'normal'} ${money(pay.rate)}/h → ${money(pay.gross)}`);
+  // The note is part of the row that gets written, so it belongs in the
+  // preview — otherwise the only unverified part of the row is the one the
+  // user typed in their own words.
+  if (shift.note) bits.push(shift.note);
+  return bits.join(' · ');
 }
 
 // ---------- OCR: text parsing (pure, Node-testable) ----------
@@ -705,11 +1062,28 @@ function matchMonth(token) {
   return null;
 }
 function parseDateToken(text, today) {
-  const m = /^(\d{1,2})[-/. ]([A-Za-z0-9]{2,9})$/.exec(String(text || '').trim());
-  if (!m) return null;
-  const mon = matchMonth(m[2]);
-  if (mon == null) return null;
-  return today ? inferDate(+m[1], Object.keys(MONTHS)[mon], today) : true;
+  const s = String(text || '').trim();
+  const m = /^(\d{1,2})[-/. ]([A-Za-z0-9]{2,9})$/.exec(s);
+  if (m) {
+    const mon = matchMonth(m[2]);
+    if (mon == null) return null;
+    return today ? inferDate(+m[1], Object.keys(MONTHS)[mon], today) : true;
+  }
+  // A fully numeric date. Rosters head their columns "22-Sep" but their TITLE
+  // with a range — "Week 39   22/09/2026 - 28/09/2026   Store 3021" — and that
+  // range is the one part of the header big enough to survive glare, so it is
+  // worth knowing: it says which week the sheet covers even when the date row
+  // itself did not read (see columnAnchors).
+  const n = /^(\d{1,2})[-/. ](\d{1,2})[-/. ](\d{2,4})$/.exec(s);
+  if (!n) return null;
+  // Day first, as the workbook writes it, unless only one reading is possible:
+  // a 13+ in the first place can only be a day and a 13+ in the second only a
+  // day too, which settles a US-style sheet the other way round.
+  const a = +n[1], b = +n[2];
+  const [day, mon] = a > 12 && b <= 12 ? [a, b] : b > 12 && a <= 12 ? [b, a] : [a, b];
+  const year = +n[3] < 100 ? 2000 + +n[3] : +n[3];
+  if (day < 1 || day > 31 || mon < 1 || mon > 12) return null;
+  return today ? new Date(Date.UTC(year, mon - 1, day)) : true;
 }
 
 function inferDate(day, mon, today) {
@@ -733,6 +1107,405 @@ function inferDate(day, mon, today) {
 // opts.fallback: { weekStart: 'YYYY-MM-DD' } — used when the date row could not
 // be read at all: the seven days are laid out evenly across the span the time
 // cells occupy, starting at weekStart (roster columns are Sun→Sat in order).
+// ---------- roster OCR: the grid ----------
+/**
+ * Where a row's name column ends and its first day begins: the left edge of the
+ * first column, as the grid has it.
+ *
+ * NOT "a couple of word-widths left of the first column's centre", which is what
+ * this used to be. A cell's text is left-aligned in its column, so a short one
+ * ("OFF") sits half a cell left of its own centre — inside any threshold drawn
+ * from the centre — and the day off was swallowed into the name. The name that
+ * then reads "Sean Murphy OFF" matches nobody, and the scan loses the row it was
+ * looking for. Erring the other way costs nothing: a name that drifts right lands
+ * in the first day column, where it is not a time range and so is no cell at all.
+ */
+export function rosterNameColumnRight(bounds) {
+  return bounds && bounds.length ? bounds[0][0] : Infinity;
+}
+
+/**
+ * One day column's horizontal extent: the halfway line to each neighbour, so a
+ * word belongs to the column its centre falls in and never to whichever word
+ * happens to sit beside it. Shared by the strip pass and the cell pass, which is
+ * what makes the two agree about where a day starts.
+ *
+ * The first and last columns have no neighbour to meet halfway, so they are
+ * extrapolated by half a column pitch. That overshoots into the name column on
+ * the left, deliberately: a name that drifts right still lands left of the first
+ * day (see rosterNameColumnRight), while a cell that drifted a few pixels left
+ * never lands in the name column's lap.
+ */
+export function rosterColumnBounds(cols) {
+  const cx = (cols || []).map(c => Number(c && c.cx)).filter(Number.isFinite);
+  if (!cx.length) return [];
+  return cx.map((c, i) => {
+    const prev = i > 0 ? cx[i - 1] : null;
+    const next = i < cx.length - 1 ? cx[i + 1] : null;
+    const pitch = cx.length > 1 ? Math.abs((next != null ? next : c) - (prev != null ? prev : c)) : 1;
+    return [
+      prev != null ? (prev + c) / 2 : c - pitch / 2,
+      next != null ? (c + next) / 2 : c + pitch / 2,
+    ];
+  });
+}
+
+// The range-shaped run inside a cell's text, so a cell carrying one shift plus
+// noise still reads. Module scope so both the strip pass and the cell pass agree
+// on what "a range" looks like to within a stray character.
+const CELL_RANGE_RE = /\d{1,2}(?::\d{2})?\s*[-–—]\s*\d{1,2}(?::\d{2})?/g;
+
+/**
+ * The shift one day column's words state, or null. Pure, so the grammar a photo
+ * is read with can be pinned without a photo.
+ *
+ * `tokens` are the strip pass's words that fell inside the column, any order.
+ * The job is to survive the ways a cell arrives broken:
+ *
+ *   - split into pieces by the engine ("07:00" "-" "15:00") — re-joined when
+ *     they run together, which is what the gap is for;
+ *   - carrying a rule line or the neighbouring column's edge ("| 07:00-15:00") —
+ *     a token that is punctuation carries no glyphs, and one good token is
+ *     enough, so the cell is taken from the best single token before it is lost;
+ *   - read twice, because two overlapping strips both cover the row — the two
+ *     reads sit on top of each other, so the duplicate is dropped (the more
+ *     confident copy kept) rather than concatenated into nonsense;
+ *   - holding exactly one range among noise ("07:00-15:00 x") — recovered, but
+ *     only when the cell holds exactly ONE, since two ranges on one day means the
+ *     grid put two days in this column and neither can be trusted to be the
+ *     day's own shift.
+ */
+// A token of pure punctuation is a rule line the engine has dressed as text: it
+// carries no glyphs, so it belongs in neither a name nor the box a cell is
+// cropped by. The sheet's own rules come back this way on a real read.
+const isGlyphToken = text => /[0-9A-Za-z]/.test(String(text == null ? '' : text));
+
+/**
+ * Words written back as the runs they were written in, which is what both a
+ * name and the pieces of a cell need before they can be read:
+ *
+ *   - pieces that run together are rejoined verbatim, so the "22" "-" "Sep" a
+ *     date came back in closes up into one token again;
+ *   - a word that starts where the run so far already is was READ twice, not
+ *     written twice — the two overlapping strips both cover the row — so the
+ *     more confident copy is kept instead of the pair concatenating into
+ *     "LiamLiam DoyleDoyle";
+ *   - everything else keeps its own run, and the caller joins runs with a space.
+ *
+ * Only a substantial overlap counts as a double read (40% of the shorter token),
+ * because a genuine pair of pieces can shave a pixel or two off each other.
+ *
+ * Punctuation is deliberately NOT filtered here: the "-" between the two halves
+ * of a split range arrives as its own token with no glyph in it, and dropping it
+ * would leave "07:00" and "15:00" as two ranges in one day. Filtering that noise
+ * is the caller's job, where it knows whether it is reading a name or a cell.
+ */
+function mergeTokenRuns(words, joinGap) {
+  const sorted = (words || [])
+    .filter(w => w && String(w.text || '').trim())
+    .map(w => ({ text: String(w.text).trim(), x0: Number(w.x0), x1: Number(w.x1), confidence: w.confidence == null ? 100 : w.confidence }))
+    .sort((a, b) => a.x0 - b.x0);
+  const runs = [];
+  for (const t of sorted) {
+    const prev = runs[runs.length - 1];
+    if (prev && prev.x1 - t.x0 > Math.max(2, (t.x1 - t.x0) * 0.4)) {
+      if (t.confidence > prev.confidence) { prev.text = t.text; prev.confidence = t.confidence; }
+      prev.x0 = Math.min(prev.x0, t.x0);
+      prev.x1 = Math.max(prev.x1, t.x1);
+      continue;
+    }
+    if (prev && t.x0 - prev.x1 <= joinGap) { prev.text += t.text; prev.x1 = t.x1; continue; }
+    runs.push({ ...t });
+  }
+  return runs;
+}
+
+// One row's words as text: a space only where the engine left one, so "Parth"
+// "Sharma" stays two words while the fragments of one token close up. The name a
+// staff row is matched on is read this way, and a rule line the engine read as
+// "|" is dropped here rather than being carried into the name.
+function joinRowWords(words, joinGap) {
+  return mergeTokenRuns((words || []).filter(w => w && isGlyphToken(w.text)), joinGap)
+    .map(r => r.text).join(' ').trim();
+}
+
+export function parseCellTokens(tokens, joinGap = 12) {
+  const runs = mergeTokenRuns(tokens, joinGap);
+  if (!runs.length) return null;
+  const confidence = Math.round(Math.min(...runs.map(r => r.confidence)));
+  const text = runs.map(r => r.text).join(' ');
+  const direct = parseTimeCell(text);
+  if (direct) return { ...direct, raw: text, confidence };
+  // One run at a time: a column's crop can carry a rule's edge, and the shift is
+  // still in there perfectly readable. But only while exactly one run IS a shift
+  // — two ranges in one day means the grid put two days in this column, and
+  // picking the first would be guessing which one this day was paid for.
+  const ranges = runs.map(r => ({ run: r, parsed: parseTimeCell(r.text) })).filter(x => x.parsed);
+  if (ranges.length === 1) return { ...ranges[0].parsed, raw: ranges[0].run.text, confidence: Math.round(ranges[0].run.confidence) };
+  if (ranges.length > 1) return null;
+  // Nothing came back as a whole run, but exactly one range-shaped stretch of the
+  // cell's text did: that is the shift, with whatever rides beside it dropped.
+  const found = text.match(CELL_RANGE_RE) || [];
+  const only = found.length === 1 ? parseTimeCell(found[0]) : null;
+  return only ? { ...only, raw: text, confidence } : null;
+}
+
+/**
+ * The lines a page's words were written on.
+ *
+ * A row is a LINE, not a level: a photo of a sheet is almost never square to the
+ * phone — half a degree across 1700px is 15px of drift and a hand-held shot is
+ * routinely 1-3°, i.e. 30-90px — so each group keeps the slope of its own words
+ * and a word joins the group whose line passes nearest it AT ITS OWN x.
+ *
+ * Grouping by a flat tolerance instead is what tore a tilted page apart: one
+ * physical staff row landed in three groups, so the reader returned a matched
+ * fragment holding a third of the week's shifts plus a couple of fragments named
+ * "(unnamed row)" holding the rest.
+ *
+ * Pure and exported, because this decision is the whole difference between a
+ * read and a mess and a photo is not needed to test it.
+ */
+/** The tilt of the page, as a slope in y per x.
+ *
+ * Taken from the words themselves, before any row is known: the median slope
+ * over every pair that is far apart across the page and close enough vertically
+ * to be on one line. A median, because the pairs that are NOT on one line — a
+ * word from the row above, a rule the engine boxed as text — are a minority and
+ * cannot move it.
+ *
+ * Estimating the tilt once for the page rather than per row is what keeps a
+ * single bad box from forking a row: a group that fits its own slope from its own
+ * two ends has nothing to go on until it holds two well-separated words, and the
+ * one mis-boxed word that arrives first tilts the whole line it started.
+ */
+export function pageSkew(words, medianH) {
+  const pts = (words || [])
+    .filter(w => w && [w.x0, w.y0, w.x1, w.y1].every(Number.isFinite))
+    .map(w => ({ cx: (w.x0 + w.x1) / 2, cy: (w.y0 + w.y1) / 2 }));
+  const slopes = [];
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 1; j < pts.length; j++) {
+      const dx = pts[j].cx - pts[i].cx;
+      if (Math.abs(dx) < medianH * 6) continue;
+      const dy = pts[j].cy - pts[i].cy;
+      // Wider than a line, narrower than the row pitch: a pair from two different
+      // rows would drag the median toward "this page is level".
+      if (Math.abs(dy) > medianH * 3.5) continue;
+      slopes.push(dy / dx);
+    }
+  }
+  if (!slopes.length) return 0;
+  slopes.sort((a, b) => a - b);
+  const mid = slopes[Math.floor(slopes.length / 2)];
+  // Clamped to ~8.5°: past that the sheet is not being read by a phone held over
+  // it, and a runaway slope would chain the whole page into one group.
+  return Math.max(-0.15, Math.min(0.15, mid));
+}
+
+/**
+ * The lines a page's words were written on. A row is a LINE, not a level: a
+ * photo of a sheet is almost never square to the phone — half a degree across
+ * 1700px is 15px of drift and a hand-held shot is routinely 1-3°, i.e. 30-90px —
+ * so the page's tilt is taken out of every word's y first (see pageSkew) and the
+ * grouping is then the flat one it looks like: a word joins the line its centre
+ * sits on, within a text height.
+ *
+ * Grouping by a flat tolerance on the raw y is what tore a tilted page apart:
+ * one physical staff row landed in three groups, so the reader returned a matched
+ * fragment holding a third of the week's shifts plus fragments named
+ * "(unnamed row)" holding the rest — and the days the cell pass never saw went
+ * missing from the week entirely.
+ *
+ * Pure and exported, because this decision is the whole difference between a read
+ * and a mess, and a photo is not needed to test it.
+ */
+export function groupWordsIntoRows(words, medianH, skew = null) {
+  const tol = Math.max(medianH * 0.9, 14);
+  const slope = skew == null ? pageSkew(words, medianH) : skew;
+  const flat = (words || [])
+    .filter(w => w && [w.x0, w.y0, w.x1, w.y1].every(Number.isFinite))
+    .map(w => ({ w, y: (w.y0 + w.y1) / 2 - slope * ((w.x0 + w.x1) / 2) }))
+    .sort((a, b) => a.y - b.y);
+  const rows = [];
+  for (const { w, y } of flat) {
+    const row = rows.find(r => Math.abs(r.cy - y) <= tol);
+    if (row) { row.items.push(w); row.cy = row.items.reduce((s, i) => s + ((i.y0 + i.y1) / 2 - slope * ((i.x0 + i.x1) / 2)), 0) / row.items.length; }
+    else rows.push({ cy: y, items: [w] });
+  }
+  // The rest of the reader walks the sheet top to bottom.
+  return rows.sort((a, b) => a.cy - b.cy);
+}
+
+const DAY_MS = 86400000;
+const utcMidnight = d => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+
+/**
+ * The columns a roster's header describes, left to right.
+ *
+ * Tokens are taken from the header rows only — a shift range is what tells a
+ * header row from a staff row, see parseRosterWords — and two rules keep the
+ * sheet's own furniture out of the grid:
+ *
+ *  - A DATE anchors a column only from the header row that carries the most of
+ *    them, and only when that row carries three or more. A real roster titles
+ *    itself "Week 39  22/09/2026 - 28/09/2026  Store 3021": one or two dates, in
+ *    a line of prose, a hundred pixels from the first day column. Merged into the
+ *    grid they land as a phantom column at the left, every real column then sits
+ *    one place away from its own date, and the whole week is paid a day late.
+ *    Day NAMES are collected from every header row instead: they are what the
+ *    grid is checked against (see resolveColumnDates), and a day name standing
+ *    beside a title date is what proves that date is not a column.
+ *  - When no header row carries three dates — a sparse header, or a date row lost
+ *    to glare — those dates are returned as `weekStart` rather than as columns.
+ *    A title's date range still says which week the sheet covers, which is worth
+ *    far more than a phantom column.
+ *
+ * Missing header columns are filled in by the grid's own pitch, because rosters
+ * are evenly spaced; a grid that still came out wider than a week is narrowed to
+ * the seven consecutive columns that read most like one — the most day names and
+ * dates, at an even pitch.
+ */
+export function columnAnchors(headerRows, today = new Date(), mergeWithin = 90, max = 7) {
+  const rows = (headerRows || []).filter(r => r && Array.isArray(r.phrases));
+  const now = utcMidnight(today);
+  const dated = rows.map(row => row.phrases.filter(ph => parseDateToken(ph.text, now)));
+  let dateRow = -1, dateCount = 0;
+  dated.forEach((list, i) => { if (list.length > dateCount) { dateCount = list.length; dateRow = i; } });
+  const tokens = [];
+  rows.forEach((row, i) => {
+    for (const ph of row.phrases) {
+      const cx = (ph.x0 + ph.x1) / 2;
+      const weekday = weekdayOf(ph.text);
+      const date = dateCount >= 3 && i === dateRow ? parseDateToken(ph.text, now) : null;
+      if (weekday == null && !date) continue;
+      tokens.push({ cx, weekday, date, confidence: ph.confidence });
+    }
+  });
+  // Which week the sheet covers, when a date row did not survive to say it: two
+  // dates about a week apart are the range printed under the title, and the
+  // earlier of the two is the week's first day.
+  let weekStart = null;
+  if (dateCount < 3) {
+    const dates = [];
+    rows.forEach(row => row.phrases.forEach(ph => {
+      const d = parseDateToken(ph.text, now);
+      if (d) dates.push(d);
+    }));
+    dates.sort((a, b) => a - b);
+    for (let i = 0; i + 1 < dates.length; i++) {
+      const gap = Math.round((dates[i + 1] - dates[i]) / DAY_MS);
+      if (gap >= 5 && gap <= 7) { weekStart = dates[i]; break; }
+    }
+    if (!weekStart && dates.length) weekStart = dates[0];
+  }
+  tokens.sort((a, b) => a.cx - b.cx);
+  let cols = [];
+  for (const t of tokens) {
+    const last = cols[cols.length - 1];
+    if (last && t.cx - last.cx <= mergeWithin) {
+      // A date and a day name on one column are two readings of the same day.
+      if (t.date && !last.date) { last.date = t.date; last.confidence = t.confidence; }
+      if (t.weekday != null && last.weekday == null) last.weekday = t.weekday;
+      continue;
+    }
+    cols.push({ ...t });
+  }
+  if (cols.length >= 2) {
+    const gaps = cols.slice(1).map((c, i) => c.cx - cols[i].cx).sort((a, b) => a - b);
+    const gap = gaps[Math.floor(gaps.length / 2)];
+    if (gap > mergeWithin / 3) {
+      const filled = [...cols];
+      let left = filled[0].cx - gap;
+      while (filled.length < max) { filled.unshift({ cx: left }); left -= gap; }
+      let right = filled[filled.length - 1].cx + gap;
+      while (filled.length < max) { filled.push({ cx: right }); right += gap; }
+      cols = filled;
+    }
+  }
+  if (cols.length > max) {
+    let bestStart = 0, bestScore = -Infinity;
+    for (let s = 0; s + max <= cols.length; s++) {
+      const win = cols.slice(s, s + max);
+      const gaps = win.slice(1).map((c, i) => c.cx - win[i].cx);
+      const mid = [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)];
+      const even = gaps.every(g => Math.abs(g - mid) <= mid * 0.35) ? 1 : 0;
+      const score = win.filter(c => c.weekday != null).length * 3
+        + win.filter(c => c.date).length + even;
+      if (score > bestScore) { bestScore = score; bestStart = s; }
+    }
+    cols = cols.slice(bestStart, bestStart + max);
+  }
+  return { cols, weekStart };
+}
+
+/**
+ * Give every column its date, in place.
+ *
+ * Three sources, in this order, because they are not equally trustworthy:
+ *
+ *  - A date token, and the day name printed over the same column, cannot both be
+ *    right when they disagree ("23-Sep" read for 27-Sep) — the day name is the
+ *    reliable signal, so the date is dropped. The surviving anchor is then the
+ *    one that agrees with the most day names across the grid, and the whole
+ *    series is rebuilt from it: one misread date token can move a single column,
+ *    never the week.
+ *  - Failing that, the week range printed under the title (columnAnchors).
+ *  - Failing that, the day names alone: the week that CONTAINS today, or the
+ *    nearest one. Anchoring on "the next Tuesday after today" — which is what
+ *    this used to do — is a whole week late whenever today does not happen to
+ *    fall inside the week being read, and that pays every shift a week late.
+ */
+export function resolveColumnDates(cols, today = new Date(), weekStart = null) {
+  const list = cols || [];
+  if (!list.length) return list;
+  const now = utcMidnight(today).getTime();
+  for (const c of list) {
+    if (c.date && c.weekday != null && c.date.getUTCDay() !== c.weekday) { c.date = null; c.confidence = 0; }
+  }
+  const agreement = (anchorIdx, anchorDate) => {
+    let score = 0;
+    list.forEach((c, i) => {
+      if (c.weekday == null) return;
+      const d = new Date(anchorDate.getTime() + (i - anchorIdx) * DAY_MS);
+      if (d.getUTCDay() === c.weekday) score += 1;
+    });
+    return score;
+  };
+  const anchors = list.map((c, i) => ({ i, c })).filter(x => x.c.date);
+  if (anchors.length) {
+    let best = anchors[0], bestScore = -1;
+    for (const a of anchors) {
+      const score = agreement(a.i, a.c.date) * 1000 + (a.c.confidence || 0);
+      if (score > bestScore) { bestScore = score; best = a; }
+    }
+    list.forEach((c, i) => { c.date = new Date(best.c.date.getTime() + (i - best.i) * DAY_MS); c.confidence = undefined; });
+    return list;
+  }
+  const start = weekStart instanceof Date ? weekStart
+    : typeof weekStart === 'string' ? isoToUtcMidnight(weekStart) : null;
+  if (start && !Number.isNaN(start.getTime())) {
+    list.forEach((c, i) => { c.date = new Date(start.getTime() + i * DAY_MS); c.confidence = undefined; });
+    return list;
+  }
+  const first = list.findIndex(c => c.weekday != null);
+  if (first >= 0) {
+    let bestStart = null, bestGap = Infinity, bestForward = false;
+    for (let delta = -21; delta <= 21; delta++) {
+      const d = now + delta * DAY_MS;
+      if (new Date(d + first * DAY_MS).getUTCDay() !== list[first].weekday) continue;
+      const end = d + (list.length - 1) * DAY_MS;
+      const gap = now < d ? d - now : now > end ? now - end : 0;
+      const forward = now <= d;
+      if (gap < bestGap || (gap === bestGap && forward && !bestForward)) {
+        bestGap = gap; bestStart = d; bestForward = forward;
+      }
+    }
+    if (bestStart != null) list.forEach((c, i) => { c.date = new Date(bestStart + i * DAY_MS); });
+  }
+  return list;
+}
+
 export function parseRosterWords(rawWords, today = new Date(Date.UTC(2026, 8, 22)), opts = {}) {
   const words = (rawWords || [])
     .filter(w => w && String(w.text || '').trim() && (w.confidence == null || w.confidence > 25))
@@ -742,12 +1515,7 @@ export function parseRosterWords(rawWords, today = new Date(Date.UTC(2026, 8, 22
 
   const medianH = words.map(w => w.h).sort((a, b) => a - b)[Math.floor(words.length / 2)];
   const rowTol = Math.max(medianH * 0.9, 14);
-  const rows = [];
-  for (const w of words) {
-    const row = rows.find(r => Math.abs(r.cy - w.cy) <= rowTol);
-    if (row) { row.items.push(w); row.cy = row.items.reduce((s, i) => s + i.cy, 0) / row.items.length; }
-    else rows.push({ cy: w.cy, items: [w] });
-  }
+  const rows = groupWordsIntoRows(words, medianH);
   // Merge tokens on one row into phrases when horizontally adjacent
   // (tesseract splits "14-22" or "27-Sep" into fragments).
   const gapJoin = medianH * 1.6;
@@ -766,85 +1534,33 @@ export function parseRosterWords(rawWords, today = new Date(Date.UTC(2026, 8, 22
     }
   }
 
-  // Header band: the contiguous run of leading rows that actually carry a
-  // date token or a weekday name (a store/title row above them is skipped).
-  // Rows below the band are staff rows, so the band must close at the first
-  // row without a header token — otherwise the staff rows land inside it.
+  // Header band: the leading rows that carry a date token or a weekday name.
+  //
+  // Rows BETWEEN them count too, and the band closes on a staff row rather than
+  // on the first row without a header token. A roster prints its name-column
+  // heading ("Employee") on a line of its own between the day names and the
+  // dates, so a band that stopped at the first row it could not read closed
+  // before the dates — every column then lost its date and was anchored on the
+  // nearest day NAME to today instead, which on a sheet read a day either side of
+  // that name puts the whole week out by one and pays the wrong days.
+  //
+  // A shift range is what tells the two apart: no header row holds one, so the
+  // first row that does is where the staff begin.
+  //
+  // A row counts as a header row only when it carries TWO or more of those
+  // tokens, and the search runs well past the first few lines: a photo that came
+  // back with junk between the title and the grid (a dark or glare-lit shot puts
+  // hundreds of invented words on the page) pushes the real header further down,
+  // and a single stray token on a junk row is not a header.
   const headerRows = [];
-  for (const row of rows.slice(0, Math.min(5, rows.length))) {
-    const isHeader = row.phrases.some(ph => parseDateToken(ph.text) || weekdayOf(ph.text) != null);
-    if (isHeader) headerRows.push(row);
-    else if (headerRows.length) break;
+  const scanLimit = Math.max(8, Math.min(rows.length, Math.ceil(rows.length * 0.4)));
+  for (const row of rows.slice(0, scanLimit)) {
+    if (row.phrases.some(ph => parseTimeCell(ph.text))) break;
+    const heads = row.phrases.filter(ph => parseDateToken(ph.text) || weekdayOf(ph.text) != null).length;
+    if (heads >= 2) headerRows.push(row);
   }
-  const candidates = [];
-  for (const row of headerRows) {
-    for (const ph of row.phrases) {
-      const d = parseDateToken(ph.text, today);
-      if (d) { candidates.push({ cx: (ph.x0 + ph.x1) / 2, date: d, confidence: ph.confidence }); continue; }
-      const wd = weekdayOf(ph.text);
-      if (wd != null) candidates.push({ cx: (ph.x0 + ph.x1) / 2, weekday: wd, confidence: ph.confidence });
-    }
-  }
-  // Merge near-identical column anchors (date + weekday on the same column).
-  candidates.sort((a, b) => a.cx - b.cx);
-  const mergedCols = [];
-  for (const c of candidates) {
-    const last = mergedCols[mergedCols.length - 1];
-    if (last && Math.abs(last.cx - c.cx) <= medianH * 3) {
-      if (c.date && !last.date) { last.date = c.date; last.confidence = c.confidence; }
-      if (c.weekday != null && last.weekday == null) last.weekday = c.weekday;
-    } else mergedCols.push({ ...c });
-  }
-  // Extrapolate the uniform grid outwards so missed header columns still map
-  // (rosters are evenly spaced); cap at 7 columns.
-  let cols = mergedCols;
-  if (mergedCols.length >= 2) {
-    const gaps = [];
-    for (let i = 1; i < mergedCols.length; i++) gaps.push(mergedCols[i].cx - mergedCols[i - 1].cx);
-    gaps.sort((a, b) => a - b);
-    const gap = gaps[Math.floor(gaps.length / 2)];
-    if (gap > medianH * 2) {
-      cols = [...mergedCols];
-      let left = cols[0].cx - gap;
-      while (cols.length < 7) { cols.unshift({ cx: left }); left -= gap; }
-      let right = cols[cols.length - 1].cx + gap;
-      while (cols.length < 7) { cols.push({ cx: right }); right += gap; }
-    }
-  }
-  // A misread date token ("23-Sep" for 27-Sep) and its column's weekday name
-  // cannot both be right — when they disagree, the day name is the reliable
-  // signal, so drop the date and rebuild the whole series from the anchor that
-  // best agrees with the day names across the grid.
-  for (const c of cols) {
-    if (c.date && c.weekday != null && c.date.getUTCDay() !== c.weekday) { c.date = null; c.confidence = 0; }
-  }
-  const agreement = (anchorIdx, anchorDate) => {
-    let score = 0;
-    cols.forEach((c, i) => {
-      if (c.weekday == null) return;
-      const d = new Date(anchorDate.getTime() + (i - anchorIdx) * 86400000);
-      if (d.getUTCDay() === c.weekday) score += 1;
-    });
-    return score;
-  };
-  const anchors = cols.map((c, i) => ({ i, c })).filter(x => x.c.date);
-  if (anchors.length) {
-    let best = anchors[0], bestScore = -1;
-    for (const a of anchors) {
-      const score = agreement(a.i, a.c.date) * 1000 + (a.c.confidence || 0);
-      if (score > bestScore) { bestScore = score; best = a; }
-    }
-    cols.forEach((c, i) => { c.date = new Date(best.c.date.getTime() + (i - best.i) * 86400000); c.confidence = undefined; });
-  } else if (cols.length) {
-    // No usable date token: anchor the grid on the first day name, nearest to today.
-    const first = cols.find(c => c.weekday != null);
-    if (first) {
-      const base = isoToUtcMidnight(isoLocalUTC(today));
-      base.setUTCDate(base.getUTCDate() + ((first.weekday - base.getUTCDay() + 7) % 7));
-      const off = cols.indexOf(first);
-      cols.forEach((c, i) => { c.date = new Date(base.getTime() + (i - off) * 86400000); });
-    }
-  }
+  const grid = columnAnchors(headerRows, today, medianH * 3);
+  let cols = resolveColumnDates(grid.cols, today, grid.weekStart);
 
   // No date row was read — glare, a cut edge or a steep angle can lose it. The
   // roster still lays its days out left to right, so spread seven even columns
@@ -864,74 +1580,82 @@ export function parseRosterWords(rawWords, today = new Date(Date.UTC(2026, 8, 22
     }
   }
 
-  // Staff rows: everything below the header band.
+  // Staff rows: everything below the header band. A word is placed by the GRID —
+  // the column whose bounds hold its centre — not by which word happens to sit
+  // beside it. Merging on horizontal distance alone is what lost a whole roster:
+  // the sheet's column rules come back as "|"/"=" tokens parked exactly on the
+  // cell boundary, the name column ends ~30px left of the first day, and both
+  // gaps sit inside the merge distance — so "07:00-15:00 = OFF" collapsed into
+  // one phrase that was no longer a range, and "Parth Sharma 07:00-15:00" into
+  // one that was no longer a name, dropping the day either side of every rule.
+  //
+  // Segmenting by column also makes the duplicate impossible: two overlapping
+  // strips that both read the row put both copies of a cell in the same column,
+  // where parseCellTokens keeps one, instead of two cells racing for one day.
   const headerBottom = headerRows.length ? headerRows[headerRows.length - 1].cy + rowTol * 1.5 : rows[0].cy;
+  const bounds = rosterColumnBounds(cols);
+  const nameRight = rosterNameColumnRight(bounds);
+  const joinGap = medianH * 0.45;
   const out = [];
   for (const row of rows) {
     if (row.cy <= headerBottom) continue;
-    const firstColX = cols.length ? cols[0].cx : Infinity;
-    const nameParts = [];
-    const cellPhrases = [];
-    for (const ph of row.phrases) {
-      const cx = (ph.x0 + ph.x1) / 2;
-      if (cx < firstColX - medianH * 2.2) nameParts.push(ph);
-      else cellPhrases.push(ph);
-    }
-    if (!cellPhrases.length) continue;
-    const name = nameParts.map(p => p.text).join(' ').trim();
-    const cells = [];
-    const usedCols = new Map(); // colIndex → best cell, so duplicate reads don't both default on
-    for (const ph of cellPhrases) {
-      const cx = (ph.x0 + ph.x1) / 2;
-      let colIdx = -1, bestDist = Infinity;
-      cols.forEach((c, i) => {
-        const dist = Math.abs(c.cx - cx);
+    const nameWords = [];
+    const colWords = bounds.map(() => []);
+    for (const w of row.items) {
+      const cx = (w.x0 + w.x1) / 2;
+      if (cx < nameRight) { nameWords.push(w); continue; }
+      let colIdx = 0, bestDist = Infinity;
+      bounds.forEach((b, i) => {
+        const dist = cx < b[0] ? b[0] - cx : cx > b[1] ? cx - b[1] : 0;
         if (dist < bestDist) { bestDist = dist; colIdx = i; }
       });
-      const parsed = parseTimeCell(ph.text);
-      if (!parsed) continue; // "off", headers, noise
-      const col = colIdx >= 0 ? cols[colIdx] : null;
+      colWords[colIdx].push(w);
+    }
+    if (!colWords.some(list => list.length)) continue;
+    const cells = [];
+    for (let i = 0; i < bounds.length; i++) {
+      const parsed = parseCellTokens(colWords[i], joinGap);
+      if (!parsed) continue; // "off", a rest word, or a rule's edge
+      const col = cols[i];
       const date = col && col.date ? isoLocalUTC(col.date) : null;
       const weekday = col && col.date ? col.date.getUTCDay() : (col && col.weekday != null ? col.weekday : null);
-      const cell = {
+      cells.push({
         date, weekday,
         startMin: parsed.startMin, endMin: parsed.endMin,
-        raw: ph.text, confidence: Math.round(ph.confidence),
+        raw: parsed.raw, confidence: parsed.confidence,
         dupe: false,
-      };
-      const prev = usedCols.get(colIdx);
-      if (prev) {
-        // Two reads landed on one day (grid drift or a stray token): keep the
-        // more confident as the default and flag the other for review.
-        if (cell.confidence > prev.confidence) { prev.dupe = true; usedCols.set(colIdx, cell); }
-        else cell.dupe = true;
-      } else usedCols.set(colIdx, cell);
-      cells.push(cell);
+      });
     }
     if (!cells.length) continue;
+    const name = joinRowWords(nameWords, joinGap);
     out.push({
       name: name || '(unnamed row)',
       matches: opts.name ? nameMatches(name, opts.name) : false,
       cells,
+      // The words this row was read from — the same objects, so the cell pass can
+      // crop to where the ink actually is on a tilted page without re-deriving it
+      // from a row centre that a tilt moves by tens of pixels across the sheet.
+      words: row.items,
     });
   }
 
   // Cells read at cell resolution (see ocrOwnerCells) belong to the row the
   // typed name matched: each came from a crop of one day column rather than from
-  // a word box, so they replace that row's loose strip reads. When the pass
-  // covered the whole grid its silence about a day means the day is blank; when
-  // it only covered part of the grid, the strip reads it never covered are kept.
+  // a word box, so they are the better read of that day and win it.
+  //
+  // Merged a DAY at a time, not swapped wholesale. Replacing the row's cells
+  // whenever the pass claimed the whole grid meant one failed crop silently
+  // deleted a shift the strip pass had already read correctly — the crop a glare
+  // defeated, on the day that mattered. Here a day the pass read keeps its read,
+  // a day it could not read keeps the strip pass's, and a day both agree is empty
+  // is the only way a day goes missing.
   if (Array.isArray(opts.cells) && opts.cells.length) {
     let owner = out.find(r => r.matches);
     if (!owner && opts.name) { owner = { name: opts.name, matches: true, cells: [] }; out.unshift(owner); }
     if (owner) {
-      if (opts.cellsComplete) {
-        owner.cells = opts.cells;
-      } else {
-        const merged = new Map(owner.cells.map(c => [c.date, c]));
-        for (const c of opts.cells) merged.set(c.date, c);
-        owner.cells = [...merged.values()];
-      }
+      const merged = new Map(owner.cells.filter(c => c.date).map(c => [c.date, c]));
+      for (const c of opts.cells) if (c && c.date) merged.set(c.date, c);
+      owner.cells = [...merged.values()].sort((a, b) => String(a.date).localeCompare(String(b.date)));
     }
   }
   return { rows: out, columns: cols };
@@ -1012,31 +1736,210 @@ export async function drawPhotoPreview(file, canvas, maxW = 720) {
 // canvas and the blob all live only inside this call — the bitmap is released
 // and the canvas zeroed before it returns, and nothing is written to storage,
 // cache, or the network.
-async function ocrStripWords(worker, file, canvas, strip) {
-  let bitmap = null;
+/**
+ * How far the sheet is off square, in radians, read off the ink itself.
+ *
+ * The words can be levelled per row (see pageSkew) but the SHEET cannot: a page
+ * photographed 3.5° off square carries its header half a week to the RIGHT of its
+ * last staff row, because the two are 1000px apart down the page — 3.5° over
+ * 1000px is 60px of sideways drift, a third of a day column. Nothing downstream
+ * survives that: the day grid is dated off the header, the cells are read off
+ * the rows, and every short token between them ("OFF" is 40px wide) then lands in
+ * the neighbouring day's column. Rotating the photo level once, before anything
+ * is read, is what makes the header and the rows share one frame.
+ *
+ * The angle is the one whose horizontal projection of the ink is sharpest: a
+ * level line of text puts its whole stroke count into one row of the profile, a
+ * tilted one smears it over as many rows as it drifts. Coarse scan then a refine
+ * at a quarter of the step, on a downscaled grey copy — a few hundred thousand
+ * pixels, so the whole search is cheap enough to run on every scan.
+ *
+ * Pure over a grey buffer (0 = black), so the estimate can be tested without a
+ * camera. Returns the content's own rotation: rotate the image by -tilt to level
+ * it.
+ */
+export function ocrEstimateTilt(grey, w, h, opts = {}) {
+  const maxDeg = opts.maxDeg == null ? 6 : opts.maxDeg;
+  const step = opts.step == null ? 0.5 : opts.step;
+  if (!grey || !w || !h || grey.length < w * h) return 0;
+  const cx = w / 2, cy = h / 2;
+  const offset = Math.ceil(Math.hypot(w, h) / 2) + 2;
+  const bins = new Float64Array(2 * offset + 2);
+  const score = deg => {
+    const t = deg * Math.PI / 180;
+    const sin = Math.sin(t), cos = Math.cos(t);
+    bins.fill(0);
+    for (let y = 0; y < h; y++) {
+      const base = y * w;
+      const dy = y - cy;
+      for (let x = 0; x < w; x++) {
+        if (grey[base + x] > 128) continue;          // paper
+        // The y of this pixel in a frame rotated by -t, which is the frame the
+        // page would be level in: a line written at the photo's own rotation of t
+        // lands flat in it, and so stacks its ink into one bin.
+        const i = Math.round(offset - (x - cx) * sin + dy * cos);
+        if (i >= 0 && i < bins.length) bins[i] += 1;
+      }
+    }
+    let sum = 0, sq = 0;
+    for (let i = 0; i < bins.length; i++) { sum += bins[i]; sq += bins[i] * bins[i]; }
+    return bins.length > 0 ? sq / Math.max(1, sum) : 0;
+  };
+  let best = 0, bestScore = -1;
+  for (let deg = -maxDeg; deg <= maxDeg + 1e-9; deg += step) {
+    const s = score(deg);
+    if (s > bestScore) { bestScore = s; best = deg; }
+  }
+  const fine = [best - step * 0.5, best, best + step * 0.5]
+    .filter(d => d >= -maxDeg && d <= maxDeg)
+    .map(d => ({ d, s: score(d) }))
+    .sort((a, b) => b.s - a.s);
+  return (fine[0] ? fine[0].d : best) * Math.PI / 180;
+}
+
+// The photo, decoded once for every pass that needs it (the strips, the page and
+// the cells) instead of once each. `imageOrientation: 'from-image'` is what makes
+// a phone photo taken in portrait arrive the right way up.
+async function decodePhoto(file) {
+  const buf = await file.arrayBuffer();
+  const bitmap = await createImageBitmap(new Blob([buf], { type: file.type || 'image/jpeg' }), { imageOrientation: 'from-image' });
+  return { bitmap, width: bitmap.width, height: bitmap.height };
+}
+
+// The photo turned level, in a canvas big enough to hold the whole sheet at any
+// angle the estimator accepts. Its own coordinates replace the photo's from here
+// on, so every box the engine reports is in a frame the header and the rows both
+// agree on.
+async function levelPhoto(source, tilt) {
+  const cv = document.createElement('canvas');
+  const cos = Math.abs(Math.cos(tilt)), sin = Math.abs(Math.sin(tilt));
+  const w = source.width, h = source.height;
+  cv.width = Math.max(1, Math.round(w * cos + h * sin));
+  cv.height = Math.max(1, Math.round(w * sin + h * cos));
+  const g = cv.getContext('2d');
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, cv.width, cv.height);
+  g.translate(cv.width / 2, cv.height / 2);
+  g.rotate(-tilt);
+  g.drawImage(source.bitmap, -w / 2, -h / 2, w, h);
+  const bitmap = await createImageBitmap(cv);
+  return { bitmap, width: bitmap.width, height: bitmap.height };
+}
+
+// The photo turned a quarter turn. Half the roster photos people take are of a
+// sheet held sideways (the sheet is landscape, the phone is not), and a page the
+// engine sees rotated 90° is not a page it can read at all — but the same page
+// turned back is. Tried only when nothing in the sheet's own orientation carried
+// the typed name, so the cost falls on the scan that was failing anyway.
+async function turnPhoto(source, turn = 90) {
+  const cv = document.createElement('canvas');
+  cv.width = source.height;
+  cv.height = source.width;
+  const g = cv.getContext('2d');
+  g.translate(cv.width / 2, cv.height / 2);
+  g.rotate(turn * Math.PI / 180);
+  g.drawImage(source.bitmap, -source.width / 2, -source.height / 2, source.width, source.height);
+  const bitmap = await createImageBitmap(cv);
+  return { bitmap, width: bitmap.width, height: bitmap.height };
+}
+
+// A small grey copy to estimate the tilt from: long side 640 is enough to see a
+// half-degree off square across a page, and small enough to project 25 times.
+function greyThumb(source) {
+  const scale = Math.min(1, 640 / Math.max(source.width, source.height));
+  const w = Math.max(1, Math.round(source.width * scale));
+  const h = Math.max(1, Math.round(source.height * scale));
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const c = cv.getContext('2d', { willReadFrequently: true });
+  c.fillStyle = '#fff';
+  c.fillRect(0, 0, w, h);
+  c.drawImage(source.bitmap, 0, 0, w, h);
+  const d = c.getImageData(0, 0, w, h).data;
+  const grey = new Uint8Array(w * h);
+  for (let i = 0; i < grey.length; i++) {
+    grey[i] = Math.round(0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2]);
+  }
+  return { grey, w, h };
+}
+
+/**
+ * Stretch a photo's own blacks and whites out to the full range, in place.
+ *
+ * A sheet photographed in shadow, or under a lamp that does not reach the far
+ * corner, arrives with its text at 90 grey and its paper at 170: perfectly
+ * legible to a person, and half the contrast the engine's binariser looks for —
+ * which is how a whole roster comes back with words too faint to keep. The
+ * percentiles ignore the few pixels a glare spot owns, and a photo that already
+ * spans the range (lo near 0, hi near the top) is left exactly as it is, so a
+ * good photo is read by the same engine it was read by before this existed.
+ */
+export function ocrAutoContrast(d, sample = 4) {
+  const hist = new Uint32Array(256);
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4 * Math.max(1, sample)) { hist[d[i]]++; n++; }
+  if (!n) return;
+  // Most of a sheet of paper is paper: when the median pixel is already white the
+  // photo is exposed, and stretching it would only amplify the JPEG's ringing
+  // around every stroke — which is exactly what a thin-stroke page (a monospace
+  // roster, small print) has to survive. The stretch is for the photo whose paper
+  // is grey: shot in shadow, or lit from one side.
+  let acc = 0, median = 255;
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * 0.5) { median = v; break; } }
+  if (median >= 235) return;
+  let lo = 0, hi = 255;
+  acc = 0;
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * 0.004) { lo = v; break; } }
+  acc = 0;
+  for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= n * 0.004) { hi = v; break; } }
+  if (hi - lo < 60 || hi - lo > 245) return;
+  const span = hi - lo;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = Math.max(0, Math.min(255, Math.round(((d[i] - lo) / span) * 255)));
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+}
+
+// Stretch the photo the reader just drew, before the engine sees it.
+function ocrStretchCanvas(c, w, h) {
   try {
-    const buf = await file.arrayBuffer();
-    bitmap = await createImageBitmap(new Blob([buf], { type: file.type || 'image/jpeg' }), { imageOrientation: 'from-image' });
-    const imgW = bitmap.width, imgH = bitmap.height;
+    const img = c.getImageData(0, 0, w, h);
+    ocrAutoContrast(img.data);
+    c.putImageData(img, 0, 0);
+  } catch { /* a canvas that cannot be read is read as it was drawn */ }
+}
+
+// v5 keeps words on data.words; older builds and some images only fill blocks.
+function tesseractWords(result) {
+  const words = Array.isArray(result?.data?.words) ? result.data.words : [];
+  if (words.length) return words;
+  if (Array.isArray(result?.data?.blocks)) {
+    return result.data.blocks.flatMap(b => (b.paragraphs || []).flatMap(p => (p.lines || []).flatMap(l => l.words || [])));
+  }
+  return [];
+}
+
+async function ocrStripWords(worker, source, canvas, strip) {
+  try {
+    const bitmap = source.bitmap;
+    const imgW = source.width, imgH = source.height;
     const sy = Math.max(0, Math.round(strip[0] * imgH));
     const sh = Math.max(24, Math.min(imgH - sy, Math.round((strip[1] - strip[0]) * imgH)));
-    // Upscale toward the factor that works, capped by a 12 MP working budget.
-    const scale = Math.max(0.5, Math.min(2, Math.sqrt(12e6 / Math.max(1, imgW * sh))));
+    // Upscale toward the factor that works, capped by the working budget. A small
+    // photo is the one case that wants more than 2× — its glyphs are 20px tall and
+    // a shift's own digits are what the engine gets wrong at that size — and the
+    // budget already stops the upscale from costing more than one working image.
+    const scale = Math.max(0.5, Math.min(3, Math.sqrt(OCR_WORK_PIXELS / Math.max(1, imgW * sh))));
     canvas.width = Math.max(1, Math.round(imgW * scale));
     canvas.height = Math.max(1, Math.round(sh * scale));
-    canvas.getContext('2d').drawImage(bitmap, 0, sy, imgW, sh, 0, 0, canvas.width, canvas.height);
-    bitmap.close(); // pixel data released before recognition starts
-    bitmap = null;
+    const c = canvas.getContext('2d', { willReadFrequently: true });
+    c.drawImage(bitmap, 0, sy, imgW, sh, 0, 0, canvas.width, canvas.height);
+    ocrStretchCanvas(c, canvas.width, canvas.height);
 
     const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
     const result = await worker.recognize(blob);
-    // v5 keeps words on data.words; fall back to walking blocks.
-    let words = Array.isArray(result?.data?.words) ? result.data.words : [];
-    if (!words.length && Array.isArray(result?.data?.blocks)) {
-      words = result.data.blocks.flatMap(b => (b.paragraphs || []).flatMap(p => (p.lines || []).flatMap(l => l.words || [])));
-    }
     const kx = imgW / canvas.width, ky = sh / canvas.height;
-    return words.map(w => ({
+    return tesseractWords(result).map(w => ({
       text: w.text,
       x0: (w.bbox?.x0 ?? 0) * kx, x1: (w.bbox?.x1 ?? 0) * kx,
       y0: sy + (w.bbox?.y0 ?? 0) * ky, y1: sy + (w.bbox?.y1 ?? 0) * ky,
@@ -1044,8 +1947,45 @@ async function ocrStripWords(worker, file, canvas, strip) {
     }));
   } finally {
     // Runs on every path — success, a decode that threw, a cancelled scan — so
-    // the strip canvas is always zeroed and the bitmap always released.
-    if (bitmap) bitmap.close();
+    // the strip canvas is always zeroed. The photo itself belongs to the scan and
+    // is released once, by ocrRosterRow.
+    canvas.width = 0;
+    canvas.height = 0;
+  }
+}
+
+// Read the WHOLE photo in one pass, in image pixel coordinates.
+//
+// The strip pass is the cheap path — each strip holds the upscale small glyphs
+// need while staying inside the working budget — but it costs the engine the
+// page: a strip that starts below the header holds no title, no date band and no
+// column headings, and on a sheet that is two or three degrees off square the
+// layout analysis has nothing to straighten against, so it can box a whole
+// column of one row as a single tall blob instead of reading it line by line.
+// A row in that band is invisible to the strip pass: the typed name is simply
+// not among its words, however legible the photo is. This pass gives the engine
+// the sheet's own layout, and is what the reader falls back to when the strips
+// have not found the row.
+async function ocrPageWords(worker, source, canvas) {
+  try {
+    const bitmap = source.bitmap;
+    const imgW = source.width, imgH = source.height;
+    const scale = Math.max(0.5, Math.min(3, Math.sqrt(OCR_WORK_PIXELS / Math.max(1, imgW * imgH))));
+    canvas.width = Math.max(1, Math.round(imgW * scale));
+    canvas.height = Math.max(1, Math.round(imgH * scale));
+    const c = canvas.getContext('2d', { willReadFrequently: true });
+    c.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    ocrStretchCanvas(c, canvas.width, canvas.height);
+    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    const result = await worker.recognize(blob);
+    const k = imgW / canvas.width;
+    return tesseractWords(result).map(w => ({
+      text: w.text,
+      x0: (w.bbox?.x0 ?? 0) * k, x1: (w.bbox?.x1 ?? 0) * k,
+      y0: (w.bbox?.y0 ?? 0) * k, y1: (w.bbox?.y1 ?? 0) * k,
+      confidence: w.confidence,
+    }));
+  } finally {
     canvas.width = 0;
     canvas.height = 0;
   }
@@ -1079,6 +2019,36 @@ const OCR_CELL_DRIFT = 0.42;   // how far a cell's ink may sit from the row's li
 // A cell is looked at through these views, best first, until one reads back as a
 // shift. Flat-field first: it is the only one that survives glare.
 const OCR_CELL_MODES = ['local', 'ink', 'grey'];
+
+/**
+ * The same word, read twice.
+ *
+ * The strips overlap by half so that no row is ever cut in two, which means the
+ * rows in that overlap are read by two strips and their words arrive twice — at
+ * slightly different boxes, because each strip gives the engine a different
+ * amount of its own line to lay out. Left in, the copies double every row the
+ * reader has to group, two copies of the same word can fork one staff row into
+ * two (the name in one, the shifts in the other), and a duplicated cell can win
+ * the same column twice. Same text, overlapping boxes, one line apart at most:
+ * the copy with the higher confidence is the one kept.
+ */
+export function dedupeWords(words = []) {
+  const kept = [];
+  const byText = new Map();
+  for (const w of [...words].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))) {
+    if (!w || ![w.x0, w.y0, w.x1, w.y1].every(Number.isFinite)) continue;
+    const key = String(w.text || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    if (!key) continue;
+    const list = byText.get(key) || [];
+    const cy = (w.y0 + w.y1) / 2, h = Math.max(4, w.y1 - w.y0);
+    const dupe = list.some(o => Math.abs((o.y0 + o.y1) / 2 - cy) <= h * 0.6 && w.x0 < o.x1 && o.x0 < w.x1);
+    if (dupe) continue;
+    list.push(w);
+    byText.set(key, list);
+    kept.push(w);
+  }
+  return kept;
+}
 // A cell holds a range of hours or a rest word, nothing else — telling the
 // engine so removes most of its wrong answers ("17-22" for "17-22.").
 const OCR_CELL_CHARS = '0123456789:-·. oOffFhHaAlLnNsSwW/()';
@@ -1316,76 +2286,83 @@ export function ocrPickBand(bands, prior, maxDrift) {
 // Read the row the typed name sits on, cell by cell. Returns the cells it read
 // (already in the shape parseRosterWords emits, dated off the same grid) and
 // whether every column of that grid was attempted.
-async function ocrOwnerCells(worker, file, canvas, opts = {}) {
-  const { name, nameWord, cols, progress } = opts;
+async function ocrOwnerCells(worker, source, canvas, opts = {}) {
+  const { name, nameWord, cols, rowWords = [], medianH = 24, skew = null, progress } = opts;
   const cells = [];
   // "Complete" only once the row itself is confirmed: a full grid read off the
   // wrong row would otherwise replace the matched row's cells with another
   // person's shifts. Unconfirmed, the pass merges instead of replacing.
   let complete = false;
-  let bitmap = null;
   try {
     // Every read in this pass is one line of one cell, which is exactly what
     // "single text line" tells the engine to expect. The worker is disposed at
     // the end of the scan, so the strip pass's own setting is untouched.
     await worker.setParameters({ tessedit_pageseg_mode: '7' });
-    const buf = await file.arrayBuffer();
-    bitmap = await createImageBitmap(new Blob([buf], { type: file.type || 'image/jpeg' }), { imageOrientation: 'from-image' });
-    const imgW = bitmap.width, imgH = bitmap.height;
-    // Column bounds: halfway between neighbouring centres, half a gap at each
-    // end, then inset clear of the rule lines.
-    const cx = cols.map(c => c.cx);
-    const bounds = cx.map((c, i) => {
-      const left = i > 0 ? (cx[i - 1] + c) / 2 : c - (cx[1] - cx[0]) / 2;
-      const right = i < cx.length - 1 ? (c + cx[i + 1]) / 2 : c + (c - cx[i - 1]) / 2;
-      const inset = Math.max(2, (right - left) * OCR_CELL_INSET);
-      return [Math.max(0, left + inset), Math.min(imgW, right - inset)];
+    const bitmap = source.bitmap;
+    const imgW = source.width, imgH = source.height;
+    const bounds = rosterColumnBounds(cols);
+
+    // Every crop is aimed by where the strip pass saw the ink, not by where the
+    // grid guessed it would be. A word box's HEIGHT can be nonsense under glare —
+    // that is why the row is not cropped to one word — but the union of a line's
+    // words is the text's own position, and a cell re-read inside its own glyphs
+    // cannot clip a long shift the way a grid box can (measured on the sample
+    // roster: the grid cell was 12px narrower than the text at each end, which is
+    // exactly where "07:00-15:00" keeps its two outermost digits).
+    const band = rowWords.filter(w => [w.x0, w.y0, w.x1, w.y1].every(Number.isFinite));
+    const boxOf = list => ({
+      x0: Math.min(...list.map(w => w.x0)), y0: Math.min(...list.map(w => w.y0)),
+      x1: Math.max(...list.map(w => w.x1)), y1: Math.max(...list.map(w => w.y1)),
     });
+    // A crop with room around its glyphs: sideways enough to keep a stray
+    // character of the column beside it out of frame, vertically enough to hold a
+    // descender — while staying well inside the row above and below.
+    const crop = box => {
+      const padX = Math.max(2, medianH * 0.3);
+      const cy = (box.y0 + box.y1) / 2;
+      const halfH = Math.max(medianH * 0.75, (box.y1 - box.y0) / 2 + medianH * 0.25);
+      return {
+        x0: Math.max(0, box.x0 - padX), x1: Math.min(imgW, box.x1 + padX),
+        y0: Math.max(0, cy - halfH), y1: Math.min(imgH, cy + halfH),
+      };
+    };
+    const nameRight = rosterNameColumnRight(bounds);
+    const nameParts = band.filter(w => (w.x0 + w.x1) / 2 < nameRight);
+    const rowCy = (nameWord.y0 + nameWord.y1) / 2;
+    // The row's own line, from the two ends of its words: a crop for a column the
+    // strip pass saw nothing in has to sit on the line AT THAT COLUMN'S x, which
+    // on a tilted page is not where the name is (90px apart at 3° across a page).
+    //
+    // The tilt comes from the page, not from this row's own two ends. A row whose
+    // right-hand cells the strip pass missed leaves a span half a week wide, and a
+    // slope fitted to that span lands the crop for the missing columns tens of
+    // pixels off the line — over a row's own height, which is exactly enough to
+    // read the sheet's rule instead of the shift that is there. See pageSkew.
+    const lineYAt = (() => {
+      if (band.length < 2) return () => rowCy;
+      const cx = w => (w.x0 + w.x1) / 2, cy = w => (w.y0 + w.y1) / 2;
+      const slope = skew != null ? Math.max(-0.15, Math.min(0.15, skew))
+        : (() => {
+          const sorted = [...band].sort((a, b) => cx(a) - cx(b));
+          const a = sorted[0], b = sorted[sorted.length - 1];
+          const span = cx(b) - cx(a);
+          return span <= 0 ? 0 : Math.max(-0.15, Math.min(0.15, (cy(b) - cy(a)) / span));
+        })();
+      const base = band.reduce((s, w) => s + (cy(w) - slope * cx(w)), 0) / band.length;
+      return x => base + slope * x;
+    })();
 
-    // Three rectangles, one job each: the name column's strip is what the rows
-    // are measured in, the name itself is read from a box that reaches far enough
-    // left to hold it, and each day column is cropped inside its own bounds.
-    const colGap = Math.max(40, cx[1] - cx[0]);
-    const profX0 = Math.max(0, cx[0] - colGap * 0.95);
-    const profX1 = Math.max(profX0 + 40, cx[0] - colGap * 0.15);
-    const nameX0 = Math.max(0, cx[0] - colGap * 1.3);
-    // 5% of the strip's width per row: a line of text puts tens of stroke pixels
-    // in a row, while paper grain and a faint rule leave a handful — at 2% the
-    // noise read as ink and every row looked 60px tall.
-    const nameMinInk = Math.max(4, Math.round((profX1 - profX0) * 0.05));
-
-    // Pitch: a line of text is tens of pixels tall and a sheet's rows are a little
-    // over twice that. Measuring the TEXT heights is what sizes a window that
-    // holds one row and not its neighbours — a rule is a few pixels tall, and
-    // reading rules as rows made the pitch come out at half its true value.
-    const textHeights = ocrInkBands(ocrInkProfile(bitmap, canvas, profX0, 0, profX1, imgH), nameMinInk, 3)
-      .map(b => b.y1 - b.y0).filter(h => h >= 14).sort((a, b) => a - b);
-    const textH = textHeights.length ? textHeights[Math.floor(textHeights.length / 2)] : imgH * 0.012;
-    const pitch = Math.min(Math.max(textH * 2.1, imgH * 0.012), imgH * 0.05);
-    // The window a cell is looked for in: one row's worth either side of the line,
-    // and no more. Widening it to catch a cell whose text sits high in a tilted
-    // photo merges the neighbouring rows' bands into a single run instead, which
-    // measures worse on the sample roster than the tighter window does.
-    const win = Math.max(10, Math.round(pitch * 0.45));
-
-    // The row's line. A word box's HEIGHT is unreliable but its centre is not —
-    // the strip read puts the name within a few pixels of its line — so the row
-    // is that point refined by the ink around it. One measurement, not a chain of
-    // bands: a chain accumulates whatever bias each column has and walks onto the
-    // next row (measured on a real roster: 12px a column, one whole row off by the
-    // last day).
-    const anchorCy = (nameWord.y0 + nameWord.y1) / 2;
-    const probe0 = Math.max(0, Math.round(anchorCy - win));
-    const probeRel = ocrInkCentre(ocrInkProfile(bitmap, canvas, profX0, probe0, profX1, Math.min(imgH, Math.round(anchorCy + win))), nameMinInk);
-    const rowCy = probeRel == null ? anchorCy : probe0 + probeRel;
 
     // Confirm the row by reading its name, one word at a time: the strip carries
     // the band column beside the name ("Parth 20"), which no whole-line compare
-    // survives.
+    // survives. The crop is the name column as this photo has it — the words the
+    // strip pass found left of the first day — not a width guessed from the column
+    // pitch, which on the sample roster started 140px into the name and read back
+    // "harma".
     progress(0.86, 'Checking your name on this row');
-    const nameRead = await ocrReadCell(worker, bitmap, canvas, {
-      x0: nameX0, x1: profX1, y0: Math.max(0, Math.round(rowCy - textH * 0.8)), y1: Math.min(imgH, Math.round(rowCy + textH * 0.8)),
-    }, { accept: text => String(text).split(/\s+/).some(w => nameMatches(w, name)) });
+    const nameRead = await ocrReadCell(worker, bitmap, canvas,
+      nameParts.length ? crop(boxOf(nameParts)) : crop({ x0: nameWord.x0, y0: nameWord.y0, x1: nameWord.x1, y1: nameWord.y1 }),
+      { accept: text => String(text).split(/\s+/).some(w => nameMatches(w, name)) });
     const validated = String(nameRead.text || '').split(/\s+/).filter(Boolean).some(w => nameMatches(w, name));
     if (!validated) progress(0.87, 'That row does not carry your name');
 
@@ -1393,61 +2370,32 @@ async function ocrOwnerCells(worker, file, canvas, opts = {}) {
       const [x0, x1] = bounds[i];
       if (!(x1 - x0 > 20)) continue;
       progress(0.88 + (i / cols.length) * 0.1, `Reading shift ${i + 1} of ${cols.length}`);
-      // Measure the column's ink between its own rule lines, never across them:
-      // a vertical rule runs the full height of the crop, so leaving it in puts
-      // the same ink on every row and the "line" reads as the window's middle —
-      // which is exactly where the sheet's horizontal rule sits.
-      const inset = Math.max(3, Math.round((x1 - x0) * 0.06));
-      // A rule is short and fat, a line of glyphs is tall — and the sheet's rule
-      // sits directly under its text, so a lax height test picks the rule as the
-      // row's line and crops the glyphs in half. Keep only bands as tall as the
-      // name that anchors this row, then take the one nearest it.
-      //
-      // Only a band as tall as the name that anchors this row can be a line of
-      // text; the rule directly beneath it is shorter.
-      const minBandH = Math.max(6, Math.round(textH * 0.75));
-      const margin = Math.round(textH * 0.15);
+      // The words that landed in this column, rules and all: a token that is pure
+      // punctuation is a rule line the engine dressed as text, so it carries no
+      // glyphs and is left out of the box its neighbours are measured by.
+      const own = band.filter(w => {
+        const cx = (w.x0 + w.x1) / 2;
+        return cx >= x0 && cx < x1 && isGlyphToken(w.text);
+      });
+      // A column with no words of its own is a day the strip pass found nothing
+      // on — a day off, or one it missed. Its crop is the grid cell this time, so
+      // the silence is still heard and "nothing here" stays a real answer.
+      const columnLine = lineYAt((x0 + x1) / 2);
+      const box = own.length
+        ? boxOf(own)
+        : { x0, x1, y0: columnLine - medianH, y1: columnLine + medianH };
       let parsed = null, read = { text: '', confidence: 0 };
-      // A cell's text is not always on the line the row is tracked at: the sheet's
-      // day columns drift tens of pixels from it when the photo is taken at an
-      // angle, and the glyphs hang above the rule the tracking follows. So a cell
-      // that reads back as nothing gets a second look with the window lifted by a
-      // text height — and only the cells that fail pay for it. The same two looks
-      // are then repeated at a fainter sensitivity, for cells in the photo's glare.
+      // Two sensitivities: the cell's own ink cut, then a fainter one for a cell
+      // sitting in the photo's glare, where the glyphs are washed out and the
+      // first cut finds nothing. Only a cell that fails pays for the second look.
       for (const bg of [OCR_CELL_BG, OCR_CELL_BG_FAINT]) {
-        for (const lift of [0, Math.round(textH * 0.6)]) {
-          const line = rowCy - lift;
-          const win0 = Math.max(0, Math.round(line - win));
-          const win1 = Math.min(imgH, Math.round(line + win));
-          // Under glare a glyph's strokes blur into each other and the run limit
-          // written for rule lines starts discarding them as if they were rules, so
-          // a cell is profiled with a limit only a rule across the whole column
-          // can exceed.
-          const profile = ocrInkProfile(bitmap, canvas, x0 + inset, win0, x1 - inset, win1, bg, OCR_CELL_RUN);
-          // Of the bands in the window, the line of text is the tall one and the
-          // sheet's rule the short one, so only glyph-height bands are candidates;
-          // between two, the row's own is the band ending nearest its line.
-          const band = ocrInkBands(profile, 2, minBandH)
-            .reduce((a, b) => (!a || Math.abs(b.y1 - (line - win0)) < Math.abs(a.y1 - (line - win0)) ? b : a), null);
-          if (!band) continue;
-          // Crop to the strokes of that band. The trim threshold has to be low: one
-          // sized to a shadowed cell trims a glare-lit one down to the rule beside
-          // it, which is the one thing in that crop that is not a shift.
-          const strokes = ocrTightBand(profile, band, Math.max(2, Math.round((x1 - x0) * 0.02)));
-          read = await ocrReadCell(worker, bitmap, canvas, {
-            x0: x0 + inset, x1: x1 - inset,
-            y0: Math.max(0, win0 + strokes.y0 - margin), y1: Math.min(imgH, win0 + strokes.y1 + margin),
-          }, {
-            accept: text => parseTimeCell(text) || /^\s*(off|hol|n\/?a)\b/i.test(text),
-            bg, chars: OCR_CELL_CHARS,
-          });
-          // A cell's crop can still carry a character from the column beside it (the
-          // band number, a rule's edge). If the whole text is not a range but holds
-          // exactly one, that is the cell's shift.
-          const found = String(read.text || '').match(/\d{1,2}(?::\d{2})?\s*[-–—]\s*\d{1,2}(?::\d{2})?/g) || [];
-          parsed = parseTimeCell(read.text) || (found.length === 1 ? parseTimeCell(found[0]) : null);
-          if (parsed) break;
-        }
+        read = await ocrReadCell(worker, bitmap, canvas, crop(box), {
+          accept: text => parseTimeCell(text) || /^\s*(off|hol|n\/?a)\b/i.test(text),
+          bg, chars: OCR_CELL_CHARS,
+        });
+        // One line of one cell, so the tolerant cell grammar applies unchanged —
+        // a rule's edge riding along in the crop no longer costs the shift.
+        parsed = read.text ? parseCellTokens([{ text: read.text, x0: 0, x1: 1, confidence: read.confidence }], 0) : null;
         if (parsed) break;
       }
       if (!parsed) continue;
@@ -1461,7 +2409,6 @@ async function ocrOwnerCells(worker, file, canvas, opts = {}) {
     }
     complete = validated && cols.length >= 7;
   } finally {
-    if (bitmap) bitmap.close();
     canvas.width = 0;
     canvas.height = 0;
   }
@@ -1486,31 +2433,106 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
   const progress = onProgress || (() => {});
   const ranges = ocrStripRanges();
   const words = [];
-  let scanned = 0, found = false;
+  let scanned = 0, found = false, pagePass = false;
   let cells = [], cellsComplete = false;
   progress(0.02, 'Reading photo');
+  let decoded = null, leveled = null;
   try {
     const worker = await ensureOcrWorker();
+    decoded = await decodePhoto(file);
+    // Level the sheet before anything is read off it, so its header and its staff
+    // rows share one frame (see ocrEstimateTilt). Under a third of a degree is
+    // under 5px across a page — below what the grid needs, and not worth a second
+    // copy of the photo.
+    let source = decoded;
+    try {
+      const thumb = greyThumb(source);
+      const tilt = ocrEstimateTilt(thumb.grey, thumb.w, thumb.h);
+      if (Math.abs(tilt) > 0.006) {
+        leveled = await levelPhoto(source, tilt);
+        source = leveled;
+      }
+    } catch { /* an unreadable thumbnail is read unlevelled, as before */ }
     for (const strip of ranges) {
       const from = 0.1 + (scanned / ranges.length) * 0.75;
       progress(from, `Scanning part ${scanned + 1} of ${ranges.length} for your row`);
       // While tesseract works through a strip, let its own 0→1 progress fill
       // that strip's slice of the bar rather than jumping back to the start.
       _progressSink = p => progress(from + (p * 0.75) / ranges.length, '');
-      const read = await ocrStripWords(worker, file, canvas, strip);
+      const read = await ocrStripWords(worker, source, canvas, strip);
       words.push(...read);
       scanned++;
       if (name && read.some(w => nameMatches(w.text, name))) { found = true; break; }
     }
+    // No strip carried the name. Read the sheet once, whole, before giving up: a
+    // strip has no page around it to be laid out against, and on an off-square
+    // photo that is what makes the engine drop a whole row (see ocrPageWords).
+    if (name && !found) {
+      progress(0.87, 'Reading the whole page for your row');
+      _progressSink = p => progress(0.87 + p * 0.06, '');
+      const page = await ocrPageWords(worker, source, canvas);
+      if (page.length) {
+        pagePass = true;
+        words.length = 0;
+        words.push(...page);
+        scanned++;
+        found = page.some(w => nameMatches(w.text, name));
+      }
+    }
+    // Still nothing, and the likeliest reason by far is a sheet photographed
+    // sideways: turn it back a quarter turn at a time and read the page again.
+    // Whichever frame carries the name is the frame everything else is read in.
+    if (name && !found) {
+      for (const turn of [90, -90]) {
+        progress(0.93, 'Turning the photo up the other way');
+        const turned = await turnPhoto(source, turn);
+        try {
+          _progressSink = p => progress(0.93 + p * 0.04, '');
+          const page = await ocrPageWords(worker, turned, canvas);
+          scanned++;
+          if (page.some(w => nameMatches(w.text, name))) {
+            if (leveled && leveled.bitmap) leveled.bitmap.close();
+            leveled = turned;
+            source = turned;
+            words.length = 0;
+            words.push(...page);
+            found = true;
+            break;
+          }
+        } finally {
+          if (!found && turned.bitmap) turned.bitmap.close();
+        }
+      }
+    }
+    // Rows in the strip overlap were read twice; keep one copy of each word
+    // before anything is built on top of them (see dedupeWords).
+    const merged = dedupeWords(words);
+    words.length = 0;
+    words.push(...merged);
     // The row was located, so read it again at cell resolution — the strip pass
     // only had to find the header and the name (see ocrOwnerCells). The column
     // grid comes from the same words, so no second engine session is needed.
     const nameWord = found ? words.find(w => nameMatches(w.text, name)) : null;
     if (nameWord) {
-      const cols = parseRosterWords(words, today, { name }).columns;
+      // One parse serves both halves: the column grid, and the owner's own row —
+      // the words the cell pass crops to.
+      const parsed = parseRosterWords(words, today, { name });
+      const cols = parsed.columns;
       if (cols.length >= 2) {
         _progressSink = () => {};
-        const read = await ocrOwnerCells(worker, file, canvas, { name, nameWord, cols, progress });
+        // The cell pass crops to where the ink actually is, so it needs the words
+        // of the owner's own row and a text height to size a crop with. The words
+        // come from the parse — the row the typed name matched — rather than from
+        // a band around the name's centre: on a tilted page that centre is tens of
+        // pixels off the row's own line by the time it reaches the last day, and
+        // the cells it "missed" were simply outside the band.
+        const heights = words.map(w => Math.max(4, w.y1 - w.y0)).sort((a, b) => a - b);
+        const medianH = heights.length ? heights[Math.floor(heights.length / 2)] : 24;
+        const owner = parsed.rows.find(r => r.matches);
+        const rowWords = (owner && owner.words) || [nameWord];
+        const read = await ocrOwnerCells(worker, source, canvas, {
+          name, nameWord, cols, rowWords, medianH, skew: pageSkew(words, medianH), progress,
+        });
         cells = read.cells;
         cellsComplete = read.complete;
       }
@@ -1518,8 +2540,12 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
   } finally {
     _progressSink = () => {};
     disposeOcrWorker();
+    // The photo and the levelled copy of it are this scan's, and neither outlives
+    // it: the worker's heap was the only other place a decoded roster sat.
+    if (decoded && decoded.bitmap) decoded.bitmap.close();
+    if (leveled && leveled.bitmap) leveled.bitmap.close();
   }
-  return { words, found, scanned, cells, cellsComplete };
+  return { words, found, scanned, pagePass, cells, cellsComplete };
 }
 
 // ============================================================
@@ -1536,6 +2562,13 @@ let ratesPanelOpen = false;
 // screen would otherwise throw away a parse the user is still reviewing. A
 // scan takes seconds and several reads, so that window is real.
 let scanState = null;   // { parsed, picked, note, profileId }
+// The sheet's first column date, as typed on the scan card. Held here for the
+// same reason as scanState: render() re-invokes screenTesco(), so a rebuild used
+// to snap the anchor back to this week while the sheet on the desk was a month
+// old — and the reader silently dated the shifts it found from the wrong week.
+// Session-only on purpose: persisted, next week's read would inherit an anchor
+// nobody chose any more, which is the same mistake the other way round.
+let rosterAnchor = null;
 
 /**
  * A roster read belongs to the profile that took it. The slot above is
@@ -1561,14 +2594,52 @@ export function screenTesco(ctx) {
   const now = new Date();
   // Debounced repaint for the payslip fields, at screen scope because the row
   // builder is a sibling of the card builder, not a child. A keystroke updates
-  // its own row instantly (refreshTotal) and the week card, footer and month
-  // stats follow on a short timer — repainting per character would rebuild the
-  // tab under the caret. Focus survives the repaint because the app restores it
-  // by aria-label, which is why those labels carry the payslip id.
+  // its own row instantly (refreshTotal) and everything derived from the figures
+  // follows on a short timer — repainting per character would rebuild the tab
+  // under the caret.
+  //
+  // The card itself is only rebuilt once the caret has LEFT it. Focus survives a
+  // repaint (app.js restores it by aria-label, which is why those labels carry
+  // the payslip id) but the caret does not: a number input has no selection API —
+  // selectionStart is null on type=number — so the replacement field comes back
+  // with its value selected and the next digit overwrites the figure just typed.
+  // While a field in the card holds the caret, then, the timer refreshes only the
+  // text around it (refreshDerived), and the full render follows as soon as the
+  // caret moves on.
   let payslipRenderTimer = null;
+  let payslipPaintPending = false;
+
+  // Text-only refreshers for the displays derived from the payslip figures — the
+  // week cards, the tax footer, the month stats. Each writes into nodes holding
+  // no inputs, so refreshing can never disturb the field being typed into.
+  const derivedRefreshers = [];
+  function refreshDerived() {
+    for (const refresh of derivedRefreshers) {
+      try { refresh(); } catch { /* cosmetic only — never break a keystroke for it */ }
+    }
+  }
+  function payslipFieldFocused() {
+    const active = document.activeElement;
+    return !!(active && active.closest && active.closest('.tesco-payslips-card'));
+  }
   function schedulePayslipRender() {
+    payslipPaintPending = true;
     clearTimeout(payslipRenderTimer);
-    payslipRenderTimer = setTimeout(() => { persist(); render(); }, 450);
+    payslipRenderTimer = setTimeout(repaintAfterPayslipEdit, 450);
+  }
+  function repaintAfterPayslipEdit() {
+    payslipRenderTimer = null;
+    if (!payslipPaintPending) return;
+    if (payslipFieldFocused()) {
+      refreshDerived();
+      // Keep watching: the figures stay live while the caret is in the card, and
+      // the first tick after it leaves does the full repaint.
+      payslipRenderTimer = setTimeout(repaintAfterPayslipEdit, 450);
+      return;
+    }
+    payslipPaintPending = false;
+    persist();
+    render();
   }
   function shifts() { return t.shifts || []; }
   function payslips() { return t.payslips || []; }
@@ -1579,31 +2650,49 @@ export function screenTesco(ctx) {
   const screen = $('section', { class: 'page-section tesco-section', 'aria-label': 'Tesco Pay' });
 
   // ----- header stats -----
-  const month = monthSummary(shifts(), payslips(), rates, now.getFullYear(), now.getMonth());
-  const life = lifetimeTotals(shifts(), payslips(), rates);
+  // Built as live nodes and re-filled by paintStats(): a payslip figure typed
+  // further down moves this month's received total, and that must not require a
+  // repaint of the card being typed into.
+  const statHours = $('div', { class: 'tesco-stat-value' });
+  const statAnticipated = $('div', { class: 'tesco-stat-value' });
+  const statReceived = $('div', { class: 'tesco-stat-value' });
+  const lifetimeLine = $('div', { class: 'muted', style: 'font-size:12px;margin-top:10px;' });
+  function paintStats() {
+    const month = monthSummary(shifts(), payslips(), rates, now.getFullYear(), now.getMonth());
+    const life = lifetimeTotals(shifts(), payslips(), rates);
+    statHours.textContent = `${month.hours}h`;
+    statAnticipated.textContent = fmt(month.anticipated);
+    statReceived.textContent = fmt(month.received);
+    lifetimeLine.textContent = `Lifetime: ${life.hours}h · ${fmt(life.anticipated)} anticipated · ${fmt(life.received)} received`;
+  }
+  paintStats();
+  derivedRefreshers.push(paintStats);
   screen.appendChild($('div', { class: 'card tesco-stats' },
     $('div', { class: 'tesco-stats-grid' },
-      statCell('Hours this month', `${month.hours}h`),
-      statCell('Anticipated', fmt(month.anticipated)),
-      statCell('Received', fmt(month.received)),
+      statCell('Hours this month', statHours),
+      statCell('Anticipated', statAnticipated),
+      statCell('Received', statReceived),
     ),
-    $('div', { class: 'muted', style: 'font-size:12px;margin-top:10px;' },
-      `Lifetime: ${life.hours}h · ${fmt(life.anticipated)} anticipated · ${fmt(life.received)} received`),
+    lifetimeLine,
   ));
   function statCell(label, value) {
     return $('div', { class: 'tesco-stat' },
       $('div', { style: 'font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;' }, label),
-      $('div', { class: 'tesco-stat-value' }, value),
+      value,
     );
   }
 
-  // The camera lives in the roster-scan card, which owns the name and the
-  // first-column date a read needs. The Add-shift card only reaches it through
-  // this hook, so there is one implementation and two entry points.
-  let openRosterCamera = null;
+  // The camera is reachable from exactly one place: the roster-scan card below,
+  // which owns the name and the first-column date a read needs. The Add-shift
+  // card carried a second door of its own ("Scan from camera") into the same
+  // flow — two buttons for one camera, so the one beside the form is gone.
 
   // ----- add shift -----
   screen.appendChild(buildAddCard());
+  // The Add tab's magic field, in shift clothes: describe it, watch the preview
+  // resolve, then add it. Same grammar-shaped chips and example chips, because
+  // the two fields teach the same habit — say it, check it, save it.
+  screen.appendChild(buildMagicCard());
   // ----- roster scan -----
   screen.appendChild(buildScanCard());
   // ----- pay weeks -----
@@ -1646,16 +2735,98 @@ export function screenTesco(ctx) {
       $('div', { class: 'tesco-card-title' }, 'Add shift', iconSpan('plus', 'md')),
       $('div', { class: 'tesco-form-row' }, dateIn, startIn, endIn),
       $('div', { class: 'tesco-form-row' }, noteIn, addBtn),
-      // The photo route, from the card you add shifts in: one tap opens the
-      // camera, reads the roster and offers the shifts it found for review.
-      $('div', { class: 'tesco-form-row', style: 'align-items:center;gap:10px;flex-wrap:wrap;' },
-        $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => {
-          if (openRosterCamera) openRosterCamera();
-          else toast('Open the roster scan card to use the camera.');
-        } }, 'Scan from camera'),
-        $('span', { class: 'muted', style: 'font-size:11px;' }, 'Takes a photo of the roster — the image is never saved.'),
-      ),
       preview,
+    );
+  }
+
+  // ================= magic entry =================
+  // The parser is parseShiftText (module scope, harness-pinned); this card only
+  // shows what it understood before anything is written. That preview matters
+  // more here than on the Add tab: a mis-read time is a mis-paid week, and the
+  // row it writes is worth real money.
+  function buildMagicCard() {
+    const preview = $('div', { class: 'muted', style: 'font-size:12px;min-height:18px;' });
+    const detectRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;' });
+    const detectParts = ['Date', 'Start', 'End', 'Special'].map(name => {
+      const el = $('span', { class: 'magic-detect-chip', 'aria-hidden': 'true' }, name);
+      detectRow.append(el);
+      return { name, el };
+    });
+    // Each part of the grammar lights the moment a line resolves it, so the
+    // field teaches itself instead of needing the hint read twice. "Any line"
+    // rather than the first: a batch that is half clock times and half a
+    // booked week off should not look like it failed to read the times.
+    const syncDetectChips = (parsed) => {
+      const shifts = (parsed && parsed.shifts) || [];
+      const on = {
+        Date: shifts.length > 0,
+        Start: shifts.some(s => !!s.start),
+        End: shifts.some(s => !!s.end),
+        Special: shifts.some(s => !!s.special),
+      };
+      for (const part of detectParts) {
+        part.el.classList.toggle('magic-detect-chip-on', !!on[part.name]);
+        part.el.replaceChildren(on[part.name] ? iconSpan('check-circle', 'sm') : document.createTextNode('·'),
+          $('span', {}, ' ' + part.name));
+      }
+    };
+
+    const line = (text, bad) => $('div', { style: bad ? 'color:var(--negative);' : '' }, text);
+    const renderPreview = (text) => {
+      if (!String(text || '').trim()) {
+        preview.replaceChildren('Write the shift the way you would say it — the preview fills in as you type.');
+        syncDetectChips(null);
+        return;
+      }
+      const parsed = parseShiftText(text, todayIso());
+      syncDetectChips(parsed);
+      const lines = [];
+      for (const problem of parsed.problems) lines.push(line(`Line ${problem.line}: ${problem.error}`, true));
+      // Priced with the live rate card, so the preview argues with the week
+      // card rather than with a second copy of the arithmetic.
+      for (const s of parsed.shifts) lines.push(line(shiftPreviewLine(s, shiftPay(s, rates), fmt)));
+      preview.replaceChildren(...lines);
+    };
+
+    const input = $('textarea', {
+      placeholder: 'Try: mon 8-4 stock take', 'aria-label': 'Quick shift entry', rows: '2',
+      class: 'tesco-in', style: 'width:100%;font-size:13px;margin-bottom:8px;',
+      onInput: e => renderPreview(e.target.value),
+    });
+    const examples = [
+      { label: 'mon 8-4', hint: 'the Monday just gone' },
+      { label: 'yesterday 12:30-20:15', hint: 'an afternoon shift' },
+      { label: 'sat 9-5 stock take', hint: 'with a note' },
+      { label: 'sun 10-4', hint: 'Sunday rates are worked out for you' },
+      { label: 'fri 20:00-01:00', hint: 'an overnight shift' },
+      { label: 'week off 7h', hint: 'a booked week off, no clock times' },
+      { label: '13/09 9-5 special', hint: 'a bank holiday abroad or a Sunday you worked' },
+    ];
+    const chips = $('div', { class: 'tesco-magic-chips' },
+      ...examples.map(ex => $('button', { type: 'button', class: 'magic-chip', 'aria-label': `Example: ${ex.label} (${ex.hint})`, onClick: () => {
+        input.value = ex.label;
+        renderPreview(ex.label);
+        input.focus();
+      } }, ex.label)),
+    );
+    renderPreview('');
+
+    return $('div', { class: 'card' },
+      $('div', { class: 'tesco-card-title' }, 'Magic entry', iconSpan('sparkle', 'md')),
+      $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:10px;' }, 'One shift per line, written the way you remember it — check the preview, then add it.'),
+      chips,
+      input,
+      detectRow,
+      preview,
+      $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:10px;' },
+        $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: () => {
+          const parsed = parseShiftText(input.value, todayIso());
+          if (parsed.problems.length) { toast('Check the lines marked above, then try again.'); return; }
+          if (!parsed.shifts.length) { toast('Describe a shift first — try “mon 8-4”.'); input.focus(); return; }
+          if (addShifts(parsed.shifts, 'shift')) { input.value = ''; renderPreview(''); }
+          input.focus();
+        } }, 'Add shifts'),
+      ),
     );
   }
 
@@ -1800,10 +2971,136 @@ export function screenTesco(ctx) {
     toast('Shift deleted.', restore, 'Undo');
   }
 
-  function updateShift(id, patch) {
-    const before = [...shifts()];
-    ctx.getState().tesco.shifts = before.map(s => s.id === id ? { ...s, ...patch } : s);
-    persist(); render();
+  // A hand edit is an ordinary Tesco commit: one snapshot, one undo step, and
+  // the same sort-on-write the import path uses, so changing a date re-slots the
+  // row into the week it now belongs to. The validation lives in applyShiftEdit
+  // (module scope, harness-testable) rather than here; this only knows how to
+  // put the result back into the tab. Returns the applied edit's own result, so
+  // the sheet can show the error beside the field that caused it.
+  function updateShift(id, fields) {
+    const before = snapshot();
+    const target = before.shifts.find(s => s.id === id);
+    if (!target) return { ok: false, field: null, error: 'That shift is no longer in the tab.' };
+    const others = before.shifts.filter(s => s.id !== id).map(s => `${s.date}|${s.start}|${s.end}`);
+    const result = applyShiftEdit(target, fields, others);
+    if (!result.ok) return result;
+    commitTesco(before,
+      { ...before, shifts: before.shifts.map(s => (s.id === id ? result.shift : s)) },
+      'Edit shift', 'Shift updated.');
+    return result;
+  }
+
+  // A week card's row is a summary — day, times, hours, pay — so editing one
+  // happens in a sheet rather than inline: five fields inside a 12px row would
+  // be unreadable on a phone, and every commit rebuilds the week card, which no
+  // field holding a caret survives (see the payslip notes above). The sheet
+  // validates through applyShiftEdit and previews the row with
+  // shiftPreviewLine — the same pair the magic entry uses — so what Save writes
+  // is on screen before it is written, and the rules are the importer's own.
+  function openShiftEditor(id) {
+    const target = shifts().find(s => s.id === id);
+    if (!target) return;
+    const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
+    const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Edit shift', tabindex: '-1', style: 'max-width:460px;' });
+
+    const field = (label, input, cls = '') => $('label', { class: `tesco-edit-field${cls ? ' ' + cls : ''}` }, $('span', null, label), input);
+    // Labelled "Edit shift …", not "Shift …": the Add shift card on the screen
+    // behind this sheet already owns those names, and two controls sharing an
+    // accessible name in one document is ambiguous to a screen reader — as well
+    // as to app.js's restoreFocusedField, which looks a field up by aria-label.
+    const inCls = 'tesco-in';
+    const dateIn = $('input', { type: 'date', class: inCls, value: target.date, 'aria-label': 'Edit shift date' });
+    const startIn = $('input', { type: 'time', class: inCls, value: target.start || '', 'aria-label': 'Edit shift start' });
+    const endIn = $('input', { type: 'time', class: inCls, value: target.end || '', 'aria-label': 'Edit shift end' });
+    const hoursIn = $('input', { type: 'number', class: inCls, min: '0', max: '168', step: '0.25', value: target.hours == null ? '' : target.hours, placeholder: 'from times', 'aria-label': 'Edit shift hours' });
+    // Prefilled only when the row states its own pay: that figure outranks
+    // hours × rate, so fixing the times of an imported row would otherwise leave
+    // the old amount in place. Blanking it hands the row back to the rates.
+    const grossIn = $('input', { type: 'number', class: inCls, min: '0', step: '0.01', value: target.gross == null ? '' : target.gross, placeholder: 'hours × rate', 'aria-label': 'Edit shift pay' });
+    const noteIn = $('input', { type: 'text', class: inCls, maxLength: 120, value: target.note || '', placeholder: 'e.g. stock take', 'aria-label': 'Edit shift note' });
+    const specialIn = $('input', { type: 'checkbox', checked: !!target.special, 'aria-label': 'Edit shift special' });
+    const errorEl = $('div', { style: 'font-size:12px;line-height:1.5;min-height:17px;margin-top:10px;color:var(--negative);' });
+    const previewEl = $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;margin-top:2px;' });
+    const saveBtn = $('button', { type: 'button', class: 'btn btn-primary' }, 'Save');
+
+    const inputs = { date: dateIn, start: startIn, end: endIn, hours: hoursIn, gross: grossIn };
+    const read = () => ({
+      date: dateIn.value, start: startIn.value, end: endIn.value,
+      hours: hoursIn.value, gross: grossIn.value, note: noteIn.value, special: specialIn.checked,
+    });
+
+    // The sheet holds no rendered app state — only its own text nodes — so
+    // re-validating on every keystroke cannot disturb a caret or a repaint.
+    const check = () => {
+      const others = shifts().filter(s => s.id !== id).map(s => `${s.date}|${s.start}|${s.end}`);
+      const res = applyShiftEdit(target, read(), others);
+      for (const [name, input] of Object.entries(inputs)) input.classList.toggle('tesco-edit-bad', !res.ok && res.field === name);
+      errorEl.textContent = res.ok ? '' : res.error;
+      previewEl.textContent = res.ok
+        ? `Saves as ${shiftPreviewLine(res.shift, shiftPay(res.shift, rates), fmt)}`
+        : '';
+      return res;
+    };
+    for (const input of [dateIn, startIn, endIn, hoursIn, grossIn, noteIn]) input.addEventListener('input', check);
+    specialIn.addEventListener('change', check);
+
+    // Save re-checks rather than trusting the last keystroke, and says so out
+    // loud when it refuses: the message sits beside its field, which on a phone
+    // can be scrolled past, so it is toasted and focused too.
+    saveBtn.addEventListener('click', () => {
+      const res = check();
+      if (!res.ok) {
+        toast(res.error);
+        const bad = inputs[res.field];
+        if (bad) bad.focus();
+        return;
+      }
+      const applied = updateShift(id, read());
+      if (!applied.ok) toast(applied.error);
+      close();
+    });
+    const deleteBtn = $('button', { type: 'button', class: 'btn btn-danger' }, 'Delete');
+    deleteBtn.addEventListener('click', async () => {
+      const times = target.start && target.end ? `${target.start}–${target.end}` : 'week off';
+      if (!await swalConfirm({ title: 'Delete shift?', text: `${prettyDate(target.date)} ${times}`, danger: true, confirmButtonText: 'Delete' })) return;
+      deleteShift(id);
+      close();
+    });
+
+    modal.append(
+      $('div', { style: 'display:flex;justify-content:space-between;align-items:center;' },
+        $('h2', { class: 'serif', style: 'font-size:28px;font-weight:400;' }, 'Edit shift'),
+        $('button', { type: 'button', class: 'btn-link', onClick: () => close() }, 'Close')),
+      $('p', { class: 'muted', style: 'font-size:12px;line-height:1.5;' },
+        'Leave the times blank for a booked week off and state its hours; leave the pay blank to use the hours and rates.'),
+      // A row per pair, the date and the note across the full width: a date
+      // control clips its own text below about 145px, which three fields across
+      // cannot give it — while each half of a pair is exactly what its control
+      // needs (see the sheet's CSS).
+      $('div', { class: 'tesco-edit-sheet' },
+        field('Date', dateIn, 'tesco-edit-field-wide'),
+        $('div', { class: 'tesco-edit-row' }, field('Start', startIn), field('End', endIn)),
+        $('div', { class: 'tesco-edit-row' }, field('Hours', hoursIn), field('Pay override €', grossIn)),
+        field('Note', noteIn, 'tesco-edit-field-wide')),
+      $('label', { style: 'display:flex;align-items:center;gap:8px;margin-top:12px;cursor:pointer;' },
+        specialIn,
+        $('span', { class: 'muted', style: 'font-size:12px;' }, 'Special rate ×1.5 — a Sunday is paid special whether or not this is ticked.')),
+      errorEl,
+      previewEl,
+      $('div', { class: 'tesco-edit-actions' },
+        deleteBtn,
+        $('span', { style: 'margin-left:auto;display:flex;gap:8px;' },
+          $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => close() }, 'Cancel'),
+          saveBtn)),
+    );
+
+    const close = () => { document.removeEventListener('keydown', onKey, true); bg.remove(); };
+    const onKey = ev => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    bg.appendChild(modal);
+    stackModal(bg);
+    check();
+    modal.focus({ preventScroll: true });
   }
 
   // ================= roster scan =================
@@ -1819,11 +3116,27 @@ export function screenTesco(ctx) {
     let file = null;          // memory only: dropped when the card re-renders
     const canvas = $('canvas', { class: 'tesco-scan-preview', 'aria-hidden': 'true' });
     const wrap = $('div', { class: 'tesco-scan-wrap', style: 'display:none;' }, canvas);
+    // Debounced, not immediate: persist() rewrites the document and schedules a
+    // sync push, so one write per keystroke is wasteful for a 40-character name.
+    let nameTimer = 0;
     const nameIn = $('input', {
       type: 'text', value: state().settings.tescoName || '', placeholder: 'e.g. Parth',
       'aria-label': 'Your name on the roster', class: 'tesco-in', maxLength: 40, autocomplete: 'off',
+      // Written through as it is typed, so a rebuild mid-entry (a sync poll, an
+      // undo repaint) hands the card back with the name still in it. It used to
+      // be saved only once a read ran, so it was gone at exactly the moment the
+      // next read needed it. No render() here — the photo is memory-only and
+      // would be dropped with it (see `file` above).
+      onInput: e => {
+        state().settings.tescoName = e.target.value;
+        clearTimeout(nameTimer);
+        nameTimer = setTimeout(persist, 400);
+      },
     });
-    const weekIn = $('input', { type: 'date', value: weekStartOf(todayIso()), 'aria-label': 'First column date', class: 'tesco-in' });
+    const weekIn = $('input', {
+      type: 'date', value: rosterAnchor || weekStartOf(todayIso()), 'aria-label': 'First column date', class: 'tesco-in',
+      onInput: e => { if (dateOk(e.target.value)) rosterAnchor = e.target.value; },
+    });
     const readBtn = $('button', { type: 'button', class: 'btn btn-primary', style: 'display:none;', onClick: () => run() }, 'Read my shifts');
     const status = $('div', { class: 'muted', style: 'font-size:12px;' }, 'Photo or camera shot of the weekly roster — processed in memory, never stored.');
     const bar = $('div', { class: 'tesco-progress', style: 'display:none;' }, $('div', { class: 'tesco-progress-fill' }));
@@ -1896,10 +3209,16 @@ export function screenTesco(ctx) {
     // same reader a chosen file goes to, so the promise holds on this path too:
     // nothing is written to storage, the canvas is zeroed and the stream's
     // tracks are stopped the moment the modal closes — including when a render
-    // replaces the screen underneath the open camera. "Live read" keeps taking
-    // frames until the sheet in front of the lens parses into shifts, then stops
-    // itself and hands the read to the reviewer.
+    // replaces the screen underneath the open camera — and "Stop live read"
+    // releases them there and then, so the camera light never outlives the click.
+    // "Live read" keeps taking frames until the sheet in front of the lens parses
+    // into shifts, then stops itself and hands the read to the reviewer.
     function openRosterCameraNow() {
+      // One camera at a time. This guard used to sit on the Add-shift card's
+      // wrapper, so it has to live on the function itself now that the scan
+      // card's "Use camera" is the only door in (a second Enter on it, or any
+      // future caller, must not open a second stream).
+      if (document.querySelector('[role="dialog"][aria-label="Scan roster with the camera"]')) return;
       const video = $('video', {
         playsinline: true, autoplay: true, muted: true, 'aria-label': 'Camera preview',
         style: 'width:100%;height:240px;object-fit:cover;background:#000;border-radius:10px;display:block;',
@@ -1909,17 +3228,24 @@ export function screenTesco(ctx) {
         'Fill the frame with the sheet, then Capture — or start a live read and let it find your shifts.');
       const liveBtn = $('button', { type: 'button', class: 'btn btn-ghost', 'aria-pressed': 'false' }, 'Live read');
       const captureBtn = $('button', { type: 'button', class: 'btn btn-primary' }, 'Capture');
-      const cancelBtn = $('button', { type: 'button', class: 'btn btn-ghost' }, 'Cancel');
+      // `finish` is a hoisted declaration below; wiring it here is what makes
+      // Cancel release the camera (it used to be inert, so the light stayed on).
+      const cancelBtn = $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => finish() }, 'Cancel');
+      // Shown in place of the (black) preview once the stream is released, so an
+      // off camera reads as deliberate rather than broken.
+      const camOff = $('div', { style: 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;color:#fff;font-size:13px;line-height:1.5;text-align:center;padding:0 18px;background:#000;border-radius:10px;' },
+        'Camera off — press Start camera to read the sheet, or Cancel to use a photo instead.');
       const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) finish(); } });
       bg.appendChild($('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Scan roster with the camera', style: 'max-width:520px;' },
         $('div', { class: 'tesco-card-title' }, 'Scan the roster'),
-        video,
+        $('div', { style: 'position:relative;' }, video, camOff),
         status,
         $('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;' }, captureBtn, liveBtn, cancelBtn),
       ));
       stackModal(bg);
 
       let stream = null;
+      let opening = false;      // a getUserMedia request is in flight
       let live = false;
       let busy = false;
       let closed = false;
@@ -1994,7 +3320,19 @@ export function screenTesco(ctx) {
       });
 
       liveBtn.addEventListener('click', async () => {
-        if (live) { live = false; setLiveUi(); status.textContent = 'Live read stopped — press Capture to take a frame.'; return; }
+        if (live) {
+          // Stopping the read releases the camera with it: the light going out is
+          // the point of the click, so it must not wait for the modal to close.
+          live = false;
+          stopStream();
+          setLiveUi();
+          status.textContent = 'Live read stopped and the camera released — press Start camera to take a frame, or Cancel.';
+          return;
+        }
+        // The button cycles Start camera → Live read → Stop live read, so one
+        // press does exactly what its label says: this press only re-arms the
+        // camera, the next one scans.
+        if (!stream) { await openStream(); return; }
         if (nameMissing()) { finish(); return; }
         live = true;
         setLiveUi();
@@ -2002,9 +3340,11 @@ export function screenTesco(ctx) {
       });
       function setLiveUi() {
         liveBtn.setAttribute('aria-pressed', String(live));
-        liveBtn.textContent = live ? 'Stop live read' : 'Live read';
+        liveBtn.textContent = live ? 'Stop live read' : (stream ? 'Live read' : 'Start camera');
         liveBtn.classList.toggle('btn-primary', live);
         liveBtn.classList.toggle('btn-ghost', !live);
+        captureBtn.disabled = !stream;    // nothing to grab from a released stream
+        camOff.style.display = stream ? 'none' : 'flex';
       }
       async function liveLoop() {
         for (let attempt = 1; live && attempt <= CAMERA_LIVE_ATTEMPTS; attempt++) {
@@ -2026,6 +3366,37 @@ export function screenTesco(ctx) {
         status.textContent = 'No shifts read — keep the whole sheet in the frame with the row of names in view, or press Capture.';
       }
 
+      // Acquires (or re-acquires) the stream. Kept as one function so "Stop live
+      // read" can release the device and "Start camera" can hand it straight back.
+      async function openStream() {
+        if (stream || opening || closed) return;
+        opening = true;
+        try {
+          const s = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
+            audio: false,
+          });
+          if (closed) { for (const track of s.getTracks()) track.stop(); return; }
+          stream = s;
+          video.srcObject = s;
+          video.muted = true;
+          video.playsInline = true;
+          const played = video.play();
+          if (played && played.catch) played.catch(() => {});
+          if (!live) status.textContent = 'Camera ready — fill the frame with the sheet, then Capture, or start a live read.';
+          setLiveUi();
+        } catch (err) {
+          const reason = err && err.name;
+          status.textContent = reason === 'NotAllowedError' ? 'Camera permission was refused — allow it for this site, or use Choose photo.'
+            : reason === 'NotFoundError' || reason === 'OverconstrainedError' ? 'No camera found on this device — use Choose photo.'
+            : reason === 'NotReadableError' ? 'The camera is busy in another app — close it and try again.'
+            : 'Could not start the camera — use Choose photo instead.';
+          captureBtn.disabled = true;
+          liveBtn.disabled = true;
+        } finally {
+          opening = false;
+        }
+      }
       // The stream is opened last, so a permission refusal leaves a modal that
       // says why and points at the gallery path rather than a dead black box.
       const support = cameraSupport();
@@ -2037,32 +3408,8 @@ export function screenTesco(ctx) {
         liveBtn.disabled = true;
         return;
       }
-      navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1440 } },
-        audio: false,
-      }).then(s => {
-        if (closed) { for (const track of s.getTracks()) track.stop(); return; }
-        stream = s;
-        video.srcObject = s;
-        video.muted = true;
-        video.playsInline = true;
-        const played = video.play();
-        if (played && played.catch) played.catch(() => {});
-      }).catch(err => {
-        const reason = err && err.name;
-        status.textContent = reason === 'NotAllowedError' ? 'Camera permission was refused — allow it for this site, or use Choose photo.'
-          : reason === 'NotFoundError' || reason === 'OverconstrainedError' ? 'No camera found on this device — use Choose photo.'
-          : reason === 'NotReadableError' ? 'The camera is busy in another app — close it and try again.'
-          : 'Could not start the camera — use Choose photo instead.';
-        captureBtn.disabled = true;
-        liveBtn.disabled = true;
-      });
+      openStream();
     }
-    openRosterCamera = () => {
-      if (document.querySelector('[role="dialog"][aria-label="Scan roster with the camera"]')) return;
-      openRosterCameraNow();
-    };
-
     // Every scan ends here: the pixels are already zeroed by ocrStripWords, this
     // removes the (now empty) preview chrome and says so plainly, so "the photo
     // is gone" is something the user can see rather than take on trust.
@@ -2115,12 +3462,23 @@ export function screenTesco(ctx) {
           row.cells.forEach((cell, i) => {
             const dateVal = cell.date || nextDateForWeekday(cell.weekday);
             const startVal = fmtHM(cell.startMin), endVal = fmtHM(cell.endMin);
-            const cb = $('input', { type: 'checkbox', checked: checks[i], 'aria-label': `Include ${dateVal || 'shift'}`, onChange: e => { checks[i] = e.target.checked; refresh(); } });
+            // Numbered per cell: these are addressed identities (restoreFocusedField
+            // looks fields up by aria-label), and a seven-cell read used to put seven
+            // "Date" fields on one screen — a re-render mid-fix moved the caret to
+            // whichever cell came first. 'Include shift N' is also stable where the
+            // date-based label collided whenever two cells read no date at all.
+            const cb = $('input', { type: 'checkbox', checked: checks[i], 'aria-label': `Include shift ${i + 1}`, onChange: e => { checks[i] = e.target.checked; refresh(); } });
             if (cell.dupe) cb.title = 'Possibly a duplicate read — check before adding';
-            const dIn = $('input', { type: 'date', value: dateVal || todayIso(), 'aria-label': 'Date', class: 'tesco-in', onInput: e => { cell.date = e.target.value; } });
-            const sIn = $('input', { type: 'time', value: startVal, 'aria-label': 'Start', class: 'tesco-in', onInput: e => { cell.startMin = parseHM(e.target.value) ?? cell.startMin; } });
-            const eIn = $('input', { type: 'time', value: endVal, 'aria-label': 'End', class: 'tesco-in', onInput: e => { cell.endMin = parseHM(e.target.value) ?? cell.endMin; } });
-            const hours = $('span', { class: 'muted', style: 'font-size:11px;min-width:44px;text-align:right;' }, `${paidHours(cell.startMin, cell.endMin)}h`);
+            const dIn = $('input', { type: 'date', value: dateVal || todayIso(), 'aria-label': `Date ${i + 1}`, class: 'tesco-in', onInput: e => { cell.date = e.target.value; } });
+            // The hours beside the times are recomputed as they are corrected. They
+            // used to be painted once when the row was drawn, so fixing a misread
+            // end time left "7h" sitting next to a cell that would be added as 11h
+            // — the one number in the row you check before pressing Add selected.
+            const hours = $('span', { class: 'muted', style: 'font-size:11px;min-width:44px;text-align:right;' });
+            const refreshHours = () => { hours.textContent = `${paidHours(cell.startMin, cell.endMin)}h`; };
+            const sIn = $('input', { type: 'time', value: startVal, 'aria-label': `Start ${i + 1}`, class: 'tesco-in', onInput: e => { cell.startMin = parseHM(e.target.value) ?? cell.startMin; refreshHours(); } });
+            const eIn = $('input', { type: 'time', value: endVal, 'aria-label': `End ${i + 1}`, class: 'tesco-in', onInput: e => { cell.endMin = parseHM(e.target.value) ?? cell.endMin; refreshHours(); } });
+            refreshHours();
             rowsBox.appendChild($('div', { class: 'tesco-celledit-row' }, cb, dIn, sIn, eIn, hours, $('span', { class: 'muted', style: 'font-size:10px;' }, cell.raw)));
           });
         };
@@ -2212,13 +3570,19 @@ export function screenTesco(ctx) {
         ctx.getState().settings.tescoWeekNos = map;
         persist(); render();
       },
-      onInput: e => e.target.blur(),   // commit on Enter/blur, not per keystroke
+      // No onInput here on purpose. Blurring on the first keystroke committed the
+      // field, and the render that followed handed the replacement number input
+      // back with its value selected — so the second digit of a two-digit week
+      // number overwrote the first. Committing on change (Enter, or leaving the
+      // field) is what actually lets a number be typed.
     });
     const head = $('div', { class: 'tesco-week-head' },
       $('div', {},
         $('div', { style: 'font-weight:600;font-size:13px;' }, `Week of ${prettyDate(w.weekStart)}`),
         $('div', { class: 'muted', style: 'font-size:11px;margin-top:2px;display:flex;align-items:center;gap:4px;' },
-          `Payslip ${prettyDate(payDateOf(w.weekStart))} · wk`, weekNo),
+          // Same words and the same full date as the payslips card below, so one
+          // figure isn't called "Payslip 24 Sep" here and "Pay date" there.
+          `Pay date ${prettyDateLong(payDateOf(w.weekStart))} · wk`, weekNo),
       ),
       $('div', { style: 'text-align:right;' },
         $('div', { class: 'tesco-week-gross' }, w.gross > 0 ? fmt(w.gross) : '—'),
@@ -2237,20 +3601,40 @@ export function screenTesco(ctx) {
         `Est. PAYE ${fmt(sim.paye)} · USC ${fmt(sim.usc)} · PRSI ${fmt(sim.prsi)} · FF ${fmt(sim.pension)} → net ${fmt(sim.net)}`));
     }
     if (actual != null) {
-      // Compare like with like: a payslip total is PAYE+USC+PRSI+Future Fund,
-      // so the estimate must include the pension (Future Fund) too.
-      const delta = sim ? r2(actual - (sim.tax + sim.pension)) : null;
-      const chip = delta != null
-        ? $('span', { class: `tesco-chip ${Math.abs(delta) < 1 ? 'tesco-chip-good' : 'tesco-chip-warn'}` },
-            `${delta >= 0 ? '+' : '−'}${fmt(Math.abs(delta)).slice(1)} vs est`)
-        : null;
-      box.appendChild($('div', { class: 'tesco-actual' },
-        $('span', { style: 'font-weight:600;font-size:12px;' }, `Payslip total ${fmt(actual)}`),
-        w.bankPaid != null ? $('span', { class: 'tesco-derived' }, `Received ${fmt(w.bankPaid)}`) : null,
-        chip,
-      ));
+      const actualEl = $('div', { class: 'tesco-actual' }, ...actualFigures(w));
+      box.appendChild(actualEl);
+      // A payslip figure typed below moves this week's line, so it is re-filled
+      // in place rather than by rebuilding the screen: replaceChildren() leaves
+      // the field being typed into — and its caret — untouched.
+      derivedRefreshers.push(() => {
+        const fresh = buildPayWeeks(shifts(), payslips(), rates).find(x => x.weekStart === w.weekStart);
+        const figures = fresh ? actualFigures(fresh) : [];
+        actualEl.style.display = figures.length ? '' : 'none';
+        actualEl.replaceChildren(...figures);
+      });
     }
     return box;
+  }
+
+  // The week's recorded figures: the tax + Future Fund its payslips withheld, the
+  // net that reached the bank, and how far the total sits from the estimate.
+  // Named, not just totalled: "Payslip total €72.11" beside "Received €478.42" left
+  // the reader to guess what the first figure was — and a week whose payslips were
+  // all removed in the meantime returns no figures at all, so the line hides.
+  function actualFigures(w) {
+    const actual = w.payslips.length ? w.paid : null;
+    if (actual == null) return [];
+    // Compare like with like: a payslip total is PAYE+USC+PRSI+Future Fund, so
+    // the estimate must include the pension (Future Fund) too.
+    const sim = w.gross > 0 ? simulateTax(w.gross, rates) : null;
+    const delta = sim ? r2(actual - (sim.tax + sim.pension)) : null;
+    return [
+      $('span', { style: 'font-weight:600;font-size:12px;' }, `Tax paid ${fmt(actual)}`),
+      w.bankPaid != null ? $('span', { class: 'tesco-derived' }, `Received ${fmt(w.bankPaid)}`) : null,
+      delta == null ? null
+        : $('span', { class: `tesco-chip ${Math.abs(delta) < 1 ? 'tesco-chip-good' : 'tesco-chip-warn'}` },
+            `${delta >= 0 ? '+' : '−'}${fmt(Math.abs(delta)).slice(1)} vs est`),
+    ];
   }
 
   function shiftRow(s) {
@@ -2268,16 +3652,27 @@ export function screenTesco(ctx) {
       p && p.special ? $('span', { class: 'tesco-chip' }, 'special') : null,
       $('span', { class: 'muted', style: 'font-size:11px;' }, `${p ? p.hours : '?'}h`),
       $('span', { class: 'tesco-shift-amt' }, p ? fmt(p.gross) : '—'),
-      $('button', { type: 'button', class: 'icon-btn tesco-del', title: 'Delete shift', 'aria-label': 'Delete shift', onClick: async () => {
-        if (await swalConfirm({ title: 'Delete shift?', text: `${prettyDate(s.date)} ${times}`, danger: true, confirmButtonText: 'Delete' })) deleteShift(s.id);
-      } }, '×'),
+      // Edit before delete: the destructive control keeps the end of the row, so
+      // a mistaken tap lands on the sheet rather than on a confirmation. The two
+      // travel as one group because on a very narrow phone the row wraps, and a
+      // group wraps whole and right-aligned instead of splitting across lines.
+      $('span', { class: 'tesco-shift-actions' },
+        $('button', { type: 'button', class: 'icon-btn tesco-edit', title: 'Edit shift', 'aria-label': `Edit shift ${prettyDate(s.date)} ${times}`, onClick: () => openShiftEditor(s.id) }, iconSpan('pencil', 'md')),
+        // Addressed like the pencil beside it: a `aria-label` is how a control is
+        // found (restoreFocusedField, the harness probes), so one screen must
+        // never carry two of the same — every row's delete was "Delete shift".
+        $('button', { type: 'button', class: 'icon-btn tesco-del', title: 'Delete shift', 'aria-label': `Delete shift ${prettyDate(s.date)} ${times}`, onClick: async () => {
+          if (await swalConfirm({ title: 'Delete shift?', text: `${prettyDate(s.date)} ${times}`, danger: true, confirmButtonText: 'Delete' })) deleteShift(s.id);
+        } }, '×')),
     );
     return row;
   }
 
   // ================= payslips (the "Total tax paid" table) =================
   function buildPayslipsCard() {
-    const card = $('div', { class: 'card' });
+    // The class marks the card whose fields must not be rebuilt while one of them
+    // holds the caret (see payslipFieldFocused).
+    const card = $('div', { class: 'card tesco-payslips-card' });
     card.appendChild($('div', { class: 'tesco-card-title' }, 'Payslips — tax paid', iconSpan('wallet', 'md')));
     const list = $('div', {});
     const slips = [...payslips()].sort((a, b) => b.weekStart.localeCompare(a.weekStart));
@@ -2293,24 +3688,38 @@ export function screenTesco(ctx) {
       addPayslip({ id: uid(), weekStart: ws, paye: 0, usc: 0, prsi: 0, futureFund: 0, createdAt: new Date().toISOString() });
     } }, '+ Add payslip week');
 
-    // Per-component totals — the spreadsheet's SUBTOTAL footer.
-    const comp = { paye: 0, usc: 0, prsi: 0, futureFund: 0 };
-    for (const p of payslips()) for (const k of Object.keys(comp)) comp[k] += (+p[k] || 0);
+    // Per-component totals — the spreadsheet's SUBTOTAL footer. Re-filled in
+    // place while a figure above is being typed, so the totals keep up without
+    // the card being rebuilt under the caret (see derivedRefreshers).
+    const compPaye = $('span'), compUsc = $('span'), compPrsi = $('span'), compFf = $('span');
+    const compSum = $('span', { class: 'tesco-totals-sum' });
+    function paintTotals() {
+      const comp = { paye: 0, usc: 0, prsi: 0, futureFund: 0 };
+      for (const p of payslips()) for (const k of Object.keys(comp)) comp[k] += (+p[k] || 0);
+      compPaye.textContent = `PAYE ${fmt(comp.paye)}`;
+      compUsc.textContent = `USC ${fmt(comp.usc)}`;
+      compPrsi.textContent = `PRSI ${fmt(comp.prsi)}`;
+      compFf.textContent = `FF ${fmt(comp.futureFund)}`;
+      compSum.textContent = fmt(r2(comp.paye + comp.usc + comp.prsi + comp.futureFund));
+    }
+    paintTotals();
+    derivedRefreshers.push(paintTotals);
     card.appendChild(list);
     card.appendChild(addBtn);
     card.appendChild($('div', { class: 'tesco-totals' },
       $('span', null, 'Total tax paid'),
-      $('span', null, `PAYE ${fmt(comp.paye)}`),
-      $('span', null, `USC ${fmt(comp.usc)}`),
-      $('span', null, `PRSI ${fmt(comp.prsi)}`),
-      $('span', null, `FF ${fmt(comp.futureFund)}`),
-      $('span', { class: 'tesco-totals-sum' }, fmt(r2(comp.paye + comp.usc + comp.prsi + comp.futureFund))),
+      compPaye, compUsc, compPrsi, compFf, compSum,
     ));
     return card;
   }
 
   function payslipRow(p) {
     const total = $('span', { class: 'tesco-payslip-total' }, fmt(payslipTotal(p)));
+    const ws = weekStartOf(p.weekStart);
+    // A display, like the week card's figure is editable: typing a week's number
+    // once numbers every week around it, so this row follows the week card
+    // rather than competing with it for the same stored value.
+    const weekNo = payslipWeekNumberOf(p, weekNos());
     // aria-labels carry the payslip id: the app restores focus across renders
     // by label, so two rows sharing "Payslip paye" would send the caret to the
     // wrong row after the debounced repaint below.
@@ -2331,7 +3740,16 @@ export function screenTesco(ctx) {
       if (fresh) total.textContent = fmt(payslipTotal(fresh));
     };
     return $('div', { class: 'tesco-payslip' },
-      $('input', { type: 'date', value: p.weekStart, 'aria-label': `Week start ${p.id}`, class: 'tesco-in tesco-in-date', onInput: e => { if (dateOk(e.target.value)) { updatePayslip(p.id, { weekStart: e.target.value }); schedulePayslipRender(); } } }),
+      // Which week this payslip covers, at a glance: the date it is keyed by and
+      // its week number — the number the sheet's tax table prints, and the one
+      // the week card above shows for the same week.
+      $('div', { class: 'tesco-payslip-head' },
+        $('input', { type: 'date', value: p.weekStart, 'aria-label': `Week start ${p.id}`, class: 'tesco-in tesco-in-date', onInput: e => { if (dateOk(e.target.value)) { updatePayslip(p.id, { weekStart: e.target.value }); schedulePayslipRender(); } } }),
+        weekNo == null ? null : $('span', {
+          class: 'tesco-chip tesco-payslip-wk',
+          title: 'Week number — edit it on the week card above',
+        }, `Wk ${weekNo}`),
+      ),
       $('div', { class: 'tesco-payslip-grid' },
         numField('PAYE', numIn('paye')), numField('USC', numIn('usc')), numField('PRSI', numIn('prsi')), numField('FF', numIn('futureFund')),
         // The net that landed in the bank, when the payslip states it. Optional
@@ -2339,16 +3757,33 @@ export function screenTesco(ctx) {
         numField('Bank', numIn('bankPay', true)),
       ),
       $('div', { class: 'tesco-payslip-foot' },
-        $('span', { class: 'muted', style: 'font-size:11px;' }, `Pay ${prettyDate(payDateOf(weekStartOf(p.weekStart)))}`),
-        total,
-        $('button', { type: 'button', class: 'icon-btn tesco-del', title: 'Delete payslip', 'aria-label': 'Delete payslip', onClick: async () => {
+        // Week start + 11 days is the sheet's own pay-date formula, and the
+        // weekday is the point of it: the money lands on the Thursday. Named and
+        // dated in full for that reason — a bare "24 Sep" left it unclear which
+        // year the row belonged to and which day to look for it on a statement.
+        $('span', { class: 'muted', style: 'font-size:11px;' }, `Pay date ${prettyDateLong(payDateOf(ws))}`),
+        // Labelled, because a bare number after four input fields was the thing
+        // that read as ambiguous: this is what the week's payslip withheld.
+        $('span', { class: 'tesco-payslip-tax' },
+          $('span', { class: 'muted', style: 'font-size:11px;' }, 'Tax paid'),
+          total,
+        ),
+        $('button', { type: 'button', class: 'icon-btn tesco-del', title: 'Delete payslip', 'aria-label': `Delete payslip week of ${prettyDate(p.weekStart)}`, onClick: async () => {
           if (await swalConfirm({ title: 'Delete payslip?', text: `Week of ${prettyDate(p.weekStart)}`, danger: true, confirmButtonText: 'Delete' })) deletePayslip(p.id);
         } }, '×'),
       ),
     );
   }
-  function numField(label, input) {
-    return $('label', { class: 'tesco-numfield' }, $('span', null, label), input);
+  // The optional hint rides on the LABEL line, not under the input. A trailing
+  // line only one field has made that cell taller than its neighbour, so the
+  // grid's rows stopped being evenly spaced (a hole under the field beside it).
+  // On the label line every cell is the same height and the hint still sits
+  // beside the number it derives from.
+  function numField(label, input, hint) {
+    return $('label', { class: 'tesco-numfield' },
+      $('span', { class: 'tesco-numfield-label' }, $('span', null, label), hint || null),
+      input,
+    );
   }
 
   function addPayslip(p) {
@@ -2382,9 +3817,9 @@ export function screenTesco(ctx) {
     details.open = ratesPanelOpen;
     const grid = $('div', { class: 'tesco-rates-grid' });
     let timer = null;
-    // Sunday is normal × multiplier, so show the figure it works out to right
-    // under the factor: editing either field moves it, which is the point of
-    // storing a multiple rather than its own rate.
+    // Sunday is normal × multiplier, so show the figure it works out to on the
+    // factor's own label line: editing either field moves it, which is the
+    // point of storing a multiple rather than its own rate.
     const sundayRate = $('span', { class: 'tesco-derived' });
     const refreshSundayRate = () => {
       sundayRate.textContent = `= ${fmt(r2(rates.normal * rates.specialMultiplier))}/h`;
@@ -2405,9 +3840,7 @@ export function screenTesco(ctx) {
           }, 500);
         },
       });
-      const wrap = numField(label, input);
-      if (hint) wrap.appendChild(hint);
-      return wrap;
+      return numField(label, input, hint);
     };
     grid.appendChild(field('Normal €/h', 'normal'));
     grid.appendChild(field('Sunday ×', 'specialMultiplier', undefined, sundayRate));
@@ -2501,4 +3934,13 @@ function prettyDate(iso) {
   if (!iso || !dateOk(iso)) return '—';
   const d = isoToUtcMidnight(iso);
   return `${d.getUTCDate()} ${MONTH_SHORT[d.getUTCMonth()]}`;
+}
+// The same date with its weekday and year. Used for a payslip's pay date, where
+// both carry meaning: the formula lands the money on a Thursday, and a roster
+// spans a year boundary — so "Thu 24 Sep 2026" is matchable against a bank
+// statement where "24 Sep" is not.
+function prettyDateLong(iso) {
+  if (!iso || !dateOk(iso)) return '—';
+  const d = isoToUtcMidnight(iso);
+  return `${weekdayShort(iso)} ${d.getUTCDate()} ${MONTH_SHORT[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }

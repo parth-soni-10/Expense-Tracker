@@ -135,9 +135,23 @@
   status = 404
   force = true
 
-# The local dev server script.
+# The local dev server script, the workbook → import CSVs converter beside it,
+# and the roster OCR harness: all three are run on a laptop and have no business
+# being downloadable.
 [[redirects]]
   from = "/serve.sh"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/convert-tesco-csv.py"
+  to = "/404.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/ocr-harness.html"
   to = "/404.html"
   status = 404
   force = true

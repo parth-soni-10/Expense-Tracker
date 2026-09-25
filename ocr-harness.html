@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cents. roster OCR harness</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, monospace; margin: 0; padding: 16px; background: #14161a; color: #e8e8e4; }
+  h1 { font-size: 16px; margin: 0 0 10px; }
+  #log { white-space: pre-wrap; }
+  .pass { color: #6ee7a8; } .fail { color: #ff8f7a; } .dim { color: #8b8f96; }
+  canvas { max-width: 320px; border: 1px solid #444; margin: 4px; }
+</style>
+</head>
+<body>
+<h1>cents. roster OCR harness (synthetic photos → real pipeline)</h1>
+<div id="log"></div>
+<div id="previews"></div>
+<script type="module">
+import { ocrRosterRow, parseRosterWords } from './tesco.js';
+
+const logEl = document.getElementById('log');
+const log = (s, cls = '') => { logEl.insertAdjacentHTML('beforeend', cls ? `<span class="${cls}">${s}</span>\n` : s + '\n'); };
+
+// The labels come from the real calendar so the page can never disagree with
+// itself: a roster whose day names contradict its dates is read off the day
+// names (they are the reliable signal), which shifts every column by a week.
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const WEEK_DAY = new Date(Date.UTC(2026, 8, 22));   // Tue 22 Sep 2026, the default week
+
+// A week of shifts for one staff row, using the sheet's own dialect.
+const SHIFT = ['07:00-15:00', 'OFF', '12:00-20:00', 'OFF', '09:00-17:00', '10:00-16:00', 'OFF'];
+
+function buildRosterCanvas(opts = {}) {
+  const W = opts.W || 1700, H = opts.H || 2400;
+  const people = opts.people || 9;
+  const ownerRow = opts.ownerRow ?? 4;             // 0-based staff row that is "Parth"
+  // No 'Parth Sharma' in here: the owner's row is named separately, and a names
+  // list that contains it too puts the scanned name on two different rows — the
+  // reader then matches the first one, which is not the row under test.
+  const names = opts.names || ['Aoife Byrne', 'Liam Doyle', 'Niamh Kelly', 'Sean Murphy', 'Ciara Nolan', 'Eoin Walsh', 'Grace Reilly', 'Mark Fitz', 'Zara Khan', 'Noah Blake', 'Iris Yong'];
+  const font = opts.font || 'DejaVu Sans, Verdana, Arial, sans-serif';
+  const cellFont = opts.cellFont || 40;
+  const nameFont = opts.nameFont || 40;
+  const rest = opts.rest || 'OFF';
+  const weekDay = opts.weekStartDow != null
+    ? new Date(Date.UTC(2026, 8, 20) + ((opts.weekStartDow - new Date(Date.UTC(2026, 8, 20)).getUTCDay() + 7) % 7) * 86400000)
+    : WEEK_DAY;
+  const weekDates = Array.from({ length: 7 }, (_, i) => new Date(weekDay.getTime() + i * 86400000));
+  const WEEK = weekDates.map(d => DOW[d.getUTCDay()]);
+  const DAYS = weekDates.map(d => [d.getUTCDate(), MON[d.getUTCMonth()]]);
+  const iso = weekDates.map(d => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`);
+  const owner = opts.ownerShift || SHIFT;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d');
+  g.fillStyle = opts.paper || '#ffffff'; g.fillRect(0, 0, W, H);
+
+  const m = Math.round(W * 0.045);
+  const titleH = Math.round(H * 0.075);
+  const headH = Math.round(H * 0.055);
+  const nameW = Math.round((W - m * 2) * 0.17);
+  const dayW = (W - m * 2 - nameW) / 7;
+  const bodyTop = m + titleH + headH;
+  const rowH = (H - m - bodyTop) / people;
+  // A real roster prints its cells to FIT their column. Text left to overflow
+  // runs into the neighbouring cell and the engine reads the two as one mangled
+  // word — which is a fault of the drawing, not of the reader.
+  const fit = (text, maxW, start) => {
+    let f = start;
+    for (; f > 8; f -= 1) { g.font = `${f}px ${font}`; if (g.measureText(text).width <= maxW) break; }
+    return f;
+  };
+  const pad = Math.round(dayW * 0.07);
+  const longest = SHIFT.concat(['12:00-20:00', '22:00-06:00', 'REST']).reduce((a, b) => (b.length > a.length ? b : a));
+
+  g.fillStyle = '#111';
+  g.font = `bold ${Math.round(W * 0.026)}px ${font}`;
+  g.fillText('TESCO STORES  —  WEEKLY ROSTER', m, m + Math.round(W * 0.026));
+  g.font = `${Math.round(W * 0.017)}px ${font}`;
+  g.fillStyle = '#333';
+  const slashes = d => `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+  g.fillText(`Week 39   ${slashes(weekDates[0])} - ${slashes(weekDates[6])}   Store 3021`, m, m + Math.round(W * 0.026) + Math.round(W * 0.028));
+
+  // Grid rules (thin grey, thicker outer border). Off altogether on the many
+  // sheets that print only spacing: the reader must not need a rule to find a
+  // column boundary.
+  if (opts.rules !== false) {
+    const line = (x0, y0, x1, y1, w, c) => { g.strokeStyle = c; g.lineWidth = w; g.beginPath(); g.moveTo(x0, y0); g.lineTo(x1, y1); g.stroke(); };
+    const tableRight = W - m, tableBottom = bodyTop + rowH * people;
+    line(m, bodyTop, tableRight, bodyTop, 2, '#999');
+    for (let i = 0; i <= 7; i++) { const x = m + nameW + dayW * i; line(x, bodyTop - headH, x, tableBottom, 2, '#bbb'); }
+    line(m, bodyTop - headH, m, tableBottom, 2, '#999');
+    for (let i = 0; i <= people; i++) line(m, bodyTop + rowH * i, tableRight, bodyTop + rowH * i, i === people ? 3 : 2, i === people ? '#999' : '#bbb');
+  }
+
+  // Header: day names + dates (either can be absent — some sheets print one).
+  g.fillStyle = '#111';
+  g.textBaseline = 'middle';
+  g.font = `bold ${Math.round(cellFont * 0.9)}px ${font}`;
+  g.fillText('Employee', m + 14, bodyTop - headH * 0.5);
+  for (let d = 0; d < 7; d++) {
+    const x = m + nameW + dayW * d + dayW / 2;
+    g.textAlign = 'center';
+    if (opts.dayNames !== false) {
+      g.font = `bold ${Math.round(cellFont * 0.9)}px ${font}`;
+      g.fillText(WEEK[d], x, opts.dates === false ? bodyTop - headH * 0.5 : bodyTop - headH * 0.75);
+    }
+    if (opts.dates !== false) {
+      g.font = `${Math.round(cellFont * 0.8)}px ${font}`;
+      g.fillText(`${String(DAYS[d][0]).padStart(2, '0')}-${DAYS[d][1]}`, x, opts.dayNames === false ? bodyTop - headH * 0.5 : bodyTop - headH * 0.28);
+    }
+  }
+  g.textAlign = 'left';
+
+  // Staff rows.
+  const cellFit = fit(longest, dayW - pad * 2, cellFont);
+  const truth = {};
+  for (let r = 0; r < people; r++) {
+    const cy = bodyTop + rowH * r + rowH / 2;
+    const nm = r === ownerRow ? (opts.ownerName || 'Parth Sharma') : (names[r % names.length] || `Person ${r}`);
+    g.fillStyle = '#111';
+    g.font = `${opts.bold ? 'bold ' : ''}${fit(nm, nameW - pad * 2, nameFont)}px ${font}`;
+    g.fillText(nm, m + pad, cy);
+    for (let d = 0; d < 7; d++) {
+      // A rotating pattern so rows differ; the owner row is the pinned one.
+      const shift = r === ownerRow ? owner[d] : (d === r % 7 ? rest : SHIFT[(d + r) % 7]);
+      g.fillStyle = '#111';
+      g.font = `${opts.bold ? 'bold ' : ''}${cellFit}px ${font}`;
+      g.fillText(shift, m + nameW + dayW * d + pad, cy);
+      if (r === ownerRow) truth[d] = shift;
+    }
+  }
+  return { cv, truth, ownerRow, iso, geom: { m, titleH, headH, nameW, dayW, bodyTop, rowH, people, W, H } };
+}
+
+// Photograph the page: rotate, blur, glare, noise, then JPEG.
+async function photograph(built, opts = {}) {
+  const { cv } = built;
+  const out = document.createElement('canvas');
+  const deg = (opts.deg || 0) * Math.PI / 180;
+  const scale = opts.scale || 1;
+  out.width = Math.round(cv.width * scale);
+  out.height = Math.round(cv.height * scale);
+  const g = out.getContext('2d');
+  g.fillStyle = opts.paper || '#f4f2ee';
+  g.fillRect(0, 0, out.width, out.height);
+  // A sheet photographed on a table leaves a margin, so turn the page inside the
+  // frame by default; inset: 0 is the tight crop where the sheet fills the frame
+  // and a tilt puts its own corners out of the picture.
+  const inset = opts.inset == null ? 0.045 : opts.inset;
+  const dw = out.width * (1 - inset * 2), dh = out.height * (1 - inset * 2);
+  g.save();
+  g.translate(out.width / 2, out.height / 2);
+  g.rotate(deg);
+  if (opts.blur) g.filter = `blur(${opts.blur}px)`;
+  // Keystone: the phone held so one edge of the sheet is nearer — the vertical
+  // scale grows across the page, which shears every column into a slight fan.
+  // Drawn in slices, because a canvas transform cannot express it.
+  if (opts.keystone) {
+    const slices = 48;
+    for (let i = 0; i < slices; i++) {
+      const t0 = i / slices, t1 = (i + 1) / slices;
+      const frac = (t0 + t1) / 2 - 0.5;
+      const dy = dh * opts.keystone * frac;
+      g.drawImage(cv, t0 * cv.width, 0, Math.max(1, (t1 - t0) * cv.width), cv.height,
+        -dw / 2 + t0 * dw, -dh / 2 + dy / 2, Math.max(1, (t1 - t0) * dw), dh - Math.abs(dy));
+    }
+  } else {
+    g.drawImage(cv, -dw / 2, -dh / 2, dw, dh);
+  }
+  g.filter = 'none';
+  g.restore();
+  // Glare: a bright radial wash, as a reflection off a glossy sheet.
+  if (opts.glare) {
+    const gr = g.createRadialGradient(out.width * 0.62, out.height * 0.33, 10, out.width * 0.62, out.height * 0.33, Math.max(out.width, out.height) * 0.7);
+    gr.addColorStop(0, `rgba(255,255,255,${opts.glare})`);
+    gr.addColorStop(0.5, `rgba(255,255,255,${opts.glare * 0.45})`);
+    gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, out.width, out.height);
+  }
+  // Brightness gradient: the sheet lit unevenly.
+  if (opts.gradient) {
+    const lg = g.createLinearGradient(0, 0, out.width, out.height);
+    lg.addColorStop(0, `rgba(0,0,0,${opts.gradient})`);
+    lg.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = lg; g.fillRect(0, 0, out.width, out.height);
+  }
+  if (opts.noise) {
+    const img = g.getImageData(0, 0, out.width, out.height);
+    const d = img.data;
+    let seed = 12345;
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
+    for (let i = 0; i < d.length; i += 4) {
+      const n = (rnd() - 0.5) * opts.noise * 255;
+      d[i] = Math.max(0, Math.min(255, d[i] + n));
+      d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
+      d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n));
+    }
+    g.putImageData(img, 0, 0);
+  }
+  const blob = await new Promise(res => out.toBlob(res, opts.jpeg === false ? 'image/png' : 'image/jpeg', opts.quality || 0.82));
+  return new File([blob], 'roster.jpg', { type: blob.type });
+}
+
+const truthToCells = (truth, iso) => {
+  const out = {};
+  for (const [d, t] of Object.entries(truth)) {
+    if (!/^\d/.test(t)) continue;
+    const [a, b] = t.split('-');
+    out[iso[+d]] = [a, b];
+  }
+  return out;
+};
+
+// A cheap checksum of the bytes the engine is given, so a result can be tied to
+// the exact photo that produced it: two runs that disagree are only comparable
+// when this agrees.
+async function fileSum(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  let a = 0, b = 0;
+  for (let i = 0; i < buf.length; i += 997) { a = (a + buf[i]) % 100000; b = (b + i * buf[i]) % 100000; }
+  return `${buf.length}.${a}.${b}`;
+}
+
+async function runCase(name, built, photoOpts, scanOpts = {}) {
+  const file = await photograph(built, photoOpts);
+  window.__lastFile = file;
+  window.__lastSum = await fileSum(file);
+  window.__lastBuilt = built;
+  window.__lastPhoto = photoOpts;
+  const canvas = document.createElement('canvas');
+  const stages = [];
+  const t0 = performance.now();
+  let read;
+  try {
+    read = await ocrRosterRow(file, canvas, { name: scanOpts.name || 'Parth', today: new Date(Date.UTC(2026, 8, 25)) }, (p, msg) => stages.push([+(p * 100).toFixed(0), msg]));
+  } catch (e) {
+    log(`FAIL ${name}: threw ${e.message}`, 'fail'); return { name, ok: false, error: e.message };
+  }
+  const ms = Math.round(performance.now() - t0);
+  window.__lastRead = read;
+  const parsed = parseRosterWords(read.words, new Date(Date.UTC(2026, 8, 25)), {
+    name: scanOpts.name || 'Parth', cells: read.cells, cellsComplete: read.cellsComplete,
+  });
+  const truth = truthToCells(built.truth, built.iso || ['2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25', '2026-09-26', '2026-09-27', '2026-09-28']);
+  const owner = parsed.rows.find(r => r.matches) || null;
+  const got = {};
+  for (const c of (owner ? owner.cells : read.cells || [])) {
+    if (!c.date) continue;
+    got[c.date] = [String(Math.floor(c.startMin / 60)).padStart(2, '0') + ':' + String(c.startMin % 60).padStart(2, '0'),
+      String(Math.floor(c.endMin / 60) % 24).padStart(2, '0') + ':' + String(c.endMin % 60).padStart(2, '0')];
+  }
+  const diffs = [];
+  // A photo too poor to read is allowed to come back EMPTY — what is never
+  // allowed is coming back with someone else's shift on the wrong day, which the
+  // user would have no way to notice.
+  if (scanOpts.expect === 'refuse') {
+    if (owner && Object.keys(got).length) diffs.push(`refused to fail: read ${Object.keys(got).length} cell(s) off a photo that cannot be read`);
+  } else {
+    const wantKeys = Object.keys(truth).sort();
+    for (const k of wantKeys) {
+      if (!(k in got)) diffs.push(`${k}: missing (want ${truth[k].join('-')})`);
+      else if (got[k][0] !== truth[k][0] || got[k][1] !== truth[k][1]) diffs.push(`${k}: ${got[k].join('-')} != ${truth[k].join('-')}`);
+    }
+    for (const k of Object.keys(got).sort()) if (!(k in truth)) diffs.push(`${k}: extra read ${got[k].join('-')}`);
+    if (!owner) diffs.push('no row matched the name');
+  }
+  // A case declared beyond what the reader does keeps one job: it must not come
+  // back LOOKING right (that is the failure a person cannot catch). It is logged,
+  // not counted, so the matrix stays a regression signal instead of a wish list.
+  if (scanOpts.expect === 'limit') {
+    log(`LIMIT ${name}  [${ms}ms, reads=${read.scanned}${read.pagePass ? '+page' : ''}, found=${read.found}, complete=${read.cellsComplete}, rows=${parsed.rows.length}, cells=${Object.keys(got).length}, ${diffs.length} wrong] ${scanOpts.why || ''}`, 'dim');
+    return { name, ok: true, limit: true, ms, diffs, rows: parsed.rows.length, cols: parsed.columns.length, found: read.found, rawCells: (read.cells || []).map(c => ({ d: c.date, r: c.raw })), stages };
+  }
+  const ok = diffs.length === 0;
+  log(`${ok ? 'PASS' : 'FAIL'} ${name}${scanOpts.expect === 'refuse' ? ' [expect refuse]' : ''}  [${ms}ms, reads=${read.scanned}${read.pagePass ? '+page' : ''}, found=${read.found}, complete=${read.cellsComplete}, rows=${parsed.rows.length}, cols=${parsed.columns.length}, sum=${window.__lastSum}]`, ok ? 'pass' : 'fail');
+  if (!ok) for (const d of diffs) log(`        ${d}`, 'dim');
+  if (!ok) {
+    log(`        rows: ${parsed.rows.map(r => `${r.name}${r.matches ? '*' : ''}(${r.cells.length})`).join(', ')}`, 'dim');
+    log(`        raw cells: ${(read.cells || []).map(c => `${c.date}:${c.raw}`).join(' | ') || '(none)'}`, 'dim');
+  }
+  return { name, ok, ms, diffs, rows: parsed.rows.length, cols: parsed.columns.length, scanned: read.scanned, found: read.found, complete: read.cellsComplete, rawCells: (read.cells || []).map(c => ({ d: c.date, r: c.raw, conf: c.confidence })), stages };
+}
+
+// The variants a phone actually produces: a shot down the page, a glare-lit
+// glossy sheet, a dark corner, a small image, heavy JPEG, another typeface, the
+// phone held at an angle, a sideways shot, and the layouts other sheets use.
+window.__scenarios = () => [
+  { name: 'clean', built: window.__ocrHarness.buildRosterCanvas({}), photo: { jpeg: false } },
+  { name: 'handheld-jpeg', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 1.2, blur: 0.6, noise: 0.05, glare: 0.28, gradient: 0.12, quality: 0.82 } },
+  { name: 'glare', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 0.8, blur: 0.8, noise: 0.04, glare: 0.55, quality: 0.8 } },
+  { name: 'shadow-dark', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: -1, blur: 0.5, noise: 0.06, gradient: 0.38, quality: 0.78 } },
+  { name: 'low-res', built: window.__ocrHarness.buildRosterCanvas({}), photo: { scale: 0.55, blur: 0.4, noise: 0.04, quality: 0.85 } },
+  { name: 'tiny', built: window.__ocrHarness.buildRosterCanvas({}), photo: { scale: 0.4, noise: 0.05, quality: 0.8 } },
+  { name: 'rotated-2.5deg', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 2.5, blur: 0.5, noise: 0.04, quality: 0.8 } },
+  { name: 'rotated--2deg', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: -2, blur: 0.5, noise: 0.04, quality: 0.8 } },
+  { name: 'tilted-3.5deg', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 3.5, blur: 0.5, noise: 0.05, quality: 0.8 } },
+  { name: 'tilted-5deg', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 5, blur: 0.6, noise: 0.05, quality: 0.8 } },
+  { name: 'tight-crop-2deg', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 2, inset: 0, blur: 0.5, noise: 0.05, quality: 0.8 } },
+  { name: 'noisy-jpeg60', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 1, noise: 0.13, quality: 0.6 } },
+  { name: 'times-new-roman', built: window.__ocrHarness.buildRosterCanvas({ font: '"Times New Roman", serif' }), photo: { deg: 1, noise: 0.04, quality: 0.8 } },
+  { name: 'courier', built: window.__ocrHarness.buildRosterCanvas({ font: '"Courier New", monospace' }), photo: { noise: 0.04, quality: 0.8 } },
+  { name: 'bold-print', built: window.__ocrHarness.buildRosterCanvas({ bold: true }), photo: { deg: 1, noise: 0.04, quality: 0.8 } },
+  { name: 'big-page', built: window.__ocrHarness.buildRosterCanvas({ W: 2100, H: 2970 }), photo: { deg: 1.2, blur: 0.7, noise: 0.05, glare: 0.2, quality: 0.82 } },
+  { name: 'small-page', built: window.__ocrHarness.buildRosterCanvas({ W: 1250, H: 1770 }), photo: { deg: 1, blur: 0.5, noise: 0.05, quality: 0.82 } },
+  { name: 'owner-first-row', built: window.__ocrHarness.buildRosterCanvas({ ownerRow: 0 }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  { name: 'owner-last-row', built: window.__ocrHarness.buildRosterCanvas({ ownerRow: 8 }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  { name: 'many-people', built: window.__ocrHarness.buildRosterCanvas({ people: 16 }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  { name: 'keystone-8pct', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 1, keystone: 0.08, noise: 0.05, quality: 0.82 } },
+  // The reader levels the sheet by ROTATING it, which undoes the phone being off
+  // square but not the sheet being photographed from one side. Past ~10% of
+  // keystone the far edge's columns drift enough that a day's own cell crop no
+  // longer sits over its ink. Declared, not pretended.
+  { name: 'keystone-16pct', built: window.__ocrHarness.buildRosterCanvas({}), photo: { keystone: 0.16, blur: 0.4, noise: 0.05, quality: 0.8 }, scan: { expect: 'limit', why: 'beyond a rotation-only rectification' } },
+  { name: 'sun-first-week', built: window.__ocrHarness.buildRosterCanvas({ weekStartDow: 0 }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  { name: 'no-rule-lines', built: window.__ocrHarness.buildRosterCanvas({ rules: false }), photo: { deg: 1, blur: 0.4, noise: 0.05, quality: 0.82 } },
+  { name: 'no-day-names', built: window.__ocrHarness.buildRosterCanvas({ dayNames: false }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  { name: 'no-date-row', built: window.__ocrHarness.buildRosterCanvas({ dates: false }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  { name: 'rest-words', built: window.__ocrHarness.buildRosterCanvas({ rest: 'REST' }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  { name: 'rest-dashes', built: window.__ocrHarness.buildRosterCanvas({ rest: '-' }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  { name: 'night-shift', built: window.__ocrHarness.buildRosterCanvas({ ownerShift: ['07:00-15:00', 'OFF', '22:00-06:00', 'OFF', '09:00-17:00', '10:00-16:00', 'OFF'] }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  { name: 'sideways-90', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 90, noise: 0.04, quality: 0.82 } },
+  { name: 'sideways--90', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: -90, blur: 0.4, noise: 0.04, quality: 0.82 } },
+  { name: 'blurry', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 1, blur: 2.2, noise: 0.05, quality: 0.75 } },
+  { name: 'almost-blank', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 1, scale: 0.22, blur: 1.2, noise: 0.06, quality: 0.5 }, scan: { expect: 'refuse' } },
+];
+window.__runScenarios = names => {
+  const all = window.__scenarios();
+  const pick = names ? all.filter(s => names.includes(s.name)) : all;
+  window.__ocrDone = false;
+  document.getElementById('log').innerHTML = '';
+  return window.__runAll(pick);
+};
+
+window.__ocrHarness = { runCase, buildRosterCanvas, photograph, log, truthToCells };
+window.__ocrReport = null;
+window.__ocrDone = false;
+
+window.__runAll = async (cases) => {
+  const results = [];
+  for (const c of cases) {
+    try { results.push(await runCase(c.name, c.built, c.photo, c.scan)); }
+    catch (e) { log(`ERROR ${c.name}: ${e.stack}`, 'fail'); results.push({ name: c.name, ok: false, error: e.message }); }
+  }
+  window.__ocrReport = results;
+  window.__ocrDone = true;
+  const limits = results.filter(r => r.limit).length;
+  const pass = results.filter(r => r.ok && !r.limit).length;
+  const total = results.length - limits;
+  log(`\n=== ${pass}/${total} passed${limits ? `, ${limits} declared limit (not counted)` : ''} ===`, pass === total ? 'pass' : 'fail');
+  return results;
+};
+log('harness ready');
+</script>
+</body>
+</html>

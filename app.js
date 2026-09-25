@@ -4804,13 +4804,15 @@ function formView({ initial = null, onSubmit, onCancel }) {
   function redrawSplit() {
     splitWrap.innerHTML = '';
     splitRows.forEach((r, i) => {
-      const sel = $('select', { 'aria-label': 'Split method' });
+      // Numbered per row: every slice used to share one aria-label, which is an
+      // addressed identity here, not a caption (see the convention in CLAUDE.md).
+      const sel = $('select', { 'aria-label': `Split method ${i + 1}` });
       appendMethodOptions(sel, SLICE_METHODS, r.method);
       sel.value = r.method;
       sel.onchange = () => { r.method = sel.value; };
-      const amt = $('input', { type: 'text', inputmode: 'decimal', value: r.amount, 'aria-label': 'Slice amount', placeholder: 'slice €', autocomplete: 'off', style: 'width:106px;text-align:right;' });
+      const amt = $('input', { type: 'text', inputmode: 'decimal', value: r.amount, 'aria-label': `Slice amount ${i + 1}`, placeholder: 'slice €', autocomplete: 'off', style: 'width:106px;text-align:right;' });
       amt.oninput = () => { r.amount = amt.value; };
-      const rm = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;', 'aria-label': 'Remove slice', onClick: () => { if (splitRows.length > 1) { splitRows.splice(i, 1); redrawSplit(); } } }, '×');
+      const rm = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;', 'aria-label': `Remove slice ${i + 1}`, onClick: () => { if (splitRows.length > 1) { splitRows.splice(i, 1); redrawSplit(); } } }, '×');
       splitWrap.appendChild($('div', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:8px;' }, sel, amt, splitRows.length > 1 ? rm : $('span', {})));
     });
     const add = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;', onClick: () => { splitRows.push({ method: 'Cash', amount: '' }); redrawSplit(); } }, '+ Add slice');
@@ -6596,8 +6598,15 @@ function screenHistory() {
       };
       const selectAll = isGroup ? legs.map(l => l.id) : [e.id];
       const budgetAppliedTo = isGroup ? legs : [e];
-      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${e.details || ''} on ${friendlyDate(e.date)}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
-        $('span', { role: 'cell', class: 'history-cell-check' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selectAll.every(id => selected.has(id)) ? true : null, 'aria-label': `Select ${e.details || 'entry'}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
+      // Every control in this row is addressed by this string, so it has to name
+      // the row and not just the entry: a bank-to-bank transfer writes two rows
+      // with the same details and the same date, and the static 'Toggle budget
+      // inclusion' repeated that on *every* row of the screen. The amount and the
+      // method are what the two legs of a transfer differ by, so they carry the
+      // distinction (and the sign: the money left one account and reached the other).
+      const rowLabel = `${e.details || (isNote ? 'note' : 'entry')} \u00b7 ${friendlyDate(e.date)} \u00b7 ${isGroup ? 'split' : methodShort(e.method)} \u00b7 ${(isCredit ? '+' : '') + fmt(totalAmount)}`;
+      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${rowLabel}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
+        $('span', { role: 'cell', class: 'history-cell-check' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selectAll.every(id => selected.has(id)) ? true : null, 'aria-label': `Select ${rowLabel}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
           for (const id of selectAll) { if (ev.target.checked) selected.add(id); else selected.delete(id); }
           syncBulkBar();
         } })),
@@ -6609,10 +6618,10 @@ function screenHistory() {
         $('span', { class: `display-num history-amount${isCredit ? ' is-credit' : ''}` }, isNote ? 'Note' : (isCredit ? '+' : '') + fmt(totalAmount)),
         $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, isNote ? '-' : fmt(rowBalance)),
         $('span', { class: 'history-method-wrap' }, ...(isGroup
-          ? legs.map(l => $('button', { type: 'button', class: 'pill split-leg', title: 'Edit this slice', 'aria-label': `Edit ${methodShort(l.method)} slice`, onClick: ev => { ev.stopPropagation(); openLegEditor(l); } }, `${fmt(l.amount)} ${methodShort(l.method)}`))
+          ? legs.map(l => $('button', { type: 'button', class: 'pill split-leg', title: 'Edit this slice', 'aria-label': `Edit ${fmt(l.amount)} ${methodShort(l.method)} slice`, onClick: ev => { ev.stopPropagation(); openLegEditor(l); } }, `${fmt(l.amount)} ${methodShort(l.method)}`))
           : [$('span', { class: 'pill history-method' }, methodShort(e.method))])),
         $('span', { class: 'history-actions' },
-          !isNote && !isTransfer ? $('button', { type: 'button', class: 'history-action-btn budget-toggle-btn', title: e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', 'aria-label': 'Toggle budget inclusion', onClick: ev => {
+          !isNote && !isTransfer ? $('button', { type: 'button', class: 'history-action-btn budget-toggle-btn', title: e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', 'aria-label': `Toggle budget inclusion for ${rowLabel}`, onClick: ev => {
             ev.stopPropagation();
             const previous = e.budgetExcluded === true;
             for (const leg of budgetAppliedTo) leg.budgetExcluded = !previous;
@@ -6621,7 +6630,7 @@ function screenHistory() {
             toast(previous ? 'Included in budget calculations.' : 'Excluded from budget calculations.');
             render();
           } }, e.budgetExcluded ? 'Include budget' : 'Exclude budget') : null,
-          $('button', { type: 'button', class: 'history-action-btn', title: isGroup ? 'Edit or delete split payment' : 'Edit or delete entry', 'aria-label': (isGroup ? 'Edit or delete split' : `Edit or delete ${e.details || 'entry'}`), onClick: ev => { ev.stopPropagation(); openRow(); } }, 'Manage'),
+          $('button', { type: 'button', class: 'history-action-btn', title: isGroup ? 'Edit or delete split payment' : 'Edit or delete entry', 'aria-label': (isGroup ? `Edit or delete split ${rowLabel}` : `Edit or delete ${rowLabel}`), onClick: ev => { ev.stopPropagation(); openRow(); } }, 'Manage'),
         ),
       );
 
@@ -7603,12 +7612,14 @@ function openSplitEditor(legs) {
   }
   function redraw() {
     listWrap.innerHTML = '';
-    rows.forEach((r) => {
-      const sel = $('select', { 'aria-label': 'Split method', onchange: () => { r.method = sel.value; } });
+    rows.forEach((r, i) => {
+      // Numbered per row, like the quick-capture split above: two slices must not
+      // answer to one aria-label.
+      const sel = $('select', { 'aria-label': `Split method ${i + 1}`, onchange: () => { r.method = sel.value; } });
       appendMethodOptions(sel, allMethodIds, r.method);
       sel.value = r.method;
-      const amt = $('input', { type: 'text', inputmode: 'decimal', value: r.amount, 'aria-label': 'Slice amount', autocomplete: 'off', style: 'width:110px;text-align:right;', oninput: (ev) => { r.amount = ev.target.value; updateTotal(); } });
-      const rm = $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 9px;font-size:11px;', onClick: () => { if (rows.length <= 1) return; rows = rows.filter(x => x !== r); redraw(); updateTotal(); } }, 'Remove');
+      const amt = $('input', { type: 'text', inputmode: 'decimal', value: r.amount, 'aria-label': `Slice amount ${i + 1}`, autocomplete: 'off', style: 'width:110px;text-align:right;', oninput: (ev) => { r.amount = ev.target.value; updateTotal(); } });
+      const rm = $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 9px;font-size:11px;', 'aria-label': `Remove slice ${i + 1}`, onClick: () => { if (rows.length <= 1) return; rows = rows.filter(x => x !== r); redraw(); updateTotal(); } }, 'Remove');
       listWrap.appendChild($('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' }, sel, amt, rows.length > 1 ? rm : null));
     });
   }

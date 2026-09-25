@@ -16,8 +16,8 @@ A calm, private expense tracker that runs right in your browser. No app store, n
 - **Never miss a bill** — rent, subscriptions, and paydays as recurring reminders, with one-tap marking done.
 - **Undo anything** — every action can be undone, even after a reload.
 - **Stay private** — the app opens locked (default PIN `100901`); on your phone you can unlock with fingerprint or Face ID instead.
-- **Tesco Pay tab** — log your shifts, or point the camera at the roster and let it read them (**Scan from camera** on the Add-shift card, or **Use camera** beside *Choose roster photo*: one shot, or a **live read** that keeps taking frames until your shifts are found). The photo is decoded to a canvas, read and dropped — nothing is written to storage, cache or state — and the app works out paid hours, Sunday pay, weekly gross, an Irish PAYE/USC/PRSI/pension estimate, and tracks the tax on each payslip. The home screen shows this month's hours, anticipated pay and received pay at a glance. **Export CSV** writes the whole table out in the workbook's own columns — the shifts, then the tax table below them — and **Import CSV** reads one back (dates, times, the special flag, notes, payslip tax and week numbers; hours, pay and the estimate are recalculated). Each week's number is the sheet's own count and can be edited on the week card.
-- **Daily reminder** — a nudge to upload your transactions at a time you choose (default 20:00). While the app is open it's a notification; on **mobile** (installed PWA or phone browser) with **Cloud sync on** you can also enable **push**, which reaches you even when cents. is fully closed.
+- **Tesco Pay tab** — log your shifts with the form, or write them the way you would say them: **Magic entry** takes one shift per line (`mon 8-4 stock take`, `yesterday 12:30-20:15`, `fri 20:00-01:00`, `week off 7h`, `13/09 9-5 special`) and prices every line against your own rate card in a live preview before anything is stored — a line it cannot read is named back on its own, in red, and the batch is held until every line reads (a half-added batch is how a shift goes missing from a week), while lines that are already stored are dropped rather than duplicated and the toast says how many actually landed. Or point the camera at the roster and let it read them (**Use camera** on the Scan roster card, beside *Choose roster photo*: one shot, or a **live read** that keeps taking frames until your shifts are found). The reader levels a tilted sheet before parsing, retries a sideways photo upright, and ignores the duplicated words a strip-based read produces — so a photo taken at an angle off the noticeboard still reads, and a photo it cannot read with confidence is refused rather than guessed at. The photo is decoded to a canvas, read and dropped — nothing is written to storage, cache or state — and the app works out paid hours, Sunday pay, weekly gross, an Irish PAYE/USC/PRSI/pension estimate, and tracks the tax on each payslip. The home screen shows this month's hours, anticipated pay and received pay at a glance. **Export CSV** writes the whole table out in the workbook's own columns — the shifts, then the tax table below them — and **Import CSV** reads one back (dates, times, the special flag, notes, payslip tax and week numbers; hours, pay and the estimate are recalculated). Each week's number is the sheet's own count and can be edited on the week card; every payslip row prints that same number as a *Wk* chip, plus its **pay date** — the week's Sunday + 11 days, which is always the Thursday the money lands — beside the *Tax paid* figure that row records. Any shift row can be **edited**: the pencil beside it opens the row as a sheet (date, start, end, stated hours, an optional pay override, note, special rate) with a live preview of the row it will write, and the same rules the CSV import applies — so a shift can never be edited into something an import would have refused. Moving the date re-slots it into its new week, one undo step covers the change, and the row keeps its identity, so a synced copy elsewhere is updated rather than duplicated.
+- **Daily reminder** — a nudge to upload your transactions at a time you choose (default 20:00), set from the menu (≡) → **Daily reminder**. While the app is open it's a notification; on **mobile** (installed PWA or phone browser) with **Cloud sync on** you can also enable **push**, which reaches you even when cents. is fully closed.
 
 ## Getting started
 
@@ -93,6 +93,16 @@ Browsers block the file when opened by double-click, so run a tiny local server 
 
 or any simple static server, e.g. `python -m http.server 8080` — then open the address it prints.
 
+### Getting your Tesco Pay data in
+
+If you keep your shifts and payslips in the workbook, `convert-tesco-csv.py` turns it (or a CSV of it) into a file **Tesco Pay → Import CSV** reads directly. It needs nothing installed — Python's standard library is enough — and it reads the **Data** sheet and the **Summary** sheet together, which a single-sheet "Save as CSV" cannot:
+
+```
+python convert-tesco-csv.py "Tesco Pay.xlsx"
+```
+
+Run it with no arguments and it looks for `Tesco Pay*` beside the app or on the Desktop. Dates come across as ISO whatever the file held (Excel serials, `13/09/2026`, `09/13/2026`, `13 Sep 2026`); add `--month-first` if an ambiguous date was read the wrong way round. `--self-test` checks the script itself, and it refuses to overwrite an existing file unless you pass `--force`.
+
 ## Checks
 
 Twelve pure-Node guardrails run in the Netlify build command and **block the deploy when one fails**. `run-guards.mjs` runs all twelve in build order — that single command is also what CI calls:
@@ -114,6 +124,8 @@ node scripts/test-reminder-push.mjs    # the push payload still matches the RFC 
 ```
 
 `scripts/test-reminder-push.mjs` runs a fake push service on `http://localhost`, and `reminders-push` refuses loopback, private-network and metadata endpoints unless `CENTS_TEST_LOCALHOST_PUSH=1` is set — the harness sets it for its own run. **Never set it in Netlify**: with it, any account could store a subscription pointing at the function runtime's own localhost.
+
+The roster reader's pixel half cannot be a Node guard (it needs a canvas), so it ships a browser harness: open `ocr-harness.html` on the served app and it draws rosters, photographs them (tilt, glare, shadow, blur, keystone, ±90°, JPEG noise, tiny and huge pages) and runs the real `ocrRosterRow` + `parseRosterWords` over each, printing PASS/FAIL. It is a dev tool — 404'd in `netlify.toml` and listed in `.netlifyignore`, so it never deploys.
 
 `.github/workflows/guards.yml` runs the same suite on every push, on the same Node version the deploy uses. That matters for one specific reason: Netlify parses `netlify.toml` *before* it runs the build command, so a broken config can never be reported by a predeploy guard — the only signal is a failed deploy. CI is the earliest place it can be caught.
 
