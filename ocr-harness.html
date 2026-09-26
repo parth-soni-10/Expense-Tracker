@@ -19,7 +19,16 @@
 import { ocrRosterRow, parseRosterWords } from './tesco.js';
 
 const logEl = document.getElementById('log');
-const log = (s, cls = '') => { logEl.insertAdjacentHTML('beforeend', cls ? `<span class="${cls}">${s}</span>\n` : s + '\n'); };
+// Built as nodes rather than markup: every line this prints is OCR output or a
+// filename, and interpolating that into insertAdjacentHTML makes the harness a
+// DOM-XSS sink for content that a scan directly controls. textContent cannot be
+// markup, and a className property cannot escape its attribute.
+const log = (s, cls = '') => {
+  const line = document.createElement('span');
+  if (cls) line.className = cls;
+  line.textContent = s;
+  logEl.append(line, document.createTextNode('\n'));
+};
 
 // The labels come from the real calendar so the page can never disagree with
 // itself: a roster whose day names contradict its dates is read off the day

@@ -888,6 +888,62 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   .app-header.is-sticky.head-hidden { transform: translateY(-100%); }
 }
 
+/* ── Progressive blur edges (phones) ──
+   A masked backdrop-filter band at each edge melts content into the chrome,
+   ramping from a strong blur at the screen edge to none where it meets the
+   page. Kept to phones, where the two edges that need depth (top of the
+   scrolling header, bottom tab dock) are the ones without an opaque surface
+   filling them. The bands are thin and sit *below* the header and dock in z,
+   so the large opaque surfaces stay large opaque surfaces — only the strips
+   between them composite. Without backdrop-filter support the tint alone
+   still dissolves the edge. */
+/* Off until the phone breakpoint claims them, so no empty boxes ever enter
+   the flow at laptop widths. */
+.edge-blur { display: none; }
+@media (max-width: 639px) {
+  .edge-blur {
+    display: block;
+    position: fixed; left: 0; right: 0; z-index: 30;
+    pointer-events: none;
+  }
+  .edge-blur span {
+    position: absolute; inset: 0;
+    background: color-mix(in srgb, var(--bg) 58%, transparent);
+  }
+  .edge-blur-top {
+    top: 0; height: 48px;
+    opacity: 0; transition: opacity 0.25s var(--ease-out);
+  }
+  /* Revealed by the scroll handler in app.js once the page has moved. */
+  html.edge-scrolled .edge-blur-top { opacity: 1; }
+  .edge-blur-bottom { bottom: 0; height: 120px; }
+  .edge-blur-top span:nth-child(1) {
+    backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+    mask-image: linear-gradient(to bottom, #000 0%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 100%);
+  }
+  .edge-blur-top span:nth-child(2) {
+    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+    mask-image: linear-gradient(to bottom, #000 0%, transparent 54%);
+    -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 54%);
+  }
+  .edge-blur-bottom span:nth-child(1) {
+    backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
+    mask-image: linear-gradient(to top, #000 0%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 100%);
+  }
+  .edge-blur-bottom span:nth-child(2) {
+    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+    mask-image: linear-gradient(to top, #000 0%, transparent 44%);
+    -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 44%);
+  }
+}
+/* The edges are decorative depth, so anyone who has asked the OS for less
+   transparency gets the plain surfaces instead. */
+@media (prefers-reduced-transparency: reduce) {
+  .edge-blur { display: none !important; }
+}
+
 /* ============================================================
    History table — shared grid classes (perf: one parsed style each)
    ============================================================ */

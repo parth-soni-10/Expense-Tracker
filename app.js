@@ -8432,7 +8432,17 @@ function _render() {
       lastScroll = now;
     };
     window.addEventListener('scroll', () => {
-      if (window.innerWidth < 640) return;
+      if (window.innerWidth < 640) {
+        // Phone edge treatment. The top progressive-blur band paints above the
+        // page shell, and the in-flow header sits inside that shell, so the
+        // header cannot out-stack the band — blurring it as it left the screen
+        // smeared the logo. So the band waits until the header has scrolled
+        // fully off (`__hdrBottom` is its document-space bottom, measured once
+        // per render) and only then fades in: the logo stays crisp on the way
+        // out, and content melts as it reaches the edge.
+        document.documentElement.classList.toggle('edge-scrolled', window.scrollY >= Math.max(6, window.__hdrBottom || 0));
+        return;
+      }
       const hdr = window.__stickyHdr;
       if (!hdr || !hdr.isConnected) {
         window.__stickyHdr = document.querySelector('.app-header');
@@ -8441,9 +8451,21 @@ function _render() {
       }
       if (rafId === null) rafId = requestAnimationFrame(applySticky);
     }, { passive: true });
+    // A resize can re-wrap the header (the layout's only wrapping row), so the
+    // phone edge treatment's scroll threshold has to be re-measured - the
+    // render-time cache would otherwise be stale after an orientation change.
+    window.addEventListener('resize', () => {
+      const hdr = document.querySelector('.app-header');
+      if (hdr) window.__hdrBottom = Math.round(hdr.getBoundingClientRect().bottom + window.scrollY);
+    }, { passive: true });
   }
   // Refresh the cached element - the header is rebuilt on every render.
   window.__stickyHdr = document.querySelector('.app-header');
+  // Document-space bottom of the header, for the phone edge treatment above:
+  // the scroll handler compares against it instead of reading layout per event.
+  window.__hdrBottom = window.__stickyHdr
+    ? Math.round(window.__stickyHdr.getBoundingClientRect().bottom + window.scrollY)
+    : 0;
 }
 
 // Watermelon-style mouse spotlight: feeds --mx/--my CSS vars so the hovered
