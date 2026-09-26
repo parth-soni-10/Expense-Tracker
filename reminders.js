@@ -58,15 +58,6 @@ function localDateKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-/** Milliseconds until the next occurrence of HH:MM local time. */
-function msUntil(time, now = new Date()) {
-  const [h, m] = time.split(':').map(Number);
-  const target = new Date(now);
-  target.setHours(h, m, 0, 0);
-  if (target.getTime() <= now.getTime()) target.setDate(target.getDate() + 1);
-  return target.getTime() - now.getTime();
-}
-
 function notificationsSupported() {
   return typeof window !== 'undefined' && 'Notification' in window;
 }
