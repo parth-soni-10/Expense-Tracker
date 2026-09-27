@@ -89,6 +89,9 @@
 
 /* ── Dark mode — warm espresso night ── */
 [data-theme="dark"] {
+  /* Tells the browser the page is dark, so scrollbars, form controls and the
+     native date picker stop being painted light against it. */
+  color-scheme: dark;
   --bg: #101210;
   --bg-deep: #161916;
   --card: #171A17;
@@ -181,7 +184,7 @@ body {
   font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif;
   font-size: 15px;
   line-height: 1.5;
-  min-height: 100vh;
+  min-height: 100dvh;
   position: relative;
   overflow-x: hidden;
   /* Haikei-style generative mesh — layered radial glows pinned to the layer

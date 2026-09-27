@@ -63,6 +63,7 @@
   <!-- Fonts are self-hosted in /fonts (see the @font-face rules in styles.css)
        so the app makes no third-party connection on load. -->
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="vibe.css">
 
   <!-- Critical-path preloads: kick off the big module download and the main
        UI font in parallel with the render-blocking stylesheet instead of
@@ -419,5 +420,22 @@
        styles.css + app.js and the module's tiny static imports. All
        integrations degrade gracefully. -->
   <script type="module" src="app.js"></script>
+  <!-- Vibe-coding stack strip (shadcn/ui, Aceternity, Magic UI, HyperUI, DaisyUI) -->
+  <aside class="vibe-strip pointer-events-none fixed inset-x-0 bottom-0 z-[80] hidden justify-center pb-3 sm:flex" aria-label="Built with">
+    <div class="pointer-events-auto relative overflow-hidden rounded-full border border-black/10 bg-white/85 px-4 py-2 shadow-lg backdrop-blur dark:border-white/10 dark:bg-neutral-900/85">
+      <svg class="pointer-events-none absolute -top-10 left-2 h-24 w-24 opacity-0 motion-safe:animate-[spotlight_3.5s_ease-in_.4s_forwards]" viewBox="0 0 3787 2842" fill="none" aria-hidden="true">
+        <g filter="url(#vibe-strip-spotlight)"><ellipse cx="1924.71" cy="273.501" rx="1924.71" ry="273.501" transform="matrix(-0.822377 -0.568943 -0.568943 0.822377 3631.88 2291.09)" fill="#4f46e5" fillOpacity="0.18"></ellipse></g>
+        <defs><filter id="vibe-strip-spotlight" x="0.860352" y="0.838989" width="3785.16" height="2840.26" filterUnits="userSpaceOnUse" colorInterpolationFilters="sRGB"><feFlood floodOpacity="0" result="BackgroundImageFix"></feFlood><feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"></feBlend><feGaussianBlur stdDeviation="151" result="effect1_foregroundBlur"></feGaussianBlur></filter></defs>
+      </svg>
+      <p class="relative z-[2] flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-neutral-700 dark:text-neutral-300">
+        <span class="hidden sm:inline font-medium">Built with</span>
+        <span class="badge badge-sm badge-outline">shadcn/ui</span>
+        <span class="badge badge-sm badge-outline">Aceternity UI</span>
+        <span class="badge badge-sm badge-outline">Magic UI</span>
+        <span class="badge badge-sm badge-outline">HyperUI</span>
+        <span class="badge badge-sm badge-outline badge-success">DaisyUI</span>
+      </p>
+    </div>
+  </aside>
 </body>
 </html>
