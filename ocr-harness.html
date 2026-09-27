@@ -17,6 +17,10 @@
 <div id="previews"></div>
 <script type="module">
 import { ocrRosterRow, parseRosterWords } from './tesco.js';
+// Namespace import for the reader's newer internals: the harness runs against
+// whichever build is on disk, and a step a build does not have yet must report
+// as absent rather than stop the page from loading at all.
+import * as OCR from './tesco.js';
 
 const logEl = document.getElementById('log');
 // Built as nodes rather than markup: every line this prints is OCR output or a
@@ -232,12 +236,46 @@ async function fileSum(file) {
   return `${buf.length}.${a}.${b}`;
 }
 
+// What the reader's own rule scan sees in this photo, reported so a grid can be
+// checked against the page it was read from instead of trusted. The reader
+// accepts a ruled grid only when the words agree with it, so this is the number
+// that decides whether that happened at all.
+async function photoRules(file) {
+  const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const imgW = bitmap.width, imgH = bitmap.height;
+  const scale = Math.min(1, 1500 / Math.max(imgW, imgH));
+  const w = Math.max(1, Math.round(imgW * scale)), h = Math.max(1, Math.round(imgH * scale));
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  const c = cv.getContext('2d', { willReadFrequently: true });
+  c.drawImage(bitmap, 0, 0, w, h);
+  bitmap.close();
+  const d = c.getImageData(0, 0, w, h).data;
+  const grey = new Uint8Array(w * h);
+  for (let i = 0; i < grey.length; i++) grey[i] = d[i * 4];
+  if (typeof OCR.ocrLocalMarks !== 'function' || typeof OCR.ocrRulingLines !== 'function') {
+    return { v: [], vCount: 0, hCount: 0, spread: 0, uneven: false, absent: true };
+  }
+  const marks = OCR.ocrLocalMarks(grey, w, h, { drop: 26, radius: Math.max(8, Math.round(Math.min(w, h) * 0.02)) });
+  const lines = OCR.ocrRulingLines(marks, w, h);
+  const light = OCR.ocrIllumination(grey, w, h);
+  return {
+    v: lines.v.map(x => Math.round(x * (imgW / w))),
+    vCount: lines.v.length,
+    hCount: lines.h.length,
+    spread: light.spread,
+    uneven: light.uneven,
+  };
+}
+
 async function runCase(name, built, photoOpts, scanOpts = {}) {
   const file = await photograph(built, photoOpts);
   window.__lastFile = file;
   window.__lastSum = await fileSum(file);
   window.__lastBuilt = built;
   window.__lastPhoto = photoOpts;
+  const rules = await photoRules(file);
+  window.__lastRules = rules;
   const canvas = document.createElement('canvas');
   const stages = [];
   const t0 = performance.now();
@@ -249,6 +287,11 @@ async function runCase(name, built, photoOpts, scanOpts = {}) {
   }
   const ms = Math.round(performance.now() - t0);
   window.__lastRead = read;
+  // Did the rules the photo prints actually become the grid the cells were
+  // cropped to? Read back the same way the reader does it.
+  const ruleGrid = typeof OCR.rosterColumnsFromRules === 'function'
+    ? OCR.rosterColumnsFromRules(rules.v, parseRosterWords(read.words, new Date(Date.UTC(2026, 8, 25)), { name: scanOpts.name || 'Parth' }).columns, {})
+    : null;
   const parsed = parseRosterWords(read.words, new Date(Date.UTC(2026, 8, 25)), {
     name: scanOpts.name || 'Parth', cells: read.cells, cellsComplete: read.cellsComplete,
   });
@@ -279,17 +322,21 @@ async function runCase(name, built, photoOpts, scanOpts = {}) {
   // back LOOKING right (that is the failure a person cannot catch). It is logged,
   // not counted, so the matrix stays a regression signal instead of a wish list.
   if (scanOpts.expect === 'limit') {
-    log(`LIMIT ${name}  [${ms}ms, reads=${read.scanned}${read.pagePass ? '+page' : ''}, found=${read.found}, complete=${read.cellsComplete}, rows=${parsed.rows.length}, cells=${Object.keys(got).length}, ${diffs.length} wrong] ${scanOpts.why || ''}`, 'dim');
+    log(`LIMIT ${name}  [${ms}ms, reads=${read.scanned}${read.pagePass ? '+page' : ''}, found=${read.found}, complete=${read.cellsComplete}, rows=${parsed.rows.length}, cells=${Object.keys(got).length}, ${diffs.length} wrong, rules=${rules.absent ? 'n/a' : `${rules.vCount}v/${rules.hCount}h`}${ruleGrid ? '=grid' : ''}, light=${rules.spread}${rules.uneven ? '!' : ''}] ${scanOpts.why || ''}`, 'dim');
     return { name, ok: true, limit: true, ms, diffs, rows: parsed.rows.length, cols: parsed.columns.length, found: read.found, rawCells: (read.cells || []).map(c => ({ d: c.date, r: c.raw })), stages };
   }
   const ok = diffs.length === 0;
-  log(`${ok ? 'PASS' : 'FAIL'} ${name}${scanOpts.expect === 'refuse' ? ' [expect refuse]' : ''}  [${ms}ms, reads=${read.scanned}${read.pagePass ? '+page' : ''}, found=${read.found}, complete=${read.cellsComplete}, rows=${parsed.rows.length}, cols=${parsed.columns.length}, sum=${window.__lastSum}]`, ok ? 'pass' : 'fail');
+  const tries = (read.tries || []).map(t => `${t.tag}:${t.columns}c/${t.cells}s/${t.named}n${t.dated}d${t.complete ? '*' : ''}${t.found ? '' : '-'}`).join(' ');
+  log(`${ok ? 'PASS' : 'FAIL'} ${name}${scanOpts.expect === 'refuse' ? ' [expect refuse]' : ''}  [${ms}ms, reads=${read.scanned}${read.pagePass ? '+page' : ''}, found=${read.found}, complete=${read.cellsComplete}, rows=${parsed.rows.length}, cols=${parsed.columns.length}, rules=${rules.absent ? 'n/a' : `${rules.vCount}v/${rules.hCount}h`}${ruleGrid ? '=grid' : ''}, light=${rules.spread}${rules.uneven ? '!' : ''}, sum=${window.__lastSum}]`, ok ? 'pass' : 'fail');
+  if (tries) log(`        readings: ${tries}`, 'dim');
   if (!ok) for (const d of diffs) log(`        ${d}`, 'dim');
+  if (ruleGrid) log(`        ruled grid: ${ruleGrid.bounds.map(b => Math.round(b[0]) + '-' + Math.round(b[1])).join(' | ')}`, 'dim');
+  if (!ok) log(`        grid: ${parsed.columns.map(c => `${Math.round(c.cx)}${c.weekday != null ? '=' + ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'][c.weekday] : ''}${c.date ? '@' + c.date.toISOString().slice(8, 10) : ''}`).join(' ')}`, 'dim');
   if (!ok) {
     log(`        rows: ${parsed.rows.map(r => `${r.name}${r.matches ? '*' : ''}(${r.cells.length})`).join(', ')}`, 'dim');
     log(`        raw cells: ${(read.cells || []).map(c => `${c.date}:${c.raw}`).join(' | ') || '(none)'}`, 'dim');
   }
-  return { name, ok, ms, diffs, rows: parsed.rows.length, cols: parsed.columns.length, scanned: read.scanned, found: read.found, complete: read.cellsComplete, rawCells: (read.cells || []).map(c => ({ d: c.date, r: c.raw, conf: c.confidence })), stages };
+  return { name, ok, ms, diffs, rows: parsed.rows.length, cols: parsed.columns.length, scanned: read.scanned, found: read.found, complete: read.cellsComplete, rules, ruleGrid: !!ruleGrid, rawCells: (read.cells || []).map(c => ({ d: c.date, r: c.raw, conf: c.confidence })), stages };
 }
 
 // The variants a phone actually produces: a shot down the page, a glare-lit
@@ -322,6 +369,17 @@ window.__scenarios = () => [
   // keystone the far edge's columns drift enough that a day's own cell crop no
   // longer sits over its ink. Declared, not pretended.
   { name: 'keystone-16pct', built: window.__ocrHarness.buildRosterCanvas({}), photo: { keystone: 0.16, blur: 0.4, noise: 0.05, quality: 0.8 }, scan: { expect: 'limit', why: 'beyond a rotation-only rectification' } },
+  // The light a photo of a roster actually arrives with: a lamp at one end of a
+  // long table, a window down one side, a phone's own shadow across the bottom.
+  // One global threshold has one answer for the whole frame, so the end it was
+  // not tuned for is the end that fails — and this is the failure a person can
+  // never catch, because the half that read looks right.
+  { name: 'uneven-lamp', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 1.5, blur: 0.6, noise: 0.05, gradient: 0.5, quality: 0.8 } },
+  { name: 'shadow-across', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 0.8, blur: 0.5, noise: 0.05, gradient: 0.62, glare: 0.18, quality: 0.78 } },
+  { name: 'glare-hard', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 0.6, blur: 0.7, noise: 0.04, glare: 0.78, quality: 0.8 } },
+  { name: 'dark-corner', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 1.2, blur: 0.5, noise: 0.06, gradient: 0.42, glare: 0.35, quality: 0.78 } },
+  { name: 'tilted-7deg', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: 7, blur: 0.6, noise: 0.05, quality: 0.8 } },
+  { name: 'tilted-7deg-lamp', built: window.__ocrHarness.buildRosterCanvas({}), photo: { deg: -7, blur: 0.6, noise: 0.05, gradient: 0.45, quality: 0.8 } },
   { name: 'sun-first-week', built: window.__ocrHarness.buildRosterCanvas({ weekStartDow: 0 }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
   { name: 'no-rule-lines', built: window.__ocrHarness.buildRosterCanvas({ rules: false }), photo: { deg: 1, blur: 0.4, noise: 0.05, quality: 0.82 } },
   { name: 'no-day-names', built: window.__ocrHarness.buildRosterCanvas({ dayNames: false }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },

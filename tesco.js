@@ -1416,10 +1416,38 @@ export function columnAnchors(headerRows, today = new Date(), mergeWithin = 90, 
     const gap = gaps[Math.floor(gaps.length / 2)];
     if (gap > mergeWithin / 3) {
       const filled = [...cols];
+      // A day the header did not give up is put back WHERE the header is missing
+      // it. A column's own date is derived from its POSITION in the row — the days
+      // run in order, and resolveColumnDates rebuilds the whole series from one
+      // surviving anchor — so putting a column back in the wrong place renumbers
+      // every day after it.
+      //
+      // That is not a hypothetical: read at an angle, with the light falling off
+      // across the sheet, the header gives up six days' worth of tokens with the
+      // seventh missing from the middle, and a fill at the left edge turned
+      // Tuesday's shift into Wednesday's shift, Thursday's into Friday's — a whole
+      // week paid a day late, which is the one kind of misread nobody notices.
+      // The gap is where the paper says it is: doubling the pitch between two
+      // columns is a missing day sitting between them, and nothing else looks like
+      // that.
+      while (filled.length < max) {
+        let at = -1, widest = gap * 1.5;
+        for (let i = 1; i < filled.length; i++) {
+          const d = filled[i].cx - filled[i - 1].cx;
+          if (d > widest) { widest = d; at = i; }
+        }
+        if (at < 0) break;
+        filled.splice(at, 0, { cx: (filled[at - 1].cx + filled[at].cx) / 2 });
+      }
+      // No gap to fill, so the days left over are off one end of the row, and that
+      // end is the left: the header gives up its first days when the light falls
+      // off across the sheet, and the fall-off lands on the name column's side of a
+      // hand-held shot. A day put at the left is a day before the week — it takes
+      // no shift that the day names did not already give every column (the tests
+      // below hold both ends of that) — where the same guess at the right walks the
+      // grid off the paper.
       let left = filled[0].cx - gap;
       while (filled.length < max) { filled.unshift({ cx: left }); left -= gap; }
-      let right = filled[filled.length - 1].cx + gap;
-      while (filled.length < max) { filled.push({ cx: right }); right += gap; }
       cols = filled;
     }
   }
@@ -1660,6 +1688,65 @@ export function parseRosterWords(rawWords, today = new Date(Date.UTC(2026, 8, 22
   }
   return { rows: out, columns: cols };
 }
+/**
+ * What a read of the page is worth, as a number, and whether it is worth
+ * stopping for.
+ *
+ * The reader used to stop at the first read that mentioned the typed name. That
+ * is the wrong test, and it is wrong in the direction a person cannot see: a read
+ * can carry the name and still be a worse reading of the sheet than the one that
+ * comes next — the words there, the columns and the day cells garbled — and the
+ * scan then commits to it. On a photo lit from one side that is exactly the
+ * failure: the strips find the name, and the row they hand back has the whole
+ * week's cells shifted into the neighbouring days.
+ *
+ * So a read is SCORED on what it actually produced — how many of the week's
+ * columns it found, whether the typed name is on one of its rows, how many dated
+ * shifts that row holds, and whether those dates are distinct (two shifts on one
+ * date is the grid folding a neighbouring column into it, and is penalised rather
+ * than rewarded) — and the reader reads the sheet another way while no read has
+ * yet come back COMPLETE: the full seven columns, the row, and at least one dated
+ * shift on it.
+ *
+ * The words are filtered to exactly what parseRosterWords will keep, so "good"
+ * cannot drift from "what the parse will actually use": a read scored complete
+ * here is a read whose parse is complete.
+ *
+ * Pure, and exported, because this decision — which reading of a photo to believe
+ * — is the whole difference between a correct week and a week paid a day late.
+ */
+export function rosterReadQuality(rawWords, name, today = new Date()) {
+  const words = (rawWords || []).filter(w => w && String(w.text || '').trim()
+    && (w.confidence == null || w.confidence > 25)
+    && [w.x0, w.y0, w.x1, w.y1].every(Number.isFinite));
+  if (!words.length) return { words: [], found: false, columns: 0, cells: 0, score: -1, complete: false };
+  const parsed = parseRosterWords(words, today, { name });
+  const owner = name ? parsed.rows.find(r => r.matches) : null;
+  const dated = owner ? owner.cells.filter(c => c && c.date).map(c => new Date(c.date).getTime()) : [];
+  const cells = dated.length;
+  const sameDay = new Set(dated).size !== cells;
+  // How the week was dated: the day names and the date tokens the header gave up.
+  // Both are checked, because the grid's dates are rebuilt from whichever of them
+  // survived and a header read in the dark side of a photo can leave too few of
+  // either for that to be anything but a guess.
+  const named = parsed.columns.filter(c => c && c.weekday != null).length;
+  const dateTokens = parsed.columns.filter(c => c && c.date).length;
+  const score = cells * 4 + parsed.columns.length + (owner ? 12 : 0) - (sameDay ? 8 : 0);
+  return {
+    words, found: !!owner, columns: parsed.columns.length, cells, score, sameDay, named, dated: dateTokens,
+    // Complete: a whole week's columns, the typed name on one of the rows, a dated
+    // shift read off that row — and a header the week could actually be DATED
+    // from, which needs three or more day names or three or more date tokens. Days
+    // are Sunday→Saturday in order, so a grid whose dates rest on one surviving
+    // token has one column's worth of evidence for seven columns' worth of
+    // answer, and on a photo read in the dark that is how a week is paid a day
+    // late. Anything less is worth another reading.
+    complete: !!(owner && parsed.columns.length >= 7 && cells >= 1 && !sameDay
+      && (named >= 3 || dateTokens >= 3)),
+    parsed,
+  };
+}
+
 function isoLocalUTC(d) { return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`; }
 
 // ---------- OCR: engine wiring (browser only) ----------
@@ -1691,7 +1778,7 @@ async function ensureOcrWorker() {
     _ocrPromise = (async () => {
       await loadTesseractScript();
       const origin = window.location.origin;
-      return window.Tesseract.createWorker('eng', 1, {
+      const worker = await window.Tesseract.createWorker('eng', 1, {
         workerPath: `${origin}/vendor/tesseract/worker.min.js`,
         corePath: `${origin}/vendor/tesseract`,
         langPath: `${origin}/vendor/tesseract`,
@@ -1706,6 +1793,15 @@ async function ensureOcrWorker() {
         workerBlobURL: false,
         logger: m => { if (m && typeof m.progress === 'number') _progressSink(m.progress); },
       });
+      // How the engine is told to size its own layout work. A canvas carries no
+      // resolution, so the engine assumes 70 dpi and — taking our upscaled page at
+      // face value — treats a roster's 30px glyphs as a headline and its line
+      // spacing as a paragraph gap. 300 is the truth for a sheet upscaled to the
+      // 12 MP working budget (that is about A4 at 300 dpi), and it is what the
+      // line and word heuristics are then measured against. Set once, on the
+      // worker, because it describes the images every pass hands over.
+      await worker.setParameters({ user_defined_dpi: '300' }).catch(() => {});
+      return worker;
     })();
     _ocrPromise.catch(() => { _ocrPromise = null; });
   }
@@ -1720,7 +1816,15 @@ export async function drawPhotoPreview(file, canvas, maxW = 720) {
   const scale = Math.min(1, maxW / bitmap.width);
   canvas.width = Math.max(1, Math.round(bitmap.width * scale));
   canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  // `willReadFrequently` on purpose, and it is the caller's canvas that makes it
+  // matter: the app hands the SAME canvas to this preview and to ocrRosterRow as
+  // its working surface, and a canvas only ever has one 2d context — the first
+  // options object wins. Created without it here, every readback the reader then
+  // does (one per strip, one per page pass, one per cell view) is served by a
+  // GPU-backed surface and stalls on a readback, which the browser complains
+  // about once per scan. The preview is drawn to once and read back dozens of
+  // times, so the CPU-backed surface is the right one for it.
+  canvas.getContext('2d', { willReadFrequently: true }).drawImage(bitmap, 0, 0, canvas.width, canvas.height);
   bitmap.close();
 }
 
@@ -1728,7 +1832,8 @@ export async function drawPhotoPreview(file, canvas, maxW = 720) {
 // The reading pipeline is three small pieces, each with one job:
 //   ocrStripRanges()  where to look (overlapping half-height strips)
 //   ocrStripWords()   read one strip at the resolution small glyphs need
-//   ocrRosterRow()    stop at the row carrying the typed name
+//   ocrRosterRow()    read the sheet until a reading carries the typed name
+//                     AND the week around it, and keep the best reading it took
 // Read one horizontal strip and return its words in ORIGINAL-image pixel
 // coordinates, so strips read separately stitch into one shared space.
 //
@@ -1754,12 +1859,23 @@ export async function drawPhotoPreview(file, canvas, maxW = 720) {
  * at a quarter of the step, on a downscaled grey copy — a few hundred thousand
  * pixels, so the whole search is cheap enough to run on every scan.
  *
+ * The search reaches as far as the reader is willing to believe a sheet can be
+ * held off square, and no further: ±8.5° is the same bound pageSkew puts on the
+ * tilt it will trust from the words, and past it a sheet is not being read by a
+ * phone held over it — it is being read sideways, which the quarter-turn path
+ * handles by turning the whole photo instead. A narrower search is not safer, it
+ * is just blind exactly where a photograph starts to be hard: a sheet 7° off
+ * square delivers its header half a week to the left of its last staff row, and
+ * an estimator that will not look past 6° reports the page as 6° and levels it
+ * 1° wrong — every column then lands its crop just far enough off the line to
+ * read the row above.
+ *
  * Pure over a grey buffer (0 = black), so the estimate can be tested without a
  * camera. Returns the content's own rotation: rotate the image by -tilt to level
  * it.
  */
 export function ocrEstimateTilt(grey, w, h, opts = {}) {
-  const maxDeg = opts.maxDeg == null ? 6 : opts.maxDeg;
+  const maxDeg = opts.maxDeg == null ? 8.5 : opts.maxDeg;
   const step = opts.step == null ? 0.5 : opts.step;
   if (!grey || !w || !h || grey.length < w * h) return 0;
   const cx = w / 2, cy = h / 2;
@@ -1843,10 +1959,12 @@ async function turnPhoto(source, turn = 90) {
   return { bitmap, width: bitmap.width, height: bitmap.height };
 }
 
-// A small grey copy to estimate the tilt from: long side 640 is enough to see a
-// half-degree off square across a page, and small enough to project 25 times.
-function greyThumb(source) {
-  const scale = Math.min(1, 640 / Math.max(source.width, source.height));
+// A small grey copy of the photo: long side 640 is enough to see a half-degree
+// off square across a page and small enough to project 25 times, and the same
+// shape serves the rule scan further up, which wants a little more resolution to
+// separate two rules three pixels apart from one rule six pixels wide.
+function greyThumb(source, maxEdge = 640) {
+  const scale = Math.min(1, maxEdge / Math.max(source.width, source.height));
   const w = Math.max(1, Math.round(source.width * scale));
   const h = Math.max(1, Math.round(source.height * scale));
   const cv = document.createElement('canvas');
@@ -1861,6 +1979,37 @@ function greyThumb(source) {
     grey[i] = Math.round(0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2]);
   }
   return { grey, w, h };
+}
+
+// How the photo is lit, from a small grey copy of it: whether the paper's own
+// brightness is one flat wash or slides across the frame. Answered before any
+// word is read, because it decides which image the engine is given (ocrIllumination).
+function ocrPhotoLight(source) {
+  try {
+    const t = greyThumb(source, 320);
+    return ocrIllumination(t.grey, t.w, t.h);
+  } catch { return { spread: 0, paper: 255, ink: 0, uneven: false }; }
+}
+
+// The sheet's ruled grid in the source's own pixel coordinates, or null when the
+// page does not print one the reader can trust (see ocrRulingLines,
+// rosterColumnsFromRules). Marks rather than Sauvola: a rule is faint, and the
+// glyph threshold is tuned to ask for a mark much darker than a hairline rule is.
+function ocrPhotoRules(source) {
+  try {
+    const t = greyThumb(source, 1500);
+    const marks = ocrLocalMarks(t.grey, t.w, t.h, {
+      drop: 26,
+      radius: Math.max(8, Math.round(Math.min(t.w, t.h) * 0.02)),
+    });
+    if (!marks.length) return null;
+    const lines = ocrRulingLines(marks, t.w, t.h);
+    if (!lines.v.length) return null;
+    return {
+      v: lines.v.map(x => x * (source.width / t.w)),
+      h: lines.h.map(y => y * (source.height / t.h)),
+    };
+  } catch { return null; }
 }
 
 /**
@@ -1900,13 +2049,340 @@ export function ocrAutoContrast(d, sample = 4) {
   }
 }
 
-// Stretch the photo the reader just drew, before the engine sees it.
-function ocrStretchCanvas(c, w, h) {
+/**
+ * The page as ink and paper, thresholded LOCALLY rather than globally.
+ *
+ * Everything above this point treats the photo's light as one number: a single
+ * linear stretch of the whole frame (ocrAutoContrast). That is the right answer
+ * for a sheet photographed in flat shade, and the wrong one for the sheet that
+ * is really photographed — a lamp at one end, a window at the other, a phone's
+ * own shadow across the bottom third. There the paper is at 200 grey in the light
+ * and 120 in the shade, so no single threshold separates ink from paper anywhere
+ * except in the band it was tuned for: the light end binarises to a solid black
+ * slab and the dark end to blank white. A page read that way loses a whole
+ * column of shifts.
+ *
+ * The engine's own binariser is the same global Otsu — tesseract's maintainers
+ * describe it as "custom global Otsu without normalization" of "rather bad
+ * quality", and it is what every segmentation and layout decision is made from,
+ * even though recognition itself runs on the grey image. So the useful move is
+ * the one this function makes: do the local threshold here, where the roster's
+ * own geometry is known, and hand the engine a page that is already clean.
+ *
+ * Sauvola's rule, computed from two box means (see the sliding windows below):
+ *
+ *     T = m * (1 + k * (s / R - 1))
+ *
+ * A pixel is ink when it is darker than the mean `m` of the window it sits in,
+ * by a margin that grows with the window's own standard deviation `s`. On bare
+ * paper s is ~0, so T = m(1-k) and only a real mark survives; in a band of text s
+ * is large, so T rises toward m and faint strokes in that band are still caught.
+ * That is what makes it follow a lighting gradient — m moves with the light, and
+ * the decision moves with it.
+ *
+ * `k = 0.24` and `R = 128` are the values Sauvola's own paper recommends and the
+ * ones the document-binarisation literature converges on for photographed text.
+ * Pure over a grey buffer (0 = black), so the threshold the reader uses can be
+ * pinned without a camera. Returns 0 for ink and 255 for paper.
+ */
+export function ocrSauvola(grey, w, h, opts = {}) {
+  if (!grey || !w || !h || grey.length < w * h) return new Uint8Array(0);
+  const k = opts.k == null ? 0.24 : opts.k;
+  const R = opts.R == null ? 128 : opts.R;
+  // The window has to be wider than a stroke (or the mean sits ON the glyph and
+  // the glyph is split into its own edges) and narrower than a column of text
+  // (or the mean becomes the page's and this is a global threshold again). A
+  // third of the shorter side is the band that holds for a roster cell; the long
+  // page passes in an explicit radius sized from the glyphs instead.
+  const r = Math.max(4, Math.min(96, Math.round(
+    opts.radius == null ? Math.min(w, h) / 3 : opts.radius)));
+  const out = new Uint8Array(w * h);
+  ocrBoxWalk(grey, w, h, r, (x, y, m, sd) => {
+    out[y * w + x] = grey[y * w + x] > m * (1 + k * (sd / R - 1)) ? 255 : 0;
+  });
+  return out;
+}
+
+/**
+ * The window's mean and standard deviation at every pixel, in one pass and in
+ * O(width) memory.
+ *
+ * The window is a square box, so its statistics separate exactly into a
+ * horizontal pass over a vertical sum — two sliding sums, one column-resident
+ * (`colA`/`colB`) and one walking the row. The obvious alternative, an integral
+ * image, is also O(1) per pixel but costs a Float64 accumulator per pixel per
+ * statistic: at the 12 MP working budget that is ~200 MB of RAM on a phone for a
+ * threshold, against ~8 KB here.
+ *
+ * Paper runs off every edge of a photo, so the window is REPLICATED at the
+ * margins rather than truncated. A truncated window has a smaller n and a smaller
+ * s, so every local rule that scales with s — Sauvola's especially — goes
+ * conservative exactly at the edge of the sheet, which is where a roster prints
+ * its first and last day columns.
+ */
+function ocrBoxWalk(grey, w, h, r, visit) {
+  const colA = new Float32Array(w), colB = new Float32Array(w);
+  const span = 2 * r + 1;
+  const n = span * span;
+  const rowAt = y => (y < 0 ? 0 : y > h - 1 ? h - 1 : y);
+  const colAt = x => (x < 0 ? 0 : x > w - 1 ? w - 1 : x);
+  for (let dy = -r; dy <= r; dy++) {
+    const base = rowAt(dy) * w;
+    for (let x = 0; x < w; x++) { const v = grey[base + x]; colA[x] += v; colB[x] += v * v; }
+  }
+  for (let y = 0; y < h; y++) {
+    if (y > 0) {
+      const add = rowAt(y + r) * w, del = rowAt(y - r - 1) * w;
+      for (let x = 0; x < w; x++) {
+        const a = grey[add + x], b = grey[del + x];
+        colA[x] += a - b; colB[x] += a * a - b * b;
+      }
+    }
+    let sa = 0, sb = 0;
+    for (let dx = -r; dx <= r; dx++) { const i = colAt(dx); sa += colA[i]; sb += colB[i]; }
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      if (x > 0) {
+        const ai = colAt(x + r), di = colAt(x - r - 1);
+        sa += colA[ai] - colA[di]; sb += colB[ai] - colB[di];
+      }
+      const m = sa / n;
+      visit(x, y, m, Math.sqrt(Math.max(0, sb / n - m * m)));
+    }
+  }
+}
+
+/**
+ * Ink as "meaningfully darker than the paper around it", by a fixed margin.
+ *
+ * The local threshold that reads a RULE, where ocrSauvola reads glyphs, and the
+ * difference matters: Sauvola's margin grows with the window's own contrast, so
+ * on the flat paper beside a hairline table rule it asks for a mark far darker
+ * than the rule is — and a roster printed with light grey rules then comes back
+ * with no grid at all, which is the one thing the grid is wanted for. A margin
+ * fixed in grey levels asks the same question everywhere: is this pixel at least
+ * `drop` below the paper it sits on? A faint rule says yes, paper texture says no.
+ *
+ * This is the classic mean − C adaptive threshold, and the background it subtracts
+ * is a wide box mean — wider than any stroke, so it follows a lamp's hotspot and a
+ * shadow across the sheet but never a glyph. Pure, over a grey buffer.
+ */
+export function ocrLocalMarks(grey, w, h, opts = {}) {
+  if (!grey || !w || !h || grey.length < w * h) return new Uint8Array(0);
+  const drop = opts.drop == null ? 30 : opts.drop;
+  const r = Math.max(4, Math.min(96, Math.round(
+    opts.radius == null ? Math.min(w, h) / 12 : opts.radius)));
+  const out = new Uint8Array(w * h);
+  ocrBoxWalk(grey, w, h, r, (x, y, m) => {
+    out[y * w + x] = grey[y * w + x] < m - drop ? 0 : 255;
+  });
+  return out;
+}
+
+/**
+ * How far the photo's own light is from being one flat wash.
+ *
+ * Which view a page wants is a question about the photo, and it is answerable
+ * before anything is read: the paper's brightness in one corner versus another.
+ * A sheet on a desk under a ceiling light is even, and there the global stretch
+ * is right — it keeps the anti-aliased edge of every stroke, which is exactly
+ * what the LSTM reads. A sheet with a window down one side is not, and there the
+ * local threshold is the only thing that reads the dark third at all.
+ *
+ * Measured as the spread of the PAPER level between tiles, not of every pixel:
+ * tiles are compared by their own high percentile, because paper is what most of
+ * a tile is even when the tile holds a line of shifts, and because a percentile
+ * ignores the ink rather than averaging it in. An even sheet's tiles come back
+ * within a few grey levels of each other however much text they hold.
+ *
+ * Pure, so the choice can be pinned without a photo.
+ */
+export function ocrIllumination(grey, w, h, opts = {}) {
+  if (!grey || !w || !h || grey.length < w * h) return { spread: 0, paper: 255, ink: 0, uneven: false };
+  const tiles = Math.max(2, opts.tiles || 5);
+  const unevenAt = opts.unevenAt == null ? 26 : opts.unevenAt;
+  const hist = new Uint32Array(256);
+  for (let i = 0; i < grey.length; i++) hist[grey[i]]++;
+  const totalPx = w * h;
+  // The page's own paper level, for the ink share below.
+  let acc = 0, paper = 255;
+  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= totalPx * 0.75) { paper = v; break; } }
+  const t = tiles, lv = new Array(t * t).fill(null);
+  for (let ty = 0; ty < t; ty++) {
+    for (let tx = 0; tx < t; tx++) {
+      const x0 = Math.floor(tx * w / t), x1 = Math.floor((tx + 1) * w / t);
+      const y0 = Math.floor(ty * h / t), y1 = Math.floor((ty + 1) * h / t);
+      const px = Math.max(1, (x1 - x0) * (y1 - y0));
+      const tile = new Uint32Array(256);
+      for (let y = y0; y < y1; y++) {
+        const base = y * w;
+        for (let x = x0; x < x1; x++) tile[grey[base + x]]++;
+      }
+      let a = 0;
+      for (let v = 0; v < 256; v++) { a += tile[v]; if (a >= px * 0.8) { lv[ty * t + tx] = v; break; } }
+      if (lv[ty * t + tx] == null) lv[ty * t + tx] = 255;
+    }
+  }
+  const spread = Math.max(...lv) - Math.min(...lv);
+  // A photo whose paper is dark as a whole is not "uneven" — it is underexposed,
+  // and that is what ocrAutoContrast is for. Only the DIFFERENCE between tiles
+  // asks for a local threshold.
+  const ink = (() => {
+    const cut = Math.max(40, paper - 60);
+    let sum = 0;
+    for (let v = 0; v < cut; v++) sum += hist[v];
+    return sum / totalPx;
+  })();
+  return { spread, paper, ink, uneven: spread >= unevenAt };
+}
+
+/**
+ * The sheet's ruled lines, read off the ink itself.
+ *
+ * A roster is a table, and a table printed with its rules on states its own
+ * structure: the vertical lines ARE the column boundaries and the horizontal
+ * ones are the row pitch, printed to within a pixel. Reading a day column off the
+ * x of the day name printed over it instead is a guess that has to be right on a
+ * tilted, glare-lit photo — the name is a 20px token, the engine boxes it ±10px, 
+ * and the column it describes is 200px wide, so a 10px error is a tenth of a day.
+ * The rule is a 1000px line and cannot be boxed wrong by more than the stroke.
+ *
+ * This is the classical document-analysis step (long dark run-lengths along and
+ * across the page, the way a table-recognition pipeline finds its grid) and it is
+ * cheap enough to run on every scan: two O(pixels) passes over a downscaled copy.
+ *
+ * A line is a run, not a count: a column of text also has ink in most of its
+ * rows, and counting ink would mistake a dense column for a rule. A rule is a
+ * CONTIGUOUS run covering most of the table's extent, which no column of text
+ * has — glyphs leave gaps between them.
+ *
+ * Pure over a binary buffer (0 = ink), so the grid a photo is read with can be
+ * pinned without a photo. Returns the line centres, left to right / top to bottom.
+ */
+export function ocrRulingLines(binary, w, h, opts = {}) {
+  if (!binary || !w || !h || binary.length < w * h) return { v: [], h: [] };
+  const vFrac = opts.vFrac == null ? 0.3 : opts.vFrac;
+  const hFrac = opts.hFrac == null ? 0.35 : opts.hFrac;
+  const minV = opts.minV == null ? Math.round(h * vFrac) : opts.minV;
+  const minH = opts.minH == null ? Math.round(w * hFrac) : opts.minH;
+  const v = ocrLineCentres(binary, w, h, true, minV, Math.max(1, Math.round(w * 0.006)));
+  const hz = ocrLineCentres(binary, w, h, false, minH, Math.max(1, Math.round(h * 0.006)));
+  return { v, h: hz };
+}
+
+// The centre of each run of adjacent scanlines (columns when `vertical`) that
+// carries one contiguous stretch of ink at least `minRun` long. Adjacent hits
+// merge into one line — a rule is 2-3px of stroke, not one.
+function ocrLineCentres(binary, w, h, vertical, minRun, mergeWithin) {
+  const outer = vertical ? w : h;
+  const inner = vertical ? h : w;
+  const step = vertical ? 1 : w;
+  const at = (o, i) => (vertical ? binary[i * w + o] : binary[o * w + i]);
+  const hits = [];
+  for (let o = 0; o < outer; o++) {
+    let run = 0, best = 0;
+    for (let i = 0; i < inner; i++) {
+      if (at(o, i) === 0) { run++; if (run > best) best = run; }
+      else run = 0;
+    }
+    if (best >= minRun) hits.push(o);
+  }
+  const lines = [];
+  for (const x of hits) {
+    const last = lines[lines.length - 1];
+    if (last && x - last[last.length - 1] <= mergeWithin) last.push(x);
+    else lines.push([x]);
+  }
+  // The stroke's own centre, not its leading edge: a 3px rule read by its first
+  // hit is a pixel and a half to the left of where the paper put it, and this
+  // number becomes a cell boundary.
+  return lines.map(run => (run[0] + run[run.length - 1]) / 2);
+}
+
+/**
+ * The day columns the sheet's own rules draw, or null when they do not add up.
+ *
+ * Only ever a REFINEMENT of the grid the words already produced, never a
+ * replacement for it: the words say how many days there are and which day each
+ * one is, and this says exactly where each one ends. So a grid is accepted here
+ * only when it agrees with the words twice over — seven day columns between the
+ * name column and the table's right edge, and every column the words found
+ * falling inside the rule span that claims it. Anything else (a sheet printed
+ * without rules, rules the glare erased, a page of prose that happens to have a
+ * long line in it) returns null and the caller keeps the grid it had.
+ *
+ * The name column's own right edge is a rule on every roster that has one, and it
+ * is the boundary this most needs to get right: `rosterNameColumnRight` is what
+ * separates the name from the first day, and a name that swallows "OFF" matches
+ * nobody. Pure, so the acceptance rule can be pinned without a photo.
+ */
+export function rosterColumnsFromRules(vLines, cols, opts = {}) {
+  const list = (cols || []).filter(c => c && Number.isFinite(Number(c.cx)));
+  const lines = (vLines || []).filter(Number.isFinite).map(Number).sort((a, b) => a - b);
+  if (!list.length || lines.length < 4) return null;
+  const pitch = list.length > 1 ? (list[list.length - 1].cx - list[0].cx) / (list.length - 1) : 0;
+  if (!(pitch > 0)) return null;
+  // The name column's right edge: the last rule left of the first day column.
+  const firstCx = list[0].cx;
+  const nameEdge = [...lines].filter(x => x <= firstCx - pitch * 0.25).pop();
+  if (!Number.isFinite(nameEdge)) return null;
+  // Every rule from there on, minus the page's own outer border on the far side.
+  const edges = [nameEdge];
+  for (const x of lines) {
+    if (x <= nameEdge + Math.max(4, pitch * 0.08)) continue;
+    if (x - edges[edges.length - 1] < Math.max(4, pitch * 0.35)) continue;
+    edges.push(x);
+  }
+  // Seven day columns need eight boundaries, and a roster that printed its last
+  // column without closing it has seven.
+  if (edges.length === list.length) edges.push(edges[edges.length - 1] + pitch);
+  if (edges.length !== list.length + 1) return null;
+  const bounds = edges.slice(0, -1).map((a, i) => [a, edges[i + 1]]);
+  // Evenly spaced, or this is not a column grid: a title's own rule, a table with
+  // a merged cell, or a page whose rules were read at the wrong pitch.
+  const gaps = bounds.map(([a, b]) => b - a);
+  const mid = [...gaps].sort((a, b) => a - b)[Math.floor(gaps.length / 2)];
+  if (!(mid > 0) || gaps.some(g => Math.abs(g - mid) > mid * 0.3)) return null;
+  // The words have to fall where the rules say they do. This is the check that
+  // makes the whole refinement safe: a grid that would move a column off the ink
+  // it was read from is thrown away, and the caller keeps the grid the words gave.
+  const agree = list.every((c, i) => c.cx >= bounds[i][0] - pitch * 0.2 && c.cx <= bounds[i][1] + pitch * 0.2);
+  if (!agree) return null;
+  return {
+    bounds,
+    centres: bounds.map(([a, b]) => ({ cx: (a + b) / 2 })),
+    nameEdge,
+    pitch: mid,
+  };
+}
+
+/**
+ * Binarise the canvas the reader just drew, before the engine sees it.
+ * `view`: 'stretch' (global contrast), 'ink' (local Sauvola), 'auto'.
+ * Returns the view actually used, so a read can say what it was given.
+ */
+function ocrStretchCanvas(c, w, h, view = 'stretch', radius = 0) {
   try {
     const img = c.getImageData(0, 0, w, h);
-    ocrAutoContrast(img.data);
+    const d = img.data;
+    if (view === 'stretch') {
+      ocrAutoContrast(d);
+      c.putImageData(img, 0, 0);
+      return 'stretch';
+    }
+    const grey = new Uint8Array(w * h);
+    for (let i = 0; i < grey.length; i++) grey[i] = d[i * 4];
+    const bin = ocrSauvola(grey, w, h, radius ? { radius } : {});
+    if (!bin.length) { ocrAutoContrast(d); c.putImageData(img, 0, 0); return 'stretch'; }
+    for (let i = 0; i < grey.length; i++) {
+      const v = bin[i];
+      d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v;
+      d[i * 4 + 3] = 255;
+    }
     c.putImageData(img, 0, 0);
+    return 'ink';
   } catch { /* a canvas that cannot be read is read as it was drawn */ }
+  return 'stretch';
 }
 
 // v5 keeps words on data.words; older builds and some images only fill blocks.
@@ -1919,7 +2395,7 @@ function tesseractWords(result) {
   return [];
 }
 
-async function ocrStripWords(worker, source, canvas, strip) {
+async function ocrStripWords(worker, source, canvas, strip, view = 'stretch') {
   try {
     const bitmap = source.bitmap;
     const imgW = source.width, imgH = source.height;
@@ -1934,7 +2410,10 @@ async function ocrStripWords(worker, source, canvas, strip) {
     canvas.height = Math.max(1, Math.round(sh * scale));
     const c = canvas.getContext('2d', { willReadFrequently: true });
     c.drawImage(bitmap, 0, sy, imgW, sh, 0, 0, canvas.width, canvas.height);
-    ocrStretchCanvas(c, canvas.width, canvas.height);
+    // A strip is a third of a page wide and full width, so the window that reads
+    // its glyphs is sized from the glyphs themselves: about three of them, which
+    // is wider than a stroke and narrower than a word.
+    ocrStretchCanvas(c, canvas.width, canvas.height, view, Math.max(10, Math.round(canvas.height * 0.035)));
 
     const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
     const result = await worker.recognize(blob);
@@ -1966,7 +2445,8 @@ async function ocrStripWords(worker, source, canvas, strip) {
 // not among its words, however legible the photo is. This pass gives the engine
 // the sheet's own layout, and is what the reader falls back to when the strips
 // have not found the row.
-async function ocrPageWords(worker, source, canvas) {
+async function ocrPageWords(worker, source, canvas, opts = {}) {
+  const { view = 'stretch', psm = null } = opts;
   try {
     const bitmap = source.bitmap;
     const imgW = source.width, imgH = source.height;
@@ -1975,8 +2455,11 @@ async function ocrPageWords(worker, source, canvas) {
     canvas.height = Math.max(1, Math.round(imgH * scale));
     const c = canvas.getContext('2d', { willReadFrequently: true });
     c.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    ocrStretchCanvas(c, canvas.width, canvas.height);
+    // The whole page is where a roster's grid lives: ~30px glyphs on a sheet whose
+    // long side is up to 3× the working budget, so the window is the glyph band.
+    ocrStretchCanvas(c, canvas.width, canvas.height, view, Math.max(12, Math.round(canvas.width * 0.02)));
     const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    if (psm) await worker.setParameters({ tessedit_pageseg_mode: psm });
     const result = await worker.recognize(blob);
     const k = imgW / canvas.width;
     return tesseractWords(result).map(w => ({
@@ -2232,7 +2715,7 @@ export function ocrPickBand(bands, prior, maxDrift) {
 // (already in the shape parseRosterWords emits, dated off the same grid) and
 // whether every column of that grid was attempted.
 async function ocrOwnerCells(worker, source, canvas, opts = {}) {
-  const { name, nameWord, cols, rowWords = [], medianH = 24, skew = null, progress } = opts;
+  const { name, nameWord, cols, rowWords = [], medianH = 24, skew = null, progress, ruleGrid = null } = opts;
   const cells = [];
   // "Complete" only once the row itself is confirmed: a full grid read off the
   // wrong row would otherwise replace the matched row's cells with another
@@ -2245,7 +2728,13 @@ async function ocrOwnerCells(worker, source, canvas, opts = {}) {
     await worker.setParameters({ tessedit_pageseg_mode: '7' });
     const bitmap = source.bitmap;
     const imgW = source.width, imgH = source.height;
-    const bounds = rosterColumnBounds(cols);
+    // Where each day starts and ends: the sheet's own ruled lines when they add
+    // up (rosterColumnsFromRules), the day names' own positions otherwise. The
+    // rules are the better answer by a lot — a 1000px line cannot be boxed wrong
+    // the way a 20px day name can — and because the rule grid is only accepted if
+    // every column the words found falls inside the span that claims it, taking it
+    // can only straighten a cell's crop, never move it onto the wrong day.
+    const bounds = (ruleGrid && ruleGrid.bounds) || rosterColumnBounds(cols);
 
     // Every crop is aimed by where the strip pass saw the ink, not by where the
     // grid guessed it would be. A word box's HEIGHT can be nonsense under glare —
@@ -2365,9 +2854,16 @@ async function ocrOwnerCells(worker, source, canvas, opts = {}) {
 // Roster photos are handed round, shot at an angle or taken through glare, and
 // "drag a band across your row" is the one step that breaks when they are. The
 // strips are read top-down instead — the first always carries the date header
-// at the top of the sheet — and stop as soon as the typed name appears, so the
-// common scan is two reads: header, then row. Every word comes back in
-// image-pixel coordinates for parseRosterWords() to turn into dated cells.
+// at the top of the sheet — so the common scan is two reads: header, then row.
+// Every word comes back in image-pixel coordinates for parseRosterWords() to
+// turn into dated cells.
+//
+// The strips are the CHEAP reading, not the deciding one. Each reading the photo
+// is given is scored on what it actually produced and the best is kept
+// (rosterReadQuality), so the reader escalates — page, then a locally-thresholded
+// page, then the photo turned a quarter turn — until one comes back whole. A
+// reading that merely mentions the typed name no longer ends the scan: a read can
+// carry the name and still put the week's shifts on the wrong days.
 //
 // The worker is created here and torn down in the same breath: its heap is the
 // one place a decoded image could outlive the scan, so dropping it covers
@@ -2380,6 +2876,9 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
   const words = [];
   let scanned = 0, found = false, pagePass = false;
   let cells = [], cellsComplete = false;
+  // Every reading of this photo the reader accepted as an answer, in the order
+  // they were taken, with the score each one earned (rosterReadQuality).
+  const tries = [];
   progress(0.02, 'Reading photo');
   let decoded = null, leveled = null;
   try {
@@ -2398,6 +2897,21 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
         source = leveled;
       }
     } catch { /* an unreadable thumbnail is read unlevelled, as before */ }
+    let best = null;
+    /**
+     * Offer a reading of the photo. Keeps it if it is the best so far and says
+     * whether the reader can stop: only a reading that came back whole ends the
+     * search, so a read that merely mentions the name no longer does.
+     */
+    const consider = (tag, list) => {
+      // The strip overlap reads each row twice, so the dedupe happens here, once
+      // per reading, before anything is judged or built on top of it.
+      const q = rosterReadQuality(dedupeWords(list), name, today);
+      tries.push({ tag, words: q.words.length, columns: q.columns, cells: q.cells, score: q.score, complete: q.complete, found: q.found, named: q.named, dated: q.dated });
+      if (q.words.length && (!best || q.score > best.score)) best = q;
+      return q;
+    };
+    let settled = false;
     for (const strip of ranges) {
       const from = 0.1 + (scanned / ranges.length) * 0.75;
       progress(from, `Scanning part ${scanned + 1} of ${ranges.length} for your row`);
@@ -2407,27 +2921,44 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
       const read = await ocrStripWords(worker, source, canvas, strip);
       words.push(...read);
       scanned++;
-      if (name && read.some(w => nameMatches(w.text, name))) { found = true; break; }
+      // The strips only have to FIND the row — it is the whole-page reads that
+      // settle which reading of the photo is believed, below.
+      if (name && read.some(w => nameMatches(w.text, name))) break;
     }
-    // No strip carried the name. Read the sheet once, whole, before giving up: a
-    // strip has no page around it to be laid out against, and on an off-square
-    // photo that is what makes the engine drop a whole row (see ocrPageWords).
-    if (name && !found) {
+    settled = consider('strips', words).complete;
+    // Not settled: read the sheet whole. A strip has no page around it to be laid
+    // out against, and on an off-square photo that is what makes the engine drop a
+    // whole row (see ocrPageWords) — and on a photo lit from one side the strips
+    // find the name on a row whose day cells have slid into the columns beside it.
+    if (name && !settled) {
       progress(0.87, 'Reading the whole page for your row');
       _progressSink = p => progress(0.87 + p * 0.06, '');
       const page = await ocrPageWords(worker, source, canvas);
-      if (page.length) {
-        pagePass = true;
-        words.length = 0;
-        words.push(...page);
-        scanned++;
-        found = page.some(w => nameMatches(w.text, name));
-      }
+      pagePass = true;
+      scanned++;
+      settled = consider('page', page).complete;
     }
-    // Still nothing, and the likeliest reason by far is a sheet photographed
+    // Still not settled, and by now the two likeliest reasons are both things a
+    // better-handled image fixes rather than a better-read one: the shot is lit
+    // unevenly (a lamp one side, a shadow the other), or the sheet is a sparse
+    // grid the engine's default layout analysis refuses to cut into cells. So this
+    // pass changes the IMAGE and not the request — a locally-thresholded page when
+    // the light is uneven, and sparse text mode either way, which is the
+    // page-segmentation setting for exactly this content ("find as much text as
+    // possible in no particular order" is a table said in Tesseract's own words).
+    // Paid for only by a scan the reader has not already read whole.
+    if (name && !settled) {
+      const light = ocrPhotoLight(source);
+      progress(0.9, light.uneven ? 'Evening out the light on this photo' : 'Reading this photo as a grid');
+      _progressSink = p => progress(0.9 + p * 0.03, '');
+      const page = await ocrPageWords(worker, source, canvas, { view: light.uneven ? 'ink' : 'stretch', psm: '11' });
+      scanned++;
+      settled = consider(light.uneven ? 'page-ink' : 'page-sparse', page).complete;
+    }
+    // Still not settled, and the likeliest reason by far is a sheet photographed
     // sideways: turn it back a quarter turn at a time and read the page again.
-    // Whichever frame carries the name is the frame everything else is read in.
-    if (name && !found) {
+    // Whichever frame reads best is the frame everything else is read in.
+    if (name && !settled) {
       for (const turn of [90, -90]) {
         progress(0.93, 'Turning the photo up the other way');
         const turned = await turnPhoto(source, turn);
@@ -2435,25 +2966,24 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
           _progressSink = p => progress(0.93 + p * 0.04, '');
           const page = await ocrPageWords(worker, turned, canvas);
           scanned++;
-          if (page.some(w => nameMatches(w.text, name))) {
+          if (consider(`turn${turn}`, page).complete) {
             if (leveled && leveled.bitmap) leveled.bitmap.close();
             leveled = turned;
             source = turned;
-            words.length = 0;
-            words.push(...page);
-            found = true;
+            settled = true;
             break;
           }
         } finally {
-          if (!found && turned.bitmap) turned.bitmap.close();
+          if (!settled && turned.bitmap) turned.bitmap.close();
         }
       }
     }
-    // Rows in the strip overlap were read twice; keep one copy of each word
-    // before anything is built on top of them (see dedupeWords).
-    const merged = dedupeWords(words);
+    // The reading the rest of the scan is built on: the one that came back whole
+    // if any did, otherwise the one that read the most of the sheet.
+    const kept = (best && best.words) || [];
     words.length = 0;
-    words.push(...merged);
+    words.push(...kept);
+    found = !!(best && best.found);
     // The row was located, so read it again at cell resolution — the strip pass
     // only had to find the header and the name (see ocrOwnerCells). The column
     // grid comes from the same words, so no second engine session is needed.
@@ -2464,6 +2994,11 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
       const parsed = parseRosterWords(words, today, { name });
       const cols = parsed.columns;
       if (cols.length >= 2) {
+        // Where the sheet draws its own column boundaries. Computed here, once,
+        // after the page is settled (a turned photo has turned its rules too) and
+        // before any cell is cropped to a boundary that is only a guess.
+        const rules = ocrPhotoRules(source);
+        const ruleGrid = rules ? rosterColumnsFromRules(rules.v, cols, {}) : null;
         _progressSink = () => {};
         // The cell pass crops to where the ink actually is, so it needs the words
         // of the owner's own row and a text height to size a crop with. The words
@@ -2476,7 +3011,7 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
         const owner = parsed.rows.find(r => r.matches);
         const rowWords = (owner && owner.words) || [nameWord];
         const read = await ocrOwnerCells(worker, source, canvas, {
-          name, nameWord, cols, rowWords, medianH, skew: pageSkew(words, medianH), progress,
+          name, nameWord, cols, rowWords, medianH, skew: pageSkew(words, medianH), progress, ruleGrid,
         });
         cells = read.cells;
         cellsComplete = read.complete;
@@ -2490,7 +3025,7 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
     if (decoded && decoded.bitmap) decoded.bitmap.close();
     if (leveled && leveled.bitmap) leveled.bitmap.close();
   }
-  return { words, found, scanned, pagePass, cells, cellsComplete };
+  return { words, found, scanned, pagePass, cells, cellsComplete, tries };
 }
 
 // ============================================================

@@ -23,6 +23,7 @@ import {
   storedShift, storedPayslip, applyShiftEdit,
   rosterColumnBounds, parseCellTokens,
   pageSkew, dedupeWords, columnAnchors, resolveColumnDates, ocrEstimateTilt, ocrAutoContrast,
+  ocrSauvola, ocrLocalMarks, ocrIllumination, ocrRulingLines, rosterColumnsFromRules, rosterReadQuality,
 } from '../tesco.js';
 import { validateState } from '../storage.js';
 
@@ -870,6 +871,32 @@ ok('a sheet for a week not yet started reads forwards',
 ok('a sheet for the week just gone reads backwards',
   resolveColumnDates([{ cx: 100, weekday: 2 }, { cx: 200, weekday: 3 }], new Date(Date.UTC(2026, 8, 24))).map(c => c.date.toISOString().slice(0, 10)),
   ['2026-09-22', '2026-09-23']);
+// A header that lost ONE day in the middle — read at an angle with the light
+// falling off across the sheet, which is the photo a roster really arrives as.
+// The missing day goes back into the gap it left, because a column's date comes
+// from its POSITION in the row: a fill at the left edge instead renumbers every
+// day by one, which is a whole week paid a day late.
+const holed = columnAnchors([headerRow([
+  ...dayNames.slice(0, 3).map(ph => ({ ...ph, text: 'T' })),
+  ...dayNames.slice(4).map(ph => ({ ...ph, text: 'T' })),
+].map((ph, i) => ({ ...ph, text: dayNames[i < 3 ? i : i + 1].text })), 360)], today, 90);
+ok('a column lost in the middle is filled in the middle', holed.cols.map(c => c.cx), [430, 610, 790, 970, 1150, 1330, 1510]);
+ok('so the days after it keep their own day', holed.cols.map(c => c.weekday), [2, 3, 4, null, 6, 0, 1]);
+ok('and the week still dates from its own first day',
+  resolveColumnDates(holed.cols, today).map(c => c.date.toISOString().slice(8, 10)),
+  ['22', '23', '24', '25', '26', '27', '28']);
+// With no gap to fill, the day left over goes on the left — the end the header
+// loses when the light falls off on the name column's side — and that is safe:
+// the day names then date every real column by its own weekday, whatever the
+// phantom in front of them is numbered. Six names surviving, so the phantom is
+// not a day of this week and the six are.
+const short = columnAnchors([headerRow(dayNames.slice(0, 6), 360)], today, 90);
+ok('a day the header did not give up goes back on the left',
+  short.cols.map(c => c.cx), [250, 430, 610, 790, 970, 1150, 1330]);
+ok('and the six real days keep their own dates',
+  resolveColumnDates(short.cols, today).slice(1).map(c => c.date.toISOString().slice(8, 10)),
+  ['22', '23', '24', '25', '26', '27']);
+
 ok('a title range anchors the series when no date row survived',
   resolveColumnDates([{ cx: 100 }, { cx: 200 }, { cx: 300 }], today, new Date(Date.UTC(2026, 8, 22))).map(c => c.date.toISOString().slice(0, 10)),
   ['2026-09-22', '2026-09-23', '2026-09-24']);
@@ -909,6 +936,138 @@ for (let i = 0; i < 40; i++) { shadowed[i * 4] = shadowed[i * 4 + 1] = shadowed[
 ocrAutoContrast(shadowed);
 ok('a shadowed photo is stretched to full range',
   [shadowed[200 * 4], shadowed[10 * 4]], [255, 0]);
+
+// ---------- the page as ink and paper ----------
+// A sheet lit from one side: paper at 235 grey on the left edge sliding to 110
+// on the right, with a line of "glyphs" printed right across it — 6px of ink,
+// 6px of gap, inked 90 grey below whatever the paper is on that part of the
+// page. This is the shot no single threshold can read: cut at the middle of the
+// range and the shadowed third comes back as one black slab, cut at the dark end
+// and the lit third comes back blank.
+const litW = 240, litH = 60;
+const litPage = (() => {
+  const g = new Uint8Array(litW * litH);
+  for (let y = 0; y < litH; y++) {
+    for (let x = 0; x < litW; x++) {
+      const paper = Math.round(235 - (125 * x) / (litW - 1));
+      g[y * litW + x] = (x % 12 < 6 && y > 10 && y < 40) ? Math.max(0, paper - 90) : paper;
+    }
+  }
+  return g;
+})();
+// The same print under flat light, as the control.
+const flatPage = (() => {
+  const g = new Uint8Array(litW * litH).fill(235);
+  for (let y = 11; y < 40; y++) for (let x = 0; x < litW; x++) if (x % 12 < 6) g[y * litW + x] = 145;
+  return g;
+})();
+ok('a page lit from one side is read as unevenly lit', ocrIllumination(litPage, litW, litH).uneven, true);
+ok('a page under flat light is not', ocrIllumination(flatPage, litW, litH).uneven, false);
+ok('the light down one side is what the spread measures',
+  ocrIllumination(litPage, litW, litH).spread > 100, true);
+const litBin = ocrSauvola(litPage, litW, litH, { radius: 18 });
+// The three answers that matter, at the two ends of the gradient and between two
+// glyphs: local thresholding is only worth its cost if it gets the ink in the
+// SHADOW as well as the ink in the light.
+// x%12 < 6 is the ink, so x = 3 and x = 231 are glyphs and x = 9 and x = 237 are
+// the gap between two of them.
+ok('the lit end reads its glyphs as ink', litBin[25 * litW + 3], 0);
+ok('the shadowed end reads its glyphs as ink too', litBin[25 * litW + 231], 0);
+ok('the gap between two glyphs is still paper in the light', litBin[25 * litW + 9], 255);
+ok('and still paper in the shadow', litBin[25 * litW + 237], 255);
+ok('the page above the print is paper at both ends',
+  [litBin[2 * litW + 3], litBin[2 * litW + litW - 3]], [255, 255]);
+// A page whose paper is already one flat wash must not gain speckle from the
+// local rule: that is the common case, and it is the one the LSTM's own grey is
+// better for.
+const flatBin = ocrSauvola(flatPage, litW, litH, { radius: 18 });
+let flatInk = 0;
+for (const v of flatBin) if (v === 0) flatInk++;
+ok('a flat page keeps exactly its printed ink', flatInk, 29 * 120);
+
+// The marks a RULE is read from, as opposed to a glyph (ocrLocalMarks): a
+// hairline table rule is a 20-grey dip, which is far too faint for the glyph
+// threshold above and exactly what a fixed margin is for.
+const ruledPage = (() => {
+  const w = 300, h = 80;
+  const g = new Uint8Array(w * h).fill(240);
+  for (let y = 18; y < 22; y++) for (let x = 10; x < 290; x++) g[y * w + x] = 205;   // a faint rule
+  for (let x = 0; x < w; x++) for (let y = 0; y < h; y++) g[y * w + x] -= Math.round(60 * y / h); // lit from the top
+  return { g, w, h };
+})();
+const ruledMarks = ocrLocalMarks(ruledPage.g, ruledPage.w, ruledPage.h, { drop: 26, radius: 12 });
+ok('a faint rule survives the local mark threshold', ruledMarks[20 * ruledPage.w + 150], 0);
+ok('and the paper either side of it does not', ruledMarks[40 * ruledPage.w + 150], 255);
+const ruledByGlyphs = ocrSauvola(ruledPage.g, ruledPage.w, ruledPage.h, { radius: 12 });
+ok('the same rule is what the glyph threshold throws away', ruledByGlyphs[20 * ruledPage.w + 150], 255);
+
+// The sheet's ruled grid: long contiguous runs, not counts of ink. A column of
+// text has ink in nearly every row and is still not a rule — the text leaves gaps.
+const gridW = 400, gridH = 300;
+const gridBin = (() => {
+  const b = new Uint8Array(gridW * gridH).fill(255);
+  const vAt = [40, 100, 160, 220, 280, 340], hAt = [60, 120, 180, 240];
+  for (const x of vAt) for (let dx = 0; dx < 3; dx++) for (let y = 20; y < 280; y++) b[y * gridW + x + dx] = 0;
+  for (const y of hAt) for (let dy = 0; dy < 2; dy++) for (let x = 20; x < 380; x++) b[(y + dy) * gridW + x] = 0;
+  // A dense column of "text" — ink in most rows, never in a long run.
+  for (let y = 30; y < 270; y += 7) for (let x = 60; x < 68; x++) b[y * gridW + x] = 0;
+  return b;
+})();
+const gridLines = ocrRulingLines(gridBin, gridW, gridH);
+ok('six vertical rules are found, and the column of text is not one', gridLines.v, [41, 101, 161, 221, 281, 341]);
+ok('four horizontal rules are found', gridLines.h, [60.5, 120.5, 180.5, 240.5]);
+
+// The day grid the sheet's own rules draw, accepted only when every column the
+// words found falls inside the span claiming it.
+const sevenCols = Array.from({ length: 7 }, (_, i) => ({ cx: 140 + i * 40 }));
+const eightLines = Array.from({ length: 8 }, (_, i) => 120 + i * 40);
+const snug = rosterColumnsFromRules(eightLines, sevenCols, {});
+ok('the rules give seven day columns', snug.bounds.length, 7);
+ok('and each one starts where the sheet drew it', snug.bounds.map(b => b[0]), [120, 160, 200, 240, 280, 320, 360]);
+ok('the name column ends at the rule the sheet drew', snug.nameEdge, 120);
+ok('a grid whose rules do not frame the words is refused',
+  rosterColumnsFromRules(eightLines.map(x => x + 30), sevenCols, {}), null);
+ok('a page with no even pitch is refused',
+  rosterColumnsFromRules([120, 121, 400, 401, 700, 701], sevenCols, {}), null);
+ok('too few rules to be a week are refused',
+  rosterColumnsFromRules([120, 160, 200], sevenCols, {}), null);
+
+// ---------- which reading of a photo to believe ----------
+// The reader takes several readings of one photo and keeps the best, so the score
+// is what decides which week gets paid. A reading that merely mentions the typed
+// name is not good enough: it has to have produced the week's columns and a dated
+// shift on the row that name is on.
+const wkWord = (text, x0, x1, y) => ({ text, x0, x1, y0: y, y1: y + 30, confidence: 90 });
+const weekNames = ['Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Mon'];
+const weekDates = ['22-Sep', '23-Sep', '24-Sep', '25-Sep', '26-Sep', '27-Sep', '28-Sep'];
+const weekHeader = [
+  ...weekNames.map((t, i) => wkWord(t, 400 + i * 180, 460 + i * 180, 350)),
+  ...weekDates.map((t, i) => wkWord(t, 400 + i * 180, 500 + i * 180, 400)),
+];
+const ownerRowWords = [
+  wkWord('Parth', 60, 200, 500), wkWord('Sharma', 210, 330, 500),
+  ...['07:00-15:00', 'OFF', '12:00-20:00', 'OFF', '09:00-17:00', '10:00-16:00', 'OFF']
+    .map((t, i) => wkWord(t, 400 + i * 180, 540 + i * 180, 500)),
+];
+const wholeWeek = rosterReadQuality([...weekHeader, ...ownerRowWords], 'Parth', today);
+ok('a reading of the whole week is accepted', wholeWeek.complete, true);
+ok('it found the seven columns', wholeWeek.columns, 7);
+ok('and the four shifts that week holds', wholeWeek.cells, 4);
+ok('and the row that carries the typed name', wholeWeek.found, true);
+// The same shot read as a strip that stopped before the header: the name and the
+// shifts are there, the week's columns are not, and the old reader would have
+// taken it — which is how a week lands in the wrong days.
+const noHeader = rosterReadQuality(ownerRowWords, 'Parth', today);
+ok('a reading with no header is not accepted', noHeader.complete, false);
+ok('and it scores below the whole week', noHeader.score < wholeWeek.score, true);
+ok('the header alone is worth its columns and nothing more', rosterReadQuality(weekHeader, 'Parth', today).score, 7);
+ok('a reading without the typed name cannot be accepted', rosterReadQuality([...weekHeader, wkWord('Aoife', 60, 200, 500)], 'Parth', today).complete, false);
+ok('nothing read is worth less than anything', rosterReadQuality([], 'Parth', today).score, -1);
+// The same filter the parse applies, so what is judged good is what the parse uses.
+const faint = rosterReadQuality(ownerRowWords.map(w => ({ ...w, confidence: 10 })), 'Parth', today);
+ok('words the parse would throw away cannot make a reading', faint.words.length, 0);
+ok('and a box that is not a number is not a word',
+  rosterReadQuality([...weekHeader, ...ownerRowWords, { text: 'X', x0: 0, y0: 0, x1: 1, y1: 1, confidence: 90 }], 'Parth', today).words.length, wholeWeek.words.length + 1);
 
 // ---------- report ----------
 if (fails.length) {
