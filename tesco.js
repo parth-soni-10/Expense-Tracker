@@ -2011,11 +2011,8 @@ export function ocrStripRanges(count = OCR_STRIP_COUNT, height = OCR_STRIP_H) {
 // row: one cell at a time, each crop aligned to the ink of its own column. That
 // also follows a tilted sheet, which a whole-width strip read cannot.
 const OCR_CELL_UPSCALE = 3;    // one cell is ~0.3 MP: the 12 MP working budget is never near
-const OCR_CELL_INSET = 0.07;   // keeps a column's own rule line out of the crop
 const OCR_CELL_BG = 18;        // "darker than its own row's average by this much" = ink
 const OCR_CELL_BG_FAINT = 8;   // for a cell in glare, where 18 finds no glyphs at all
-const OCR_CELL_RUN = 0.6;      // a cell's ink: strokes, not a rule across the column
-const OCR_CELL_DRIFT = 0.42;   // how far a cell's ink may sit from the row's line
 // A cell is looked at through these views, best first, until one reads back as a
 // shift. Flat-field first: it is the only one that survives glare.
 const OCR_CELL_MODES = ['local', 'ink', 'grey'];
@@ -2062,38 +2059,6 @@ function rowInkCut(d, w, y, bg = OCR_CELL_BG) {
   let sum = 0;
   for (let x = 0; x < w; x++) sum += d[base + x * 4];
   return sum / w - bg;
-}
-
-// Per-row ink counts for one column slice: one run per line of text.
-function ocrInkProfile(bitmap, canvas, x0, y0, x1, y1, bg = OCR_CELL_BG, maxRunFrac = 0.22) {
-  const w = Math.max(8, Math.round(x1 - x0));
-  const h = Math.max(8, Math.round(y1 - y0));
-  // A rectangle that is off the image, or one the grid produced as NaN, has no
-  // ink to report — returning an empty profile keeps the caller on its normal
-  // "nothing in this cell" path instead of throwing out of the whole scan.
-  if (![w, h, x0, y0].every(Number.isFinite) || x1 - x0 < 8 || y1 - y0 < 8) return new Float32Array(0);
-  canvas.width = w; canvas.height = h;
-  const c = canvas.getContext('2d', { willReadFrequently: true });
-  c.drawImage(bitmap, x0, y0, x1 - x0, y1 - y0, 0, 0, w, h);
-  const d = c.getImageData(0, 0, w, h).data;
-  // Only runs of ink a GLYPH could make count: the sheet's own rule lines run
-  // unbroken across the crop, so a row that is one long run is a rule, not
-  // text — which is how a ruled roster stops reading as forty lines of ink.
-  const maxRun = Math.max(6, Math.round(w * maxRunFrac));
-  const ink = new Float32Array(h);
-  for (let y = 0; y < h; y++) {
-    const cut = rowInkCut(d, w, y, bg);
-    const base = y * w * 4;
-    let n = 0, run = 0;
-    for (let x = 0; x < w; x++) {
-      if (d[base + x * 4] < cut) { run++; continue; }
-      if (run && run <= maxRun) n += run;
-      run = 0;
-    }
-    if (run && run <= maxRun) n += run;
-    ink[y] = n;
-  }
-  return ink;
 }
 
 // One cell as the engine wants it: glyphs upscaled to the size tesseract reads
@@ -2250,26 +2215,6 @@ export function ocrTextBands(bands) {
   const heights = bands.map(b => b.y1 - b.y0).sort((a, b) => a - b);
   const med = heights.length ? heights[Math.floor(heights.length / 2)] : 0;
   return bands.filter(b => b.y1 - b.y0 >= Math.max(8, med * 0.6));
-}
-
-// The part of a band that actually carries strokes. A profile band can run from
-// one rule to the next, and a crop that includes those empty edges is what
-// truncates a long line of text: cropped to its glyphs it reads back whole.
-function ocrTightBand(ink, band, minInk) {
-  let y0 = band.y0, y1 = band.y1;
-  while (y0 < y1 && ink[y0] < minInk) y0++;
-  while (y1 > y0 && ink[y1 - 1] < minInk) y1--;
-  return { y0, y1, cy: (y0 + y1) / 2 };
-}
-
-// The line a cell sits on, as the centre of mass of the ink in its window. A
-// band's midpoint is dragged by a rule welded to the text it shares a row with
-// (the sheet's bands run from rule to rule), while the mass sits on the glyphs —
-// which is what keeps a chain of cells on one row across a photo.
-function ocrInkCentre(ink, minInk) {
-  let sum = 0, mass = 0;
-  for (let i = 0; i < ink.length; i++) { sum += i * ink[i]; mass += ink[i]; }
-  return mass < minInk * 3 ? null : sum / mass;
 }
 
 // The line a cell sits on: the band nearest `prior`, and never one so far away

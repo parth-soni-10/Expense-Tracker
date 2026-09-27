@@ -241,7 +241,7 @@ await call(pushHandler, 'POST', {
 received.length = 0;
 // The dispatcher reads `new Date()` internally; the record's time is 'now',
 // so the run is due unless the minute ticks past mid-run — acceptable.
-const sendResp = await sendHandler(null, {});
+await sendHandler(null, {});
 check('scheduled-delivery', received.length === 1 && received[0].title === 'cents. — time to upload your transactions');
 check('payload-has-generic-body', received.length === 1 && received[0].body === "Log today's spending while it's fresh.");
 
