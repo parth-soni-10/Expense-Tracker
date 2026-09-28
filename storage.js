@@ -9,6 +9,9 @@
 import { SEED_SETTINGS, TABS } from './seed.js';
 import { getPrivacyPin, setPrivacyPin } from './settings.js';
 import { nsKey } from './profiles.js';
+// The one CSV field rule in the app. tesco.js writes and reads the workbook
+// with the same one, so a note that is guarded here is guarded there too.
+import { csvDocument, CSV_BOM } from './csv.js';
 
 const KEY = () => nsKey('state');
 // Where an UNREADABLE stored document is parked instead of being lost. Kept
@@ -549,6 +552,9 @@ export function validateState(s) {
     tescoRates: normalizeTescoRates(safeSettings.tescoRates),
     tescoWeekNos: normalizeWeekNos(safeSettings.tescoWeekNos),
     enabledTabs: normalizeEnabledTabs(safeSettings.enabledTabs),
+    // Booleans are stored as booleans; a document that never had this key is false
+    // (a fresh app has not offered the tour yet).
+    tourSeen: safeSettings.tourSeen === true,
   };
   out.tesco = normalizeTesco(s.tesco);
   out.schemaVersion = 2;
@@ -651,6 +657,11 @@ export function saveState(state) {
   }
 }
 
+/** Read a specific profile's document as this device holds it. */
+export function readStateText() {
+  try { return localStorage.getItem(KEY()); } catch { return null; }
+}
+
 /** Read a specific profile's document as this device holds it.
  *  The Admin panel is the only place one profile reads another's. */
 export function loadStateFor(profileId) {
@@ -701,15 +712,196 @@ export function downloadText(filename, text, mime = 'text/plain') {
   setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
 }
 
+// ---------- restoring a backup ----------
+// Export has always existed; reading a file back was the missing half, which
+// made "Export data" a one-way door (the notice on a full quota tells the user
+// to export a backup, and nothing could ever open it). These two are pure —
+// text in, verdict out, no DOM and no storage — so the rules are testable.
+
+/** A file bigger than this is refused before it is parsed: the whole document
+ *  is held as one string and JSON.parse'd on the UI thread, so an absurd file
+ *  would freeze the tab instead of failing. An export of 100k entries is
+ *  roughly 30 MB. */
+export const MAX_BACKUP_BYTES = 32 * 1024 * 1024;
+/** Entries a single restore may adopt. Far above any real ledger (the app's own
+ *  tombstone ceiling is 4000) and far below "parse until the tab dies". */
+export const MAX_BACKUP_ENTRIES = 100000;
+
+/**
+ * Read the text of a file the user picked as a backup and say what it is.
+ *
+ * Never throws and never writes: it answers `{ ok: true, state, kept, dropped }`
+ * or `{ ok: false, reason, detail }` so the caller can tell the user what was
+ * wrong with the file instead of showing a generic failure.
+ *
+ * Two things are deliberately stripped before validation:
+ *   · `settings.pinHash` — legacy PIN material must never arrive from a file.
+ *     validateState MIGRATES a legacy hash into device storage when the device
+ *     has no PIN, so a hostile (or just stale) file would otherwise get to set
+ *     this device's lock. The app's own export deletes the key, so a genuine
+ *     backup is unaffected;
+ *   · `localResetAt` — a whole-document tombstone means "everything before this
+ *     is void" and is compared across devices by the sync path. A restored copy
+ *     of an old reset stamp would re-assert a reset that later data superseded.
+ */
+export function parseBackup(text) {
+  if (typeof text !== 'string' || !text.trim()) return { ok: false, reason: 'empty' };
+  if (text.length > MAX_BACKUP_BYTES) return { ok: false, reason: 'too-large' };
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { ok: false, reason: 'unreadable' };
+  }
+  // The smallest thing every export has and no other document does. A file with
+  // no `entries` array is not a backup this app wrote, so it is refused rather
+  // than merged in as an empty (or catastrophic) document.
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !Array.isArray(parsed.entries)) {
+    return { ok: false, reason: 'not-a-backup' };
+  }
+  if (parsed.entries.length > MAX_BACKUP_ENTRIES) return { ok: false, reason: 'too-large' };
+  const raw = JSON.parse(JSON.stringify(parsed));
+  if (raw.settings && typeof raw.settings === 'object' && !Array.isArray(raw.settings)) {
+    delete raw.settings.pinHash;
+  } else if (raw.settings !== undefined) {
+    // A settings value that is not an object (array, string, null) is not the
+    // shape validateState expects; drop it so the seed settings apply and the
+    // restore cannot fail on a field it was never asked to read.
+    delete raw.settings;
+  }
+  delete raw.localResetAt;
+  const state = validateState(raw);
+  // How much of the file survived validation. A file whose entries were all
+  // junk validates to an empty document, and a merge of nothing would look like
+  // a successful restore of nothing at all.
+  const kept = state.entries.length;
+  const dropped = raw.entries.length - kept;
+  return { ok: true, state, kept, dropped };
+}
+
+/** Does `merged` hold anything the document it was merged from (`incoming`)
+ *  does not? Used by the second-tab guard: two tabs of this app are two
+ *  in-memory copies of one document, and each write replaces the whole file, so
+ *  the tab that writes second silently erases the other's new entry. The tab
+ *  that receives the write merges both copies and must write the union back —
+ *  but only when it actually HAS something the writer missed, or the two tabs
+ *  would write at each other forever. */
+export function foreignWriteNeeded(merged, incoming) {
+  const version = (record) => {
+    const at = Date.parse(record?.updatedAt || '');
+    if (Number.isFinite(at)) return at;
+    const history = Array.isArray(record?.mutationHistory) ? record.mutationHistory : [];
+    const last = history.length ? Date.parse(history[history.length - 1]?.at || '') : NaN;
+    if (Number.isFinite(last)) return last;
+    const created = Date.parse(record?.createdAt || '');
+    return Number.isFinite(created) ? created : 0;
+  };
+  const listHasMore = (mine = [], theirs = []) => {
+    const seen = new Map();
+    for (const item of Array.isArray(theirs) ? theirs : []) if (item && item.id) seen.set(item.id, version(item));
+    for (const item of Array.isArray(mine) ? mine : []) {
+      if (!item || !item.id) continue;
+      const previous = seen.get(item.id);
+      if (previous === undefined || version(item) > previous) return true;
+    }
+    return false;
+  };
+  const mine = merged && typeof merged === 'object' ? merged : {};
+  const theirs = incoming && typeof incoming === 'object' ? incoming : {};
+  if (listHasMore(mine.entries, theirs.entries)) return true;
+  if (listHasMore(mine.tesco?.shifts, theirs.tesco?.shifts)) return true;
+  if (listHasMore(mine.tesco?.payslips, theirs.tesco?.payslips)) return true;
+  // A deletion is content too: the tombstone that removes an entry has to reach
+  // the other tab, or its next write puts the deleted entry back.
+  const tomb = (doc, key) => new Set(Array.isArray(doc?.settings?.[key]) ? doc.settings[key] : []);
+  const theirsEntries = tomb(theirs, 'deletedEntryIds');
+  for (const id of tomb(mine, 'deletedEntryIds')) if (!theirsEntries.has(id)) return true;
+  const theirsShifts = new Set(Array.isArray(theirs.tesco?.deletedShiftIds) ? theirs.tesco.deletedShiftIds : []);
+  for (const id of new Set(Array.isArray(mine.tesco?.deletedShiftIds) ? mine.tesco.deletedShiftIds : [])) if (!theirsShifts.has(id)) return true;
+  const theirsSlips = new Set(Array.isArray(theirs.tesco?.deletedPayslipIds) ? theirs.tesco.deletedPayslipIds : []);
+  for (const id of new Set(Array.isArray(mine.tesco?.deletedPayslipIds) ? mine.tesco.deletedPayslipIds : [])) if (!theirsSlips.has(id)) return true;
+  // Balance checkpoints are keyed by date inside a per-method map, so they get
+  // the same treatment one level down: a point (or a whole method) the writer
+  // did not have is content worth writing.
+  const minePoints = mine.settings?.balanceCheckpoints || {};
+  const theirsPoints = theirs.settings?.balanceCheckpoints || {};
+  for (const method of Object.keys(minePoints)) {
+    const had = new Set((Array.isArray(theirsPoints[method]) ? theirsPoints[method] : []).map(point => point?.date));
+    for (const point of Array.isArray(minePoints[method]) ? minePoints[method] : []) {
+      if (point && point.date && !had.has(point.date)) return true;
+    }
+  }
+  return false;
+}
+
+/** The local calendar date, as both exports' file names carry it. Local rather
+ *  than UTC: the file is named after the day the person made it, not the day it
+ *  was in Greenwich. */
+function exportStamp() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
 export function exportJSON(state) {
   // PIN fallback material is intentionally local-only. Never place it in a
   // downloadable export, even if device storage was unavailable during legacy
   // PIN migration.
   const safeState = JSON.parse(JSON.stringify(state || {}));
   if (safeState.settings && typeof safeState.settings === 'object') delete safeState.settings.pinHash;
-  const now = new Date();
-  const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  downloadText(`expenses-${localDate}.json`, JSON.stringify(safeState, null, 2), 'application/json');
+  downloadText(`expenses-${exportStamp()}.json`, JSON.stringify(safeState, null, 2), 'application/json');
+}
+
+// ---------- the ledger as a table ----------
+// The JSON export is the document itself — it is what Restore from backup reads
+// back. This is the same ledger for a person: one row per entry, the readable
+// label instead of the stored id, in a file any spreadsheet opens. There is no
+// importer for it, so a column may be added without breaking a round trip.
+//
+// The label resolvers are handed in rather than looked up here: app.js owns
+// categoryLabel/methodLabel and the custom-category table behind them, and a
+// second copy of those rules in this file would be a second answer to "what is
+// category 'gro' called" — one free to drift from the one on screen.
+export const ENTRIES_CSV_HEADER = Object.freeze(['Date', 'Type', 'Category', 'Details', 'Amount', 'Method', 'Note']);
+
+export function entriesCsv(state, labels = {}) {
+  const category = typeof labels.category === 'function' ? labels.category : (id) => id;
+  const method = typeof labels.method === 'function' ? labels.method : (id) => id;
+  const entries = (Array.isArray(state?.entries) ? state.entries : [])
+    // A row that is not an object has no fields to print, and a validated
+    // document cannot hold one — but this is also reachable from a hostile
+    // merge, and a pure function that can throw half way through is worse than
+    // one that skips a row it cannot read.
+    .filter(e => e && typeof e === 'object')
+    // Newest first — the order the History screen reads in, with its own
+    // tie-breaks, so two entries on one day come out in the order they were
+    // written rather than in whatever order the array happens to hold.
+    .slice().sort((a, b) => String(b.date).localeCompare(String(a.date))
+      || String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
+      || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  const rows = [ENTRIES_CSV_HEADER];
+  for (const e of entries) {
+    rows.push([
+      e.date,
+      e.type,
+      category(e.category),
+      e.details,
+      // Two decimals and nothing else: "12.40" has to stay a cell a spreadsheet
+      // can total. (csvCell() leaves a plain number alone precisely so that the
+      // apostrophe which defuses "=SUM(A1)" cannot turn -56.08 into text.)
+      Number.isFinite(Number(e.amount)) ? Number(e.amount).toFixed(2) : '',
+      method(e.method),
+      e.note,
+    ]);
+  }
+  return csvDocument(rows);
+}
+
+/** entriesCsv() as a file. The BOM is for the reader, not for us: Excel on
+ *  Windows opens a BOM-less UTF-8 file in the machine's own ANSI code page, so a
+ *  note carrying a euro sign or an accent arrives as mojibake. Nothing in this
+ *  app reads the file back, so the byte costs no round trip. */
+export function exportEntriesCsv(state, labels = {}) {
+  downloadText(`expenses-${exportStamp()}.csv`, CSV_BOM + entriesCsv(state, labels), 'text/csv;charset=utf-8');
 }
 
 // ---------- persistent undo journal ----------

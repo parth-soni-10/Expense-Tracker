@@ -23,15 +23,17 @@
  *   · a second change while one is running wins, and the frames of the first
  *     cannot write over it.
  *
- * The second thing it pins is the route transition's bound. A view transition
- * does not run its update callback until the browser has captured the old state,
- * and capturing needs a compositor frame — so a document that cannot produce one
- * leaves the navigation waiting on a snapshot instead of drawing the next
- * screen. That is not hypothetical: in a webview that was not compositing, a
- * route change took 4040ms, while the same navigation with the API unavailable
- * took 9ms. `renderRoute` is lifted out of app.js the same way `paintFigure` is
- * and run against a fake `document`, so the budget, the skip and the release can
- * be checked without a browser.
+ * The second thing it pins is that a route change costs nothing but the render.
+ * It used to hand the change to the View Transitions API, and that was a stall:
+ * the browser will not call the update callback until it has captured the old
+ * state, and capturing needs a compositor frame — so a document that cannot
+ * produce one waited out a whole fallback budget before drawing anything.
+ * Measured on a webview that was not compositing: ~270ms per tab switch (~250 of
+ * it the budget) against ~20ms with no transition. So the guard now pins the
+ * ABSENCE of that machinery, in app.js and in the CSS: no startViewTransition,
+ * no budget, no entrance animation on the screen. `renderRoute` is lifted out of
+ * app.js the same way `paintFigure` is and run against a fake `render`, so the
+ * claim that a navigation renders once and arms nothing is checked, not assumed.
  *
  * The third is the chart popup wiring contract: the attributes the charts emit
  * have to be covered by a `wireChartTips` selector, or a mark is silently
@@ -155,110 +157,77 @@ queue = []; a = el();
 app.paintFigure(a, 'month', NaN);
 ok('a non-finite value writes nothing', a.textContent, '');
 
-// ---------- the route transition, and the bound that keeps it honest ----------
-const vtStart = src.indexOf('const VT_BUDGET');
+// ---------- a route change costs the render and nothing else ----------
+// The delay this exists to keep out: the app used to hand every route change to
+// the View Transitions API, and a browser that cannot capture a compositor frame
+// never runs the update callback — so the tab switch waited out a 250ms budget
+// before drawing at all, with a 180/220ms cross-fade on top of it. That is fixed
+// by not using the API, and the fix is only worth anything if its return fails
+// the build, so the machinery is pinned ABSENT here twice: in app.js, and in the
+// CSS that carried the animation.
 const rtAt = src.indexOf('function renderRoute()');
 const rtEnd = src.indexOf('\n}\n', rtAt);
-if (vtStart < 0 || rtAt < 0 || rtEnd < 0 || vtStart > rtAt) {
+if (rtAt < 0 || rtEnd < 0) {
   console.error('test-motion: renderRoute is no longer where this harness looks for it in app.js.');
   process.exit(1);
 }
-const routeCode = src.slice(vtStart, rtEnd + 2);
-if (!/VT_BUDGET/.test(routeCode) || !/skipTransition/.test(routeCode) || routeCode.length > 2200) {
-  console.error(`test-motion: lifted an implausible renderRoute slice (${routeCode.length} chars).`);
-  process.exit(1);
-}
-// The route change is the transition's only entry point: if app.js ever goes back
-// to wiring hashchange straight at render(), every assertion below is moot.
+const routeCode = src.slice(rtAt, rtEnd + 2);
+// A bound on the slice, not just its presence: renderRoute is allowed to be a
+// plain render and nothing more, so machinery coming back has to fail here.
+ok('renderRoute is small enough to be a plain render', routeCode.length <= 400, true);
+
+// The route change is the only entry point that matters: if hashchange ever stops
+// going through renderRoute, every assertion below is checking dead code.
 ok('hashchange is still wired through renderRoute',
   /addEventListener\('hashchange',\s*renderRoute\)/.test(src), true);
 
-/**
- * Render the lifted renderRoute against a stand-in browser.
- *   vt       — does the engine have the View Transitions API at all
- *   reduce   — has the reader asked for less motion
- *   invoke   — does the browser ask for the new state (a compositing one does, on
- *              the next frame; a webview that cannot snapshots does not at all)
- *   throws   — an engine that refuses the transition outright
- * The sandbox declares the flags renderRoute closes over, so their real values
- * after a call can be read back through `flags()`.
- */
-const buildRoute = ({ vt, reduce, invoke = true, throws = false }) => {
-  const calls = { renders: 0, starts: 0, skips: 0, cb: null };
+ok('app.js never hands a render to the View Transitions API',
+  /startViewTransition|skipTransition|VT_BUDGET/.test(src), false);
+ok('and renderRoute itself names no deferral',
+  /setTimeout|requestAnimationFrame|await |Promise|\.then\(/.test(routeCode), false);
+ok('and it does not reach for the document', /document\./.test(routeCode), false);
+
+/** Render the lifted renderRoute against a fake render, counting what it asks for. */
+const buildRoute = () => {
+  const calls = { renders: 0 };
   const timers = [];
-  const impl = throws
-    ? `(cb) => { calls.starts++; calls.cb = cb; throw new Error('refused'); }`
-    : `(cb) => { calls.starts++; calls.cb = cb; const p = ${invoke} ? cb() : null; return { finished: Promise.resolve(p), skipTransition: () => { calls.skips++; } }; }`;
   const body = `
-const _reduceMotion = ${reduce};
-let _renderSilent = false, _flushWaiters = null, _vtRunning = false;
 const render = () => { calls.renders++; };
 const setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
-const clearTimeout = (id) => { if (id) timers[id - 1] = null; };
-const document = { startViewTransition: ${vt ? impl : 'undefined'} };
 ${routeCode}
-return { renderRoute, VT_BUDGET, flags: () => ({ _vtRunning, _renderSilent }) };
+return { renderRoute };
 `;
   const app = new Function('calls', 'timers', body)(calls, timers);
-  return { app, calls, timers, armed: () => timers.filter(Boolean), run: () => timers.forEach(t => t && t.fn()) };
+  return { app, calls, timers };
 };
+let r = buildRoute();
+r.app.renderRoute();
+ok('a route change renders once and arms nothing',
+  [r.calls.renders, r.timers.length], [1, 0]);
+// Back to back, as a user flicking through tabs does: still one render each, and
+// no state that a later navigation could be gated on.
+r = buildRoute();
+r.app.renderRoute(); r.app.renderRoute(); r.app.renderRoute();
+ok('and three navigations in a row render three times and arm nothing',
+  [r.calls.renders, r.timers.length], [3, 0]);
 
-// No API: the plain render, and nothing armed that could fire later.
-let r = buildRoute({ vt: false, reduce: false });
-r.app.renderRoute();
-ok('no API: the route renders on the spot and arms no watchdog',
-  [r.calls.renders, r.calls.starts, r.armed().length], [1, 0, 0]);
-
-// Reduced motion: a transition is not even attempted.
-r = buildRoute({ vt: true, reduce: true });
-r.app.renderRoute();
-ok('reduced motion: the transition is never even attempted',
-  [r.calls.renders, r.calls.starts, r.armed().length], [1, 0, 0]);
-
-// The ordinary browser: it asks for the new state, so the transition runs and
-// the watchdog stands down rather than rendering a second time.
-r = buildRoute({ vt: true, reduce: false, invoke: true });
-r.app.renderRoute();
-ok('a browser that asks for the new state gets the transition',
-  [r.calls.renders, r.calls.starts, r.calls.skips], [1, 1, 0]);
-r.run();
-ok('and its watchdog stands down once the browser has asked',
-  [r.calls.renders, r.calls.skips], [1, 0]);
-
-// The bug this bound exists for: a document that cannot capture a snapshot.
-r = buildRoute({ vt: true, reduce: false, invoke: false });
-r.app.renderRoute();
-ok('a browser that cannot snapshot has not frozen the route yet',
-  [r.calls.renders, r.calls.starts, r.armed().length], [0, 1, 1]);
-// Read defensively: if the watchdog is gone entirely, the assertion above has
-// already recorded it, and the point of the harness is to report, not to throw.
-const armed = r.armed();
-ok('the budget is short enough that nobody waits on a snapshot',
-  [typeof r.app.VT_BUDGET === 'number' && r.app.VT_BUDGET <= 400, armed.length ? armed[0].ms : null],
-  [true, r.app.VT_BUDGET]);
-r.run();
-ok('the watchdog renders the route itself, skips the transition, and clears the flags',
-  [r.calls.renders, r.calls.skips, r.app.flags()._vtRunning, r.app.flags()._renderSilent],
-  [1, 1, false, false]);
-// The callback can still arrive afterwards; it must not leave the guard stuck on,
-// which would silently downgrade every later navigation to a plain render.
-r.calls.cb();
-ok('a callback that arrives late leaves the guard free for the next navigation',
-  [r.calls.renders, r.app.flags()._vtRunning], [2, false]);
-
-// An engine that refuses the transition outright is a plain render, not a dead end.
-r = buildRoute({ vt: true, reduce: false, throws: true });
-r.app.renderRoute();
-ok('a refused transition is turned into a plain render',
-  [r.calls.renders, r.calls.starts, r.armed().length, r.app.flags()._vtRunning], [1, 1, 0, false]);
-
-// One transition at a time: a second navigation while the first is unresolved
-// renders plainly instead of queueing behind it.
-r = buildRoute({ vt: true, reduce: false, invoke: false });
-r.app.renderRoute();
-r.app.renderRoute();
-ok('a navigation during an unresolved transition renders plainly',
-  [r.calls.renders, r.calls.starts], [1, 1]);
+// The CSS half: with the machinery gone, a screen must still not animate itself
+// in. A rule that animates .screen is the stutter back under a new name.
+const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+ok('no rule animates the screen as it arrives',
+  /^\.screen\s*\{[^}]*animation\s*:/m.test(css), false);
+ok('and the staggered-children rules are gone', /\.screen\.stagger/.test(css), false);
+ok('and the view-transition pseudo-elements are gone',
+  /::view-transition|view-transition-name|centsVt/.test(css), false);
+// countUp is in here for the same reason, from the other direction: it was an
+// entry animation on a figure INSIDE the dashboard, so it replayed on every
+// switch back to the Home tab rather than on the route change itself.
+ok('and no keyframes are left named for an entry animation',
+  /@keyframes (riseIn|centsVt|countUp)/.test(css), false);
+// screenIn survives on purpose: the things that appear INTO a screen that is
+// already there (the bulk bar, an empty state) still fade in.
+ok('screenIn is still there for the things that appear into a screen',
+  /@keyframes screenIn/.test(css) && /\.bulk-bar \{ animation: screenIn/.test(css), true);
 
 // ---------- the chart popup wiring contract ----------
 // A chart mark's popup is the only way to read it — a bar is a shape, not a table
@@ -279,5 +248,5 @@ ok('and there is a wiring call per chart scope that needs one',
 
 console.log(fails.length
   ? `test-motion: ${fails.length} FAILED\n\n${fails.join('\n')}`
-  : `test-motion: OK — ${pass} assertions passed (a figure counts when it changes and rests on its exact total; a route change never waits on a snapshot; every chart mark is wired to a popup)`);
+  : `test-motion: OK — ${pass} assertions passed (a figure counts when it changes and rests on its exact total; a route change renders and waits on nothing; every chart mark is wired to a popup)`);
 process.exitCode = fails.length ? 1 : 0;

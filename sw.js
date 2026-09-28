@@ -11,7 +11,13 @@
  * Network-first: every request tries the network and only falls back to a
  * cached copy when offline. It never serves stale content while online.
  */
-const CACHE = 'cents-v22';
+const CACHE = 'cents-v24';
+// The Tesco Pay ENGINE is on the boot path (it feeds the dashboard figures); the
+// screen beside it is fetched on the first visit to the tab, so it has to be
+// warm for that visit to work offline.
+// Note: this array is read by check-sw-shell.mjs and check-boot-payload.mjs with
+// a naive quoted-string scan, so keep comments out of it (an apostrophe inside
+// would pair with a real opening quote and shred the list).
 const SHELL = [
   '/',
   '/index.html',
@@ -20,11 +26,19 @@ const SHELL = [
   '/seed.js',
   '/settings.js',
   '/storage.js',
+  '/csv.js',
   '/sync.js',
   '/sync-merge.js',
   '/profiles.js',
   '/reminders.js',
+  '/tesco-pay.js',
   '/tesco.js',
+  // tesco.js imports this the moment it loads, so the first offline visit to
+  // #tesco needs it warm for the same reason. The OCR engine it feeds is NOT
+  // here: 6 MB of wasm + traineddata, fetched on the first scan — a cold offline
+  // scan cannot work regardless, so precaching it would cost every user.
+  '/ocr-pixels.js',
+  '/tour.js',
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',

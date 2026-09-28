@@ -12,17 +12,20 @@
  * Also wired into the Netlify build command (netlify.toml).
  */
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import {
   scanSlotForProfile,
   paidHours, parseHM, fmtHM, shiftPay, simulateTax, r2,
   weekStartOf, payDateOf, buildPayWeeks, monthSummary, lifetimeTotals,
-  payslipTotal, parseTimeCell, parseRosterWords, isSunday, nameMatches, ocrStripRanges, ocrInkBands, ocrPickBand, ocrFlatField,
+  payslipTotal, parseTimeCell, parseRosterWords, isSunday, nameMatches, ocrStripRanges, ocrFlatField,
   TESCO_RATE_DEFAULTS,
   tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf, payslipWeekNumberOf,
   parseShiftText, shiftPreviewLine,
   storedShift, storedPayslip, applyShiftEdit, weekOffShift, weekBankWrite,
   rosterColumnBounds, parseCellTokens,
-  pageSkew, dedupeWords, columnAnchors, resolveColumnDates, ocrEstimateTilt, ocrAutoContrast,
+  sheetRowsToCsv, workbookToCsv,
+  pageSkew, dedupeWords, columnAnchors, resolveColumnDates, parseDateToken, columnDatingAgreement,
+  ocrEstimateTilt, ocrAutoContrast,
   ocrSauvola, ocrLocalMarks, ocrIllumination, ocrRulingLines, rosterColumnsFromRules, rosterReadQuality,
   createOcrPool, ocrPoolSize, OCR_POOL_MAX,
   ocrStripBox, ocrPageBox, ocrPrepSize, OCR_PREP_MAX, createOcrPrepWorker, ocrStretchData,
@@ -72,6 +75,10 @@ ok('but a row that states special still pays ×1.5 with no clock times',
   [true, 151.62]);
 
 // ---------- tax: the cached cells from the workbook ----------
+// The sheet's cached cells were computed at 4.2%, which is also this app's default
+// (the rate card is where a user types 4.35%, in force from 1 Oct 2026) — so the
+// PRSI rules pinned below the PAYE block are the only place the engine follows the
+// statute rather than the sheet. See the €287 pin for where the two differ.
 const t = simulateTax(550.525, null);
 ok('PAYE on €550.525 = 33.18 (Excel half-up, not 33.17)', t.paye, 33.18);
 ok('USC on €550.525 = 7.55', t.usc, 7.55);
@@ -82,13 +89,33 @@ ok('net = 478.42', t.net, 478.42);
 // The pension is subtracted at its raw 1.5% (O17 = L−M−N), so a gross whose
 // pension lands on a half-cent rounds the net up instead of down: €287.00
 // (13.25h on a Sunday) has a raw pension of €4.305 → net €268.37, not €268.36.
-ok('net subtracts the raw pension (€287 → 268.37)', simulateTax(287, null).net, 268.37);
+// This is where the engine and the sheet part company: the sheet charged PRSI on a
+// €287 week, the statute exempts it (€352 or less), so the net is €12.05 higher
+// than the sheet's cached cell. The rounding it was pinning is unchanged — 287 −
+// 2.28 of USC − 4.305 of raw pension is 280.415, which comes to rest on 280.42.
+ok('net subtracts the raw pension (€287 → 280.42, no PRSI below €352)', simulateTax(287, null).net, 280.42);
 ok('…while the pension itself still displays rounded', simulateTax(287, null).pension, 4.31);
 // The €76.93 credit swallows all PAYE below the cutoff.
 ok('PAYE floored at 0 under the credit', simulateTax(300, null).paye, 0);
-// PRSI credit tapers across €352.01–424.
-ok('PRSI credit gone above €424', simulateTax(500, null).prsi, r2(500 * 0.042));
-near('PRSI tapers inside the €352–424 band', simulateTax(400, null).prsi, r2(400 * 0.042 - (12 - (400 - 352.01) / 6)));
+// ---------- PRSI: the low-earnings rules ----------
+// The case that exposed this: a €300 week, about 20 hours at the card rate. It
+// owes no PAYE (the weekly credit swallows it) and NO PRSI — an employee on €352 a
+// week or less is exempt, not "charged with a credit" — so the whole bill is the
+// USC on the first €231 plus 2% of the rest. The full-rate charge below the
+// threshold made this week cost €15.14 instead of the €2.54 a payslip shows.
+ok('a €300 week owes no PAYE', simulateTax(300, null).paye, 0);
+ok('a €300 week owes no PRSI (exempt at €352 a week or less)', simulateTax(300, null).prsi, 0);
+ok('a €300 week owes €2.54 of USC', simulateTax(300, null).usc, 2.54);
+ok('so the whole week costs €2.54, not €15.14', simulateTax(300, null).tax, 2.54);
+ok('exactly €352 a week is still exempt', simulateTax(352, null).prsi, 0);
+// One cent over the threshold and PRSI is payable on the whole week, less the €12
+// credit at its maximum — the cliff the statute has, not a taper this app invented.
+ok('one cent over the threshold pays the rate less the full €12 credit', simulateTax(352.01, null).prsi, 2.78);
+// Above €424 the credit is spent; the charge runs straight through.
+ok('PRSI credit gone above €424', simulateTax(500, null).prsi, 21);
+ok('the credit is spent by €424', [simulateTax(424, null).prsi, simulateTax(424.01, null).prsi], [17.81, 17.81]);
+// €400: 4.2% is €16.80, less the credit €12 − €47.99/6 = €4.00 → €12.80.
+near('PRSI tapers inside the €352–424 band', simulateTax(400, null).prsi, 12.8);
 ok('USC bands: 0.5% up to €231', simulateTax(200, null).usc, 1);
 ok('no negative tax on a zero week', simulateTax(0, null), { paye: 0, usc: 0, prsi: 0, pension: 0, tax: 0, net: 0 });
 
@@ -130,15 +157,26 @@ const payslips = [
   { id: 'r', weekStart: '2026-08-23', paye: 10, usc: 0, prsi: 0, futureFund: 0 }, // no shifts beside it
 ];
 const withSlips = [...weekShifts, ...refundShifts];
+// "Today" is pinned for the stats assertions below. Which weeks the bank has paid
+// yet decides a month's received figure (a week is only counted once its pay date
+// has come round — see receivedTotal), and a harness that read the wall clock
+// would change its mind about September the moment October began. Every call to
+// monthSummary/lifetimeTotals here passes it explicitly.
+const TODAY = '2026-10-05';
 ok('payslip total = 72.11 (sheet R17)', payslipTotal(payslips[0]), 72.11);
 ok('a refund payslip is negative', payslipTotal(payslips[1]), -56.08);
 ok('payslip attaches to its week', buildPayWeeks(withSlips, payslips).find(w => w.weekStart === '2026-09-20').payslip.id, 'p');
 ok('a payslip week with no shifts still lists', buildPayWeeks(withSlips, payslips).length, 3);
-ok('received = 550.53 − 72.11 = €478.42 net (sheet O17)', lifetimeTotals(withSlips, [payslips[0]]).received, 478.42);
-ok('a refund week receives 101.08 + 56.08 = €157.16', lifetimeTotals(withSlips, [payslips[1]]).received, 157.16);
-ok('a payslip with no shifts beside it adds nothing', lifetimeTotals(withSlips, [payslips[2]]).received, 0);
-ok('lifetime received = €635.58', lifetimeTotals(withSlips, payslips).received, 635.58);
-ok('lifetime hours = 41.5', lifetimeTotals(withSlips, payslips).hours, 41.5);
+ok('received = 550.53 − 72.11 = €478.42 net (sheet O17)', lifetimeTotals(weekShifts, [payslips[0]], null, TODAY).received, 478.42);
+ok('a refund week receives 101.08 + 56.08 = €157.16', lifetimeTotals(refundShifts, [payslips[1]], null, TODAY).received, 157.16);
+// A payslip on its own says what was withheld, not what the gross it came out of
+// was — so with no shift rows beside it there is nothing to net it against and it
+// claims nothing. A NEGATIVE total is the exception: that is money handed back.
+ok('a payslip with no shifts beside it claims nothing', lifetimeTotals([], [payslips[2]], null, TODAY).received, 0);
+ok('but a refund with no shifts beside it is money in',
+  lifetimeTotals([], [{ id: 'rr', weekStart: '2026-08-23', paye: -40, usc: 0, prsi: 0, futureFund: 0 }], null, TODAY).received, 40);
+ok('lifetime received = €635.58', lifetimeTotals(withSlips, payslips, null, TODAY).received, 635.58);
+ok('lifetime hours = 41.5', lifetimeTotals(withSlips, payslips, null, TODAY).hours, 41.5);
 
 // A correction run inside one week: the sheet's tax table holds two rows for
 // the week of 6 Dec 2025 (€0.70 and €0.56) and the app stores two payslips, so
@@ -151,19 +189,24 @@ const twoRuns = [
 const runWeek = buildPayWeeks(weekShifts, twoRuns).find(w => w.weekStart === '2026-09-20');
 ok('two pay runs in one week both count', runWeek.paid, 3);
 ok('and both are kept for the tab to show', runWeek.payslips.length, 2);
-ok('the week received nets both runs off the gross', lifetimeTotals(weekShifts, twoRuns).received, r2(550.53 - 3));
+ok('the week received nets both runs off the gross', lifetimeTotals(weekShifts, twoRuns, null, TODAY).received, r2(550.53 - 3));
 
 // The sheet's Final Bank Pay (its tax table's net, typed from a statement): it
 // is the money that actually landed, so it wins over gross − tax. That is how
 // holiday pay, a refund or a correction is counted — and how a paid week with
 // no shifts at all stops reading as €0 received.
 const banked = { ...payslips[0], bankPay: 600 };
-ok('an entered net replaces gross − tax', lifetimeTotals(withSlips, [banked]).received, 600);
-ok('a paid week with no shifts receives its net', lifetimeTotals(withSlips, [{ ...payslips[2], bankPay: 316.99 }]).received, 316.99);
-ok('its month counts it too', monthSummary(withSlips, [{ ...payslips[2], bankPay: 316.99 }], null, 2026, 7).received, 316.99);
-ok('an absent net still falls back to gross − tax', lifetimeTotals(withSlips, [payslips[0]]).received, 478.42);
+ok('an entered net replaces gross − tax', lifetimeTotals(weekShifts, [banked], null, TODAY).received, 600);
+ok('a paid week with no shifts receives its net', lifetimeTotals([], [{ ...payslips[2], bankPay: 316.99 }], null, TODAY).received, 316.99);
+// It lands in the month it was PAID in (23 Aug + 11 days = 3 Sep), not in the
+// month of its own week: the bank does not move money early for a calendar.
+ok('a typed net is counted in the month it was paid',
+  monthSummary(withSlips, [{ ...payslips[2], bankPay: 316.99 }], null, 2026, 8, TODAY).received, 416.04);
+ok('and not in the month of the week it belongs to',
+  monthSummary(withSlips, [{ ...payslips[2], bankPay: 316.99 }], null, 2026, 7, TODAY).received, 0);
+ok('an absent net still falls back to gross − tax', lifetimeTotals(weekShifts, [payslips[0]], null, TODAY).received, 478.42);
 ok('two runs with a net each add up',
-  lifetimeTotals(weekShifts, [{ ...twoRuns[0], bankPay: 300 }, { ...twoRuns[1], bankPay: 200 }]).received, 500);
+  lifetimeTotals(weekShifts, [{ ...twoRuns[0], bankPay: 300 }, { ...twoRuns[1], bankPay: 200 }], null, TODAY).received, 500);
 
 // A custom hourly rate must reach the week and lifetime totals, not only the
 // per-shift rows: a user on €15/h had one card print €157.50 + €112.50 beside
@@ -174,21 +217,81 @@ const customGross = r2(weekShifts.reduce((sum, s) => sum + shiftPay(s, customRat
 const customWeeks = buildPayWeeks(weekShifts, [], customRates);
 ok("a week's gross uses the custom rate", customWeeks[0].gross, customGross);
 ok('and is not the default-rate figure', customWeeks[0].gross === 550.53, false);
-ok('lifetime anticipated uses the custom rate', lifetimeTotals(weekShifts, [], customRates).anticipated, customGross);
+const customNet = simulateTax(customGross, customRates).net;
+ok('the custom rate reaches the net a week is expected to land, not just its gross',
+  lifetimeTotals(weekShifts, [], customRates, TODAY).anticipated, customNet);
 ok('received nets the payslip off the custom-rate gross',
-  lifetimeTotals(withSlips, [payslips[0]], customRates).received, r2(customGross - payslipTotal(payslips[0])));
-const sepCustom = monthSummary(weekShifts, [payslips[0]], customRates, 2026, 8);
-ok("a month's anticipated uses the custom rate", sepCustom.anticipated, customGross);
-ok("and its received nets the payslip off that same gross", sepCustom.received, r2(customGross - payslipTotal(payslips[0])));
+  lifetimeTotals(weekShifts, [payslips[0]], customRates, TODAY).received, r2(customGross - payslipTotal(payslips[0])));
+const sepCustom = monthSummary(weekShifts, [payslips[0]], customRates, 2026, 8, TODAY);
+ok("a month's anticipated uses the custom rate", sepCustom.anticipated, customNet);
+// The sheet's block is the week of 20 Sep, which is paid on 1 October — so
+// September has nothing of it to show and October takes all of it.
+ok('a month receives a week only once its pay date has arrived', sepCustom.received, 0);
+ok('and the next month takes it',
+  monthSummary(weekShifts, [payslips[0]], customRates, 2026, 9, TODAY).received, r2(customGross - payslipTotal(payslips[0])));
 ok('the CSV export carries the custom-rate gross',
   tescoCsv(weekShifts, [], customRates, new Map()).includes(customGross.toFixed(2)), true);
 
-// September 2026: the six shifts above all fall in it, and the August payslip
-// week drops out of the month's received.
-const sep = monthSummary(withSlips, payslips, null, 2026, 8);
+// September 2026: the six shifts above all fall in it, in two pay weeks — the
+// week of 6 Sep (its Wednesday shift and the refund payslip) and the week of
+// 20 Sep (the sheet's own block).
+const sep = monthSummary(withSlips, payslips, null, 2026, 8, TODAY);
 ok('September hours = 41.5', sep.hours, 41.5);
-ok('September anticipated = €651.61', sep.anticipated, 651.61);
-ok('September received = €635.58 (August week excluded)', sep.received, 635.58);
+// Hours are the month's own shifts, by date. The expected figure is a NET and a
+// net is a weekly thing (the PAYE credit, the USC bands and the PRSI threshold
+// are all per week), so it is each week's gross simulated once and summed:
+// €478.42 for the sheet's block + €99.05 for the 7h week.
+// The two nets differ in kind, not just in size: the sheet's €550.53 week is above
+// the PRSI threshold and pays 4.2%, while the 7h week's €101.08 is BELOW €352 and
+// so pays no PRSI at all — the exemption pinned in the tax block above.
+ok('September anticipated = €577.47 net', sep.anticipated, 577.47);
+// Received follows the PAY DATE: the week of 20 Sep is paid on 1 Oct, so it is
+// October's money, while the refund week (paid 17 Sep) is September's.
+ok('September received = €157.16 (the refund week, paid 17 Sep)', sep.received, 157.16);
+const oct = monthSummary(withSlips, payslips, null, 2026, 9, TODAY);
+ok('October received = €478.42 (the week paid on 1 Oct)', oct.received, 478.42);
+ok('and October anticipates nothing of its own', oct.anticipated, 0);
+
+// ---------- what a month's figures mean ----------
+// Received is money that reached the bank, so every week the bank has paid counts
+// — a worked week with no payslip typed in is worth its simulated net (the figure
+// the week card prints as "→ net €X"), not €0. Before this, three worked weeks in a
+// month with one payslip between them added up to that one bank line while the
+// card still called the result "received", which read as a total it wasn't.
+ok('a worked week with no payslip is worth its estimate, not €0',
+  lifetimeTotals(withSlips, [], null, TODAY).received, r2(478.42 + 99.05));
+// …but only once its pay date has come round: the week of 20 Sep pays on 1 Oct.
+ok('a week the bank has not paid yet is not money received',
+  lifetimeTotals(withSlips, [], null, '2026-09-20').received, 99.05);
+ok('a typed net counts before its pay date (the user watched it land)',
+  lifetimeTotals(withSlips, [{ id: 'bx', weekStart: '2026-09-20', bankPay: 300 }], null, '2026-09-20').received, 399.05);
+// The two edges of a month, which used to move the wrong way: the week starting
+// Sun 30 Aug is PAID on 10 Sep, and the week starting Sun 27 Sep is not paid until
+// 8 Oct. Reading the month off the week's start put both in the wrong one.
+const edgeShifts = [
+  { id: 'ea', date: '2026-08-31', start: '09:00', end: '17:00' }, // week of 30 Aug, paid 10 Sep
+  { id: 'eb', date: '2026-09-28', start: '09:00', end: '17:00' }, // week of 27 Sep, paid 8 Oct
+];
+const edgeSep = monthSummary(edgeShifts, [], null, 2026, 8, TODAY);
+ok('September receives the week paid on 10 Sep, whose Sunday was in August', edgeSep.received, 99.05);
+ok("while the month's hours are still the shift's own day", edgeSep.hours, 7);
+// The other edge, read once the 27 Sep week has actually been paid (8 Oct) —
+// before that date the same week is still awaiting the bank, so it is not money
+// received yet either (that is the clamp above, not a third rule).
+ok('and the week of 27 Sep is October\u2019s money, not September\u2019s',
+  [monthSummary(edgeShifts, [], null, 2026, 9, TODAY).received,
+   monthSummary(edgeShifts, [], null, 2026, 9, '2026-10-10').received], [0, 99.05]);
+// The two figures are on two bases on purpose, and both are nets: the estimate is
+// simulated once per pay week, never per row, because the credit and the bands are
+// weekly. Two €500 rows of one week pay €153.84 of PAYE between them, not €46.14.
+const bigWeek = [
+  { id: 'b1', date: '2026-09-21', start: '09:00', end: '17:00', gross: 500 },
+  { id: 'b2', date: '2026-09-22', start: '09:00', end: '17:00', gross: 500 },
+];
+ok('a week is simulated once on the week, not once per row',
+  lifetimeTotals(bigWeek, [], null, TODAY).anticipated, simulateTax(1000, null).net);
+ok('…which is not the same as taxing each row on its own',
+  lifetimeTotals(bigWeek, [], null, TODAY).anticipated === r2(2 * simulateTax(500, null).net), false);
 
 // ---------- week numbers: the sheet's own column ----------
 // The sheet hand-types it (1..52/53 from where its pay year starts, restarting
@@ -321,6 +424,67 @@ ok('two pay runs in one week keep their own rows',
   [{ weekStart: '2025-12-07', paye: 0, usc: 0.7, prsi: 0, futureFund: 0 },
    { weekStart: '2025-12-12', paye: 0, usc: 0.56, prsi: 0, futureFund: 0 }]);
 
+// ---------- the workbook itself: the sheet's two tables, read by SheetJS ----------
+// The importer is the VENDORED SheetJS and its input is a real workbook, so the
+// fixture is not stubbed: scripts/fixtures/tesco-workbook.xlsx is a deflate zip
+// holding a Summary sheet (the tax table) FIRST and a Data sheet (the shift table)
+// second — the workbook's own shape, and the one that used to hide every shift
+// behind the tax header. The rows below are what the mini build the browser loads
+// hands back, serials and all.
+const require = createRequire(import.meta.url);
+const XLSXModule = require('../vendor/xlsx.mini.min.js');
+const XLSX = XLSXModule.default || XLSXModule;
+const workbook = XLSX.read(readFileSync(new URL('./fixtures/tesco-workbook.xlsx', import.meta.url)), { type: 'buffer' });
+ok('the vendored build reads the workbook, sheets in their own order', workbook.SheetNames, ['Summary', 'Data']);
+const asSheet = name => ({
+  name,
+  rows: XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1, raw: true, defval: '', blankrows: true }),
+});
+const workbookCsv = workbookToCsv([asSheet('Summary'), asSheet('Data')]);
+// The shift table's header has to come before the tax table's in the document:
+// parseTescoCsv stops the shift table at the tax header, so the reverse order
+// reads as a file with no shifts at all in it.
+ok('the shift sheet is written first however the workbook orders its sheets',
+  workbookCsv.indexOf('End Time') < workbookCsv.indexOf('Week Start Date'), true);
+const fromWorkbook = parseTescoCsv(workbookCsv);
+ok('Excel\u2019s own date serials and time fractions read as the sheet\u2019s dates and times',
+  fromWorkbook.shifts, [
+    { date: '2026-09-06', start: '07:00', end: '15:00', hours: 7, gross: 151.62, bankPay: 400, special: true, note: 'Sunday shop' },
+    { date: '2026-09-07', start: '09:00', end: '17:00', hours: 7, gross: 101.08, special: false, note: 'Lates, then close' },
+    { date: '2026-09-08', start: null, end: null, hours: 7, gross: 101.08, special: false, note: 'week off' },
+    { date: '2026-09-13', start: '07:00', end: '15:00', hours: 7, gross: 151.62, special: true, note: 'Next week' },
+  ]);
+ok('a week off booked with hours and no times survives the workbook',
+  [fromWorkbook.shifts[2].hours, fromWorkbook.shifts[2].start], [7, null]);
+ok('a blank row in the middle of a sheet is skipped, not fatal', fromWorkbook.skipped, 1);
+ok('the tax table\u2019s row is the week\u2019s payslip, net and all', fromWorkbook.payslips,
+  [{ weekStart: '2026-09-06', paye: 33.18, usc: 7.55, prsi: 23.12, futureFund: 8.26, weekNo: 36, bankPay: 400 }]);
+ok('the sheet\u2019s own week numbers come across with the rows', fromWorkbook.weekNos,
+  { '2026-09-06': 36, '2026-09-13': 37 });
+// The cells themselves, at the boundary SheetJS hands them over at: a Date is
+// written as its calendar day (a local-time date object lands on the day before
+// in a negative-offset zone, which is why the reader asks for serials), a blank
+// stays empty rather than becoming "null", and text a spreadsheet would run keeps
+// the apostrophe guard the CSV export already has.
+ok('a Date cell is written as its own calendar day',
+  sheetRowsToCsv([[new Date(Date.UTC(2026, 8, 6))]]), '2026-09-06');
+ok('a blank cell stays empty and a number stays a number', sheetRowsToCsv([['a', null, 1.5]]), 'a,,1.5');
+ok('a formula-looking cell gets the apostrophe guard', sheetRowsToCsv([['=SUM(A1)']]), "'=SUM(A1)");
+ok('one sheet is still a document', workbookToCsv([{ name: 'Data', rows: [['Date', 'Start Time', 'End Time'], ['2026-09-06', 0.5, 0.75]] }]),
+  'Date,Start Time,End Time\n2026-09-06,0.5,0.75');
+ok('no sheets at all is no document', workbookToCsv([]), '');
+ok('and neither is a sheet with no rows', workbookToCsv([{ name: 'Data', rows: [] }]), '');
+// Two of the three header names is not the shift sheet: a Summary sheet with a
+// Date and a Start Time column would otherwise be written first and put the tax
+// header above the shifts, which reads as a file with no shifts in it.
+const decoy = { name: 'Summary', rows: [['Date', 'Start Time', 'Amount'], [46271, 0.29, 12]] };
+const realData = { name: 'Data', rows: [['Week', 'Date', 'End Time', 'Start Time'], [36, 46271, 0.625, 0.29]] };
+ok('the shift sheet is the sheet carrying all three header names',
+  workbookToCsv([decoy, realData]).indexOf('Amount') > workbookToCsv([decoy, realData]).indexOf('End Time'), true);
+ok('a sheet with no rows is dropped, not written as an empty section',
+  workbookToCsv([{ name: 'Summary', rows: [['Week Start Date', 'PAYE'], ['2026-09-06', 5]] }, { name: 'Empty', rows: [] }]),
+  'Week Start Date,PAYE\n2026-09-06,5');
+
 // ---------- import: a row keeps its own hours, pay and week ----------
 // The sheet's older rows were worked at rates that have since changed (14.02
 // against today's 14.44) and its older blocks break a shift differently, so a
@@ -430,6 +594,28 @@ ok('prose is skipped', parseTimeCell('training'), null);
 ok('12:30-5:30 = 5h afternoon', parseTimeCell('12:30-5:30'), { startMin: 750, endMin: 1050 });
 // 20-01 has no sane PM reading (+12h = 33h), so it rolls past midnight.
 ok('20-01 rolls past midnight', parseTimeCell('20-01'), { startMin: 1200, endMin: 1500 });
+// A colon and a full stop are the same two pixels on a photograph: JPEG ringing
+// closes the gap between a colon's dots, and the engine hands back "07.00-15.00".
+// That is a whole shift, and refusing it over the punctuation lost the day.
+ok('a colon read as a dot is still a range', parseTimeCell('07.00-15.00'), { startMin: 420, endMin: 900 });
+ok('a colon read as a comma is too', parseTimeCell('7,15-13,45'), { startMin: 435, endMin: 825 });
+ok('a typographic minus is a range', parseTimeCell('12:30\u221220:00'), { startMin: 750, endMin: 1200 });
+// The dot is a MINUTE separator, not a decimal point: a date is three numbers and
+// a clock time is two, so none of these becomes a shift.
+ok('a numeric date is not a time', parseTimeCell('22.09.2026'), null);
+ok('and neither is a lone number', parseTimeCell('12.40'), null);
+// The date grammar: a month written out, and a year printed beside it. The year
+// matters at the turn of the year — the nearest-year guess is wrong for half the
+// photos taken either side of it, and a printed year is the sheet saying so.
+const dated = new Date(Date.UTC(2026, 8, 25));
+ok('a date that names its month reads', parseDateToken('20 September 2026', dated).toISOString().slice(0, 10), '2026-09-20');
+ok('a short month with a year reads', parseDateToken('22-Sep-2026', dated).toISOString().slice(0, 10), '2026-09-22');
+ok('a printed year is obeyed even when the nearest one would differ',
+  parseDateToken('29-Dec-2025', new Date(Date.UTC(2027, 0, 2))).toISOString().slice(0, 10), '2025-12-29');
+ok('without a year the nearest one is still the guess', parseDateToken('29-Dec', dated).toISOString().slice(0, 10), '2026-12-29');
+ok('all-numeric dates are unaffected by the month-name grammar', parseDateToken('22/09/2026', dated).toISOString().slice(0, 10), '2026-09-22');
+ok('an impossible day is not a date', parseDateToken('32-Sep-2026', dated), null);
+ok('and a time range is never a date', parseDateToken('07:00-15:00', dated), null);
 
 // No date row read at all: the seven days are laid out across the span the
 // time cells occupy, from the week's first day, and rows stay separate.
@@ -498,16 +684,6 @@ ok('its cells total 16.25h', r2(sheet.rows[0].cells.reduce((n, c) => n + paidHou
 ok('the other row lands on its own day', sheet.rows[1].cells.map(c => c.date), ['2026-09-21']);
 ok('an unmatched name flags nothing', parseRosterWords(tilted, new Date(Date.UTC(2026, 8, 22)), { name: 'Nobody' }).rows.every(r => !r.matches), true);
 
-// ---------- cell-level reads: the ink profile decides which line a cell is on ----------
-// The strip pass only has to find the header and the typed name; the shifts are
-// read cell by cell, and each cell's line is chosen from the ink profile of its
-// own column — never from a word box (see ocrOwnerCells).
-const ink = ocrInkBands([0, 5, 5, 5, 5, 5, 5, 5, 0, 0, 0, 0, 5, 5, 5, 5, 5, 5, 0]);
-ok('one run of ink per line of text', ink.map(b => [b.y0, b.y1]), [[1, 8], [12, 18]]);
-ok('a mark too small to be a glyph is not a line', ocrInkBands([9, 0, 0, 0, 0, 0]).length, 0);
-ok('a cell takes the line nearest its row', ocrPickBand(ink, 14, 4).cy, 15);
-ok('a cell never jumps to the row above or below', ocrPickBand(ink, 0, 3), null);
-
 // ---------- the grid: one day per column, by bounds rather than by proximity ----
 // A roster is a grid, so a word belongs to the column whose bounds hold its
 // centre. Word-to-word proximity is what lost a real roster: the sheet's column
@@ -538,6 +714,10 @@ ok('a range the engine split into pieces is put back together',
 // The rule line the engine reads as a character, parked on the cell boundary.
 ok('a rule fragment riding along in the cell is not the cell',
   cellOf(toks(['07:00-15:00', 10, 160], ['=', 166, 172])), '07:00-15:00');
+ok('a cell whose colon came back as a dot is still the day\u2019s shift',
+  cellOf(toks(['07.00-15.00', 10, 160])), '07:00-15:00');
+ok('and one read with a hyphen and a full stop is recovered from its text',
+  cellOf(toks(['| 12.00 - 20.00 |', 4, 200])), '12:00-20:00');
 ok('and a rest word beside a shift does not hide it',
   cellOf(toks(['|', 4, 8], ['12:00-20:00', 12, 170])), '12:00-20:00');
 // Two overlapping strips both cover the row, so the same cell arrives twice, on
@@ -1039,6 +1219,47 @@ ok('a title range anchors the series when no date row survived',
   resolveColumnDates([{ cx: 100 }, { cx: 200 }, { cx: 300 }], today, new Date(Date.UTC(2026, 8, 22))).map(c => c.date.toISOString().slice(0, 10)),
   ['2026-09-22', '2026-09-23', '2026-09-24']);
 
+// The title's date range is one RUN of print, and the engine boxes a run as one
+// word: "Week 39   22/09/2026 - 28/09/2026   Store 3021" comes back whole.
+// Reading only whole phrases threw the range away — the one line that says WHICH
+// WEEK the sheet covers, and the one line of a header big enough to survive glare.
+const mergedTitle = headerRow([{ text: 'Week 39 22/09/2026 - 28/09/2026 Store 3021', x0: 60, x1: 900 }], 240);
+ok('a range inside one merged title phrase still dates the week',
+  columnAnchors([mergedTitle, headerRow(dayNames, 360)], today, 90).weekStart.toISOString().slice(0, 10), '2026-09-22');
+ok('and the same range written out months and all',
+  columnAnchors([headerRow([{ text: 'Week 39 20 September 2026 - 26 September 2026', x0: 60, x1: 900 }], 240), headerRow(dayNames, 360)], today, 90)
+    .weekStart.toISOString().slice(0, 10), '2026-09-20');
+// ...and the band rule that decides which rows ARE the header has to see it too,
+// or the row is never offered to columnAnchors at all.
+const mergedRead = parseRosterWords([
+  { text: 'Week 39 22/09/2026 - 28/09/2026 Store 3021', x0: 60, y0: 200, x1: 900, y1: 236, confidence: 92 },
+  ...dayNames.map(ph => ({ text: ph.text, x0: ph.x0, y0: 300, x1: ph.x1, y1: 330, confidence: 92 })),
+  { text: 'Parth', x0: 10, y0: 400, x1: 98, y1: 430, confidence: 93 },
+  { text: '7-15', x0: 400, y0: 402, x1: 470, y1: 432, confidence: 90 },
+], today, { name: 'parth' });
+ok('the band rule sees the dates inside a merged title', mergedRead.columns.length, 7);
+ok('so the row is dated off the week the title states',
+  mergedRead.rows[0].cells.map(c => c.date), ['2026-09-22']);
+
+// The range says WHERE the week is; the day names say which day is which. A
+// Monday-first range printed over a Sunday-first grid, or one digit read wrong,
+// moves every shift by a day — and a week dated a day late is the misread nobody
+// catches. The names win, because they are what this function already trusts.
+const sundayFirst = Array.from({ length: 7 }, (_, i) => ({ cx: 400 + i * 180, weekday: i }));
+const asWeeks = list => list.map(c => c.date.toISOString().slice(0, 10));
+const shifted = resolveColumnDates(sundayFirst.map(c => ({ ...c })), today, new Date(Date.UTC(2026, 8, 21)));
+ok('a range one day out is slid to the week the day names state', asWeeks(shifted),
+  ['2026-09-20', '2026-09-21', '2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25', '2026-09-26']);
+ok('and every one of its day names then agrees', columnDatingAgreement(shifted), { named: 7, agree: 7 });
+ok('a range that already agrees is left exactly where it is',
+  asWeeks(resolveColumnDates(sundayFirst.map(c => ({ ...c })), today, new Date(Date.UTC(2026, 8, 20))))[0], '2026-09-20');
+// A range from ANOTHER week is still where the week is (that is what it is for) —
+// the slide only ever fixes the rotation, never picks a week of its own.
+ok('a range for another week keeps its week and gets the rotation right',
+  asWeeks(resolveColumnDates(sundayFirst.map(c => ({ ...c })), today, new Date(Date.UTC(2026, 9, 15))))[0], '2026-10-18');
+ok('a grid with no day names reports no names',
+  columnDatingAgreement([{ cx: 1, date: new Date(Date.UTC(2026, 8, 22)) }]), { named: 0, agree: 0 });
+
 // The photo's own levelling: ink on a level page stacks into one row of the
 // projection, and the angle that stacks it best is the angle to undo.
 function stripedPage(w, h, deg) {
@@ -1198,7 +1419,36 @@ ok('and the row that carries the typed name', wholeWeek.found, true);
 const noHeader = rosterReadQuality(ownerRowWords, 'Parth', today);
 ok('a reading with no header is not accepted', noHeader.complete, false);
 ok('and it scores below the whole week', noHeader.score < wholeWeek.score, true);
-ok('the header alone is worth its columns and nothing more', rosterReadQuality(weekHeader, 'Parth', today).score, 7);
+// The header alone is worth its columns and the corroboration behind its dating,
+// and nothing for a row: there is no owner row to pay for.
+const headerOnly = rosterReadQuality(weekHeader, 'Parth', today);
+ok('the header alone is worth its columns, its dating and no row',
+  headerOnly.score, headerOnly.columns + headerOnly.agree * 2);
+ok('its seven day names all agree with the dates it gave them', headerOnly.agree, 7);
+// The reading a score could not judge before: a header whose names describe no
+// week at all. Read in the dark side of a photo the day names come back in an
+// order no week has, so at most a couple of them can agree with any dating — and
+// at most a couple is not a header the sheet can be dated from. It used to be
+// called whole, on the strength of having seven of them.
+const SCRAMBLED = ['Sun', 'Wed', 'Fri', 'Mon', 'Sat', 'Tue', 'Thu'];
+const weekOf = (names, title) => [
+  ...names.map((t, i) => wkWord(t, 400 + i * 180, 460 + i * 180, 350)),
+  wkWord(title, 60, 900, 290),
+  ...ownerRowWords,
+];
+const garbled = rosterReadQuality(weekOf(SCRAMBLED, 'Week 39 22/09/2026 - 28/09/2026'), 'Parth', today);
+const sound = rosterReadQuality(weekOf(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], 'Week 39 22/09/2026 - 28/09/2026'), 'Parth', today);
+ok('a header whose names describe no week is not accepted', garbled.complete, false);
+ok('even though it found the row and its four shifts', [garbled.found, garbled.cells, garbled.columns], [true, 4, 7]);
+ok('only two of its seven names agree with the dates they were given', garbled.agree, 2);
+ok('the header that does describe a week is accepted', sound.complete, true);
+ok('with every one of its names agreeing', sound.agree, 7);
+ok('and the reading that agrees with itself outscores the one that does not', sound.score > garbled.score, true);
+// Same seven names, same title, same photo — the only difference is whether the
+// names describe a week. That pair is the whole rule: it is AGREEMENT that lets a
+// reading be believed, not the mere presence of a header.
+ok('the two readings differ only in their names',
+  [garbled.columns, sound.columns, garbled.named, sound.named], [7, 7, 7, 7]);
 ok('a reading without the typed name cannot be accepted', rosterReadQuality([...weekHeader, wkWord('Aoife', 60, 200, 500)], 'Parth', today).complete, false);
 ok('nothing read is worth less than anything', rosterReadQuality([], 'Parth', today).score, -1);
 // The same filter the parse applies, so what is judged good is what the parse uses.

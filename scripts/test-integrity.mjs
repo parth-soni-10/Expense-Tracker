@@ -39,7 +39,9 @@ globalThis.sessionStorage = new MemoryStorage();
 // (profiles.js), which resolves to "personal" on a device with no registry.
 const LIVE_KEY = 'cents:p/personal/state';
 
-const { validateState, loadState, saveState } = await import('../storage.js');
+const { validateState, loadState, saveState, parseBackup, foreignWriteNeeded, readStateText, unreadableBackup, entriesCsv, ENTRIES_CSV_HEADER, MAX_BACKUP_BYTES, MAX_BACKUP_ENTRIES } = await import('../storage.js');
+const { csvCell, csvUnquote, csvDocument, CSV_BOM } = await import('../csv.js');
+const { getPrivacyPin } = await import('../settings.js');
 const { mergeStates } = await import('../sync-merge.js');
 const { paidHours, shiftPay, simulateTax, tescoCsv, parseTescoCsv } = await import('../tesco.js');
 
@@ -303,6 +305,204 @@ const roundTrip = noThrow('tescoCsv round trip', () => {
 });
 check('CSV round trip keeps the awkward note verbatim', roundTrip && roundTrip[0] && roundTrip[0].note === 'notes, "quoted",\nnewline',
   roundTrip && roundTrip[0] ? JSON.stringify(roundTrip[0].note) : 'no shift parsed');
+
+// ------------------------------- 8. the other half of a backup: reading it back
+// "Export data" was a one-way door until parseBackup existed: the notice a full
+// quota raises tells the user to export a backup, and nothing could open one.
+// A restore is a merge, so the rules that matter are (a) what a file has to look
+// like to be read at all and (b) that reading it can never quietly set the lock
+// or resurrect a reset.
+const backupEntry = (id, amount) => ({
+  id, date: '2026-09-20', type: 'expense', method: 'AIB', category: 'gro',
+  amount, details: id, note: '', createdAt: '2026-09-20T10:00:00.000Z',
+});
+// Every refusal is pinned by its REASON, not just by "it said no": the caller
+// words each one for the user, and a file refused as unreadable when it was
+// really unsupported sends them looking for the wrong problem.
+const refused = [
+  ['empty', '', 'empty'],
+  ['blank', '   \n ', 'empty'],
+  ['not json', 'not json at all', 'unreadable'],
+  ['truncated', '{"entries":[{"id":"a"', 'unreadable'],
+  ['an array', '[]', 'not-a-backup'],
+  ['a number', '42', 'not-a-backup'],
+  ['no entries list', JSON.stringify({ settings: { monthlyBudget: 500 } }), 'not-a-backup'],
+  ['entries not a list', JSON.stringify({ entries: {} }), 'not-a-backup'],
+  ['oversized', 'x'.repeat(MAX_BACKUP_BYTES + 1), 'too-large'],
+];
+for (const [label, text, reason] of refused) {
+  const verdict = noThrow(`parseBackup(${label})`, () => parseBackup(text));
+  check(`parseBackup refuses ${label}`, verdict && verdict.ok === false,
+    verdict ? JSON.stringify(verdict).slice(0, 80) : 'undefined');
+  check(`  and says why (${label})`, verdict && verdict.reason === reason,
+    verdict ? String(verdict.reason) : 'undefined');
+}
+const WORDED = ['empty', 'too-large', 'unreadable', 'not-a-backup'];
+check('every refusal reason is one the UI can word',
+  refused.every(([, , reason]) => WORDED.includes(reason)));
+// The size cap has to be checked BEFORE the parse, so a file that is too big is
+// refused for being too big rather than reported as unreadable JSON. Both caps
+// are pinned by their reason: the byte cap, and the entry cap (which can only be
+// reached by a document that PARSES, so it is the cap doing the refusing).
+check('an oversized file is refused for its size, not its content',
+  parseBackup('x'.repeat(MAX_BACKUP_BYTES + 1)).reason === 'too-large',
+  parseBackup('x'.repeat(MAX_BACKUP_BYTES + 1)).reason);
+check('a document that parses but is absurd is still refused',
+  parseBackup(JSON.stringify({ entries: new Array(MAX_BACKUP_ENTRIES + 1).fill(null), settings: {} })).reason === 'too-large',
+  parseBackup(JSON.stringify({ entries: new Array(MAX_BACKUP_ENTRIES + 1).fill(null), settings: {} })).reason);
+
+const realBackup = stateOf([backupEntry('b1', 5), backupEntry('b2', 7)], { monthlyBudget: 900 });
+const readBack = noThrow('parseBackup(a real export)', () => parseBackup(JSON.stringify(realBackup, null, 2)));
+check('a real export is read back whole', readBack && readBack.ok === true && readBack.kept === 2 && readBack.dropped === 0,
+  JSON.stringify({ ok: readBack && readBack.ok, kept: readBack && readBack.kept, dropped: readBack && readBack.dropped }));
+check('and its settings come with it', readBack?.state?.settings?.monthlyBudget === 900);
+const partial = parseBackup(JSON.stringify({ entries: [backupEntry('b1', 5), { id: 'junk' }, null], settings: {} }));
+check('a half-readable backup reports what it could not take',
+  partial.ok === true && partial.kept === 1 && partial.dropped === 2,
+  JSON.stringify({ kept: partial.kept, dropped: partial.dropped }));
+
+// The two things a file may never bring with it. `pinHash` is the serious one:
+// validateState MIGRATES a legacy hash into device storage when the device has
+// no PIN, so a hostile file would otherwise get to set this device's lock — and
+// the app's own export deletes the key, so stripping it costs a real backup
+// nothing. `localResetAt` is a whole-document tombstone that later data
+// supersedes; a restored copy of one would re-assert a reset it lost to.
+const hadPin = !!(getPrivacyPin() && getPrivacyPin().hash);
+const hostileFile = parseBackup(JSON.stringify({
+  entries: [backupEntry('b1', 5)],
+  settings: { pinHash: 'a'.repeat(64) },
+  localResetAt: '2026-09-19T00:00:00.000Z',
+}));
+check('a file cannot smuggle in PIN material', hostileFile.ok === true && hostileFile.state.settings.pinHash === undefined,
+  String(hostileFile?.state?.settings?.pinHash));
+check('and installing one never sets the device PIN', hadPin || !(getPrivacyPin() && getPrivacyPin().hash),
+  'the file set a device PIN');
+check('a file cannot re-assert an old reset', hostileFile.state.localResetAt === undefined, String(hostileFile.state.localResetAt));
+
+// ------------------------------- 9. two tabs are two copies of one document
+// Nothing tells a tab that another tab wrote, and every save replaces the whole
+// file, so the tab that writes second erases the other's new entry. The guard
+// merges the two documents and writes the union back — and foreignWriteNeeded()
+// is what stops the pair writing at each other forever: after one round trip
+// neither side holds anything the other lacks, so nobody writes again.
+const tabA = stateOf([entry('a1', 5, '2026-09-20T11:00:00.000Z')]);
+const tabB = stateOf([entry('b1', 9, '2026-09-20T11:30:00.000Z')]);
+const aneMerge = mergeStates(tabA, tabB);
+check('the union keeps both tabs\u2019 entries', aneMerge.entries.length === 2,
+  JSON.stringify(aneMerge.entries.map(e => e.id)));
+check('the tab holding something the writer missed writes it back',
+  foreignWriteNeeded(aneMerge, tabB) === true);
+check('and the writer, once caught up, does not write again',
+  foreignWriteNeeded(mergeStates(tabB, aneMerge), aneMerge) === false);
+check('a newer version of a shared entry is worth writing',
+  foreignWriteNeeded(mergeStates(tabA, { ...tabA, entries: [entry('a1', 5, '2026-09-20T12:00:00.000Z')] }), tabA) === true);
+check('a deletion is content too',
+  foreignWriteNeeded(stateOf([], { deletedEntryIds: ['a1'] }), stateOf([], { deletedEntryIds: [] })) === true);
+check('a Tesco row the writer did not have is content',
+  foreignWriteNeeded({ ...tabB, tesco: { shifts: [{ id: 's1', date: '2026-09-20' }], payslips: [], deletedShiftIds: [], deletedPayslipIds: [] } }, tabB) === true);
+check('so is a balance checkpoint',
+  foreignWriteNeeded(
+    stateOf([], { balanceCheckpoints: { AIB: [{ date: '2026-09-20', balance: 10 }] } }),
+    stateOf([], { balanceCheckpoints: { AIB: [] } }),
+  ) === true);
+check('an identical document is not worth a write', foreignWriteNeeded(tabB, tabB) === false);
+check('a hostile incoming value cannot throw the guard',
+  noThrow('foreignWriteNeeded(junk)', () => foreignWriteNeeded({ entries: 'x', settings: null, tesco: 5 }, null)) !== undefined);
+
+// ------------------------------- 10. the quarantined copy is reachable again
+// loadState parks a document it could not parse instead of dropping it; until
+// now nothing could reach it, and the notice named a storage key at a user who
+// has no way to open one. Both halves of the recovery are pinned here: bytes
+// that parse are offered as a merge, bytes that do not are offered as a
+// download (because they are the only copy of that ledger).
+const brokenText = '{"entries":[{"id":"keep-me"';
+localStorage = new MemoryStorage({ [LIVE_KEY]: brokenText });
+noThrow('loadState(corrupt, again)', () => loadState());
+check('the unreadable copy can be read back off the device', unreadableBackup() === brokenText,
+  String(unreadableBackup()).slice(0, 40));
+check('and it is offered as a download, not a merge', parseBackup(unreadableBackup()).ok === false);
+// The second-tab guard re-reads the document through this, so it has to be the
+// ACTIVE profile's live key and never the quarantined copy sitting beside it.
+const liveText = JSON.stringify(stateOf([backupEntry('live1', 1)]));
+localStorage = new MemoryStorage({ [LIVE_KEY]: liveText, 'cents:p/personal/quarantine': brokenText });
+check('the guard reads the live document, not the quarantined copy beside it',
+  readStateText() === liveText, String(readStateText()).slice(0, 40));
+const salvageable = JSON.stringify({ entries: [backupEntry('s1', 3), { id: '' }], settings: {} });
+localStorage = new MemoryStorage({ [LIVE_KEY]: salvageable });
+noThrow('loadState(salvageable)', () => loadState());
+const salvage = parseBackup(unreadableBackup() || salvageable);
+check('a copy that still parses is offered as a merge', salvage.ok === true && salvage.kept === 1,
+  JSON.stringify({ ok: salvage.ok, kept: salvage.kept }));
+
+// ------------------------------------------- 11. the ledger as a spreadsheet
+// "Export CSV" writes every entry as one row a spreadsheet can read. Nothing
+// reads the file back, so what has to hold is narrower than the JSON round trip
+// and just as sharp: the columns are the ones the reader expects, a label is
+// worded the way the screen words it, a number stays a number, and a field that
+// would be read as a formula is defused rather than executed on open.
+const csvLabels = { category: (id) => ({ gro: 'Groceries', misc: 'Misc' }[id] || id), method: (id) => ({ AIB: 'AIB bank', RS: 'Revolut Savings' }[id] || id) };
+const csvRow = (id, extra = {}) => ({
+  id, date: '2026-09-20', type: 'expense', method: 'AIB', category: 'gro',
+  amount: 12.4, details: id, note: '', createdAt: '2026-09-20T10:00:00.000Z', ...extra,
+});
+const csvOf = (entries) => entriesCsv(stateOf(entries), csvLabels);
+const csvLines = (entries) => csvOf(entries).replace(/\r\n$/, '').split('\r\n');
+
+check('the header is the columns the export promises',
+  csvOf([]) === `${ENTRIES_CSV_HEADER.join(',')}\r\n`, JSON.stringify(csvOf([])));
+check('one entry is one row, in column order',
+  csvLines([csvRow('a')])[1] === '2026-09-20,expense,Groceries,a,12.40,AIB bank,', csvLines([csvRow('a')])[1]);
+check('the label resolver is what names the category and the method',
+  csvOf([csvRow('a')]).includes('Groceries') && csvOf([csvRow('a')]).includes('AIB bank'));
+// No resolvers is what a caller outside app.js hands over (a guard, a script);
+// the stored ids are a worse label but never a throw or a blank column.
+check('without resolvers the ids stand in rather than nothing',
+  entriesCsv(stateOf([csvRow('a')])).includes(',gro,') === true,
+  JSON.stringify(entriesCsv(stateOf([csvRow('a')]))));
+check('an amount is two decimals and never quoted',
+  csvLines([csvRow('a', { amount: 5 })])[1].includes(',5.00,'), csvLines([csvRow('a', { amount: 5 })])[1]);
+// The apostrophe guard must not reach a number: it would turn a tax refund into
+// text that no spreadsheet and no database load would read as a value.
+check('a negative amount stays a number', csvCell(-56.08) === '-56.08', csvCell(-56.08));
+check('a comma in a note is quoted, not split into two columns',
+  csvCell('bread, milk and eggs') === '"bread, milk and eggs"', csvCell('bread, milk and eggs'));
+check('a newline in a note stays inside one field',
+  csvCell('line one\nline two') === '"line one\nline two"', csvCell('line one\nline two'));
+check('a doubled quote survives', csvCell('he said "hi"') === '"he said ""hi"""', csvCell('he said "hi"'));
+// The reason csv.js exists: a field a spreadsheet would EXECUTE. Notes arrive
+// typed, from another app's file, and in a synced cloud copy.
+const evilCell = csvCell('=HYPERLINK("http://x","click")');
+check('a formula-looking field is defused with an apostrophe',
+  // Quoted (it holds commas and quotes) and then apostrophe-guarded: no cell a
+  // spreadsheet would run is left standing.
+  evilCell.startsWith('"\'=') && evilCell.endsWith(')"'), evilCell);
+check('so is a leading +, - or @ after whitespace',
+  csvCell('@break') === "'@break" && csvCell('  +1') === "'  +1", `${csvCell('@break')} / ${csvCell('  +1')}`);
+check('the guard is reversible, so nothing is lost on the way back',
+  csvUnquote(csvCell('@break')) === '@break' && csvUnquote(csvCell('=SUM(A1)')) === '=SUM(A1)');
+check('and it does not touch a name that merely contains an apostrophe',
+  csvUnquote("O'Brien") === "O'Brien", csvUnquote("O'Brien"));
+check('the rows end with CRLF and a trailing newline, the way every tool writes them',
+  csvOf([csvRow('a')]).endsWith('\r\n') && csvDocument([['a'], ['b']]) === 'a\r\nb\r\n', JSON.stringify(csvDocument([['a'], ['b']])));
+check('newest first, and two on one day break the tie by when they were written',
+  csvLines([
+    csvRow('older', { date: '2026-09-19' }),
+    csvRow('first', { date: '2026-09-20', createdAt: '2026-09-20T09:00:00.000Z' }),
+    csvRow('second', { date: '2026-09-20', createdAt: '2026-09-20T11:00:00.000Z' }),
+  ]).slice(1).map(line => line.split(',')[3]).join('|') === 'second|first|older',
+  csvLines([
+    csvRow('older', { date: '2026-09-19' }),
+    csvRow('first', { date: '2026-09-20', createdAt: '2026-09-20T09:00:00.000Z' }),
+    csvRow('second', { date: '2026-09-20', createdAt: '2026-09-20T11:00:00.000Z' }),
+  ]).map(line => line.split(',')[3]).join('|'));
+check('a note that reads as a formula reaches the file defused',
+  csvOf([csvRow('a', { note: '=cmd|calc' })]).includes("'=cmd|calc"), csvOf([csvRow('a', { note: '=cmd|calc' })]));
+// The pure text carries no BOM — the byte is added at the file boundary, so what
+// the tests compare is what csvDocument() produced.
+check('the text itself has no byte-order mark', entriesCsv(stateOf([])).charCodeAt(0) !== 0xFEFF && CSV_BOM === '\uFEFF');
+check('a document with no entries is still a file with a header', csvLines([]).length === 1);
+check('a hostile document cannot throw the export',
+  noThrow('entriesCsv(junk)', () => entriesCsv({ entries: [null, 42, 'x', { date: '2026-09-20' }] })) !== undefined);
 
 // ---------------------------------------------------------------- report
 if (failures.length) {

@@ -1,0 +1,414 @@
+/* ============================================================
+   tesco-pay.js — the Tesco Pay engine: rates, shift hours, the
+   Sunday premium, the Irish tax simulation, and the week/month
+   roll-ups those feed.
+
+   This module exists so the app shell can have its figures without
+   the rest of Tesco Pay. The dashboard shows a month's hours, an
+   anticipated net and what the bank has received, and those come
+   from here — but the screen, the roster-photo reader, the pixel
+   pipeline and the workbook importer (tesco.js) are ~240 KB that a
+   session may never need. app.js therefore imports THIS file on
+   boot and fetches tesco.js on the first visit to #tesco, which
+   scripts/test-boot-payload.mjs pins.
+
+   Nothing here touches the DOM, storage, a worker or a canvas, so
+   it can be imported by the shell (and by Node) without any of the
+   app's other machinery: the whole file is arithmetic and dates.
+
+   tesco.js re-exports every name below, because the harnesses and
+   the screen have always imported them from there.
+   ============================================================ */
+
+// ---------- constants ----------
+export const TESCO_RATE_DEFAULTS = Object.freeze({
+  normal: 14.44,          // €/h Monday–Saturday
+  specialMultiplier: 1.5, // Sunday & bank holidays
+  pensionPct: 1.5,        // Future Fund employee share, % of gross
+  payeCredit: 76.93,      // €/week tax credit
+  payeCutoff: 846.15,     // €/week 20% band ceiling
+  payeRateLow: 20,        // %
+  payeRateHigh: 40,       // %
+  // The workbook's own rate, so its rows come back out of an export unchanged. The
+  // statute moved on 1 Oct 2026 (4.2% → 4.35%): the rates card names both rates and
+  // this field is where the new one is typed, rather than a default that would
+  // silently rewrite the tax on every week the sheet was built from.
+  prsiRate: 4.2,          // % class A1 — 4.35% from 1 Oct 2026
+});
+export const PAY_LAG_DAYS = 11;   // the sheet's pay-date formula: week start + 11 (Thursday)
+// 0=Sun..6=Sat. The workbook anchors each pay week on its **Sunday**: the
+// weekly SUM block (L = SUM(J…:J…)) sits on the Sunday row and sums Sunday →
+// Saturday, and every hand-entered "Week Start Date" in the tax table is a
+// Sunday. Anchoring on Saturday instead shifted whole weeks by a day, which
+// moved a week's gross — and therefore its tax, pension and net — into the
+// neighbouring week.
+export const WEEK_START_DOW = 0;
+
+// ---------- small helpers ----------
+// Currency rounding, half away from zero — matches Excel's ROUND(). The
+// epsilon matters: 0.2*550.525-76.93 is 33.174999... in binary, which plain
+// Math.round would take down to 33.17 where the spreadsheet says 33.18.
+export function r2(v) {
+  const n = Number(v) || 0;
+  return Math.sign(n) * Math.round(Math.abs(n) * 100 + 1e-7) / 100;
+}
+export function pad2(n) { return String(n).padStart(2, '0'); }
+export function isoLocal(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
+export function todayIso() { return isoLocal(new Date()); }
+
+export function parseHM(str) {
+  const m = /^(\d{1,2})(?::(\d{1,2}))?$/.exec(String(str || '').trim());
+  if (!m) return null;
+  const h = +m[1], min = m[2] ? +m[2] : 0;
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+export function fmtHM(mins) {
+  mins = ((mins % 1440) + 1440) % 1440;
+  return `${pad2(Math.floor(mins / 60))}:${pad2(mins % 60)}`;
+}
+
+export function isoToUtcMidnight(dateStr) {
+  const [y, m, d] = String(dateStr).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
+export function dateOk(s) { return /^\d{4}-\d{2}-\d{2}$/.test(String(s)) && !Number.isNaN(isoToUtcMidnight(s).getTime()); }
+
+// ---------- engine: hours ----------
+// Break deduction ladder, exactly the spreadsheet's IFS:
+//   starts before 12:00 AND ≥7h → −60m; >7h → −45m; >6h → −30m; >5h → −15m.
+export function paidHours(startMin, endMin) {
+  let raw = endMin - startMin;
+  if (raw <= 0) raw += 1440; // overnight shift
+  const startH = startMin / 60, rawH = raw / 60;
+  let paid = rawH;
+  if (startH < 12 && rawH >= 7) paid = rawH - 1;
+  else if (rawH > 7) paid = rawH - 0.75;
+  else if (rawH > 6) paid = rawH - 0.5;
+  else if (rawH > 5) paid = rawH - 0.25;
+  return r2(paid);
+}
+export function isOvernight(startMin, endMin) { return endMin <= startMin; }
+
+// ---------- engine: pay & tax ----------
+export function isSunday(dateStr) { return isoToUtcMidnight(dateStr).getUTCDay() === 0; }
+
+/** Is this a number a row could state as its own hours? Empty, a non-number,
+ *  a negative or an absurd figure all mean "not stated". */
+export function statedHours(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= 168 ? r2(n) : null;
+}
+
+export function shiftPay(shift, rates) {
+  const R = { ...TESCO_RATE_DEFAULTS, ...rates };
+  const start = parseHM(shift.start), end = parseHM(shift.end);
+  // Was this row a shift at all? A booked absence — a week off, which the sheet
+  // and the Week off card both write as hours and no clock times — is not, and
+  // that is what the premium below turns on.
+  const worked = start != null && end != null;
+  // A row's own hours win over its clock times. The sheet states them, and its
+  // ladder is not the only rule in play: two rows book a full week off with no
+  // times at all (20 h), and its older blocks break a shift differently. So an
+  // imported row keeps the hours it was paid for; only a shift typed in the app
+  // has none stated and derives them.
+  const own = statedHours(shift.hours);
+  const hours = own != null ? own : (worked ? paidHours(start, end) : null);
+  if (hours == null) return null;
+  // The Sunday multiplier is a premium for WORKING Sunday, so it follows a row
+  // with clock times; a row that states its hours and no times is a booked week
+  // off paying those hours at the card rate, unless the row itself says special
+  // (which is what a week the sheet paid at premium carries). Dating a week off
+  // on the week's Sunday used to pay it at ×1.5 silently — the Week off card dates
+  // its row there so the week is unambiguous, and a 7h week off came out as
+  // €151.62 instead of €101.08.
+  const special = !!shift.special || (worked && isSunday(shift.date));
+  // Likewise a row's own pay, where the file states one: the sheet's older rows
+  // were worked at rates that have since changed (€14.02/€21.03 against today's
+  // €14.44/€21.66), and one bank holiday is a straight 2×. Recomputing those at
+  // today's rate would silently rewrite what was actually paid.
+  const card = r2(special ? R.normal * R.specialMultiplier : R.normal);
+  const paid = shift.gross == null || !Number.isFinite(Number(shift.gross)) ? null : r2(shift.gross);
+  const gross = paid == null ? r2(hours * card) : paid;
+  return { hours, special, rate: hours > 0 ? r2(gross / hours) : card, gross };
+}
+
+// The spreadsheet's Potential Tax formula, ported 1:1 (all €/week figures).
+export function simulateTax(gross, rates) {
+  const R = { ...TESCO_RATE_DEFAULTS, ...rates };
+  const g = Math.max(0, Number(gross) || 0);
+  const lo = R.payeRateLow / 100, hi = R.payeRateHigh / 100;
+  const paye = Math.max(0, r2(lo * Math.min(g, R.payeCutoff) + hi * Math.max(0, g - R.payeCutoff) - R.payeCredit));
+  const uscBands = [231, 551.9230769, 1347.2307692];
+  const usc = r2(
+    0.005 * Math.min(g, uscBands[0]) +
+    0.02 * Math.max(0, Math.min(g, uscBands[1]) - uscBands[0]) +
+    0.03 * Math.max(0, Math.min(g, uscBands[2]) - uscBands[1]) +
+    0.08 * Math.max(0, g - uscBands[2])
+  );
+  // PRSI, class A employee. Two rules, and the first one is not "4.35% with a
+  // credit": an employee on €352 a week or less is EXEMPT from PRSI altogether.
+  // Charging the full rate below that threshold was a real over-estimate — a
+  // €300 week (about 20 hours) owes €0 PRSI, not the €12.60 this used to take, and
+  // its whole tax bill is the USC (€2.54), which is what a payslip for such a week
+  // shows. Above the threshold the €12 weekly credit tapers away by one-sixth of
+  // the earnings over €352.01, reaching nothing at €424; in any week the employee
+  // is liable, every euro of the week is.
+  const prsiGross = g * R.prsiRate / 100;
+  const EXEMPT_UP_TO = 352, CREDIT_FROM = 352.01, CREDIT_TO = 424, MAX_CREDIT = 12;
+  const prsi = g <= EXEMPT_UP_TO ? 0
+    : Math.max(0, r2(prsiGross - (g <= CREDIT_TO ? MAX_CREDIT - (g - CREDIT_FROM) / 6 : 0)));
+  // The sheet's pension column is a raw percentage (N17 = L*1.5%) and its
+  // Calculated Income subtracts that raw value (O17 = L−M−N), so rounding the
+  // pension before subtracting moves the net by a cent whenever the raw figure
+  // lands on a half-cent (€287.00 → 4.305). Keep the rounded value for display,
+  // the raw one for the net.
+  const pensionRaw = g * R.pensionPct / 100;
+  const pension = r2(pensionRaw);
+  const tax = r2(paye + usc + prsi);
+  return { paye, usc, prsi, pension, tax, net: r2(g - tax - pensionRaw) };
+}
+
+// ---------- engine: pay weeks ----------
+export function weekStartOf(dateStr) {
+  const d = isoToUtcMidnight(dateStr);
+  const shift = (d.getUTCDay() - WEEK_START_DOW + 7) % 7; // days since the week's start
+  d.setUTCDate(d.getUTCDate() - shift);
+  return d.toISOString().slice(0, 10);
+}
+export function payDateOf(weekStart) {
+  const d = isoToUtcMidnight(weekStart);
+  d.setUTCDate(d.getUTCDate() + PAY_LAG_DAYS);
+  return d.toISOString().slice(0, 10);
+}
+// The week number to show for a pay week. A stored number — typed by hand on a
+// week card, or imported from the sheet's own column — always wins; otherwise
+// the nearest stored number earlier in the year carries forward one per week,
+// which is how the sheet's counter behaves. With nothing stored anywhere, the
+// ISO number is a sane placeholder. (The sheet restarts at 1 each March, so a
+// year boundary is corrected by editing that week once.)
+export function weekNumberOf(weekStart, weekNos) {
+  const map = weekNos && typeof weekNos === 'object' ? weekNos : {};
+  const stored = (key) => {
+    const no = Math.trunc(Number(map[key]));
+    return Number.isFinite(no) && no >= 1 ? no : null;
+  };
+  const own = stored(weekStart);
+  if (own != null) return own;
+  // Otherwise the nearest stored number either side carries across, one per
+  // week — so a single week typed by hand numbers the weeks around it too.
+  // Counting through a March reset would land at nought or below, so a
+  // candidate that does is passed over and the ISO week stands in instead.
+  const base = isoToUtcMidnight(weekStart);
+  for (let step = 1; step <= 60; step++) {
+    for (const [dir, at] of [[-1, step], [1, -step]]) {
+      const day = new Date(base);
+      day.setUTCDate(day.getUTCDate() + 7 * at);
+      const hit = stored(day.toISOString().slice(0, 10));
+      if (hit != null && hit + dir * step >= 1) return hit + dir * step;
+    }
+  }
+  return isoWeekNumber(weekStart);
+}
+
+// The week number a payslip row prints. A number the payslip carries itself —
+// typed on the sheet's tax table, or imported from its Week column — wins,
+// because that is the number printed on the payslip the row is transcribing.
+// Otherwise it is the week's own number, derived exactly as the week card above
+// derives it, so the two cards never disagree. Null when the row has no usable
+// date at all, which the caller renders as "no number" rather than a guess.
+export function payslipWeekNumberOf(p, weekNos) {
+  const own = Math.trunc(Number(p && p.weekNo));
+  if (Number.isFinite(own) && own >= 1 && own <= 53) return own;
+  const start = p && dateOk(p.weekStart) ? weekStartOf(p.weekStart) : null;
+  return start ? weekNumberOf(start, weekNos) : null;
+}
+
+export function isoWeekNumber(dateStr) {
+  const d = isoToUtcMidnight(dateStr);
+  const target = new Date(d);
+  target.setUTCDate(target.getUTCDate() + 4 - (target.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
+  return Math.ceil(((target - yearStart) / 86400000 + 1) / 7);
+}
+
+export function nextWeekStart(afterIso) {
+  const d = isoToUtcMidnight(weekStartOf(afterIso));
+  d.setUTCDate(d.getUTCDate() + 7);
+  return d.toISOString().slice(0, 10);
+}
+
+// Group shifts and payslips into Sunday→Saturday pay weeks. A payslip's typed
+// weekStart is snapped to its week's Sunday so the two sides always join.
+export function buildPayWeeks(shifts, payslips, rates) {
+  const weeks = new Map();
+  const week = (key) => {
+    if (!weeks.has(key)) weeks.set(key, { weekStart: key, shifts: [], payslips: [] });
+    return weeks.get(key);
+  };
+  for (const s of shifts) week(weekStartOf(s.date)).shifts.push(s);
+  for (const p of payslips) week(weekStartOf(p.weekStart)).payslips.push(p);
+  for (const w of weeks.values()) {
+    w.shifts.sort((a, b) => a.date.localeCompare(b.date) || String(a.start).localeCompare(String(b.start)));
+    w.payslips.sort((a, b) => String(a.weekStart).localeCompare(String(b.weekStart)));
+    // One payslip per week is the normal case, and the row the tab edits. A
+    // correction run inside the same week adds to it instead of one silently
+    // replacing the other — the sheet's tax table holds both rows, and the
+    // importer has always summed them.
+    w.payslip = w.payslips[w.payslips.length - 1] || null;
+    w.paid = r2(w.payslips.reduce((sum, p) => sum + payslipTotal(p), 0));
+    // The sheet's Final Bank Pay, typed from a bank statement: the net that
+    // actually landed, which no formula here can derive (holiday pay, a refund
+    // or a correction are all reasons it differs from gross − tax). The sheet
+    // keeps it on the week's shift row; the tab edits it on the payslip, which
+    // therefore wins where one records a net — otherwise a week carrying the net
+    // on its shift row alone (no payslip of its own) would drop the figure.
+    const finite = list => list.filter(x => x.bankPay != null && Number.isFinite(Number(x.bankPay)));
+    const netted = finite(w.payslips).length ? finite(w.payslips) : finite(w.shifts);
+    w.bankPaid = netted.length ? r2(netted.reduce((sum, p) => sum + Number(p.bankPay), 0)) : null;
+    // One pass at the user's rates, so a week's totals always agree with the
+    // per-shift rows the tab prints under them and with monthSummary above.
+    const pays = w.shifts.map(s => shiftPay(s, rates)).filter(Boolean);
+    w.gross = r2(pays.reduce((sum, p) => sum + p.gross, 0));
+    w.hours = r2(pays.reduce((sum, p) => sum + p.hours, 0));
+  }
+  return [...weeks.values()].sort((a, b) => b.weekStart.localeCompare(a.weekStart));
+}
+
+// What one pay week's money did, in order of authority:
+//   * Final Bank Pay, typed off a statement: the money the user watched land, so
+//     it wins — and, unlike an estimate below, it counts whatever the calendar
+//     says (holiday pay, a refund or a correction is exactly why it differs from
+//     gross − tax, and the shift rows cannot express any of them);
+//   * otherwise the sheet's Calculated Income (O = Gross Income − Potential Tax
+//     − Pension): the week's gross minus the tax + Future Fund its payslips
+//     recorded. A refund week's negative tax lands as money in, which is the
+//     sheet's own arithmetic;
+//   * otherwise the week's simulated net — the very "→ net €X" figure the week
+//     card prints under its estimate, so what the month claims and what the week
+//     shows are one piece of arithmetic.
+// A week with a payslip but no shift rows is the one case nothing can be derived
+// from: its tax alone says nothing about the gross it was taken out of, so only a
+// refund (negative tax) is money that landed — a positive total there is not money
+// arriving, and it claims nothing.
+function weekReceived(w, rates) {
+  if (w.bankPaid != null) return w.bankPaid;
+  if (!w.shifts.length) return w.paid < 0 ? r2(-w.paid) : 0;
+  if (w.payslips.length) return r2(w.gross - w.paid);
+  return w.gross > 0 ? simulateTax(w.gross, rates).net : 0;
+}
+
+// Money that reached the bank over the weeks handed in. A week is counted only
+// once its pay date has come round, because a week of the current month is
+// normally paid in the NEXT one (pay date = the week's Sunday + 11) and an
+// estimate for a week the bank has not paid yet would claim money that has not
+// arrived. A typed bank figure is counted regardless — the user saw that money.
+// Weeks with no record at all are estimated rather than counted as €0, which is
+// what made a month's Received add up to one bank line while three worked weeks
+// sat in it (see monthSummary).
+function receivedTotal(weeks, rates, today) {
+  return r2(weeks.reduce((sum, w) => {
+    if (w.bankPaid == null && payDateOf(w.weekStart) > today) return sum;
+    return sum + weekReceived(w, rates);
+  }, 0));
+}
+// ---------- a week's final bank pay: one figure, one home ----------
+/**
+ * Where a week's final bank pay is written.
+ *
+ * The sheet types it off a bank statement, so it is the one figure here that no
+ * formula can derive — holiday pay, a refund or a correction all make it
+ * disagree with gross − tax. It is also a WEEK's figure, not a row's, and the tab
+ * has two homes for it: the sheet keeps it on the week's shift row (tescoCsv
+ * calls that row the week's carrier — its first row by date, the Sunday when one
+ * was worked), while the Payslips card has a Bank field of its own.
+ *
+ * buildPayWeeks sums every figure it finds on a week's records (a payslip's when
+ * any payslip has one, otherwise the shift rows'), so writing one figure into two
+ * homes would pay it twice. This puts it on the week's carrier row AND on the
+ * week's own payslip — the row the tab edits, the last of that week — and clears
+ * it from every other record of that week, so the week's received figure is
+ * exactly what was typed and the two homes can never disagree.
+ *
+ * A blank or unreadable amount clears the week: "not known" is a real state here
+ * (the received line hides), and quietly zeroing it would claim the bank paid
+ * nothing. A negative is kept — a clawback is a real statement line.
+ *
+ * Returns new arrays; the caller commits them. `carrierId` is the row the cell
+ * was typed on, so the week comes from the row rather than from a date two rows
+ * can share.
+ */
+export function weekBankWrite(shifts, payslips, carrierId, amount) {
+  const list = Array.isArray(shifts) ? shifts : [];
+  const slips = Array.isArray(payslips) ? payslips : [];
+  const carrier = list.find(s => s.id === carrierId);
+  if (!carrier) return { shifts: list, payslips: slips };
+  const ws = weekStartOf(carrier.date);
+  const raw = amount == null ? '' : String(amount).trim();
+  const n = raw === '' || !Number.isFinite(Number(raw)) ? null : r2(Number(raw));
+  // Copy-on-write, and an unchanged figure hands back the same record: the cell
+  // commits on change, and clicking in and straight back out must not look like
+  // an edit (nor leave an undo step behind).
+  const setOn = (row, mine) => {
+    const v = mine ? n : null;
+    if (v == null) {
+      if (row.bankPay == null) return row;
+      const { bankPay, ...rest } = row;
+      return rest;
+    }
+    return row.bankPay != null && r2(row.bankPay) === v ? row : { ...row, bankPay: v };
+  };
+  const own = slips.filter(p => weekStartOf(p.weekStart) === ws).pop() || null;
+  return {
+    shifts: list.map(s => (weekStartOf(s.date) === ws ? setOn(s, s.id === carrierId) : s)),
+    payslips: slips.map(p => (weekStartOf(p.weekStart) === ws ? setOn(p, !!own && p.id === own.id) : p)),
+  };
+}
+
+// Month summary — the sheet's monthly stats block. The three figures sit on two
+// bases on purpose, and the labels say which:
+//   * hours are the month's own shifts, by shift date — the hours worked in this
+//     month, which is what "hours this month" means;
+//   * the anticipated figure is a NET, and a net is a weekly thing (the PAYE
+//     credit, the USC bands and the PRSI threshold are all per week), so it is
+//     simulated once per pay week on the week's whole gross and the week is
+//     placed in the month its Sunday falls in — the sheet's own month rule. It is
+//     never prorated across a boundary: half a week's tax is a fiction, and a
+//     straddling week would otherwise be counted in two months;
+//   * received is money that landed, so it follows the PAY DATE, not the week: the
+//     week of 27 Sep is paid on 8 Oct and belongs to October, while the week of
+//     30 Aug was paid in September and belongs to September. Counting it by week
+//     start used to move both edges of the month the wrong way.
+// `today` only decides which weeks have been paid yet (see receivedTotal); it is a
+// parameter so the harness can pin a month without a wall clock.
+export function monthSummary(shifts, payslips, rates, year, monthIdx, today = todayIso()) {
+  const inMonth = iso => { const d = isoToUtcMidnight(iso); return d.getUTCFullYear() === year && d.getUTCMonth() === monthIdx; };
+  const weeks = buildPayWeeks(shifts, payslips, rates);
+  let hours = 0;
+  for (const s of shifts) {
+    if (!inMonth(s.date)) continue;
+    const p = shiftPay(s, rates);
+    if (p) hours += p.hours;
+  }
+  let anticipated = 0;
+  for (const w of weeks) {
+    if (!inMonth(w.weekStart) || w.gross <= 0) continue;
+    anticipated += simulateTax(w.gross, rates).net;
+  }
+  const received = receivedTotal(weeks.filter(w => inMonth(payDateOf(w.weekStart))), rates, today);
+  return { hours: r2(hours), anticipated: r2(anticipated), received };
+}
+// The same figures over every week the tab holds. Expected and received are both
+// nets, so the two compare directly here too — one is what the hours should pay,
+// the other what the bank has actually paid.
+export function lifetimeTotals(shifts, payslips, rates, today = todayIso()) {
+  const weeks = buildPayWeeks(shifts, payslips, rates);
+  let hours = 0, anticipated = 0;
+  for (const w of weeks) {
+    hours += w.hours;
+    if (w.gross > 0) anticipated += simulateTax(w.gross, rates).net;
+  }
+  return { hours: r2(hours), anticipated: r2(anticipated), received: receivedTotal(weeks, rates, today) };
+}
+export function payslipTotal(p) { return r2((+p.paye || 0) + (+p.usc || 0) + (+p.prsi || 0) + (+p.futureFund || 0)); }

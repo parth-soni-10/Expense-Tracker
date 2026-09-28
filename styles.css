@@ -610,7 +610,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   font-size: 17px;
 }
 
-/* ── Shared page rhythm + staggered screen transition ── */
+/* ── Shared page rhythm ── */
 .page-section { width: 100%; min-width: 0; }
 .page-title-row {
   display: flex; align-items: baseline; justify-content: space-between;
@@ -635,62 +635,33 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .page-section > .card, .dashboard-section > .card { margin-bottom: var(--page-gap) !important; }
 .page-section > .card:last-child, .dashboard-section > .card:last-child { margin-bottom: 0 !important; }
 
-/* Screen entrance — springy rise, then staggered children (motion-primitives) */
-.screen { animation: screenIn 0.18s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.screen.screen-static { animation: none; }
+/* ── Screen swap ──
+   A route change draws the next screen and stops there: no entrance animation on
+   the screen, none on its children, and no view transition. Both used to run on a
+   tab switch and both were felt as stutter.
+
+   The transition was the worse of the two. Handing the change to the View
+   Transitions API made the browser capture the old state before it would call
+   back, and a document that cannot produce a compositor frame therefore waited
+   out a whole fallback budget before drawing anything: measured at ~270ms per tab
+   switch (~250 of it the budget) against ~20ms with no transition at all — on top
+   of the 180/220ms cross-fade everywhere else. Do the render; be done.
+
+   screenIn is still used, by things that appear INTO a screen that is already
+   there (the bulk bar, an empty state), where a fade is information rather than
+   latency. */
 @keyframes screenIn {
-  /* Starts at 0.45 opacity, not 0 — the page is readable on the very first
-     frame instead of blanking for the whole animation (feels instant). */
   from { opacity: 0.45; transform: translateY(6px); }
   to   { opacity: 1; transform: none; }
-}
-.screen.stagger > * { animation: riseIn 0.2s cubic-bezier(0.22, 1, 0.36, 1) both; }
-/* Delays capped at 0.06s — pages settle well under a quarter second. */
-.screen.stagger > *:nth-child(1) { animation-delay: 0.005s; }
-.screen.stagger > *:nth-child(2) { animation-delay: 0.01s; }
-.screen.stagger > *:nth-child(3) { animation-delay: 0.02s; }
-.screen.stagger > *:nth-child(4) { animation-delay: 0.03s; }
-.screen.stagger > *:nth-child(5) { animation-delay: 0.04s; }
-.screen.stagger > *:nth-child(6) { animation-delay: 0.05s; }
-.screen.stagger > *:nth-child(n+7) { animation-delay: 0.06s; }
-@keyframes riseIn {
-  /* Same partial-visibility trick as screenIn — never fully blank. */
-  from { opacity: 0.35; transform: translateY(10px); }
-  to   { opacity: 1; transform: none; }
-}
-
-/* ── Cross-route continuity (View Transitions API) ──
-   Where the browser can snapshot a navigation, the change is animated by the
-   transition instead of by screenIn: the old screen leaves upward and the new
-   one rises into its place, 180/220ms — the same weight as the CSS entrance it
-   replaces, so an engine with the API feels like the same app, only continuous.
-
-   The header and the phone tab bar carry a view-transition-name, which takes
-   them out of the root cross-fade altogether: the chrome is the part that must
-   not move, so it is named and then given no animation at all. */
-.app-header { view-transition-name: cents-header; }
-.bottom-tab-bar { view-transition-name: cents-tabs; }
-::view-transition-group(cents-header),
-::view-transition-group(cents-tabs) { animation: none; }
-::view-transition-old(root) { animation: centsVtLeave 0.18s var(--ease-out) both; }
-::view-transition-new(root) { animation: centsVtEnter 0.22s var(--ease-out) both; }
-@keyframes centsVtLeave { to { opacity: 0; transform: translateY(-6px); } }
-@keyframes centsVtEnter { from { opacity: 0; transform: translateY(8px); } }
-/* The reduce-motion block above cannot reach these: its `*` selector does not
-   match view-transition pseudo-elements, and neither does a media query on the
-   transition root. Named explicitly rather than left to the JS gate alone. */
-@media (prefers-reduced-motion: reduce) {
-  ::view-transition-old(root), ::view-transition-new(root),
-  ::view-transition-group(cents-header), ::view-transition-group(cents-tabs) { animation: none !important; }
 }
 
 /* Users who opt out of motion get instant, animation-free navigation. */
 @media (prefers-reduced-motion: reduce) {
-  .screen, .screen.stagger > *, .dashboard-hero, .card, .btn, .pill, .nav-link,
+  .screen, .dashboard-hero, .card, .btn, .pill, .nav-link,
   .modal-bg, .modal, .toast, .menu-backdrop, .menu-panel, .menu-level, .menu-row,
   .rec-row, .heat-cell, .heat-cell-wrap,
   .swal-popup, .swal-confirm, .swal-cancel, .tippy-box, .flatpickr-calendar,
-  .insight-bar-row, .balance-editor-row, .empty-state, .chart-fade, .budget-pct-anim {
+  .insight-bar-row, .balance-editor-row, .empty-state, .chart-fade {
     animation: none !important;
     transition-duration: 0.01ms !important;
   }
@@ -1086,12 +1057,9 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 }
 .heat-cell-wrap:hover .heat-tip { opacity: 1; }
 
-/* ── Budget % counter ── */
-@keyframes countUp {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.budget-pct-anim { animation: countUp 0.5s cubic-bezier(0.2,0.8,0.2,1) both; }
+/* The budget % used to fade-and-rise here on a 0.5s countUp, which replayed
+   every time the dashboard was drawn — including every tab switch back to it.
+   It is a figure the reader is coming to read, not an arrival to announce. */
 
 /* ── Recurring "Paid" satisfaction animation ── */
 @keyframes paidFlash {
@@ -2109,11 +2077,17 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 .tesco-stats-grid {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
 }
+/* An equal-width cell per figure, label over value. The value is pushed to the
+   cell's bottom so the three figures share one line even when a longer label
+   (Anticipated (est. net)) wraps to a second line on a phone — otherwise that
+   cell's figure sat a line lower than its neighbours'. */
+.tesco-stat { display: flex; flex-direction: column; }
 .tesco-stat-value {
   font-family: 'Space Grotesk', system-ui, sans-serif;
   font-size: 20px; font-weight: 600; letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums; margin-top: 2px;
 }
+.tesco-stat > .tesco-stat-value { margin-top: auto; padding-top: 2px; }
 .tesco-form-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .tesco-form-row-spread { align-items: center; justify-content: space-between; }
 .tesco-in {
@@ -2416,3 +2390,45 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   .profile-row .profile-row-actions .btn { flex: 1; min-height: 44px; }
 }
 
+
+/* ---------- driver.js (the tour) ----------
+   Vendored theme notes: driver.css is written light — #fff popover, #2d2d2d text,
+   #ccc borders, a white arrow — with no prefers-color-scheme block, so in a dark
+   theme it lands as a white card over a dark app. Every rule below is prefixed with
+   `html` on purpose: loadVendor appends the vendor stylesheet to <head> AFTER this
+   one, so at equal specificity (`.driver-popover`) the vendor would win. Colours come
+   from the app's own tokens, which flip with the theme, so there is one override set
+   rather than two.
+   The arrow's transparent sides are re-stated because the base rule below sets all
+   four border colours at a higher specificity than driver.css's per-side rules. */
+html .driver-popover {
+  background: var(--card);
+  color: var(--ink);
+  font-family: inherit;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-xl);
+  max-width: 330px;
+}
+html .driver-popover-title { font-size: 15px; font-weight: 600; line-height: 1.35; }
+html .driver-popover-description { font-size: 13px; line-height: 1.55; color: var(--muted); }
+html .driver-popover-close-btn { color: var(--muted); }
+html .driver-popover-close-btn:hover,
+html .driver-popover-close-btn:focus { color: var(--ink); }
+html .driver-popover-progress-text { color: var(--muted); font-size: 11px; }
+html .driver-popover-footer-btn {
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 5px 11px;
+}
+html .driver-popover-footer-btn:hover,
+html .driver-popover-footer-btn:focus { background: var(--bg); }
+html .driver-popover-arrow { border-color: var(--card); }
+html .driver-popover-arrow-side-left { border-top-color: transparent; border-bottom-color: transparent; border-right-color: transparent; }
+html .driver-popover-arrow-side-right { border-top-color: transparent; border-bottom-color: transparent; border-left-color: transparent; }
+html .driver-popover-arrow-side-top { border-bottom-color: transparent; border-left-color: transparent; border-right-color: transparent; }
+html .driver-popover-arrow-side-bottom { border-top-color: transparent; border-left-color: transparent; border-right-color: transparent; }

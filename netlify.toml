@@ -9,7 +9,7 @@
 
 [build]
   publish = "."
-  # Thirteen guardrails, all pure-Node and fast:
+  # Sixteen guardrails, all pure-Node and fast:
   #   check-netlify-config — THIS file is shaped the way Netlify's schema
   #                          requires (see the note on the scheduled function
   #                          below), every scheduled function it names exists,
@@ -18,6 +18,12 @@
   #                          functions read appears in the README's install table
   #   check-sw-shell      — every sw.js SHELL entry exists on disk
   #   check-image-hygiene — the roster-OCR code has no way to persist the photo
+  #   check-boot-payload  — the boot path stays the shell and the arithmetic:
+  #                         the static import closure from index.html is pinned
+  #                         by name and by size (Tesco Pay's screen, reader and
+  #                         workbook importer are ~240 KB of it, deferred to the
+  #                         first #tesco visit), every lazy import() resolves,
+  #                         and everything the app loads is in the offline shell
   #   check-csp-hashes    — every inline boot script is hashed in the CSP below
   #                         (a miss is invisible locally: no CSP is sent there)
   #   check-freshness     — a deploy always reaches the device: every app asset
@@ -27,6 +33,13 @@
   #                         reads (`$` drops a non-string `innerHTML` in silence,
   #                         so a miss renders an empty element, not an error:
   #                         the header's admin circle shipped blank that way)
+  #   check-a11y          — the accessibility audit is a browser page
+  #                         (a11y-harness.html), so this is what stops it doing
+  #                         nothing: every route/menu level/menu modal must still
+  #                         be a surface the harness drives, its verdict must
+  #                         still sum all four defects, the page must stay
+  #                         dev-only, and no icon-only control may go unnamed
+  #                         (the History month chevrons shipped that way)
   #   test-tesco          — the pay/tax engine still matches the workbook's
   #                         own cached figures, so a pay change can't ship silently
   #   test-sync           — the sync contract still round-trips the full state
@@ -44,11 +57,19 @@
   #                         so a reminder can't silently stop being decryptable
   #   test-motion         — a headline figure counts only when it changed and
   #                         rests on the exact total rather than an animation
-  #                         frame; a route change can never wait on a view
-  #                         transition's snapshot; every chart mark is covered by
-  #                         a tooltip (app.js's browser-free surface, lifted out
-  #                         of the file's own text)
-  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/check-icon-refs.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-cloud.mjs && node scripts/test-reminder-push.mjs && node scripts/test-motion.mjs"
+  #                         frame; a route change renders and waits on nothing
+  #                         (no view transition, no entrance animation, and the
+  #                         CSS for either cannot come back); every chart mark is
+  #                         covered by a tooltip (app.js's browser-free surface,
+  #                         lifted out of the file's own text)
+  #   test-ui-libs        — the four vendored UI libraries (Fuse, focus-trap +
+  #                         tabbable, driver.js, SheetJS) still do what the app
+  #                         assumes: the search RANKS through the vendored Fuse
+  #                         itself, the field stays live without it, the focus
+  #                         trap keeps its load order and its Escape rules, the
+  #                         tour stages lazily on the live nav, and every
+  #                         vendor/ path the code names resolves on disk
+  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/check-icon-refs.mjs && node scripts/check-boot-payload.mjs && node scripts/check-a11y.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-cloud.mjs && node scripts/test-reminder-push.mjs && node scripts/test-motion.mjs && node scripts/test-ui-libs.mjs"
 
   # Pin the build runtime. scripts/test-tesco.mjs imports tesco.js — a plain
   # .js browser module, and this repo has no package.json (no-build model), so
@@ -158,6 +179,14 @@
 
 [[redirects]]
   from = "/ocr-harness.html"
+  to = "/404.html"
+  status = 404
+  force = true
+
+# The accessibility harness: it drives the real app in an iframe, so it is a
+# laptop tool like the roster harness above and never part of the deploy.
+[[redirects]]
+  from = "/a11y-harness.html"
   to = "/404.html"
   status = 404
   force = true

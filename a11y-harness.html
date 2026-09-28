@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>cents. — accessibility harness</title>
+<!--
+  Dev-only harness (404'd in netlify.toml and listed in .netlifyignore, like
+  ocr-harness.html): it loads the real app in an iframe, drives it through every
+  route and every surface that opens from the nav, the header or the menu, and
+  walks each one for the four accessibility defects that a rebuild can quietly
+  reintroduce:
+
+    · an interactive control with no accessible NAME (an icon-only button whose
+      icon span is aria-hidden reads as "button" to a screen reader);
+    · two controls in ONE scope sharing an aria-label — an addressed identity, not
+      a label: restoreFocusedField looks fields up by it, and so does this;
+    · a form field with no label at all (aria-label, aria-labelledby, a wrapping
+      <label>, or a <label for>);
+    · an <img> with no alt.
+
+  It exists because a Node guard cannot see a rendered DOM. The same reasoning as
+  the OCR harness: open it on the served app and it runs the real thing.
+
+  Run: ./serve.sh 8080  →  open http://localhost:8080/a11y-harness.html
+
+  It drives only surfaces that OPEN (nav links, the menu and its drill-downs, the
+  modal openers) and never clicks anything inside an open modal, so it cannot
+  change the ledger it is auditing. The app must be unlocked: it types the
+  default PIN (100901) if a lock screen is up, and says so plainly if a custom PIN
+  is set on the device.
+
+  It also has to run in a state a user can actually BE in. A first run puts the
+  setup overlay over everything, and nothing in the menu is reachable behind it —
+  so the harness walks that overlay out through its own skip control before it
+  audits, and reports what it did ("onboarding dismissed"). Without that, a fresh
+  device audits a screen no user can reach and its PIN fields count as duplicates
+  of the menu's.
+
+  It never writes the ledger itself, and must not start: this page is served from
+  the app's OWN origin, so it shares the app's localStorage, and seeding a
+  document here would overwrite a real one. Dismissing the overlay is safe because
+  it only clicks controls the app owns — and it is the app that persists.
+-->
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 28px 32px; background: #101210; color: #E8EBE5;
+         font: 13px/1.55 ui-monospace, 'IBM Plex Mono', monospace; }
+  h1 { font: 600 19px/1.3 system-ui, sans-serif; margin: 0 0 4px; letter-spacing: -0.01em; }
+  p.lede { color: #8C928A; margin: 0 0 20px; max-width: 78ch; font-family: system-ui, sans-serif; }
+  #summary { padding: 12px 16px; border-radius: 8px; margin-bottom: 18px; font-weight: 600; }
+  #summary.ok { background: #12241A; color: #5BD08D; border: 1px solid #24513A; }
+  #summary.bad { background: #2A1518; color: #F2909B; border: 1px solid #5A2A31; }
+  #summary.wait { background: #1A1D1A; color: #8C928A; border: 1px solid #272B26; }
+  table { border-collapse: collapse; width: 100%; max-width: 1200px; }
+  th, td { text-align: left; padding: 5px 12px 5px 0; border-bottom: 1px solid #222621;
+           vertical-align: top; }
+  th { color: #8C928A; font-weight: 500; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+  tr.bad td { color: #F2909B; }
+  tr.ok td.n { color: #5BD08D; }
+  tr.skipped td { color: #6E6E67; }
+  td.n { width: 44px; }
+  details { margin: 2px 0 8px; }
+  summary { cursor: pointer; color: #D8B26A; }
+  pre { margin: 6px 0 0; padding: 8px 10px; background: #171A17; border-radius: 6px;
+        white-space: pre-wrap; word-break: break-all; font-size: 11px; color: #B9C0B7; }
+  /* The frame must be VISIBLE in the viewport, not parked off-screen: the app
+     defers its render to an animation frame (see render() in app.js), and Chrome
+     does not run frames for an iframe that is off-screen — the harness would then
+     audit a DOM the app never got to paint. Scaled down so the report stays
+     reachable; a CSS transform does not change what counts as on-screen. */
+  #frame-host { width: 682px; height: 558px; margin: 0 0 20px; overflow: hidden;
+                border: 1px solid #272B26; border-radius: 8px; background: #0B0D0B; }
+  #frame-host iframe { width: 1100px; height: 900px; border: 0; display: block;
+                       transform: scale(0.62); transform-origin: 0 0; }
+</style>
+</head>
+<body>
+  <h1>cents. — accessibility harness</h1>
+  <p class="lede">
+    Drives the real app through every route and every surface that opens, and walks each one for
+    unnamed controls, duplicate <code>aria-label</code>s in one scope, unlabelled fields and images
+    without <code>alt</code>. Nothing inside an open modal is clicked, so the ledger is untouched.
+    <strong>Keep this tab in the foreground:</strong> background tabs are throttled, and the app
+    defers its render to an animation frame — a hidden tab audits nothing and appears to hang.
+  </p>
+  <div id="frame-host"></div>
+  <div id="summary" class="wait">running…</div>
+  <table id="report"><thead><tr><th class="n">#</th><th>surface</th><th class="n">unnamed</th><th class="n">dupes</th><th class="n">fields</th><th class="n">alt</th><th>opened</th></tr></thead><tbody></tbody></table>
+<script type="module">
+/* ---------------------------------------------------------------- checks */
+const NAME_SELECTORS = 'button, a[href], [role="button"], input[type="submit"], input[type="button"], input[type="reset"]';
+
+/** The accessible name, as far as it can be computed without a browser API. */
+function nameOf(doc, el) {
+  const labelledBy = el.getAttribute('aria-labelledby');
+  const fromLabelledBy = labelledBy
+    ? labelledBy.split(/\s+/).map(id => doc.getElementById(id)?.textContent || '').join(' ')
+    : '';
+  const candidates = [
+    el.getAttribute('aria-label'),
+    fromLabelledBy,
+    el.getAttribute('title'),
+    (el.textContent || '').trim(),
+    el.querySelector('img[alt]:not([alt=""])')?.getAttribute('alt'),
+    el.querySelector('svg title')?.textContent,
+  ];
+  return (candidates.find(c => c && String(c).trim()) || '').trim();
+}
+
+/** Everything the user can see at once: the screen, plus any open modal/menu. */
+function scopes(doc) {
+  return [doc.getElementById('app'), ...doc.querySelectorAll('.modal-bg, .menu-backdrop, .swal2-container')]
+    .filter(node => node && node.isConnected);
+}
+
+/** The four defects, over one surface. Pure DOM reading — nothing is clicked. */
+function audit(doc) {
+  const unnamed = [];
+  const labelled = new Map();
+  const unlabelledFields = [];
+  const noAlt = [];
+  for (const scope of scopes(doc)) {
+    for (const el of scope.querySelectorAll(NAME_SELECTORS)) {
+      if (!nameOf(doc, el)) unnamed.push(describe(el));
+    }
+    for (const el of scope.querySelectorAll('[aria-label]')) {
+      const key = el.getAttribute('aria-label');
+      labelled.set(key, (labelled.get(key) || 0) + 1);
+    }
+    for (const el of scope.querySelectorAll('input, select, textarea')) {
+      if (el.type === 'hidden') continue;
+      const id = el.id;
+      const has = el.getAttribute('aria-label') || el.getAttribute('aria-labelledby') || el.closest('label')
+        || (id && doc.querySelector(`label[for="${CSS.escape(id)}"]`));
+      if (!has) unlabelledFields.push(describe(el));
+    }
+    for (const img of scope.querySelectorAll('img')) if (!img.hasAttribute('alt')) noAlt.push(describe(img));
+  }
+  const dupes = [...labelled.entries()].filter(([, n]) => n > 1).map(([key, n]) => `${key} x${n}`);
+  return { unnamed, dupes, unlabelledFields, noAlt, scopes: scopes(doc).length };
+}
+
+function describe(el) {
+  const cls = (el.getAttribute('class') || '').trim();
+  const html = el.outerHTML.replace(/\s+/g, ' ').slice(0, 160);
+  return `${el.tagName.toLowerCase()}${cls ? '.' + cls.split(/\s+/).join('.') : ''} — ${html}`;
+}
+
+/* --------------------------------------------------------------- driving */
+const frame = document.createElement('iframe');
+frame.src = '/?v=a11y-harness';
+frame.width = '1100';
+frame.height = '900';
+frame.style.cssText = 'border:0;';
+document.getElementById('frame-host').appendChild(frame);
+
+const wait = (ms) => new Promise(r => setTimeout(r, ms));
+const win = () => frame.contentWindow;
+const doc = () => frame.contentDocument;
+
+/** Wait for a condition the app owns, or give up so a report can still print. */
+async function until(fn, { timeout = 8000, every = 120 } = {}) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    try { if (fn()) return true; } catch { /* the frame is mid-navigation */ }
+    await wait(every);
+  }
+  return false;
+}
+
+const byText = (text, selector = 'button, .menu-row, a') => {
+  const needle = String(text).toLowerCase();
+  return [...doc().querySelectorAll(selector)]
+    .find(el => el.isConnected && el.textContent.trim().toLowerCase().includes(needle));
+};
+
+/** Click something that OPENS a surface. Never used inside an open modal. */
+async function openByText(text, selector) {
+  const el = byText(text, selector);
+  if (!el) return false;
+  el.click();
+  await wait(420);
+  return true;
+}
+
+async function closeEverything() {
+  for (let i = 0; i < 6; i++) {
+    const close = doc().querySelector('.menu-close, .modal-bg button[aria-label^="Close"], [aria-label="Close menu"]');
+    if (close && close.isConnected) { close.click(); await wait(240); continue; }
+    if (doc().querySelector('.modal-bg, .menu-backdrop')) {
+      const KeyEvent = win().KeyboardEvent;
+      doc().dispatchEvent(new KeyEvent('keydown', { key: 'Escape', bubbles: true }));
+      await wait(240);
+      continue;
+    }
+    break;
+  }
+}
+
+/* Not every surface closes on Escape or has a labelled close button, and one
+   left open makes the NEXT step's scope wrong (its modal would be counted
+   against an unrelated surface). So a fresh start is the honest reset: reload
+   the frame, wait for it to boot and unlock again. */
+let reloads = 0;
+let unlockNote = 'not unlocked yet';
+let onboardingNote = 'no setup overlay';
+async function resetFrame() {
+  frame.src = `/?v=a11y-${++reloads}`;
+  await wait(250);
+  if (!await until(() => win().__centsBooted, { timeout: 15000 })) return false;
+  unlockNote = await unlock();
+  noteOnboarding(await dismissOnboarding());
+  return until(() => doc().querySelector('#app > *'), { timeout: 8000 });
+}
+
+/* A first run puts the setup overlay over everything — position:fixed, the whole
+   viewport, pointer-events:auto, z-index 10001 — and it stays until it is
+   finished. Nothing in the menu is reachable behind it, so a run that drives the
+   menu anyway is auditing a state a real user cannot be in: the overlay's own PIN
+   fields then count as duplicates of the menu's, which is how a fresh device used
+   to report two "problems" that no user could ever see.
+
+   It is walked out the way a user walks it out — the overlay's own skip control
+   advances a step and, on the last one, finishes — so the audit runs against the
+   app as a returning user has it.
+
+   Deliberately NON-DESTRUCTIVE: this page is served from the app's own origin, so
+   it shares the app's localStorage, and seeding the ledger here would overwrite a
+   real one. It only clicks controls the app owns. */
+async function dismissOnboarding() {
+  if (!doc().querySelector('.onboarding-bg')) return 'absent';
+  for (let i = 0; i < 5 && doc().querySelector('.onboarding-bg'); i++) {
+    const skip = doc().querySelector('.onboarding-bg .btn-link');
+    if (!skip) break;
+    skip.click();
+    await wait(340);
+  }
+  return doc().querySelector('.onboarding-bg') ? 'stuck' : 'dismissed';
+}
+
+/* The note describes the RUN, not the last frame: it is folded in per step and
+   accumulates, because the setup overlay is gone by step two and a note that got
+   overwritten would report "no setup overlay" for a run whose first step had one.
+   A stuck overlay is the one outcome that must never read as clean. */
+let onboardingSeen = false;
+let onboardingStuck = false;
+function noteOnboarding(status) {
+  if (status === 'dismissed') onboardingSeen = true;
+  if (status === 'stuck') { onboardingStuck = true; onboardingSeen = true; }
+  onboardingNote = onboardingStuck
+    ? 'COULD NOT DISMISS THE SETUP OVERLAY (a step has no skip control) — the surfaces were audited behind it'
+    : onboardingSeen ? 'setup overlay dismissed' : 'no setup overlay';
+}
+
+/* The menu trigger carries no text, so it is addressed by class: a text search
+   for '' would match the first control on the page. */
+async function openMenuRoot() {
+  const trigger = doc().querySelector('.menu-trigger');
+  if (!trigger) return false;
+  trigger.click();
+  await wait(420);
+  return true;
+}
+
+async function go(route) {
+  if (win().location.hash === '#' + route) return true;
+  win().location.hash = route;
+  await wait(700);
+  return true;
+}
+
+/* Every modal the MENU can open, by the function app.js calls to open it.
+   scripts/check-a11y.mjs reads this list and asserts it against the openers in
+   app.js's buildMenuLevel(): a new menu item that opens a modal has to be added
+   here AND given a step below, so a surface cannot ship unaudited.
+   Three openers are deliberately not here, and the guard knows why:
+     · openRestorePicker — it opens the OS file dialog, which this page cannot
+       see or dismiss;
+     · startAppTour — driver.js appends its popovers to <body>, outside every
+       scope read below, so there is nothing here for this page to audit;
+     · showProfilePicker — the menu row and the header chip that reach it are
+       both rendered only when the device holds more than one profile, so a
+       step for it would report "skipped" on every ordinary run. A skip has to
+       mean "this device could not reach it", not "this device never has it". */
+const MODAL_OPENERS = [
+  'openAdminPanel', 'openRecurringManager', 'openAvatarPicker',
+  'openReminderSettings', 'openPinSettings', 'openSyncSettings',
+];
+
+/* The surfaces: every route, then every place a screen opens something. */
+const STEPS = [
+  { name: '#dashboard', open: () => go('dashboard') },
+  { name: '#add', open: () => go('add') },
+  { name: '#add · split across methods', open: async () => (await go('add')) && openByText('Split across methods', 'button, a, .btn-link') },
+  { name: '#history', open: () => go('history') },
+  { name: '#history · bulk bar (selection on)', needs: 'an entry in the ledger to select', open: async () => {
+      await go('history');
+      const box = doc().querySelector('#app input[type="checkbox"]');
+      if (!box) return false;
+      box.click();
+      await wait(400);
+      return true;
+    } },
+  { name: '#balances', open: () => go('balances') },
+  { name: '#tesco', open: () => go('tesco') },
+  { name: '#tesco · edit sheet', needs: 'a stored shift to edit', open: async () => {
+      if (!(await go('tesco'))) return false;
+      // Wait for the lazy module: the screen renders once its import lands.
+      await until(() => doc().querySelector('#app button[aria-label^="Edit shift"]'), { timeout: 6000 });
+      const pencil = doc().querySelector('#app button[aria-label^="Edit shift"]');
+      if (!pencil) return false;
+      pencil.click();
+      await wait(420);
+      return true;
+    } },
+  { name: '#insights', open: () => go('insights') },
+  { name: 'menu · root', open: openMenuRoot },
+  { name: 'menu · appearance', open: async () => { await openByText('', '.menu-trigger'); return openByText('Appearance', '.menu-row'); } },
+  { name: 'menu · privacy', open: async () => { await openByText('', '.menu-trigger'); return openByText('Privacy', '.menu-row'); } },
+  { name: 'modal · privacy PIN', open: async () => {
+      await openByText('', '.menu-trigger');
+      await openByText('Privacy', '.menu-row');
+      return openByText('PIN', '.menu-row');
+    } },
+  { name: 'menu · cloud sync', open: async () => { await openByText('', '.menu-trigger'); return openByText('Cloud sync', '.menu-row'); } },
+  { name: 'modal · sync settings', open: async () => {
+      await openByText('', '.menu-trigger');
+      await openByText('Cloud sync', '.menu-row');
+      return openByText('Sync settings', '.menu-row');
+    } },
+  { name: 'menu · data', open: async () => { await openByText('', '.menu-trigger'); return openByText('Data', '.menu-row'); } },
+  { name: 'modal · recurring & bills', open: async () => { await openByText('', '.menu-trigger'); return openByText('Recurring', '.menu-row'); } },
+  { name: 'modal · daily reminder', open: async () => { await openByText('', '.menu-trigger'); return openByText('Daily reminder', '.menu-row'); } },
+  { name: 'modal · profile picture', open: async () => { await openByText('', '.menu-trigger'); return openByText('Profile picture', '.menu-row'); } },
+  { name: 'modal · admin panel', open: () => openByText('', '.admin-trigger') },
+];
+
+// Every surface gets a freshly loaded app. It is slower than closing whatever the
+// last step left open, and it is the only version that cannot lie: a modal left
+// behind is a second scope counted against an unrelated row (and "Escape closes
+// it" is not true of every modal).
+
+/* ------------------------------------------------------------------ run */
+const summary = document.getElementById('summary');
+const tbody = document.querySelector('#report tbody');
+const results = [];
+
+function row(index, step, result, opened, failure = null) {
+  const tr = document.createElement('tr');
+  const bad = !opened ? 'skipped' : (result.unnamed.length || result.dupes.length || result.unlabelledFields.length || result.noAlt.length) ? 'bad' : 'ok';
+  tr.className = bad;
+  tr.innerHTML = `<td>${index}</td><td>${step.name}</td>`
+    + `<td class="n">${opened ? result.unnamed.length : '—'}</td>`
+    + `<td class="n">${opened ? result.dupes.length : '—'}</td>`
+    + `<td class="n">${opened ? result.unlabelledFields.length : '—'}</td>`
+    + `<td class="n">${opened ? result.noAlt.length : '—'}</td>`
+    + `<td>${opened ? `yes (${result.scopes} scope${result.scopes === 1 ? '' : 's'})` : (failure ? `threw: ${escapeHtml(failure)}` : `skipped — needs ${escapeHtml(step.needs || 'a reason (declare one)')}`)}</td>`;
+  tbody.appendChild(tr);
+  const findings = [
+    ['unnamed controls', result.unnamed],
+    ['duplicate aria-labels', result.dupes],
+    ['unlabelled fields', result.unlabelledFields],
+    ['images without alt', result.noAlt],
+  ].filter(([, list]) => list.length);
+  if (findings.length) {
+    const det = document.createElement('tr');
+    det.className = bad;
+    det.innerHTML = `<td></td><td colspan="6"><details open><summary>${findings.reduce((n, [, l]) => n + l.length, 0)} finding(s)</summary>`
+      + findings.map(([label, list]) => `<div><strong>${label}</strong><pre>${list.map(l => escapeHtml(l)).join('\n')}</pre></div>`).join('')
+      + '</details></td>';
+    tbody.appendChild(det);
+  }
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+}
+
+async function unlock() {
+  const lock = doc().querySelector('.pin-lock-bg input[aria-label="PIN"]');
+  if (!lock) return 'no lock screen';
+  lock.value = '100901';
+  const InputEvent = win().Event;
+  lock.dispatchEvent(new InputEvent('input', { bubbles: true }));
+  const gone = await until(() => !doc().querySelector('.pin-lock-bg'), { timeout: 4000 });
+  return gone ? 'unlocked with the default PIN' : 'COULD NOT UNLOCK (a custom PIN is set on this device)';
+}
+
+(async function run() {
+  // Boot is `__centsBooted`, NOT "the mount has children": with a PIN set the app
+  // deliberately paints nothing at all until it is unlocked (the lock overlay
+  // mounts on <body>), so waiting for content first would wait forever.
+  const booted = await until(() => win().__centsBooted, { timeout: 15000 });
+  if (!booted) {
+    summary.className = 'bad';
+    summary.textContent = 'the app never booted in the frame — is it being served? (open this page from the served app, not from disk)';
+    return;
+  }
+  unlockNote = await unlock();
+  noteOnboarding(await dismissOnboarding());
+  const painted = await until(() => doc().querySelector('#app > *'), { timeout: 8000 });
+  if (!painted) {
+    summary.className = 'bad';
+    summary.textContent = `the app booted but never painted — ${unlockNote}`;
+    return;
+  }
+  for (let i = 0; i < STEPS.length; i++) {
+    const step = STEPS[i];
+    let opened = false;
+    let failure = null;
+    // One surface can never take the run down: a harness that stops halfway
+    // reports on half the app and looks like a pass on the part it reached.
+    // Progress is exposed (and the very slow steps are visible) so a run that
+    // stalls can be diagnosed from the console instead of by guesswork.
+    window.__a11yProgress = { i, step: step.name, phase: 'open' };
+    try {
+      opened = (await resetFrame()) && await step.open();
+      window.__a11yProgress.phase = 'settle';
+      await wait(300);
+    } catch (err) {
+      opened = false;
+      failure = String((err && err.message) || err);
+    }
+    window.__a11yProgress.phase = 'audit';
+    let result = { unnamed: [], dupes: [], unlabelledFields: [], noAlt: [], scopes: 0 };
+    try {
+      if (opened) result = audit(doc());
+    } catch (err) {
+      failure = String((err && err.message) || err);
+      opened = false;
+    }
+    results.push({ step: step.name, opened, failure, needs: step.needs || null, ...result });
+    row(i + 1, step, result, opened, failure);
+  }
+  await closeEverything();
+  const problems = results.filter(r => r.opened)
+    .reduce((n, r) => n + r.unnamed.length + r.dupes.length + r.unlabelledFields.length + r.noAlt.length, 0);
+  const checked = results.filter(r => r.opened).length;
+  const skipped = results.length - checked;
+  const failures = results.filter(r => r.failure);
+  const broken = !checked || failures.length || onboardingStuck;
+  summary.className = (problems || broken) ? 'bad' : 'ok';
+  // A skip has to say WHY it was skipped — an unexplained one reads as coverage.
+  const skipReasons = [...new Set(results.filter(r => !r.opened).map(r => r.needs || r.failure || 'no reason declared'))];
+  summary.textContent = `${problems} problem(s) across ${checked} surface(s)`
+    + (skipped ? `, ${skipped} skipped (${skipReasons.join('; ')})` : '')
+    + (failures.length ? `, ${failures.length} step(s) threw: ${failures.map(f => `${f.step} (${f.failure})`).join('; ')}` : '')
+    + ` · ${unlockNote} · ${onboardingNote}`;
+  window.__a11yReport = { problems, checked, skipped, failures, unlock: unlockNote, onboarding: onboardingNote, results };
+  document.title = (problems || broken) ? `a11y: ${problems} problem(s)` : `a11y: clean (${checked} surfaces)`;
+})().catch(err => {
+  const box = document.getElementById('summary');
+  box.className = 'bad';
+  box.textContent = `the harness itself threw: ${(err && err.stack) || err}`;
+  window.__a11yReport = { error: String((err && err.message) || err), checked: 0, skipped: 0, problems: -1, results: [] };
+});
+</script>
+</body>
+</html>

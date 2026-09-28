@@ -2,14 +2,18 @@
    Expense Tracker - editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #balances | #insights
    ============================================================ */
-import { loadState, saveState, resetToBlank, exportJSON, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, takeStorageNotice, loadStateFor, patchProfileSettings } from './storage.js';
+import { loadState, saveState, resetToBlank, exportJSON, exportEntriesCsv, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, takeStorageNotice, loadStateFor, patchProfileSettings, parseBackup, foreignWriteNeeded, readStateText, unreadableBackup, MAX_BACKUP_BYTES, downloadText } from './storage.js';
 import { CATEGORIES, METHODS, TABS, HIDEABLE_TABS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfile, setActiveProfileId, getActiveProfileId, hasSessionChoice, nsKey, profileEnvName, isAdminProfile, setProfileIcon } from './profiles.js';
 import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime } from './reminders.js';
-import { screenTesco, monthSummary, TESCO_RATE_DEFAULTS, weekStartOf, shiftPay, r2 } from './tesco.js';
+// The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
+// the roster reader, the photo pipeline and the workbook importer live in
+// tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
+import { monthSummary, TESCO_RATE_DEFAULTS, weekStartOf, shiftPay, r2, isoLocal } from './tesco-pay.js';
+import { startTour } from './tour.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
@@ -285,19 +289,14 @@ function flushNotices() {
 // Stashed at boot, applied only after the user confirms post-unlock.
 let pendingSetupLink = null;
 let syncBootStarted = false;
+// Which route the last render drew. A route CHANGE scrolls to the top and takes
+// the initial focus the new screen asks for; a same-route re-render keeps them.
+// It is not about animation: nothing animates on either path (see styles.css).
 let lastRenderedRoute = null;
+// A render lands on the next animation frame — that one frame is the whole of the
+// deferral a route change pays. Nothing is handed to the browser to animate and
+// nothing is waited on. See renderRoute().
 let renderFrame = null;
-// Route-transition plumbing. A render normally lands on the next animation frame;
-// a view transition has to make its change inside the transition's own callback,
-// so those renders ask for the frame and say what it is for:
-//   _renderSilent  — go in without the screenIn entrance animation, because the
-//                    transition is about to snapshot the new state and an
-//                    element captured mid-fade animates in almost invisible.
-//   _flushWaiters  — released once the swap has happened, so the browser knows
-//                    the "new" state is ready to animate from.
-let _renderSilent = false;
-let _flushWaiters = null;
-let _vtRunning = false;
 
 function startInitSync() {
   if (syncBootStarted) return;
@@ -494,6 +493,7 @@ function completeUnlock() {
   startInitSync();
   offerPersistedUndo();
   flushNotices();
+  maybeStartFirstRunTour();
   if (pendingSetupLinkToast) {
     toast(pendingSetupLinkToast);
     pendingSetupLinkToast = null;
@@ -1446,6 +1446,112 @@ function stackModal(bg) {
   document.body.appendChild(bg);
 }
 
+// ---------- the tour (driver.js) ----------
+// Offered from the menu at any time, and started once on an app that is genuinely
+// empty — never sprung on someone who already has a year of entries, which is why
+// `tourSeen` is written when it ends rather than when it is offered. The steps (and
+// the reason they are anchored on the nav) are tour.js's own; this is only the
+// wiring, and a tour that cannot be loaded says so instead of doing nothing.
+function markTourSeen() {
+  if (state.settings.tourSeen) return;
+  state.settings.tourSeen = true;
+  persist();
+}
+async function startAppTour() {
+  const result = await startTour({
+    routes: ROUTES.filter(tabVisible),
+    loadVendor,
+    onEnd: () => markTourSeen(),
+  });
+  if (result === 'unavailable') toast('The tour could not be loaded.');
+  return result;
+}
+// Only for a first run: nothing logged, nothing booked, no checkpoint — the app the
+// onboarding overlay has just finished introducing.
+function maybeStartFirstRunTour() {
+  if (state.settings.tourSeen || !pinUnlocked || needsOnboarding()) return;
+  if (state.entries.length || (state.tesco && state.tesco.shifts || []).length) return;
+  const points = Object.values(state.settings.balanceCheckpoints || {});
+  if (points.some(p => Array.isArray(p) && p.length)) return;
+  // Behind the boot paint, not in front of it: the dashboard's own entrance is the
+  // thing the first step is describing.
+  setTimeout(() => { startAppTour(); }, 450);
+}
+
+// ---------- modal focus trap (focus-trap + tabbable) ----------
+// Every modal in the app is a `.modal-bg` appended to document.body — app.js's own
+// and tesco.js's, which go through stackModal — and focus is the one thing none of
+// them handled: the only 'Tab' handling in the app is the app menu's, so in every
+// other modal Tab walked straight out of the dialog and into the page behind it.
+//
+// The trap therefore follows the DOM rather than the twenty call sites: one
+// observer activates focus-trap on the TOPMOST `.modal-bg` (stacked modals keep
+// their order — the recurring manager's editor sits over it) and releases it when
+// that element leaves the document, so a modal added later is trapped by
+// construction instead of by remembering. The app menu is not a `.modal-bg` and
+// keeps its own, already-working, Tab handling.
+//
+// Escape is left to the modals (each already handles it, and only the topmost may
+// act — isTopModal), and clicks are left alone (the backdrop IS inside the trap's
+// container, so clicking it still closes the modal). If focus-trap cannot be
+// fetched the modal is exactly what it was before: focusable, Escape-able, and
+// merely untrapped — the same graceful direction as every other vendored widget.
+const _modalTraps = new Map();   // .modal-bg → its focus-trap instance
+let _trapSyncQueued = false;
+function _trapTop() {
+  const bgs = [...document.querySelectorAll('.modal-bg')];
+  return bgs[bgs.length - 1] || null;
+}
+function syncModalFocusTrap() {
+  _trapSyncQueued = false;
+  const top = _trapTop();
+  // Released first, and for both reasons: a trap whose modal has left the document
+  // (its own close() removed it) would otherwise stay on focus-trap's stack, and a
+  // modal that is no longer on top hands focus to the one above it.
+  for (const [bg, trap] of [..._modalTraps]) {
+    if (bg === top && bg.isConnected) continue;
+    _modalTraps.delete(bg);
+    try { trap.deactivate(); } catch { /* already gone */ }
+  }
+  if (!top) return;
+  const live = _modalTraps.get(top);
+  if (live) {
+    if (!live.active) { try { live.activate(); } catch { /* ignore */ } }
+    return;
+  }
+  if (typeof focusTrap === 'undefined') {
+    // First modal of the session: fetch tabbable THEN focus-trap (the UMD reads
+    // window.tabbable as it loads, so the order is load-bearing — the same trap
+    // popper → tippy has), then trap the modal that is open by then.
+    loadVendor('tabbable', { js: 'vendor/tabbable.umd.min.js' })
+      .then(() => loadVendor('focus-trap', { js: 'vendor/focus-trap.umd.min.js' }))
+      .then(syncModalFocusTrap)
+      .catch(() => {});
+    return;
+  }
+  try {
+    const trap = focusTrap.createFocusTrap(top, {
+      // Escape runs the modal's own handler (which knows whether it is the topmost
+      // one); clicking outside the container is not a thing that can happen here
+      // (the container is the full-screen backdrop) and must not deactivate it.
+      escapeDeactivates: false,
+      clickOutsideDeactivates: false,
+      allowOutsideClick: true,
+      // Tabbing from the last control cycles to the first, and back.
+      returnFocusOnDeactivate: true,
+      fallbackFocus: () => top.querySelector('.modal') || top,
+      tabbableOptions: { displayCheck: 'none' },
+    });
+    _modalTraps.set(top, trap);
+    trap.activate();
+  } catch { /* a trap that cannot be built must not break the modal */ }
+}
+function wireModalFocusTrap() {
+  const queue = () => { if (_trapSyncQueued) return; _trapSyncQueued = true; queueMicrotask(syncModalFocusTrap); };
+  new MutationObserver(queue).observe(document.body, { childList: true });
+  queue();
+}
+
 function openPinSettings() {
   const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
   const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Privacy lock settings', tabindex: '-1', style: 'max-width:420px;' });
@@ -1545,6 +1651,253 @@ function persist() {
   }
   scheduleSyncPush();
 }
+
+// ---------- the Tesco Pay screen is fetched on first visit ----------
+// tesco.js holds the screen, the roster-photo reader, the pixel pipeline and the
+// workbook importer: ~240 KB of the 770 KB a boot used to pull, parsed on the
+// lock screen for a session that may never open the tab. The engine the
+// dashboard reads is tesco-pay.js, which app.js imports statically (~21 KB of
+// arithmetic), so the tab's figures stay on the dashboard either way.
+//
+// The switch in _render() asks for the module; a cold miss draws a placeholder
+// and the import's own `render()` (the app's one render path) replaces it. A
+// failure is reported and re-armed, so a later visit retries instead of leaving
+// a screen that never loads.
+let _tescoModule = null;       // the module once it has loaded
+let _tescoLoading = false;     // an import is in flight
+
+/** The Tesco module, or null while its import runs — which it starts. */
+function tescoScreen() {
+  if (_tescoModule) return _tescoModule;
+  if (!_tescoLoading) {
+    _tescoLoading = true;
+    import('./tesco.js')
+      .then(mod => { _tescoModule = mod; render(); })
+      .catch(err => {
+        _tescoLoading = false;
+        console.warn('cents: the Tesco Pay screen could not be loaded', err);
+        toast('The Tesco Pay screen could not be loaded.');
+      });
+  }
+  return null;
+}
+
+// Intent warm-up: pointing at (or tabbing to) a Tesco link starts the fetch, so
+// a click on the tab is usually already there. Delegated, because every screen
+// rebuilds its own nav — and it is the same call the route switch makes.
+function warmTescoScreen(ev) {
+  const el = ev.target && ev.target.closest ? ev.target.closest('a[href="#tesco"]') : null;
+  if (el) void tescoScreen();
+}
+document.addEventListener('pointerover', warmTescoScreen);
+document.addEventListener('focusin', warmTescoScreen);
+
+/** Drawn between asking for the module and having it. */
+function tescoLoadingCard() {
+  const c = $('section', { class: 'page-section', 'aria-label': 'Tesco Pay' });
+  c.appendChild($('div', { class: 'page-title-row' }, $('h1', { class: 'page-title' }, 'Tesco Pay')));
+  c.appendChild($('div', { class: 'card', style: 'padding:22px;' },
+    $('p', { style: 'margin:0;color:var(--muted);font-size:13px;' }, 'Opening Tesco Pay\u2026')));
+  return c;
+}
+
+// ---------- restoring a backup ----------
+// Export has always existed; reading a file back did not, which made "Export
+// data" a one-way door — including the notice a full quota raises, which tells
+// the user to export a backup it could never open again. A restore is a MERGE
+// (mergeStates, the same union the cloud path uses), so it can only ever add:
+// the newest version of each entry wins, tombstones still hold, and nothing
+// already on this device is deleted. storage.js owns the rules for reading the
+// file (parseBackup) so they are pinned in scripts/test-integrity.mjs rather
+// than checked by hand.
+let restoreInput = null;
+
+/** Why a file was refused, in the words a user can act on. */
+const BACKUP_REFUSAL = {
+  empty: 'That file is empty.',
+  'too-large': 'That file is far too large to be one of this app\u2019s backups.',
+  unreadable: 'That file is not valid JSON - it may be truncated. Try another copy.',
+  'not-a-backup': 'That file is not a cents. backup: it has no list of entries.',
+};
+
+function formatBytes(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return '0 KB';
+  if (n < 1024 * 1024) return `${Math.max(1, Math.round(n / 1024))} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** The one file-picking path, shared by Restore and the quarantined copy. */
+function openRestorePicker() {
+  if (!restoreInput) {
+    restoreInput = $('input', { type: 'file', accept: '.json,application/json', class: 'restore-file', 'aria-label': 'Choose a backup file', style: 'display:none;' });
+    restoreInput.addEventListener('change', () => {
+      const file = restoreInput.files && restoreInput.files[0];
+      // Clear the value so picking the same file twice in a row fires again.
+      restoreInput.value = '';
+      if (file) void restoreFromFile(file);
+    });
+    document.body.appendChild(restoreInput);
+  }
+  restoreInput.click();
+}
+
+async function restoreFromFile(file) {
+  if (file.size > MAX_BACKUP_BYTES) { toast(BACKUP_REFUSAL['too-large']); return; }
+  let text;
+  try {
+    text = await file.text();
+  } catch {
+    toast('That file could not be read.');
+    return;
+  }
+  await restoreFromText(text, file.name || 'that file');
+}
+
+/**
+ * Merge a validated backup document into this device's document.
+ *
+ * `source` is only ever used in the wording. The undo is one step and reverts
+ * the WHOLE document to what it was a moment ago (a merge touches settings and
+ * the Tesco tables, not just entries, so an entry-only journal would be the
+ * wrong shape) — it is therefore session-scoped, and clearing the reload-safe
+ * journal is deliberate: the older journal describes a different action.
+ */
+async function applyRestore(backupState, source) {
+  const before = JSON.parse(JSON.stringify(state));
+  const merged = validateState(mergeStates(state, backupState));
+  const added = merged.entries.length - state.entries.length;
+  const addedShifts = (merged.tesco?.shifts?.length || 0) - (state.tesco?.shifts?.length || 0);
+  if (!added && !addedShifts && JSON.stringify(merged.settings) === JSON.stringify(state.settings)) {
+    toast('Nothing to restore: this device already has everything in that file.');
+    return;
+  }
+  state = merged;
+  persist();
+  render();
+  trackAction(() => { state = validateState(before); persist(); render(); }, 'restore from backup');
+  const parts = [];
+  if (added > 0) parts.push(`${added} ${added === 1 ? 'entry' : 'entries'}`);
+  if (addedShifts > 0) parts.push(`${addedShifts} ${addedShifts === 1 ? 'shift' : 'shifts'}`);
+  toast(`Restored ${parts.length ? parts.join(' and ') : 'settings'} from ${source}.`);
+}
+
+let restoreConfirmOpen = false;
+
+async function restoreFromText(text, source) {
+  const verdict = parseBackup(text);
+  if (!verdict.ok) { toast(BACKUP_REFUSAL[verdict.reason] || 'That file could not be read as a backup.'); return; }
+  if (!verdict.kept) {
+    toast(verdict.dropped
+      ? `That backup has ${verdict.dropped} entries and none of them could be read.`
+      : 'That backup is empty.');
+    return;
+  }
+  if (restoreConfirmOpen) return;   // a second pick while the dialog is up
+  restoreConfirmOpen = true;
+  let ok = false;
+  try {
+    ok = await swalConfirm({
+      title: 'Restore this backup?',
+      text: `Merge ${verdict.kept} ${verdict.kept === 1 ? 'entry' : 'entries'} from ${source}? Nothing on this device is deleted - the newest version of each entry wins.`
+        + (verdict.dropped ? ` (${verdict.dropped} unreadable ${verdict.dropped === 1 ? 'entry was' : 'entries were'} skipped.)` : ''),
+      confirmButtonText: 'Restore',
+    });
+  } finally {
+    restoreConfirmOpen = false;
+  }
+  if (!ok) return;
+  await applyRestore(verdict.state, source);
+}
+
+// A document that could not be parsed is parked under a quarantine key by
+// loadState rather than dropped, and until now nothing could reach it: the
+// notice named a storage key at a user who has no way to open one. Offer the
+// copy back — as a restore when it can be read at all, and as a download when
+// it cannot, because those bytes are the only copy of that ledger.
+async function recoverQuarantine() {
+  const raw = unreadableBackup();
+  if (!raw) { toast('There is no unreadable copy stored on this device.'); return; }
+  const verdict = parseBackup(raw);
+  if (verdict.ok && verdict.kept) {
+    const ok = await swalConfirm({
+      title: 'Restore the kept copy?',
+      text: `A copy of a document this app could not read is still on this device. It holds ${verdict.kept} ${verdict.kept === 1 ? 'entry' : 'entries'}. Merge it in, or cancel and keep it where it is.`,
+      confirmButtonText: 'Merge it in',
+    });
+    if (!ok) return;
+    await applyRestore(verdict.state, 'the kept copy');
+    return;
+  }
+  const ok = await swalConfirm({
+    title: 'Download the kept copy?',
+    text: 'This copy cannot be read as a document, so it cannot be merged. It can be downloaded, which is the only way to keep it - a backup taken before it was damaged may still open.',
+    confirmButtonText: 'Download',
+  });
+  if (!ok) return;
+  downloadText(`cents-unreadable-${today()}.json`, raw, 'application/json');
+  toast('Downloaded the kept copy.');
+}
+
+// ---------- durable storage ----------
+// The document lives in localStorage, which browsers may evict under storage
+// pressure — for a local-first ledger that is the whole of the user's data. A
+// "persistent" origin is granted without a prompt to a site the user engages
+// with, and the call is a no-op once granted, so it is asked for on every boot.
+// Failure is silent by design: the app works either way.
+async function requestDurableStorage() {
+  try {
+    if (!navigator.storage || typeof navigator.storage.persist !== 'function') return;
+    if (await navigator.storage.persisted()) return;
+    await navigator.storage.persist();
+  } catch { /* unsupported, or refused */ }
+}
+
+/** "1.2 MB · persistent" for the Data menu: the document's own size (localStorage
+ *  keeps UTF-16, so two bytes a character) and whether the browser has promised
+ *  to keep it. */
+async function storageFootprint() {
+  const chars = (readStateText() || '').length;
+  let durable = false;
+  try { durable = !!(navigator.storage && await navigator.storage.persisted()); } catch { /* not supported */ }
+  return `${formatBytes(chars * 2)} \u00b7 ${durable ? 'persistent' : 'best-effort'}`;
+}
+
+// ---------- a second tab is a second copy of the document ----------
+// Every tab holds the whole document in memory and every save writes ALL of it
+// back, so the tab that writes second erases the entry the other one just added
+// — there is no per-entry write to collide safely. A storage event is the
+// browser saying another tab wrote; the tab that still holds something the
+// writer did not merges the two documents and writes the union back.
+// foreignWriteNeeded() is what stops the two writing at each other forever:
+// after one round trip neither side has anything the other lacks, so nobody
+// writes again. The document is re-read from storage rather than taken from
+// ev.newValue, because the event is a notification, not a snapshot (and
+// newValue is null when a key is removed).
+let foreignWriteTimer = 0;
+
+function reconcileForeignWrite() {
+  foreignWriteTimer = 0;
+  const raw = readStateText();
+  if (!raw) return;
+  let incoming;
+  try { incoming = JSON.parse(raw); } catch { return; }
+  if (!incoming || typeof incoming !== 'object' || !Array.isArray(incoming.entries)) return;
+  const merged = validateState(mergeStates(state, incoming));
+  const needed = foreignWriteNeeded(merged, incoming);
+  // Adopt either way: the other tab's document is part of ours now. Only write
+  // when this tab holds something the other does not.
+  state = merged;
+  if (needed) persist();
+  render();
+  if (!hasPinLock() || pinUnlocked) toast('Updated from another tab.');
+}
+
+window.addEventListener('storage', (ev) => {
+  if (!ev || ev.key !== nsKey('state')) return;
+  clearTimeout(foreignWriteTimer);
+  foreignWriteTimer = setTimeout(reconcileForeignWrite, 120);
+});
 
 function isUsableCloudContent(content) {
   return !!content && typeof content === 'object' && !Array.isArray(content) && Array.isArray(content.entries);
@@ -3648,9 +4001,67 @@ function fuzzyMatch(text, query) {
   }
   return qi === q.length;
 }
+// ---------- search: Fuse.js, with the local matcher as the floor ----------
+// A query runs over what a person actually types — the description, the note, the
+// category and account they show under, and the amount as it is printed — and it
+// forgives the near-misses a hand-typed query has ("sainsburys", "cofee", letters
+// in the wrong order), which the subsequence matcher cannot. Fuse is fetched when a
+// search field is first used (23 KB, and most sessions never search) and this file's
+// rule holds: a vendored widget never blocks the thing it decorates, so until it
+// lands — or if it cannot be fetched at all — the local matcher keeps the field live.
+// The result order is Fuse's own score order: a search is read as a ranking, with
+// the closest match first under the field. With no query nothing is reordered.
+function localSearch(entries, query) {
+  return entries.filter(e => fuzzyMatch(
+    [e.details, e.note, categoryLabel(e.category), methodShort(e.method), fmt(e.amount)].join(' '), query));
+}
+function rankEntries(entries, query) {
+  if (typeof Fuse !== 'undefined') {
+    try {
+      const docs = entries.map(e => ({
+        entry: e,
+        details: e.details || '',
+        note: e.note || '',
+        categoryLabel: categoryLabel(e.category),
+        methodLabel: methodShort(e.method),
+        amountText: fmt(e.amount),
+      }));
+      const fuse = new Fuse(docs, {
+        keys: [
+          { name: 'details', weight: 0.5 },
+          { name: 'note', weight: 0.25 },
+          { name: 'categoryLabel', weight: 0.12 },
+          { name: 'methodLabel', weight: 0.08 },
+          { name: 'amountText', weight: 0.05 },
+        ],
+        // 0.3, measured rather than guessed (scripts/test-ui-libs.mjs runs these
+        // against the vendored build): it is the loosest setting at which an amount
+        // typed in full ("12.40") returns that row and not also €61.50, while "cofee",
+        // "electricty", a category, an account and a note all still match. At 0.4 the
+        // amount query picks up strangers — the price of a ranking that forgives too
+        // much. A transposed word ("trian") is not promised either way; no threshold
+        // here matches it.
+        threshold: 0.3,
+        ignoreLocation: true,    // the match is not expected near the start
+        minMatchCharLength: 2,
+        includeScore: true,
+      });
+      return fuse.search(query).map(r => r.item.entry);
+    } catch { /* fall through to the local matcher */ }
+  }
+  return localSearch(entries, query);
+}
+// Start fetching the ranker as soon as a search field is touched, so the first
+// query of a session is ranked rather than merely matched. Cheap and idempotent:
+// loadVendor caches by name and the type check short-circuits every later call.
+function ensureSearchLib() {
+  if (typeof Fuse !== 'undefined') return;
+  loadVendor('fuse', { js: 'vendor/fuse.min.js' }).catch(() => {});
+}
 function searchEntries(entries, query, filters) {
-  return entries.filter(e => {
-    if (query && !fuzzyMatch(e.details + ' ' + (e.note||''), query)) return false;
+  if (query) ensureSearchLib();
+  const matched = query ? rankEntries(entries, query) : entries;
+  return matched.filter(e => {
     if (filters.type && filters.type !== 'all' && e.type !== filters.type) return false;
     if (filters.category && filters.category !== 'all' && e.category !== filters.category) return false;
     if (filters.method && filters.method !== 'all' && e.method !== filters.method) return false;
@@ -4626,6 +5037,9 @@ function buildMenuLevel(id) {
     // other way in, and it is behind the lock.
     list.append(menuRowEl({ icon: 'photo', label: 'Profile picture', onClick: () => { closeAppMenu(); openAvatarPicker(activeProfile()); } }));
     list.append(menuRowEl({ icon: 'clock', label: 'Daily reminder', onClick: () => { closeAppMenu(); openReminderSettings(); } }));
+    // The tour is a row rather than a first-run-only event: it is the cheapest way
+    // to see what a tab is for, and the one place a hidden tab is explained.
+    list.append(menuRowEl({ icon: 'sparkle', label: 'Take the tour', onClick: () => { closeAppMenu(); startAppTour(); } }));
     list.append(menuRowEl({ icon: 'appearance', label: 'Appearance', chevron: true, onClick: () => menuDrill('appearance') }));
     list.append(menuRowEl({ icon: 'lock', label: 'Privacy & security', chevron: true, onClick: () => menuDrill('privacy') }));
     list.append(menuRowEl({ icon: 'cloud', label: 'Cloud sync', chevron: true, onClick: () => menuDrill('sync') }));
@@ -4651,7 +5065,29 @@ function buildMenuLevel(id) {
       list.append(menuRowEl({ icon: 'cloud', label: 'Sync now', onClick: () => { scheduleSyncPush(1500, true); toast('Syncing…'); menuRefreshLevel('sync'); } }));
     }
   } else if (id === 'data') {
+    list.append(menuInfoRow('Entries', String(state.entries.length)));
+    // Filled in when the async storage probe answers; if the menu was closed
+    // (or rebuilt) in the meantime the node is gone and this is skipped.
+    const storageRow = menuInfoRow('On this device', '\u2026');
+    list.append(storageRow);
+    void storageFootprint().then(text => {
+      if (storageRow.isConnected) storageRow.lastElementChild.textContent = text;
+    });
     list.append(menuRowEl({ icon: 'data', label: 'Export data', onClick: () => { closeAppMenu(); exportJSON(state); toast('Exported.'); } }));
+    // The same ledger as a spreadsheet. The labels are resolved by this file's
+    // own categoryLabel/methodLabel, so the file a user opens names a category
+    // the way the screen does — including their custom ones.
+    list.append(menuRowEl({ icon: 'download', label: 'Export CSV', note: 'One row per entry, for a spreadsheet', onClick: () => {
+      closeAppMenu();
+      exportEntriesCsv(state, { category: categoryLabel, method: methodLabel });
+      toast('Exported CSV.');
+    } }));
+    list.append(menuRowEl({ icon: 'download', label: 'Restore from backup', note: 'Merges a .json export back in', onClick: () => { closeAppMenu(); openRestorePicker(); } }));
+    // Only offered when there IS one: a document loadState could not parse is
+    // parked under a quarantine key, and until now nothing could reach it.
+    if (unreadableBackup()) {
+      list.append(menuRowEl({ icon: 'alert', label: 'Recover unreadable copy', note: 'Kept from a document that would not open', onClick: () => { closeAppMenu(); void recoverQuarantine(); } }));
+    }
     list.append(menuRowEl({ icon: 'data', label: 'Reset all data', danger: true, onClick: async () => {
       closeAppMenu();
       if (!(await swalConfirm({ title: 'Reset all data?', text: 'This clears every entry, balance checkpoint, and setting on this device. Continue?', confirmButtonText: 'Reset', danger: true }))) return;
@@ -5345,7 +5781,7 @@ function screenDashboard() {
     screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:${isNarrow() ? '22px' : '32px'};` },
       $('div', { class: 'row between' },
         $('span', { class: 'eyebrow' }, 'Spent of budget'),
-        $('span', { class: 'serif budget-pct-anim', style: 'font-size:22px;' }, `${pct.toFixed(1)}%`),
+        $('span', { class: 'serif', style: 'font-size:22px;' }, `${pct.toFixed(1)}%`),
       ),
       $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 20px;' },
         $('div', { class: 'budget-bar-fill', style: `height:100%;width:${pct}%;background:${pct > 90 ? 'var(--negative)' : 'var(--accent)'};transition:width .5s cubic-bezier(0.2,0.8,0.2,1);border-radius:99px;` }),
@@ -5377,13 +5813,16 @@ function screenDashboard() {
   const tescoShifts = (state.tesco && state.tesco.shifts) || [];
   if (tescoShifts.length && tabVisible('tesco')) {
     const tescoRates = { ...TESCO_RATE_DEFAULTS, ...(state.settings.tescoRates || {}) };
-    const tescoMonth = monthSummary(tescoShifts, (state.tesco && state.tesco.payslips) || [], tescoRates, now.getFullYear(), now.getMonth());
+    // Both figures are nets (see monthSummary): what the month's hours should pay
+    // after tax, and what the bank has paid in so far. The words match the tab's
+    // own stat card, because they are the same three figures.
+    const tescoMonth = monthSummary(tescoShifts, (state.tesco && state.tesco.payslips) || [], tescoRates, now.getFullYear(), now.getMonth(), isoLocal(now));
     screen.appendChild($('a', { href: '#tesco', class: 'card', style: 'display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;margin-bottom:24px;' },
       iconSpan('briefcase', 'md'),
       $('div', { style: 'flex:1;min-width:0;' },
         $('div', { style: 'font-weight:600;font-size:13px;' }, 'Tesco Pay'),
         $('div', { class: 'muted', style: 'font-size:12px;margin-top:2px;' },
-          `${tescoMonth.hours}h this month · ${fmt(tescoMonth.anticipated)} anticipated · ${fmt(tescoMonth.received)} received`),
+          `${tescoMonth.hours}h this month · ${fmt(tescoMonth.anticipated)} anticipated (est. net) · ${fmt(tescoMonth.received)} received`),
       ),
       $('span', { class: 'muted', style: 'font-size:11px;' }, 'Open →'),
     ));
@@ -6392,7 +6831,9 @@ function screenHistory() {
   const filtered = searchEntries(monthEntries, searchQuery, { type: 'all', category: activeCat, method: activeMethodGroup ? 'all' : activeMethod })
     .filter(e => !activeMethodGroup || activeMethodGroup.members.includes(e.method));
   // Sort a copy so filtering/history presentation never mutates persisted order.
-  let visible = [...filtered].sort((a, b) => b.date.localeCompare(a.date)
+  // A query is read as a ranking and keeps the ranker's order (closest match first,
+  // under the field); with the field empty the month reads newest-first as usual.
+  let visible = searchQuery ? [...filtered] : [...filtered].sort((a, b) => b.date.localeCompare(a.date)
     || ((b.createdAt || '')).localeCompare(a.createdAt || '')
     || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
   if (activeDay) visible = visible.filter(e => e.date === activeDay);
@@ -6424,16 +6865,16 @@ function screenHistory() {
   c.appendChild($('div', { class: 'page-title-row' },
     $('h1', { class: 'page-title' }, monthLabel(activeMonth)),
     $('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;justify-content:flex-end;' },
-      monthNav(iconSpan('chevron-left', 'md'), () => { const i = months.indexOf(activeMonth); if (i < months.length - 1) update({ month: months[i + 1] }); }, months.indexOf(activeMonth) >= months.length - 1),
+      monthNav(iconSpan('chevron-left', 'md'), () => { const i = months.indexOf(activeMonth); if (i < months.length - 1) update({ month: months[i + 1] }); }, months.indexOf(activeMonth) >= months.length - 1, 'Previous month'),
       monthNav(monthKey(today()) === activeMonth ? 'Today' : 'Jump', () => update({ month: monthKey(today()) }), false),
-      monthNav(iconSpan('chevron-right', 'md'), () => { const i = months.indexOf(activeMonth); if (i > 0) update({ month: months[i - 1] }); }, months.indexOf(activeMonth) <= 0),
+      monthNav(iconSpan('chevron-right', 'md'), () => { const i = months.indexOf(activeMonth); if (i > 0) update({ month: months[i - 1] }); }, months.indexOf(activeMonth) <= 0, 'Next month'),
     ),
   ));
 
   c.appendChild(calendarCard(activeMonth, activeDay, (ds) => update({ day: activeDay === ds ? '' : ds })));
 
   // Search bar
-  const searchInput = $('input', { type: 'text', value: searchQuery, placeholder: 'Search descriptions, notes…', 'aria-label': 'Search entries', autocomplete: 'off', style: 'width:100%;max-width:320px;', onInput: (e) => {
+  const searchInput = $('input', { type: 'text', value: searchQuery, placeholder: 'Search descriptions, notes…', 'aria-label': 'Search entries', autocomplete: 'off', style: 'width:100%;max-width:320px;', onFocus: () => ensureSearchLib(), onInput: (e) => {
     // Debounced update
     clearTimeout(searchInput._timer);
     searchInput._timer = setTimeout(() => update({ q: e.target.value }), 250);
@@ -6755,8 +7196,17 @@ function calendarCard(activeMonth, activeDay, onDayChange) {
   );
 }
 
-function monthNav(label, onClick, disabled) {
-  return $('button', { type: 'button', class: 'btn btn-ghost', disabled: disabled ? '' : null, style: 'height:28px;padding:0 12px;font-size:13px;line-height:16px;font-weight:500;border-radius:6px;', onClick }, label);
+// A month-navigation button. `label` is what is shown; when it is an icon rather
+// than text it carries no accessible name of its own — the icon span is
+// aria-hidden — so the caller passes `ariaLabel` for it. An icon-only button
+// without one reads as "button, dimmed" to a screen reader and nothing else,
+// which is how the History chevrons shipped (a11y-harness.html reports it per
+// surface). aria-label is an ADDRESSED IDENTITY in this app — restoreFocusedField
+// looks fields up by it and the harness probes by it — so each one is unique.
+function monthNav(label, onClick, disabled, ariaLabel = null) {
+  const node = $('button', { type: 'button', class: 'btn btn-ghost', disabled: disabled ? '' : null, style: 'height:28px;padding:0 12px;font-size:13px;line-height:16px;font-weight:500;border-radius:6px;', onClick }, label);
+  if (ariaLabel) node.setAttribute('aria-label', ariaLabel);
+  return node;
 }
 
 // ---------- screens: balances ----------
@@ -8309,16 +8759,9 @@ function render() {
     if (flushed) return;
     flushed = true;
     renderFrame = null;
-    // Read at flush time, not captured by render(): a route transition sets the
-    // flag and then asks for a frame, and whichever render wins that frame is the
-    // one that has to go in silently.
-    const silent = _renderSilent;
-    _renderSilent = false;
-    const flushDone = _flushWaiters;
-    _flushWaiters = null;
     libCleanup(); // destroy stale vendor-widget instances (flatpickr / tippy / sortable) before re-render
     try {
-      _render(silent);
+      _render();
     } catch (e) {
     // Error boundary: if anything in the render pipeline throws,
     // show the error ON THE PAGE so we can see it without DevTools.
@@ -8353,9 +8796,6 @@ function render() {
       // Also log so we can see it in DevTools
       console.error('Render crashed:', e);
     }
-    // Released on every path, the crash one included: a transition left waiting
-    // on a frame that never came would hold the page on its old snapshot.
-    if (flushDone) flushDone();
   };
   if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(flush);
   // Watchdog: rAF can be throttled or blocked outright (occluded iframe,
@@ -8367,69 +8807,28 @@ function render() {
 }
 
 /**
- * A route change, with continuity where the browser can give it.
+ * A route change, and it goes straight through: one render, on the next frame.
  *
- * The View Transitions API snapshots the page before and after a navigation and
- * animates between them, so the account balance you were looking at is shown
- * crossing over into the one you asked for instead of the whole screen blinking.
- * The header and the phone tab bar are named in CSS, which takes them out of that
- * cross-fade entirely: the chrome holds still and only the content moves.
+ * This used to hand the change to the View Transitions API, which cross-faded
+ * the old screen up and out over 180/220ms. That was the stutter. A transition
+ * costs MORE than its animation: the browser will not call the update callback
+ * until it has captured the old state, and capturing needs a compositor frame,
+ * so a document that cannot produce one waits out the whole fallback budget
+ * before drawing the next screen at all. Measured on a webview that was not
+ * compositing: every tab switch took ~270ms, ~250 of them the budget, against
+ * ~20ms for the same navigation with no transition. It was slow where the API
+ * could not be used and animated everywhere else, and the fix for both is the
+ * same one: do the render and be done.
  *
- * Everything about this is a fallback-first: an engine without the API, or a
- * reader who has asked for less motion, gets exactly the render() it always got
- * (with the screenIn entrance that has always carried a route change), and a
- * transition that throws is caught and turned into a plain render.
- *
- * And a transition is BOUNDED. The browser will not run the update callback
- * until it has captured the old state, and capturing needs a compositor frame.
- * A document that cannot produce one — a webview that is not compositing, a
- * browser under that much pressure — leaves the navigation waiting on a snapshot
- * instead of drawing the next screen. Measured in exactly such a webview: the
- * route change took 4040ms, against 9ms for the same navigation with the API
- * unavailable. So if the browser has not asked for the new state within
- * VT_BUDGET, the transition is skipped and the render goes through unanimated.
- * The animation is the thing that may be lost here; the navigation is not.
+ * The entrance animations that used to carry a route change are gone with it.
+ * Nothing here is deferred, animated, or awaited, and the screen is never
+ * captured mid-swap, so what a tab switch costs is the render itself.
  */
-const VT_BUDGET = 250;
 function renderRoute() {
-  if (_reduceMotion || _vtRunning || typeof document.startViewTransition !== 'function') { render(); return; }
-  _renderSilent = true;
-  _vtRunning = true;
-  let asked = false;
-  let release = () => {};
-  const flushed = new Promise(resolve => { release = resolve; _flushWaiters = resolve; });
-  let transition = null;
-  let budget = 0;
-  // The way out, and it is unconditional on both counts: the promise is released
-  // whatever the transition went on to do (one left unsettled holds finished()
-  // open, and a transition that never finishes is one this guard never starts
-  // again), and the flags are cleared before the render so the screen gets the
-  // entrance a skipped transition owes it.
-  const fallback = () => {
-    if (asked) return;
-    asked = true;
-    _vtRunning = false;
-    _renderSilent = false;
-    try { if (transition) transition.skipTransition(); } catch (err) { /* nothing left to skip */ }
-    release();
-    render();
-  };
-  try {
-    transition = document.startViewTransition(() => { asked = true; render(); return flushed; });
-    transition.finished.finally(() => { _vtRunning = false; clearTimeout(budget); });
-  } catch (err) {
-    // Not a stylistic loss: a render that never happened is. Unsupportable or
-    // refused (a transition cannot start while the document is hidden), so go
-    // the ordinary way.
-    _vtRunning = false;
-    _renderSilent = false;
-    render();
-    return;
-  }
-  budget = setTimeout(fallback, VT_BUDGET);
+  render();
 }
 
-function _render(silent = false) {
+function _render() {
   const main = document.getElementById('app');
   if (!main) return;
   const focusedField = captureFocusedField();
@@ -8465,13 +8864,12 @@ function _render(silent = false) {
   } else {
     document.body.removeAttribute('data-wide');
   }
-  // Inside a route transition the browser animates the change itself, so the CSS
-  // entrance is suppressed: the transition snapshots the new state, and an
-  // element captured a frame into a 180ms fade would be animated from almost
-  // nothing. Everywhere else the entrance is the route change's only signal.
-  const entrance = route !== lastRenderedRoute && !silent;
+  // Whether this render is a route change or a repaint of the screen already up.
+  // It no longer decides an animation — a route change animates nothing — only
+  // where the page sits and who holds focus once it has drawn.
+  const routeChanged = route !== lastRenderedRoute;
   lastRenderedRoute = route;
-  const screen = $('main', { class: `shell screen${entrance ? ' stagger' : ' screen-static'}`, id: 'screen', tabindex: '-1' });
+  const screen = $('main', { class: 'shell screen', id: 'screen', tabindex: '-1' });
   // Each route needs a heading: the pages label their sections with .eyebrow
   // text, so the document otherwise had no outline to navigate by. Visually
   // hidden, and it doubles as the skip link's landing target.
@@ -8480,18 +8878,22 @@ function _render(silent = false) {
     case 'add':      screen.appendChild(screenAdd()); break;
     case 'history':  screen.appendChild(screenHistory()); break;
     case 'balances': screen.appendChild(screenBalances()); break;
-    case 'tesco':    screen.appendChild(screenTesco({
-      getState: () => state, $, iconSpan, toast, persist, render, trackAction, swalConfirm, fmt, stackModal, isTopModal,
-    })); break;
+    case 'tesco': {
+      const tesco = tescoScreen();
+      if (tesco) {
+        screen.appendChild(tesco.screenTesco({
+          // loadVendor is handed over too: the workbook import in the Tesco data
+          // card is the one thing in tesco.js that fetches a library of its own
+          // (SheetJS).
+          getState: () => state, $, iconSpan, toast, persist, render, trackAction, swalConfirm, fmt, stackModal, isTopModal, loadVendor,
+        }));
+      } else {
+        screen.appendChild(tescoLoadingCard());
+      }
+      break;
+    }
     case 'insights': screen.appendChild(screenInsights()); break;
     default:         screen.appendChild(screenDashboard());
-  }
-  // A per-child rise animation on a huge subtree (the History table) forces
-  // the browser to rasterize the whole thing into a composite layer on every
-  // navigation - keep the single cheap screenIn fade for heavy screens and
-  // stagger only light ones, so navigation stays instant.
-  if (entrance && (screen.querySelector('.history-row') || screen.children.length > 12)) {
-    screen.classList.remove('stagger');
   }
   main.appendChild(screen);
 
@@ -8529,7 +8931,7 @@ function _render(silent = false) {
 
   // Focus the Add form only when navigation created it. Same-route renders
   // restore the user's existing field/caret instead, so typing never jumps.
-  if (entrance && route === 'add') {
+  if (routeChanged && route === 'add') {
     const form = main.querySelector('[data-route-initial-focus="true"]');
     const target = form?.querySelector(`#${form.dataset.firstFocus || 'f-amount'}`);
     target?.focus({ preventScroll: true });
@@ -8565,10 +8967,10 @@ function _render(silent = false) {
 
   // Route changes should land at the top of the page; only same-route
   // re-renders restore the user's scroll position.
-  window.scrollTo(0, entrance ? 0 : scrollY);
+  window.scrollTo(0, routeChanged ? 0 : scrollY);
   // Rebuilding a same-route screen should not make typing/searching lose focus
   // or move the caret. Newly opened forms still manage their own initial focus.
-  if (!entrance) restoreFocusedField(focusedField);
+  if (!routeChanged) restoreFocusedField(focusedField);
 
   // Sticky header - register the scroll listener once. The header is rebuilt on
   // every render, so the cached element is refreshed here on each render. The
@@ -8701,6 +9103,14 @@ window.addEventListener('DOMContentLoaded', () => {
   // control - the lock/onboarding overlays mount on <body>, not #app, so
   // "mount has children" can't be the signal. Set before anything renders.
   window.__centsBooted = true;
+  // Focus follows every modal, from the moment the first one opens (see
+  // syncModalFocusTrap) — installed at boot rather than by each modal, so a modal
+  // added later is trapped without remembering to ask.
+  wireModalFocusTrap();
+  // Ask the browser to keep this origin's storage. A no-op once granted (and
+  // silent when the browser has no such API): the ledger is the whole of the
+  // app's data, so "best-effort" storage is the one thing worth asking for.
+  void requestDurableStorage();
   // ── OTA update flow ──────────────────────────────────────────────
   // A redeploy swaps the served index.html; the service worker notices the
   // changed document and asks open, controlled tabs to reload so they leave
@@ -8791,6 +9201,9 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   showProfileGate();
   render();
+  // A brand-new app gets the tour once, after the dashboard has drawn (the overlay
+  // paths above guard themselves).
+  maybeStartFirstRunTour();
   // Anything the storage layer could not do (an unreadable document) is
   // reported once the UI is up; raiseNotice defers it behind any overlay.
   const storageNotice = takeStorageNotice();
@@ -8801,6 +9214,7 @@ window.addEventListener('DOMContentLoaded', () => {
 // Expose tiny global for DevTools tinkering
 window.__cents = {
   resetToBlank, render, toast,
+  startTour: startAppTour,
   initSync, scheduleSyncPush, doAutoPush,
   renderSyncIndicator, openSyncSettings,
   syncPull, syncPush,

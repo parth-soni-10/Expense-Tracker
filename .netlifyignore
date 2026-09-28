@@ -26,6 +26,9 @@ data*.json
 __pycache__/
 *.pyc
 ocr-harness.html
+# Same treatment for the accessibility harness: it loads the app in an iframe and
+# walks every route and modal, which is a thing you do against a local server.
+a11y-harness.html
 
 # Standard noise
 .DS_Store

@@ -64,6 +64,9 @@ function buildRosterCanvas(opts = {}) {
   const DAYS = weekDates.map(d => [d.getUTCDate(), MON[d.getUTCMonth()]]);
   const iso = weekDates.map(d => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`);
   const owner = opts.ownerShift || SHIFT;
+  // A colon is two dots, and a photo closes the gap between them: the engine hands
+  // back "07.00-15.00", which is the same shift written differently.
+  const cellText = t => (opts.timeSep ? String(t).replace(':', opts.timeSep) : t);
   const cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
   const g = cv.getContext('2d');
@@ -85,7 +88,7 @@ function buildRosterCanvas(opts = {}) {
     return f;
   };
   const pad = Math.round(dayW * 0.07);
-  const longest = SHIFT.concat(['12:00-20:00', '22:00-06:00', 'REST']).reduce((a, b) => (b.length > a.length ? b : a));
+  const longest = cellText(SHIFT.concat(['12:00-20:00', '22:00-06:00', 'REST']).reduce((a, b) => (b.length > a.length ? b : a)));
 
   g.fillStyle = '#111';
   g.font = `bold ${Math.round(W * 0.026)}px ${font}`;
@@ -93,7 +96,13 @@ function buildRosterCanvas(opts = {}) {
   g.font = `${Math.round(W * 0.017)}px ${font}`;
   g.fillStyle = '#333';
   const slashes = d => `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
-  g.fillText(`Week 39   ${slashes(weekDates[0])} - ${slashes(weekDates[6])}   Store 3021`, m, m + Math.round(W * 0.026) + Math.round(W * 0.028));
+  // `titleFrom` prints the range starting at another day of the week, which is
+  // what a Monday-first range over a Sunday-first grid is — one day out, printed
+  // large enough to survive glare, and the kind of line a reader trusts blindly.
+  const titleFrom = opts.titleFrom || 0;
+  const titleStart = weekDates[titleFrom];
+  const titleEnd = new Date(titleStart.getTime() + 6 * 86400000);
+  g.fillText(`Week 39   ${slashes(titleStart)} - ${slashes(titleEnd)}   Store 3021`, m, m + Math.round(W * 0.026) + Math.round(W * 0.028));
 
   // Grid rules (thin grey, thicker outer border). Off altogether on the many
   // sheets that print only spacing: the reader must not need a rule to find a
@@ -137,7 +146,7 @@ function buildRosterCanvas(opts = {}) {
     g.fillText(nm, m + pad, cy);
     for (let d = 0; d < 7; d++) {
       // A rotating pattern so rows differ; the owner row is the pinned one.
-      const shift = r === ownerRow ? owner[d] : (d === r % 7 ? rest : SHIFT[(d + r) % 7]);
+      const shift = cellText(r === ownerRow ? owner[d] : (d === r % 7 ? rest : SHIFT[(d + r) % 7]));
       g.fillStyle = '#111';
       g.font = `${opts.bold ? 'bold ' : ''}${cellFit}px ${font}`;
       g.fillText(shift, m + nameW + dayW * d + pad, cy);
@@ -216,11 +225,13 @@ async function photograph(built, opts = {}) {
   return new File([blob], 'roster.jpg', { type: blob.type });
 }
 
+// The expected cells in the page's own dialect: a sheet drawn with "." instead of
+// ":" still MEANS 07:00-15:00, and that is what the reader has to produce.
 const truthToCells = (truth, iso) => {
   const out = {};
   for (const [d, t] of Object.entries(truth)) {
     if (!/^\d/.test(t)) continue;
-    const [a, b] = t.split('-');
+    const [a, b] = String(t).split('-').map(x => x.replace('.', ':'));
     out[iso[+d]] = [a, b];
   }
   return out;
@@ -269,6 +280,11 @@ async function photoRules(file) {
 }
 
 async function runCase(name, built, photoOpts, scanOpts = {}) {
+  // The day the sheet is read on. Almost every scenario is read in the week the
+  // sheet covers, which is the easy case; a scenario can say otherwise, and one
+  // does — a sheet photographed a month later is what tells the title's date
+  // range apart from "the week containing today".
+  const when = scanOpts.today || new Date(Date.UTC(2026, 8, 25));
   const file = await photograph(built, photoOpts);
   window.__lastFile = file;
   window.__lastSum = await fileSum(file);
@@ -281,7 +297,7 @@ async function runCase(name, built, photoOpts, scanOpts = {}) {
   const t0 = performance.now();
   let read;
   try {
-    read = await ocrRosterRow(file, canvas, { name: scanOpts.name || 'Parth', today: new Date(Date.UTC(2026, 8, 25)) }, (p, msg) => stages.push([+(p * 100).toFixed(0), msg]));
+    read = await ocrRosterRow(file, canvas, { name: scanOpts.name || 'Parth', today: when }, (p, msg) => stages.push([+(p * 100).toFixed(0), msg]));
   } catch (e) {
     log(`FAIL ${name}: threw ${e.message}`, 'fail'); return { name, ok: false, error: e.message };
   }
@@ -290,9 +306,9 @@ async function runCase(name, built, photoOpts, scanOpts = {}) {
   // Did the rules the photo prints actually become the grid the cells were
   // cropped to? Read back the same way the reader does it.
   const ruleGrid = typeof OCR.rosterColumnsFromRules === 'function'
-    ? OCR.rosterColumnsFromRules(rules.v, parseRosterWords(read.words, new Date(Date.UTC(2026, 8, 25)), { name: scanOpts.name || 'Parth' }).columns, {})
+    ? OCR.rosterColumnsFromRules(rules.v, parseRosterWords(read.words, when, { name: scanOpts.name || 'Parth' }).columns, {})
     : null;
-  const parsed = parseRosterWords(read.words, new Date(Date.UTC(2026, 8, 25)), {
+  const parsed = parseRosterWords(read.words, when, {
     name: scanOpts.name || 'Parth', cells: read.cells, cellsComplete: read.cellsComplete,
   });
   const truth = truthToCells(built.truth, built.iso || ['2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25', '2026-09-26', '2026-09-27', '2026-09-28']);
@@ -326,7 +342,9 @@ async function runCase(name, built, photoOpts, scanOpts = {}) {
     return { name, ok: true, limit: true, ms, diffs, rows: parsed.rows.length, cols: parsed.columns.length, found: read.found, rawCells: (read.cells || []).map(c => ({ d: c.date, r: c.raw })), stages };
   }
   const ok = diffs.length === 0;
-  const tries = (read.tries || []).map(t => `${t.tag}:${t.columns}c/${t.cells}s/${t.named}n${t.dated}d${t.complete ? '*' : ''}${t.found ? '' : '-'}`).join(' ');
+  // `n` names present and `a` of them agreeing with the dates they were given:
+  // the second number is what says whether the week was read or guessed at.
+  const tries = (read.tries || []).map(t => `${t.tag}:${t.columns}c/${t.cells}s/${t.named}n${t.agree}a/${t.dated}d${t.complete ? '*' : ''}${t.found ? '' : '-'}`).join(' ');
   log(`${ok ? 'PASS' : 'FAIL'} ${name}${scanOpts.expect === 'refuse' ? ' [expect refuse]' : ''}  [${ms}ms, reads=${read.scanned}${read.pagePass ? '+page' : ''}, found=${read.found}, complete=${read.cellsComplete}, rows=${parsed.rows.length}, cols=${parsed.columns.length}, rules=${rules.absent ? 'n/a' : `${rules.vCount}v/${rules.hCount}h`}${ruleGrid ? '=grid' : ''}, light=${rules.spread}${rules.uneven ? '!' : ''}, sum=${window.__lastSum}]`, ok ? 'pass' : 'fail');
   if (tries) log(`        readings: ${tries}`, 'dim');
   if (!ok) for (const d of diffs) log(`        ${d}`, 'dim');
@@ -384,6 +402,19 @@ window.__scenarios = () => [
   { name: 'no-rule-lines', built: window.__ocrHarness.buildRosterCanvas({ rules: false }), photo: { deg: 1, blur: 0.4, noise: 0.05, quality: 0.82 } },
   { name: 'no-day-names', built: window.__ocrHarness.buildRosterCanvas({ dayNames: false }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
   { name: 'no-date-row', built: window.__ocrHarness.buildRosterCanvas({ dates: false }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  // A colon read as a dot: JPEG ringing closes the gap between a colon's dots and
+  // the engine hands back "07.00-15.00". One shift, written differently.
+  { name: 'dot-times', built: window.__ocrHarness.buildRosterCanvas({ timeSep: '.' }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
+  // The title prints its range one day out of step with the grid's first column,
+  // which is exactly what a Monday-first range over a Sunday-first sheet is, and
+  // the date row is lost so the range is the only thing that says WHICH week.
+  // The range locates the week, the day names say which day is which, and the
+  // names win — or every shift on the sheet is paid a day late.
+  //
+  // Read a month after the fact on purpose: read inside the sheet's own week the
+  // day-name fallback would land on the right dates by luck, and the scenario
+  // would pass without the rule it is here to test.
+  { name: 'title-range-one-day-out', built: window.__ocrHarness.buildRosterCanvas({ dates: false, titleFrom: 1 }), photo: { deg: 1, noise: 0.04, quality: 0.82 }, scan: { today: new Date(Date.UTC(2026, 9, 20)) } },
   { name: 'rest-words', built: window.__ocrHarness.buildRosterCanvas({ rest: 'REST' }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
   { name: 'rest-dashes', built: window.__ocrHarness.buildRosterCanvas({ rest: '-' }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
   { name: 'night-shift', built: window.__ocrHarness.buildRosterCanvas({ ownerShift: ['07:00-15:00', 'OFF', '22:00-06:00', 'OFF', '09:00-17:00', '10:00-16:00', 'OFF'] }), photo: { deg: 1, noise: 0.04, quality: 0.82 } },
