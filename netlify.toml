@@ -9,7 +9,7 @@
 
 [build]
   publish = "."
-  # Twelve guardrails, all pure-Node and fast:
+  # Thirteen guardrails, all pure-Node and fast:
   #   check-netlify-config — THIS file is shaped the way Netlify's schema
   #                          requires (see the note on the scheduled function
   #                          below), every scheduled function it names exists,
@@ -42,7 +42,13 @@
   #                         resurrect data on hostile input
   #   test-reminder-push  — the push payload still matches the RFC 8291 vector,
   #                         so a reminder can't silently stop being decryptable
-  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/check-icon-refs.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-cloud.mjs && node scripts/test-reminder-push.mjs"
+  #   test-motion         — a headline figure counts only when it changed and
+  #                         rests on the exact total rather than an animation
+  #                         frame; a route change can never wait on a view
+  #                         transition's snapshot; every chart mark is covered by
+  #                         a tooltip (app.js's browser-free surface, lifted out
+  #                         of the file's own text)
+  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/check-icon-refs.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-cloud.mjs && node scripts/test-reminder-push.mjs && node scripts/test-motion.mjs"
 
   # Pin the build runtime. scripts/test-tesco.mjs imports tesco.js — a plain
   # .js browser module, and this repo has no package.json (no-build model), so

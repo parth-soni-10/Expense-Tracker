@@ -135,28 +135,39 @@ function _wireFlatpickrNow(el, { defaultDate, onChange } = {}) {
   return inst;
 }
 
-// Rich heatmap tooltips via tippy.js delegation. Falls back to the existing
-// .heat-tip hover popups when tippy is unavailable. tippy + Popper are
+// Chart popups via tippy.js delegation: the heat map's per-day popups, and the
+// insights charts' per-mark figures — which are the only way to read a number off
+// a chart, since a bar is a shape rather than a table cell. Falls back to the
+// existing .heat-tip hover popups when tippy is unavailable. tippy + Popper are
 // fetched lazily on first use; the CSS-only fallback covers the interim.
-function wireHeatTippy(gridEl) {
-  if (!gridEl) return;
-  if (typeof tippy !== 'undefined' && typeof Popper !== 'undefined') return _wireHeatTippyNow(gridEl);
+//
+// One instance per scope, because `delegate` takes a single selector and the
+// scopes are unrelated cards. Two attributes are served: `data-chart-tip` on a
+// chart mark, and `data-tip` on a heat cell, which predates it. `has-tippy` on
+// the scope is what suppresses the CSS-only fallback.
+function wireChartTips(scopeEl, selector) {
+  if (!scopeEl || typeof selector !== 'string') return;
+  // A warm load wires the scope before it is mounted, which is fine: the
+  // listeners are bound to the element itself and fire once it is in the tree.
+  if (typeof tippy !== 'undefined' && typeof Popper !== 'undefined') return _wireChartTipsNow(scopeEl, selector);
   // The tippy bundle reads window.Popper, so load Popper first, then tippy.
   const popperReady = typeof Popper !== 'undefined'
     ? Promise.resolve()
     : loadVendor('popper', { js: 'vendor/popper.min.js' });
   popperReady
     .then(() => loadVendor('tippy', { js: 'vendor/tippy-bundle.umd.min.js' }))
-    .then(() => { if (gridEl.isConnected) _wireHeatTippyNow(gridEl); })
+    // On the cold path the screen is mounted by the time the library lands, so a
+    // scope a re-render has since thrown away is skipped rather than wired blind.
+    .then(() => { if (scopeEl.isConnected) _wireChartTipsNow(scopeEl, selector); })
     .catch(() => {});
 }
 
-function _wireHeatTippyNow(gridEl) {
-  if (!gridEl || typeof tippy === 'undefined' || typeof Popper === 'undefined') return;
-  gridEl.classList.add('has-tippy'); // suppress the CSS-only .heat-tip fallback
-  const inst = tippy(gridEl, {
-    delegate: '.heat-cell[data-tip]',
-    content: ref => ref.dataset.tip,
+function _wireChartTipsNow(scopeEl, selector) {
+  if (!scopeEl || typeof tippy === 'undefined' || typeof Popper === 'undefined') return;
+  scopeEl.classList.add('has-tippy'); // suppress the CSS-only .heat-tip fallback
+  const inst = tippy(scopeEl, {
+    delegate: selector,
+    content: ref => ref.dataset.chartTip || ref.dataset.tip,
     allowHTML: false,
     theme: 'cents',
     placement: 'top',
@@ -165,7 +176,7 @@ function _wireHeatTippyNow(gridEl) {
     duration: [160, 90],
     animation: 'none',
     appendTo: document.body,
-    onShow(instance) { return !!instance.reference.dataset.tip; },
+    onShow(instance) { return !!(instance.reference.dataset.chartTip || instance.reference.dataset.tip); },
   });
   _tippyInstances.add(inst);
 }
@@ -276,6 +287,17 @@ let pendingSetupLink = null;
 let syncBootStarted = false;
 let lastRenderedRoute = null;
 let renderFrame = null;
+// Route-transition plumbing. A render normally lands on the next animation frame;
+// a view transition has to make its change inside the transition's own callback,
+// so those renders ask for the frame and say what it is for:
+//   _renderSilent  — go in without the screenIn entrance animation, because the
+//                    transition is about to snapshot the new state and an
+//                    element captured mid-fade animates in almost invisible.
+//   _flushWaiters  — released once the swap has happened, so the browser knows
+//                    the "new" state is ready to animate from.
+let _renderSilent = false;
+let _flushWaiters = null;
+let _vtRunning = false;
 
 function startInitSync() {
   if (syncBootStarted) return;
@@ -2779,6 +2801,48 @@ const fmt = (n) => {
 // animation left, and it falls back to the final frame when it is set.
 const _reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+/**
+ * Fill a headline figure, counting to it when it has changed.
+ *
+ * The count is a display and nothing more: the last frame writes the formatted
+ * target, so a figure can never come to rest on a rounded-up intermediate. Each
+ * figure remembers the value it was last painted with under `key`, and that
+ * memory is what makes the motion mean something:
+ *   · a changed figure counts from where the reader last saw it, so going back to
+ *     the home screen after adding an entry shows the total moving to meet it;
+ *   · a re-render that changed nothing — every keystroke repaints the screen —
+ *     writes the number and does not move at all;
+ *   · a figure that has never been painted arrives already at its value, because
+ *     counting up from zero on first sight is decoration, not information.
+ * Reduced motion (and a non-browser) gets the number, instantly.
+ */
+const _figureValues = new Map();
+const _figureFrames = new Map();
+function paintFigure(el, key, value, format = fmt) {
+  if (!el || !Number.isFinite(value)) return;
+  const prev = _figureValues.get(key);
+  _figureValues.set(key, value);
+  const cancel = _figureFrames.get(key);
+  if (cancel) { cancel(); _figureFrames.delete(key); }
+  const settle = () => { el.textContent = format(value); };
+  if (_reduceMotion || !Number.isFinite(prev) || prev === value || typeof requestAnimationFrame !== 'function') {
+    settle();
+    return;
+  }
+  const from = prev, span = value - from, started = performance.now(), dur = 420;
+  let raf = 0;
+  const step = () => {
+    const k = Math.min(1, (performance.now() - started) / dur);
+    // easeOutCubic — leaves the mark quickly and arrives without overshoot,
+    // which is the same 'calm and quick' the CSS timing tokens carry.
+    el.textContent = format(from + span * (1 - Math.pow(1 - k, 3)));
+    if (k < 1) raf = requestAnimationFrame(step);
+    else { _figureFrames.delete(key); settle(); }
+  };
+  raf = requestAnimationFrame(step);
+  _figureFrames.set(key, () => cancelAnimationFrame(raf));
+}
+
 // Whole days from today until an ISO date; negative = in the past.
 function daysUntil(iso) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return Infinity;
@@ -4333,7 +4397,7 @@ function currentRoute() {
   }
   return 'dashboard';
 }
-window.addEventListener('hashchange', render);
+window.addEventListener('hashchange', renderRoute);
 
 // ---------- DOM helpers ----------
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -5146,6 +5210,8 @@ function screenDashboard() {
     const pathD = vals.map((v, i) => `${i === 0 ? 'M' : 'L'} ${i * step} ${sparkH - ((v - mn) / rng) * (sparkH - 4) - 2}`).join(' ');
     const areaD = pathD + ` L ${(vals.length - 1) * step} ${sparkH} L 0 ${sparkH} Z`;
     const lastVal = vals[vals.length - 1];
+    const netWorthEl = $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` });
+    paintFigure(netWorthEl, 'dashboard-net-worth', lastVal);
     screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '14px 16px' : '18px 16px'};margin-bottom:24px;display:flex;align-items:center;gap:16px;` },
       $('svg', { viewBox: `0 0 ${sparkW} ${sparkH}`, style: 'flex:1;min-width:120px;height:40px;', 'aria-label': 'Net worth trend' },
         $('path', { d: areaD, style: `fill:${isUp ? 'var(--positive)' : 'var(--negative)'};opacity:0.1;` }),
@@ -5153,7 +5219,7 @@ function screenDashboard() {
       ),
       $('div', { style: 'text-align:right;flex-shrink:0;' },
         $('div', { class: 'eyebrow' }, 'Net worth'),
-        $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(lastVal)),
+        netWorthEl,
       ),
     ));
   }
@@ -5168,8 +5234,13 @@ function screenDashboard() {
     : null;
 
   // Hero - the monthly total and the balance
-  const heroTotalEl = $('span', { class: 'serif' }, fmt(expenseSum));
-  const heroBalanceEl = $('span', { class: 'display-num', style: `font-size:13px;color:${runningBalance >= 0 ? 'var(--positive)' : 'var(--negative)'};` }, fmt(runningBalance));
+  // Both hero figures count when they change (see paintFigure): the month's total
+  // and the running balance are the two numbers the whole screen is about, and
+  // the moment they change is the moment the reader comes back to look at them.
+  const heroTotalEl = $('span', { class: 'serif' });
+  paintFigure(heroTotalEl, 'dashboard-month-total', expenseSum);
+  const heroBalanceEl = $('span', { class: 'display-num', style: `font-size:13px;color:${runningBalance >= 0 ? 'var(--positive)' : 'var(--negative)'};` });
+  paintFigure(heroBalanceEl, 'dashboard-balance', runningBalance);
   screen.appendChild($('div', { class: 'page-title-row dashboard-hero' },
     $('div', null,
       $('div', { class: 'eyebrow' }, monthLabel(key)),
@@ -6932,7 +7003,7 @@ function screenInsights() {
     ...['M','T','W','T','F','S','S'].map(l => $('div', { style: 'text-align:center;font-size:10px;color:var(--muted);padding-bottom:4px;' }, l)),
     ...heatCells,
   );
-  wireHeatTippy(heatGrid);
+  wireChartTips(heatGrid, '.heat-cell[data-tip]');
   c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:12px;' }, `Spending heatmap · ${monthLabel(heatKey)}`),
     heatGrid,
@@ -7137,11 +7208,11 @@ function donutChart(rows) {
   if (!total) return null;
   const R = 52, C = 2 * Math.PI * R, W = 180, H = 180;
   let acc = 0;
-  const segments = rows.map(([, val], i) => {
+  const segments = rows.map(([cat, val], i) => {
     const frac = val / total;
     const len = Math.max(0, frac * C - 2);
     const finalOff = -acc * C;
-    const seg = $('circle', { cx: W / 2, cy: H / 2, r: R, fill: 'none', stroke: DONUT_PALETTE[i % DONUT_PALETTE.length], 'stroke-width': 16, 'stroke-dasharray': `${len} ${C - len}`, 'stroke-dashoffset': String(finalOff - len), style: 'transition:stroke-dasharray .6s cubic-bezier(0.2,0.8,0.2,1);' });
+    const seg = $('circle', { cx: W / 2, cy: H / 2, r: R, fill: 'none', stroke: DONUT_PALETTE[i % DONUT_PALETTE.length], 'stroke-width': 16, 'stroke-dasharray': `${len} ${C - len}`, 'stroke-dashoffset': String(finalOff - len), 'data-chart-tip': `${categoryLabel(cat)} · ${fmt(val)} · ${Math.round(frac * 100)}%`, style: 'transition:stroke-dasharray .6s cubic-bezier(0.2,0.8,0.2,1);' });
     seg._finalOff = finalOff;
     acc += frac;
     return seg;
@@ -7156,13 +7227,14 @@ function donutChart(rows) {
   }
   const legend = rows.map(([cat, val], i) => {
     const pct = Math.round((val / total) * 100);
-    return $('div', { style: 'display:flex;align-items:center;gap:8px;font-size:12px;' },
+    // The legend prints the share; the popup is where the money is.
+    return $('div', { 'data-chart-tip': `${categoryLabel(cat)} · ${fmt(val)} · ${pct}%`, style: 'display:flex;align-items:center;gap:8px;font-size:12px;' },
       $('span', { style: `width:8px;height:8px;border-radius:2px;background:${DONUT_PALETTE[i % DONUT_PALETTE.length]};flex-shrink:0;` }),
       $('span', { style: 'flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, categoryLabel(cat)),
       $('span', { class: 'muted', style: 'flex-shrink:0;' }, `${pct}%`),
     );
   });
-  return $('div', { style: 'display:flex;align-items:center;gap:28px;flex-wrap:wrap;' },
+  const donut = $('div', { style: 'display:flex;align-items:center;gap:28px;flex-wrap:wrap;' },
     $('div', { style: 'position:relative;flex-shrink:0;' },
       $('svg', { viewBox: `0 0 ${W} ${H}`, width: '150', height: '150', 'aria-label': 'Category share donut', style: 'transform:rotate(-90deg);' }, ...segments),
       $('div', { style: 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;' },
@@ -7172,6 +7244,8 @@ function donutChart(rows) {
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:8px;flex:1;min-width:150px;' }, ...legend),
   );
+  wireChartTips(donut, '[data-chart-tip]');
+  return donut;
 }
 
 // ---------- month-over-month comparison ----------
@@ -7198,19 +7272,27 @@ function monthOverMonthChart() {
   const yAt = v => H - padB - (v / max) * (H - padB - padT);
   const rects = [];
   const labels = [];
+  const hits = [];
   months.forEach((m, i) => {
     const x = xAt(i);
     if (m.exp > 0) rects.push($('rect', { x, y: yAt(m.exp), width: bw, height: H - padB - yAt(m.exp), rx: 2, style: 'fill:var(--chart-bar);' }));
     if (m.inc > 0) rects.push($('rect', { x: x + bw + 4, y: yAt(m.inc), width: bw, height: H - padB - yAt(m.inc), rx: 2, style: 'fill:var(--positive);' }));
     labels.push($('text', { x: x + bw + 2, y: H - 8, 'text-anchor': 'middle', style: 'fill:var(--muted);font-size:9px;' }, monthLabel(m.key).split(' ')[0].slice(0, 3)));
+    // A month is one target, not two: a bw-wide bar is ~10px, which is not a
+    // hover target on a phone, and a month's two figures belong together anyway.
+    // Appended last so it sits over the bars it covers, and painted rather than
+    // `fill: none` — a transparent fill is still a fill, so it takes the events.
+    hits.push($('rect', { class: 'mom-hit', x: i * slot, y: padT, width: slot, height: H - padB - padT, rx: 4, fill: 'transparent', 'data-chart-tip': `${monthLabel(m.key)} · Spending ${fmt(m.exp)} · Income ${fmt(m.inc)}` }));
   });
-  return $('div', null,
+  const chart = $('div', null,
     $('div', { style: 'display:flex;gap:14px;justify-content:flex-end;margin-bottom:10px;' },
       $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: 'width:8px;height:8px;border-radius:2px;background:var(--chart-bar);' }), 'Spending'),
       $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: 'width:8px;height:8px;border-radius:2px;background:var(--positive);' }), 'Income'),
     ),
-    $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Monthly spending vs income, last 12 months', style: 'width:100%;height:auto;' }, ...rects, ...labels),
+    $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Monthly spending vs income, last 12 months', style: 'width:100%;height:auto;' }, ...rects, ...labels, ...hits),
   );
+  wireChartTips(chart, '[data-chart-tip]');
+  return chart;
 }
 
 // ---------- stacked area chart ----------
@@ -8227,9 +8309,16 @@ function render() {
     if (flushed) return;
     flushed = true;
     renderFrame = null;
+    // Read at flush time, not captured by render(): a route transition sets the
+    // flag and then asks for a frame, and whichever render wins that frame is the
+    // one that has to go in silently.
+    const silent = _renderSilent;
+    _renderSilent = false;
+    const flushDone = _flushWaiters;
+    _flushWaiters = null;
     libCleanup(); // destroy stale vendor-widget instances (flatpickr / tippy / sortable) before re-render
     try {
-      _render();
+      _render(silent);
     } catch (e) {
     // Error boundary: if anything in the render pipeline throws,
     // show the error ON THE PAGE so we can see it without DevTools.
@@ -8264,6 +8353,9 @@ function render() {
       // Also log so we can see it in DevTools
       console.error('Render crashed:', e);
     }
+    // Released on every path, the crash one included: a transition left waiting
+    // on a frame that never came would hold the page on its old snapshot.
+    if (flushDone) flushDone();
   };
   if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(flush);
   // Watchdog: rAF can be throttled or blocked outright (occluded iframe,
@@ -8274,7 +8366,70 @@ function render() {
   renderFrame = window.setTimeout(flush, 24);
 }
 
-function _render() {
+/**
+ * A route change, with continuity where the browser can give it.
+ *
+ * The View Transitions API snapshots the page before and after a navigation and
+ * animates between them, so the account balance you were looking at is shown
+ * crossing over into the one you asked for instead of the whole screen blinking.
+ * The header and the phone tab bar are named in CSS, which takes them out of that
+ * cross-fade entirely: the chrome holds still and only the content moves.
+ *
+ * Everything about this is a fallback-first: an engine without the API, or a
+ * reader who has asked for less motion, gets exactly the render() it always got
+ * (with the screenIn entrance that has always carried a route change), and a
+ * transition that throws is caught and turned into a plain render.
+ *
+ * And a transition is BOUNDED. The browser will not run the update callback
+ * until it has captured the old state, and capturing needs a compositor frame.
+ * A document that cannot produce one — a webview that is not compositing, a
+ * browser under that much pressure — leaves the navigation waiting on a snapshot
+ * instead of drawing the next screen. Measured in exactly such a webview: the
+ * route change took 4040ms, against 9ms for the same navigation with the API
+ * unavailable. So if the browser has not asked for the new state within
+ * VT_BUDGET, the transition is skipped and the render goes through unanimated.
+ * The animation is the thing that may be lost here; the navigation is not.
+ */
+const VT_BUDGET = 250;
+function renderRoute() {
+  if (_reduceMotion || _vtRunning || typeof document.startViewTransition !== 'function') { render(); return; }
+  _renderSilent = true;
+  _vtRunning = true;
+  let asked = false;
+  let release = () => {};
+  const flushed = new Promise(resolve => { release = resolve; _flushWaiters = resolve; });
+  let transition = null;
+  let budget = 0;
+  // The way out, and it is unconditional on both counts: the promise is released
+  // whatever the transition went on to do (one left unsettled holds finished()
+  // open, and a transition that never finishes is one this guard never starts
+  // again), and the flags are cleared before the render so the screen gets the
+  // entrance a skipped transition owes it.
+  const fallback = () => {
+    if (asked) return;
+    asked = true;
+    _vtRunning = false;
+    _renderSilent = false;
+    try { if (transition) transition.skipTransition(); } catch (err) { /* nothing left to skip */ }
+    release();
+    render();
+  };
+  try {
+    transition = document.startViewTransition(() => { asked = true; render(); return flushed; });
+    transition.finished.finally(() => { _vtRunning = false; clearTimeout(budget); });
+  } catch (err) {
+    // Not a stylistic loss: a render that never happened is. Unsupportable or
+    // refused (a transition cannot start while the document is hidden), so go
+    // the ordinary way.
+    _vtRunning = false;
+    _renderSilent = false;
+    render();
+    return;
+  }
+  budget = setTimeout(fallback, VT_BUDGET);
+}
+
+function _render(silent = false) {
   const main = document.getElementById('app');
   if (!main) return;
   const focusedField = captureFocusedField();
@@ -8310,9 +8465,13 @@ function _render() {
   } else {
     document.body.removeAttribute('data-wide');
   }
-  const shouldAnimateScreen = route !== lastRenderedRoute;
+  // Inside a route transition the browser animates the change itself, so the CSS
+  // entrance is suppressed: the transition snapshots the new state, and an
+  // element captured a frame into a 180ms fade would be animated from almost
+  // nothing. Everywhere else the entrance is the route change's only signal.
+  const entrance = route !== lastRenderedRoute && !silent;
   lastRenderedRoute = route;
-  const screen = $('main', { class: `shell screen${shouldAnimateScreen ? ' stagger' : ' screen-static'}`, id: 'screen', tabindex: '-1' });
+  const screen = $('main', { class: `shell screen${entrance ? ' stagger' : ' screen-static'}`, id: 'screen', tabindex: '-1' });
   // Each route needs a heading: the pages label their sections with .eyebrow
   // text, so the document otherwise had no outline to navigate by. Visually
   // hidden, and it doubles as the skip link's landing target.
@@ -8331,7 +8490,7 @@ function _render() {
   // the browser to rasterize the whole thing into a composite layer on every
   // navigation - keep the single cheap screenIn fade for heavy screens and
   // stagger only light ones, so navigation stays instant.
-  if (shouldAnimateScreen && (screen.querySelector('.history-row') || screen.children.length > 12)) {
+  if (entrance && (screen.querySelector('.history-row') || screen.children.length > 12)) {
     screen.classList.remove('stagger');
   }
   main.appendChild(screen);
@@ -8370,7 +8529,7 @@ function _render() {
 
   // Focus the Add form only when navigation created it. Same-route renders
   // restore the user's existing field/caret instead, so typing never jumps.
-  if (shouldAnimateScreen && route === 'add') {
+  if (entrance && route === 'add') {
     const form = main.querySelector('[data-route-initial-focus="true"]');
     const target = form?.querySelector(`#${form.dataset.firstFocus || 'f-amount'}`);
     target?.focus({ preventScroll: true });
@@ -8406,10 +8565,10 @@ function _render() {
 
   // Route changes should land at the top of the page; only same-route
   // re-renders restore the user's scroll position.
-  window.scrollTo(0, shouldAnimateScreen ? 0 : scrollY);
+  window.scrollTo(0, entrance ? 0 : scrollY);
   // Rebuilding a same-route screen should not make typing/searching lose focus
   // or move the caret. Newly opened forms still manage their own initial focus.
-  if (!shouldAnimateScreen) restoreFocusedField(focusedField);
+  if (!entrance) restoreFocusedField(focusedField);
 
   // Sticky header - register the scroll listener once. The header is rebuilt on
   // every render, so the cached element is refreshed here on each render. The

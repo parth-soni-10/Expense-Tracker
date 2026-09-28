@@ -253,6 +253,10 @@ button { font-family: inherit; cursor: pointer; }
   
   letter-spacing: -0.02em;
 }
+/* The hero total counts when it changes (see paintFigure). Tabular figures stop
+   the number's own width shifting as the digits roll, which is what makes a
+   counting figure read as one figure moving rather than text being retyped. */
+.dashboard-total { font-variant-numeric: tabular-nums; }
 /* Metrics — Inter 18/24 semi bold, -0.1px tracking (the ledger face) */
 .display-num {
   font-family: 'Space Grotesk', system-ui, sans-serif;
@@ -653,6 +657,31 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   /* Same partial-visibility trick as screenIn — never fully blank. */
   from { opacity: 0.35; transform: translateY(10px); }
   to   { opacity: 1; transform: none; }
+}
+
+/* ── Cross-route continuity (View Transitions API) ──
+   Where the browser can snapshot a navigation, the change is animated by the
+   transition instead of by screenIn: the old screen leaves upward and the new
+   one rises into its place, 180/220ms — the same weight as the CSS entrance it
+   replaces, so an engine with the API feels like the same app, only continuous.
+
+   The header and the phone tab bar carry a view-transition-name, which takes
+   them out of the root cross-fade altogether: the chrome is the part that must
+   not move, so it is named and then given no animation at all. */
+.app-header { view-transition-name: cents-header; }
+.bottom-tab-bar { view-transition-name: cents-tabs; }
+::view-transition-group(cents-header),
+::view-transition-group(cents-tabs) { animation: none; }
+::view-transition-old(root) { animation: centsVtLeave 0.18s var(--ease-out) both; }
+::view-transition-new(root) { animation: centsVtEnter 0.22s var(--ease-out) both; }
+@keyframes centsVtLeave { to { opacity: 0; transform: translateY(-6px); } }
+@keyframes centsVtEnter { from { opacity: 0; transform: translateY(8px); } }
+/* The reduce-motion block above cannot reach these: its `*` selector does not
+   match view-transition pseudo-elements, and neither does a media query on the
+   transition root. Named explicitly rather than left to the JS gate alone. */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root), ::view-transition-new(root),
+  ::view-transition-group(cents-header), ::view-transition-group(cents-tabs) { animation: none !important; }
 }
 
 /* Users who opt out of motion get instant, animation-free navigation. */
@@ -1553,6 +1582,13 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
   transition: opacity 0.16s ease, transform 0.16s ease;
 }
 .has-tippy .heat-tip { display: none; }
+/* The month-by-month chart's hover targets: one transparent column per month,
+   over the bars rather than behind them (a bar is ~10px wide, which is not a
+   hover target on a phone, and a month's two figures belong together anyway).
+   `pointer-events: all` rather than relying on a transparent fill being
+   "painted", which is the kind of thing engines have disagreed about. */
+.mom-hit { fill: transparent; pointer-events: all; transition: fill .12s; }
+.mom-hit:hover { fill: color-mix(in srgb, var(--ink) 6%, transparent); }
 
 /* ── Flatpickr ──
    vendor/flatpickr.min.css is loaded on first use, i.e. appended to <head>
@@ -2141,13 +2177,20 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 }
 .tesco-shiftlist { margin-top: 8px; display: flex; flex-direction: column; }
 .tesco-shiftrow {
-  display: flex; align-items: center; gap: 8px; padding: 5px 0;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 5px 0;
   border-bottom: 1px dashed color-mix(in srgb, var(--line) 70%, transparent);
   font-size: 12px;
 }
 .tesco-shiftrow:last-child { border-bottom: none; }
 .tesco-shift-day { width: 30px; color: var(--muted); }
 .tesco-shift-time { font-variant-numeric: tabular-nums; min-width: 92px; }
+/* The row's tail — the week's gross, the bank cell and the two buttons — as one
+   group: day + times + badge + hours on the left, this at the right edge, and on
+   a phone the group is wider than what is left of the line so it wraps whole to
+   its own line rather than splitting. Wrapping the group is what keeps both
+   buttons on screen at 320px; wrapped columns used to leave the delete button
+   hanging off the card. */
+.tesco-shift-tail { display: inline-flex; align-items: center; gap: 8px; flex: none; margin-left: auto; }
 .tesco-shift-amt {
   margin-left: auto; font-variant-numeric: tabular-nums; font-weight: 600;
 }
@@ -2156,6 +2199,19 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius);
 }
 .tesco-shift-actions { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+/* The week's final bank pay: one cell per week, on the row the sheet keeps that
+   figure on. Sized like the row's other figures rather than a full-width field —
+   it sits inside a 12px row, beside the week's gross and its two buttons, and on
+   a phone it wraps to its own line with them (see the 359px breakpoint below). */
+.tesco-shift-bank { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+.tesco-shift-bank-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.tesco-shift-bank-in {
+  /* Sized to the row rather than to a form field: the 8px padding `.tesco-in`
+     gives every input made this one 39px tall beside 30px neighbours, so the
+     week's first row stood out taller than the rest of its own list. */
+  width: 88px; height: 22px; padding: 0 6px; font-size: 12px;
+  text-align: right; font-variant-numeric: tabular-nums;
+}
 .tesco-del { font-size: 16px; }
 .tesco-del:hover { color: var(--negative); }
 /* Muted at rest (the app's treatment for the secondary action in a row) and the
@@ -2223,25 +2279,19 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   .tesco-in-date { width: 132px; }
   .tesco-numfield { flex: 1 1 40%; }
   .tesco-in-num { width: 100%; }
-  /* Shift rows hold day + times + badge + hours + amount + edit + delete;
-     tighten the fixed columns so the row never overflows its card on a narrow
-     phone. The gap is 5px, not 6: a badge row needs the extra pixel of
-     headroom at 320px for the delete button to stay fully inside the card. */
+  /* Shift rows hold day + times + badge + hours + amount + the week's bank cell
+     + edit + delete; tighten the fixed columns so the row never overflows its
+     card on a narrow phone. The gap is 5px, not 6: a badge row needs the extra
+     pixel of headroom at 320px for the delete button to stay fully inside the
+     card. */
   .tesco-shiftrow { gap: 5px; font-size: 11.5px; }
   .tesco-shift-day { width: 26px; }
   .tesco-shift-time { min-width: 68px; }
+  .tesco-shift-tail { gap: 5px; }
   .tesco-shift-amt { font-size: 12px; }
+  .tesco-shift-bank-in { width: 78px; }
   .tesco-celledit-row { gap: 4px; }
   .tesco-celledit-row .tesco-in { padding: 6px 8px; }
-}
-
-/* Below 360 a shift row cannot hold day + times + badge + hours + amount + the
-   action group, and the group is the part that would be cut off. Wrapping it
-   onto its own line keeps both buttons reachable; the auto margin is what holds
-   it to the right edge rather than at the start of the wrapped line. */
-@media (max-width: 359px) {
-  .tesco-shiftrow { flex-wrap: wrap; }
-  .tesco-shift-actions { margin-left: auto; }
 }
 
 /* ============================================================

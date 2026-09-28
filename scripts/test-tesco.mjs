@@ -20,10 +20,12 @@ import {
   TESCO_RATE_DEFAULTS,
   tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf, payslipWeekNumberOf,
   parseShiftText, shiftPreviewLine,
-  storedShift, storedPayslip, applyShiftEdit,
+  storedShift, storedPayslip, applyShiftEdit, weekOffShift, weekBankWrite,
   rosterColumnBounds, parseCellTokens,
   pageSkew, dedupeWords, columnAnchors, resolveColumnDates, ocrEstimateTilt, ocrAutoContrast,
   ocrSauvola, ocrLocalMarks, ocrIllumination, ocrRulingLines, rosterColumnsFromRules, rosterReadQuality,
+  createOcrPool, ocrPoolSize, OCR_POOL_MAX,
+  ocrStripBox, ocrPageBox, ocrPrepSize, OCR_PREP_MAX, createOcrPrepWorker, ocrStretchData,
 } from '../tesco.js';
 import { validateState } from '../storage.js';
 
@@ -57,6 +59,17 @@ ok('Sunday 7h gross = €151.62 (×1.5)', shiftPay({ ...s, date: '2026-09-20' },
 ok('Sunday detected', isSunday('2026-09-20'), true);
 ok('Sunday special auto-applies', shiftPay({ ...s, date: '2026-09-20' }, null).special, true);
 ok('manual special flag pays ×1.5 on a weekday', shiftPay({ ...s, special: true }, null).gross, 151.62);
+// The Sunday multiplier is a premium for WORKING Sunday, so it follows the clock
+// times. A row with hours and no times is a booked week off (the sheet's own shape
+// and the magic entry's), and the Week off card dates it on the week's Sunday so
+// the week is unambiguous — which once paid a 7h week off at €151.62 instead of
+// €101.08, silently. A row that carries the flag itself still pays the premium.
+const weekOffRow = { date: '2026-09-20', start: '', end: '', hours: 7, note: 'week off' };
+ok('a week off dated on a Sunday pays the normal rate, not the Sunday premium',
+  [shiftPay(weekOffRow, null).special, shiftPay(weekOffRow, null).gross], [false, 101.08]);
+ok('but a row that states special still pays ×1.5 with no clock times',
+  (() => { const p = shiftPay({ ...weekOffRow, special: true }, null); return [p.special, p.gross]; })(),
+  [true, 151.62]);
 
 // ---------- tax: the cached cells from the workbook ----------
 const t = simulateTax(550.525, null);
@@ -797,6 +810,131 @@ ok('a Sunday pays special without the flag being written',
   (() => { const s = editOf({ date: '2026-09-20' }); return [s.special, shiftPay(s, null).special, shiftPay(s, null).gross]; })(),
   [false, true, 151.62]);
 
+// ---------- the Week off card's row ----------
+// The card asks for a day of the week and the hours of pay; weekOffShift answers
+// with the row that gets stored. Its rules are the importer's — storedShift keeps a
+// row that has hours and no times — and the date it lands on is the week's Sunday,
+// because a pay week runs Sun → Sat (WEEK_START_DOW) and the Sunday is the date
+// that says which week the row belongs to.
+const weekOff = (date, hours) => weekOffShift(date, hours);
+ok('a week off is dated on its week’s Sunday',
+  (() => { const r = weekOff('2026-09-24', '7'); return [r.ok, r.shift.date]; })(), [true, '2026-09-20']);
+ok('a date already on the Sunday stays put', weekOff('2026-09-20', '7').shift.date, '2026-09-20');
+ok('and any day of that week lands on the same Sunday',
+  [weekOff('2026-09-22', '7').shift.date, weekOff('2026-09-26', '7').shift.date], ['2026-09-20', '2026-09-20']);
+// The row is the sheet's own week-off shape and what the magic entry writes for
+// "week off 7h": hours, no clock times, the same note, no special flag.
+ok('the row it writes is the magic entry’s own week-off row',
+  (() => { const s = weekOff('2026-09-24', '7.5').shift; return [s.start, s.end, s.hours, s.note, s.special]; })(),
+  ['', '', 7.5, 'week off', false]);
+ok('so it prices at the card rate and reads back as the week card will show it',
+  shiftPreviewLine(weekOff('2026-09-24', '7').shift, shiftPay(weekOff('2026-09-24', '7').shift, null), money),
+  'Sun 20 Sep · 7h stated, no clock times · normal €14.44/h → €101.08 · week off');
+// Hours are statedHours' bounds with 0 excluded (a week off worth nothing is a
+// mistyped week off), and the field that is wrong is named — the shape
+// applyShiftEdit answers in, so the card can point at it.
+ok('0 hours is refused at its own field',
+  (() => { const r = weekOff('2026-09-24', '0'); return [r.ok, r.field]; })(), [false, 'hours']);
+ok('an empty hours box is refused', weekOff('2026-09-24', '').ok, false);
+ok('a negative is refused', weekOff('2026-09-24', '-3').ok, false);
+ok('the top of the ladder is 168h, and past it is refused',
+  [weekOff('2026-09-24', '168').shift.hours, weekOff('2026-09-24', '169').ok], [168, false]);
+ok('part of a week is kept as stated, to the half hour', weekOff('2026-09-24', 5.5).shift.hours, 5.5);
+ok('a figure with more decimals is rounded the way every figure here is',
+  weekOff('2026-09-24', '7.333').shift.hours, 7.33);
+ok('a date the card cannot use is refused at the date field',
+  (() => { const r = weekOff('', '7'); return [r.ok, r.field]; })(), [false, 'date']);
+ok('and a date that is not a date likewise', weekOff('next tuesday', '7').ok, false);
+// A week off has to survive the file it is exported to, or the row the card wrote
+// comes back as a blank one: no clock times, its hours in the Hours column, and
+// its note — which is what makes it a week off rather than a mistyped shift.
+ok('a week off round-trips through the CSV with its hours and note',
+  (() => {
+    const file = tescoCsv([weekOff('2026-09-24', '7.5').shift], [], null);
+    const s = storedShift(parseTescoCsv(file).shifts[0], 'w1', 'T');
+    return [s.date, s.start, s.end, s.hours, s.note];
+  })(),
+  ['2026-09-20', '', '', 7.5, 'week off']);
+
+// ---------- a week's final bank pay ----------
+// Typed off a bank statement, so it is the one figure here no formula can derive.
+// It belongs to the WEEK, and buildPayWeeks adds up every figure it finds on a
+// week's records (a payslip's when any payslip has one, otherwise the rows') — so
+// weekBankWrite puts it on the week's carrier row and on the week's own payslip
+// and clears it from every other record of that week. A second copy would pay the
+// week twice, which is the whole reason the rule is a function and not a setter.
+const bankShifts = [
+  { id: 'b1', date: '2026-09-20', start: '10:00', end: '17:00' }, // the week's carrier (its Sunday)
+  { id: 'b2', date: '2026-09-21', start: '08:00', end: '16:00' },
+  { id: 'b3', date: '2026-09-27', start: '08:00', end: '16:00' }, // the next week
+];
+const weekBankOf = (st, sl, ws) => {
+  const w = buildPayWeeks(st, sl, null).find(x => x.weekStart === ws);
+  return w ? w.bankPaid : null;
+};
+const bankTyped = weekBankWrite(bankShifts, [], 'b1', 505.4);
+ok('a figure bankTyped on the week’s carrier row becomes the week’s received',
+  [bankTyped.shifts[0].bankPay, weekBankOf(bankTyped.shifts, bankTyped.payslips, '2026-09-20')], [505.4, 505.4]);
+ok('and touches neither its week-mates nor another week',
+  ['bankPay' in bankTyped.shifts[1], 'bankPay' in bankTyped.shifts[2], weekBankOf(bankTyped.shifts, bankTyped.payslips, '2026-09-27')],
+  [false, false, null]);
+// A week can hold the figure on one of its payslips instead — the sheet's tax
+// table has no column for it, so the importer carries it there — and a payslip's
+// copy wins in buildPayWeeks. Typing on the row has to bring the payslip with it,
+// or the figure just bankTyped would be ignored.
+const weekShiftOff = [{ id: 'c1', date: '2026-09-17', start: '', end: '', hours: 7.5, note: 'week off' }];
+const bankSlips = [{ id: 'p1', weekStart: '2026-09-13', paye: 0, usc: 0, prsi: 0, futureFund: 0, bankPay: 478.42 }];
+const bankMoved = weekBankWrite(weekShiftOff, bankSlips, 'c1', 500);
+ok('typing on the row updates the week’s payslip to match',
+  [bankMoved.shifts[0].bankPay, bankMoved.payslips[0].bankPay, weekBankOf(bankMoved.shifts, bankMoved.payslips, '2026-09-13')],
+  [500, 500, 500]);
+// Two figures in one week would be added, so the week's figure is bankMoved rather
+// than left lying on a row the card no longer shows a cell for.
+const bankSpread = weekBankWrite(
+  [{ id: 'd1', date: '2026-09-20', start: '10:00', end: '17:00' },
+   { id: 'd2', date: '2026-09-21', start: '08:00', end: '16:00', bankPay: 100 }],
+  [], 'd1', 300);
+ok('a stale figure on another row of the week is cleared, not added',
+  [bankSpread.shifts[0].bankPay, 'bankPay' in bankSpread.shifts[1], weekBankOf(bankSpread.shifts, bankSpread.payslips, '2026-09-20')],
+  [300, false, 300]);
+// A correction run inside one week is two payslips, and buildPayWeeks adds their
+// nets up — so only the week's own keeps the figure.
+const twoSlips = weekBankWrite(weekShiftOff,
+  [{ id: 'q1', weekStart: '2026-09-13', paye: 0, usc: 0, prsi: 0, futureFund: 0, bankPay: 100 },
+   { id: 'q2', weekStart: '2026-09-14', paye: 0, usc: 0, prsi: 0, futureFund: 0, bankPay: 200 }],
+  'c1', 500);
+ok('a second payslip in the week does not leave a second copy to be added',
+  ['bankPay' in twoSlips.payslips[0], twoSlips.payslips[1].bankPay, weekBankOf(twoSlips.shifts, twoSlips.payslips, '2026-09-13')],
+  [false, 500, 500]);
+// Blank means "not paid yet / not known", which is a real state: the received
+// line hides rather than claiming the bank paid nothing.
+const bankBlanked = weekBankWrite(bankTyped.shifts, bankTyped.payslips, 'b1', '');
+ok('blanking the box clears the week rather than paying it nothing',
+  ['bankPay' in bankBlanked.shifts[0], weekBankOf(bankBlanked.shifts, bankBlanked.payslips, '2026-09-20')], [false, null]);
+ok('and a figure that is not a number clears it too',
+  'bankPay' in weekBankWrite(bankTyped.shifts, bankTyped.payslips, 'b1', 'abc').shifts[0], false);
+ok('a clawback goes in as a negative', weekBankOf(weekBankWrite(bankShifts, [], 'b1', -42.5).shifts, [], '2026-09-20'), -42.5);
+// Clicking into the box and straight back out is not an edit: the same records
+// come back, which is what stops an undo step (and a toast) for nothing.
+ok('an unchanged figure hands back the same records',
+  (() => { const r = weekBankWrite(bankShifts, [], 'b1', ''); return [r.shifts.every((s, i) => s === bankShifts[i]), r.payslips.length]; })(),
+  [true, 0]);
+ok('a full precision figure already reading as the bankTyped one is left alone',
+  (() => { const st = [{ id: 'e1', date: '2026-09-20', start: '10:00', end: '17:00', bankPay: 478.4200134277344 }];
+    return weekBankWrite(st, [], 'e1', '478.42').shifts[0] === st[0]; })(), true);
+ok('a row the tab no longer holds is a no-op',
+  (() => { const r = weekBankWrite(bankShifts, [], 'gone', 5); return [r.shifts === bankShifts, r.payslips.length]; })(),
+  [true, 0]);
+// The CSV carries a week's figure on that same carrier row, so exporting and
+// re-importing puts it back where it was bankTyped.
+ok('the bankTyped figure exports on the carrier row and reads back on it',
+  (() => {
+    const file = tescoCsv(bankTyped.shifts, [], null);
+    const backRow = parseTescoCsv(file).shifts.find(s => s.date === '2026-09-20');
+    return [backRow.bankPay, parseTescoCsv(file).shifts.find(s => s.date === '2026-09-21').bankPay];
+  })(),
+  [505.4, undefined]);
+
 // ---------- the sheet's own geometry ----------
 // The tilt of the page, taken from the words: a line written at 2.5° has to come
 // back as 2.5°, because that number is what the photo is rotated back by.
@@ -1068,6 +1206,230 @@ const faint = rosterReadQuality(ownerRowWords.map(w => ({ ...w, confidence: 10 }
 ok('words the parse would throw away cannot make a reading', faint.words.length, 0);
 ok('and a box that is not a number is not a word',
   rosterReadQuality([...weekHeader, ...ownerRowWords, { text: 'X', x0: 0, y0: 0, x1: 1, y1: 1, confidence: 90 }], 'Parth', today).words.length, wholeWeek.words.length + 1);
+
+// ---------- the pool the ladder's readings run on ----------
+// A scan gives one photo several independent readings — three strips, then the
+// plain page and the thresholded one — and they run together on a small pool of
+// engines (createOcrPool). Two things have to hold whatever the machine is: a
+// read never shares a worker with another read (tesseract's whitelist and page
+// mode are worker state, so two passes on one worker would read each other's
+// settings), and every worker a scan built is gone once the scan ends, however
+// it ended.
+ok('a machine with cores to spare gets three workers', ocrPoolSize(16), OCR_POOL_MAX);
+ok('and never more than three', ocrPoolSize(64), 3);
+ok('a four-core machine keeps a core for the UI', ocrPoolSize(4), 3);
+ok('a two-core machine still gets two', ocrPoolSize(2), 2);
+ok('one core does not mean the one-after-another scan', ocrPoolSize(1), 2);
+ok('an unknown core count assumes a phone, not a desktop', ocrPoolSize(undefined), 3);
+
+function fakePool(size, { failAfter = Infinity } = {}) {
+  const made = [], killed = [];
+  const pool = createOcrPool({
+    size,
+    create: async () => {
+      if (made.length >= failAfter) throw new Error('the engine would not start');
+      const worker = { id: made.length + 1, terminate: async () => { killed.push(worker.id); } };
+      made.push(worker);
+      return worker;
+    },
+  });
+  return { pool, made, killed };
+}
+
+// One read per worker, no more read in flight than the ceiling, and reads that
+// arrive with every worker busy are served first-come-first-served — the ladder
+// asks in its own order, so the batch is answered in it.
+{
+  const { pool, made, killed } = fakePool(3);
+  const held = new Set();
+  let shared = 0, running = 0, peak = 0;
+  const used = await Promise.all([0, 1, 2, 3, 4, 5].map(i => pool.run(async worker => {
+    if (held.has(worker.id)) shared++;
+    held.add(worker.id);
+    running++; peak = Math.max(peak, running);
+    await new Promise(r => setTimeout(r, 4 + (i % 3) * 4));
+    running--; held.delete(worker.id);
+    return worker.id;
+  })));
+  ok('six reads on a pool of three never share a worker', shared, 0);
+  ok('three of them read at once, and no more', peak, 3);
+  ok('the pool built three workers for six reads', made.length, 3);
+  ok('and reuses them rather than starting one per read', new Set(used).size, 3);
+  ok('every read came back with its own answer', used.length, 6);
+
+  const order = [];
+  const waiting = [
+    pool.run(async w => { order.push('a'); await new Promise(r => setTimeout(r, 25)); return w.id; }),
+    pool.run(async w => { order.push('b'); await new Promise(r => setTimeout(r, 25)); return w.id; }),
+    pool.run(async w => { order.push('c'); return w.id; }),
+    pool.run(async w => { order.push('d'); return w.id; }),
+  ];
+  await Promise.all(waiting);
+  ok('the reads that fit start before the ones that have to wait',
+    order.indexOf('a') < order.indexOf('c') && order.indexOf('b') < order.indexOf('c'), true);
+  ok('and the reads that waited are served in the order they arrived',
+    order.indexOf('c') < order.indexOf('d'), true);
+
+  await pool.dispose();
+  ok('dispose terminates every worker the pool built', killed.sort().join(), '1,2,3');
+  const afterClose = await pool.run(async () => 'ran').then(v => v, e => e.message);
+  ok('a read asked for after the scan is closed fails rather than hanging', afterClose, 'The OCR pool is closed.');
+}
+
+// An engine that will not start cannot serve the reads parked behind it either:
+// they fail with the engine's own reason, so a scan ends with something the user
+// can read instead of a spinner that never stops.
+{
+  const { pool } = fakePool(3, { failAfter: 1 });
+  const outcomes = await Promise.allSettled([
+    pool.run(async w => w.id),
+    pool.run(async w => w.id),
+    pool.run(async w => w.id),
+  ]);
+  ok('the read that got a worker still finishes', outcomes[0].status, 'fulfilled');
+  ok('the reads behind the failure fail instead of hanging',
+    outcomes.slice(1).map(o => o.status).join(), 'rejected,rejected');
+  ok('and they carry the engine\u2019s own reason',
+    String(outcomes[1].reason && outcomes[1].reason.message), 'the engine would not start');
+  await pool.dispose();
+}
+
+// ---------- the prep workers a read's pixels are prepared on ----------
+// Preparing one read — draw the region at the engine's size, binarise it, encode
+// the PNG — is seconds of work on a 12 MP photo, and it used to be seconds the
+// reader's own thread spent unable to start the next reading, collect the last
+// one, or repaint the bar. It runs on a pool of its own now (ocr-prep-worker.js),
+// sized so the engine keeps its cores and the app keeps one, and the region the
+// read looks at is cut on the reader's thread and transferred.
+ok('a machine with cores to spare gives prep three workers', ocrPrepSize(16), OCR_PREP_MAX);
+ok('and never more than three', ocrPrepSize(64), 3);
+ok('a six-core machine gives the engine its three and prep two', ocrPrepSize(6), 2);
+ok('a four-core machine, where the engine already has three, gives prep one', ocrPrepSize(4), 1);
+ok('an eight-core machine gives prep three', ocrPrepSize(8), 3);
+ok('prep never drops to none, however tight the machine', ocrPrepSize(2), 1);
+ok('an unknown core count assumes a phone, not a desktop', ocrPrepSize(undefined), 1);
+ok('engine and prep together still leave a desktop the app a core',
+  ocrPoolSize(12) + ocrPrepSize(12) <= 11, true);
+
+// The box is decided in one place because every word the engine reports is mapped
+// back through it: get the working size wrong and every coordinate on the sheet
+// slides by the difference. These are the values the reader has always used (the
+// 12 MP working budget), so a drift here is a drift in what the engine is shown.
+const stripMid = ocrStripBox(4000, 3000, [0, 0.5]);
+ok('a 12 MP photo read as a half-height strip', stripMid,
+  { sx: 0, sy: 0, sw: 4000, sh: 1500, w: 5657, h: 2121, scale: Math.SQRT2, radius: 74 });
+ok('the strip below it is the same working image, one strip lower',
+  [ocrStripBox(4000, 3000, [0.5, 1]).sy, ocrStripBox(4000, 3000, [0.5, 1]).sh, ocrStripBox(4000, 3000, [0.5, 1]).w],
+  [1500, 1500, 5657]);
+ok('and so is the middle overlap, so the three strips share one resolution',
+  ocrStripBox(4000, 3000, [0.25, 0.75]).w, stripMid.w);
+ok('a small photo is upscaled to the 3\u00d7 ceiling, not past it',
+  { w: ocrStripBox(800, 600, [0, 0.5]).w, h: ocrStripBox(800, 600, [0, 0.5]).h, scale: ocrStripBox(800, 600, [0, 0.5]).scale, radius: ocrStripBox(800, 600, [0, 0.5]).radius },
+  { w: 2400, h: 900, scale: 3, radius: 32 });
+ok('a strip the geometry cut short still gets a glyph window',
+  [ocrStripBox(4000, 3000, [0.98, 1]).sh, ocrStripBox(4000, 3000, [0.98, 1]).radius], [60, 10]);
+ok('a portrait sheet is scaled to the same budget',
+  [ocrStripBox(3000, 6000, [0, 0.5]).w, ocrStripBox(3000, 6000, [0, 0.5]).h, ocrStripBox(3000, 6000, [0, 0.5]).radius],
+  [3464, 3464, 121]);
+ok('a 12 MP page is read at its own size', ocrPageBox(4000, 3000),
+  { sx: 0, sy: 0, sw: 4000, sh: 3000, w: 4000, h: 3000, scale: 1, radius: 80 });
+ok('a small page is upscaled to the ceiling',
+  [ocrPageBox(800, 600).w, ocrPageBox(800, 600).h, ocrPageBox(800, 600).radius], [2400, 1800, 48]);
+ok('a page past the budget is downscaled, never past half size',
+  [ocrPageBox(6000, 4000).w, ocrPageBox(6000, 4000).h, ocrPageBox(6000, 4000).radius], [4243, 2828, 85]);
+ok('the reader and its worker mean the same thing by a job',
+  /'binarise'/.test(readFileSync(new URL('../ocr-prep-worker.js', import.meta.url), 'utf8')), true);
+
+// The two views on a plain buffer — no canvas, which is the point of the worker
+// shape: the threshold and the encode are the half of a read that left the
+// reader's thread, and this is the function both halves call.
+const imageData = (w, h, fill) => {
+  const d = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const v = fill(i % w, Math.floor(i / w));
+    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v;
+    d[i * 4 + 3] = 255;
+  }
+  return { data: d, width: w, height: h };
+};
+{
+  // A photo shot in shade: paper at 200, ink at 64, and the stretch is what makes
+  // it readable — its own percentiles decide, not a fixed level.
+  const img = imageData(8, 32, (x, y) => (y % 2 ? 200 : 64));
+  ok('a low-contrast image is stretched', ocrStretchData(img, 'stretch'), 'stretch');
+  ok('its ink reaches full black', img.data[(0 * 8 + 0) * 4], 0);
+  ok('and its paper full white', img.data[(1 * 8 + 0) * 4], 255);
+  // Paper already white: stretching would only amplify the JPEG's ringing around
+  // every stroke, which a thin-stroke page has to survive.
+  const exposed = imageData(8, 8, () => 240);
+  ok('a photo that is already exposed is left alone', ocrStretchData(exposed, 'stretch'), 'stretch');
+  ok('and none of its pixels move', exposed.data[0], 240);
+  ok('nothing to read is not a crash', ocrStretchData({ data: new Uint8ClampedArray(0), width: 0, height: 0 }, 'ink'), 'stretch');
+  // The local threshold: paper and ink only, whatever the paper level was.
+  const cell = imageData(64, 48, x => (x % 8 < 2 ? 40 : 190));
+  ok('the local threshold binarises what it is given', ocrStretchData(cell, 'ink', 20), 'ink');
+  ok('a thresholded read is ink and paper and nothing between',
+    [...new Set([...cell.data.filter((_, i) => i % 4 === 0)])].sort((a, b) => a - b).join(), '0,255');
+  ok('a stroke reads as ink', cell.data[(20 * 64 + 32) * 4], 0);
+  ok('and the bare paper beside it reads as paper', cell.data[(20 * 64 + 4) * 4], 255);
+}
+
+// The round trip to a prep worker: one reply per job, matched by id (a batch asks
+// for three strips at once, and they do not come back in the order they went out),
+// a job-level failure that is that job's, and no read ever left waiting on a worker
+// that has died — a scan that hangs is worse than one that fails with a reason.
+function fakePrep() {
+  const worker = { onmessage: null, onerror: null, posted: [], stopped: false, terminate() { worker.stopped = true; } };
+  worker.postMessage = (message, transfer) => worker.posted.push({ message, transfer });
+  return {
+    worker,
+    reply: data => worker.onmessage({ data }),
+    die: message => worker.onerror({ message }),
+  };
+}
+const prepFailed = e => String(e && e.message);
+{
+  const fake = fakePrep();
+  const prep = createOcrPrepWorker(() => fake.worker);
+  const blob = { size: 4096 };
+  const readA = prep.post({ type: 'binarise', view: 'stretch' }, ['a-transfer']);
+  const readB = prep.post({ type: 'binarise', w: 400 });
+  ok('a posted job carries its own id', fake.worker.posted.map(p => p.message.id).join(), '1,2');
+  ok('and the pixels are handed over, not copied', fake.worker.posted[0].transfer, ['a-transfer']);
+  ok('both jobs are still waiting for an answer', fake.worker.posted.length, 2);
+  // Answered out of order, on purpose: the second job's blob must not land in the
+  // first read's hands.
+  fake.reply({ id: 2, ok: true, blob: { size: 2 } });
+  fake.reply({ id: 1, ok: true, blob });
+  ok('a read gets its own answer when the batch comes back out of order',
+    [(await readA).blob, (await readB).blob], [blob, { size: 2 }]);
+  fake.reply({ id: 99, ok: true, blob });  // a reply nobody is waiting for
+  const bad = prep.post({ type: 'binarise' });
+  fake.reply({ id: 3, ok: false, error: 'a crop the worker could not draw' });
+  ok('a job the worker could not do fails with its reason', await bad.then(() => 'resolved', prepFailed),
+    'a crop the worker could not draw');
+  const stillWorks = prep.post({ type: 'binarise' });
+  fake.reply({ id: 4, ok: true, blob });
+  ok('a job that failed is that job\u2019s failure, not the worker\u2019s', (await stillWorks).ok, true);
+
+  const parked = prep.post({ type: 'binarise' });
+  fake.die('the worker\u2019s script did not load');
+  ok('a worker that dies fails the read waiting on it', await parked.then(() => 'resolved', prepFailed),
+    'the worker\u2019s script did not load');
+  ok('and the next read is not parked behind a dead worker',
+    await prep.post({ type: 'binarise' }).then(() => 'resolved', prepFailed), 'the worker\u2019s script did not load');
+}
+{
+  const fake = fakePrep();
+  const prep = createOcrPrepWorker(() => fake.worker);
+  const parked = prep.post({ type: 'binarise' });
+  prep.terminate();
+  ok('closing the pool fails the reads still waiting on it',
+    await parked.then(() => 'resolved', prepFailed), 'The prep worker was closed.');
+  ok('and the worker is actually terminated', fake.worker.stopped, true);
+  ok('a read asked for after the scan is closed fails rather than hanging',
+    await prep.post({ type: 'binarise' }).then(() => 'resolved', prepFailed), 'The prep worker was closed.');
+}
 
 // ---------- report ----------
 if (fails.length) {

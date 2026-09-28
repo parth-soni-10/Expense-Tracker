@@ -23,6 +23,13 @@
 
 import { uid, downloadText } from './storage.js';
 import { getActiveProfileId } from './profiles.js';
+// The pixel transforms the reader shares with the worker that prepares each
+// image for the engine (ocr-prep-worker.js). The box walk is the reader's own
+// (the rule scan); the two thresholds are pinned by scripts/test-tesco.mjs, so
+// they keep their names on this module even though they now live beside the
+// worker's copy of them — see ocr-pixels.js for why there is only one copy.
+import { ocrBoxWalk } from './ocr-pixels.js';
+export { ocrAutoContrast, ocrSauvola, ocrStretchData } from './ocr-pixels.js';
 
 // ---------- constants ----------
 export const TESCO_RATE_DEFAULTS = Object.freeze({
@@ -47,7 +54,7 @@ const WEEK_START_DOW = 0;
 // canvas: a roster carries a name column and small date tokens that a 2000px
 // downscale loses entirely, while a full 4080px page at the upscale those
 // glyphs need would be ~200 MB. Half-height strips keep every glyph at the
-// resolution that reads and stay inside a 12 MP working budget (ocrStripWords),
+// resolution that reads and stay inside a 12 MP working budget (ocrStripBox),
 // and the 50% overlap means no line is ever cut in half.
 const OCR_STRIP_H = 0.5;    // each strip covers half the photo's height
 const OCR_STRIP_COUNT = 3;  // starts at 0 / 25% / 50%, so the strips overlap by half
@@ -130,15 +137,26 @@ export function statedHours(v) {
 export function shiftPay(shift, rates) {
   const R = { ...TESCO_RATE_DEFAULTS, ...rates };
   const start = parseHM(shift.start), end = parseHM(shift.end);
+  // Was this row a shift at all? A booked absence — a week off, which the sheet
+  // and the Week off card both write as hours and no clock times — is not, and
+  // that is what the premium below turns on.
+  const worked = start != null && end != null;
   // A row's own hours win over its clock times. The sheet states them, and its
   // ladder is not the only rule in play: two rows book a full week off with no
   // times at all (20 h), and its older blocks break a shift differently. So an
   // imported row keeps the hours it was paid for; only a shift typed in the app
   // has none stated and derives them.
   const own = statedHours(shift.hours);
-  const hours = own != null ? own : (start == null || end == null ? null : paidHours(start, end));
+  const hours = own != null ? own : (worked ? paidHours(start, end) : null);
   if (hours == null) return null;
-  const special = !!shift.special || isSunday(shift.date);
+  // The Sunday multiplier is a premium for WORKING Sunday, so it follows a row
+  // with clock times; a row that states its hours and no times is a booked week
+  // off paying those hours at the card rate, unless the row itself says special
+  // (which is what a week the sheet paid at premium carries). Dating a week off
+  // on the week's Sunday used to pay it at ×1.5 silently — the Week off card dates
+  // its row there so the week is unambiguous, and a 7h week off came out as
+  // €151.62 instead of €101.08.
+  const special = !!shift.special || (worked && isSunday(shift.date));
   // Likewise a row's own pay, where the file states one: the sheet's older rows
   // were worked at rates that have since changed (€14.02/€21.03 against today's
   // €14.44/€21.66), and one bank holiday is a straight 2×. Recomputing those at
@@ -296,6 +314,59 @@ function receivedTotal(weeks) {
     return w.payslips.length && w.shifts.length ? sum + (w.gross - w.paid) : sum;
   }, 0));
 }
+// ---------- a week's final bank pay: one figure, one home ----------
+/**
+ * Where a week's final bank pay is written.
+ *
+ * The sheet types it off a bank statement, so it is the one figure here that no
+ * formula can derive — holiday pay, a refund or a correction all make it
+ * disagree with gross − tax. It is also a WEEK's figure, not a row's, and the tab
+ * has two homes for it: the sheet keeps it on the week's shift row (tescoCsv
+ * calls that row the week's carrier — its first row by date, the Sunday when one
+ * was worked), while the Payslips card has a Bank field of its own.
+ *
+ * buildPayWeeks sums every figure it finds on a week's records (a payslip's when
+ * any payslip has one, otherwise the shift rows'), so writing one figure into two
+ * homes would pay it twice. This puts it on the week's carrier row AND on the
+ * week's own payslip — the row the tab edits, the last of that week — and clears
+ * it from every other record of that week, so the week's received figure is
+ * exactly what was typed and the two homes can never disagree.
+ *
+ * A blank or unreadable amount clears the week: "not known" is a real state here
+ * (the received line hides), and quietly zeroing it would claim the bank paid
+ * nothing. A negative is kept — a clawback is a real statement line.
+ *
+ * Returns new arrays; the caller commits them. `carrierId` is the row the cell
+ * was typed on, so the week comes from the row rather than from a date two rows
+ * can share.
+ */
+export function weekBankWrite(shifts, payslips, carrierId, amount) {
+  const list = Array.isArray(shifts) ? shifts : [];
+  const slips = Array.isArray(payslips) ? payslips : [];
+  const carrier = list.find(s => s.id === carrierId);
+  if (!carrier) return { shifts: list, payslips: slips };
+  const ws = weekStartOf(carrier.date);
+  const raw = amount == null ? '' : String(amount).trim();
+  const n = raw === '' || !Number.isFinite(Number(raw)) ? null : r2(Number(raw));
+  // Copy-on-write, and an unchanged figure hands back the same record: the cell
+  // commits on change, and clicking in and straight back out must not look like
+  // an edit (nor leave an undo step behind).
+  const setOn = (row, mine) => {
+    const v = mine ? n : null;
+    if (v == null) {
+      if (row.bankPay == null) return row;
+      const { bankPay, ...rest } = row;
+      return rest;
+    }
+    return row.bankPay != null && r2(row.bankPay) === v ? row : { ...row, bankPay: v };
+  };
+  const own = slips.filter(p => weekStartOf(p.weekStart) === ws).pop() || null;
+  return {
+    shifts: list.map(s => (weekStartOf(s.date) === ws ? setOn(s, s.id === carrierId) : s)),
+    payslips: slips.map(p => (weekStartOf(p.weekStart) === ws ? setOn(p, !!own && p.id === own.id) : p)),
+  };
+}
+
 // Month summary — the spreadsheet's monthly stats block, simplified to a
 // calendar-month basis: hours/anticipated by shift date, received by the pay
 // week whose week start falls in the month.
@@ -630,6 +701,35 @@ export function storedShift(s, id, at) {
     special: !!s.special,
     createdAt: at,
   };
+}
+
+// ---------- the Week off card's row ----------
+/**
+ * A booked week off: what the card asks for — any date in the week, and the hours
+ * of pay — turned into the row that gets stored.
+ *
+ * The row is dated on the week's own Sunday rather than on the day that was
+ * picked. A pay week runs Sunday → Saturday (WEEK_START_DOW), so the Sunday is the
+ * date that says which week this is, and the week card reads a row's date back as
+ * its weekday: "Sun 27 Sep · week off 7h". The shape is the sheet's own week-off
+ * rows and what the magic entry writes for `week off 7h` — hours, no clock times,
+ * the same note — so a week off added here exports, imports and merges exactly
+ * like one that arrived in a file.
+ *
+ * Hours are `statedHours`' bounds (up to 168) with zero excluded: a week off worth
+ * nothing is a mistyped week off. Returns `{ ok: true, shift }` or
+ * `{ ok: false, field, error }`, the shape applyShiftEdit answers in, so the card
+ * can name the field it is complaining about and the harness can pin every rule
+ * without a DOM.
+ */
+export function weekOffShift(date, hours) {
+  const raw = String(date == null ? '' : date).trim();
+  if (!dateOk(raw)) return { ok: false, field: 'date', error: 'Pick a date in the week you were off.' };
+  const n = statedHours(String(hours == null ? '' : hours).trim());
+  if (n == null || !(n > 0)) {
+    return { ok: false, field: 'hours', error: 'Hours of pay should be more than 0 and up to 168.' };
+  }
+  return { ok: true, shift: { date: weekStartOf(raw), start: '', end: '', hours: n, note: 'week off', special: false } };
 }
 
 // ---------- editing: what a hand edit may change on a stored shift ----------
@@ -1749,18 +1849,201 @@ export function rosterReadQuality(rawWords, name, today = new Date()) {
 
 function isoLocalUTC(d) { return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`; }
 
-// ---------- OCR: engine wiring (browser only) ----------
-let _ocrPromise = null;
-// The worker is created lazily and torn down again as soon as a scan finishes
-// (see disposeOcrWorker): the only place a decoded roster image could outlive
-// the scan is the worker's heap, and destroying it is the cheapest way to be
-// certain nothing lingers. Re-scanning re-inits the engine (~2-3s; the model
-// itself is cached in IndexedDB, so nothing is re-downloaded).
+// ---------- OCR: the engine pool (browser only) ----------
+// One worker per read in flight, rather than one worker for the whole scan. A
+// scan is a ladder of independent readings of the same photo (see ocrRosterRow),
+// and reading them one after another spent a whole ladder's wall clock on one
+// core: three strips, then the page, then the page again through a threshold,
+// each a whole image through a whole engine, none of them waiting on the last.
+//
+// The ceiling is three, not one per core, and that is about memory rather than
+// CPU: every read in flight holds a working image of its own, and the reader
+// upscales to a 12 MP budget, so each one is ~48 MB of RGBA on the main thread
+// and again in the worker that reads it. Three is also all the widest batch
+// asks for (three strips).
+export const OCR_POOL_MAX = 3;
+/**
+ * How many workers to build on this machine. One fewer than it has cores, so
+ * the UI keeps a core while the engine works, and never fewer than two: a single
+ * worker is the one-after-another scan this pool exists to replace.
+ */
+export function ocrPoolSize(cores) {
+  const n = Number.isFinite(cores) && cores > 0 ? Math.floor(cores) : 4;
+  return Math.max(2, Math.min(OCR_POOL_MAX, n - 1));
+}
+
+/**
+ * A FIFO pool of at most `size` workers, one read on each at a time.
+ *
+ * Reads on ONE worker are sequential by necessity: tesseract's settings — the
+ * character whitelist, the page-segmentation mode — are state on the worker, so
+ * two passes sharing one would read each other's configuration. Separate
+ * workers have no such problem, which is what makes the pool safe. Workers are
+ * created on demand up to the ceiling; a read that arrives with all of them busy
+ * waits its turn.
+ *
+ * `create` is injected so the bookkeeping can be exercised without an engine
+ * (see the pool section in scripts/test-tesco.mjs): spawn on demand, park a
+ * caller when the pool is full, hand a freed worker to the longest-waiting
+ * caller, and on dispose terminate everything that was ever created.
+ */
+export function createOcrPool({ create, size = 1 } = {}) {
+  const cap = Math.max(1, Math.floor(size) || 1);
+  const all = [];      // every worker created, for the one teardown
+  const idle = [];     // workers with no read on them
+  const waiters = [];  // acquire() calls parked for a worker
+  let creating = 0;    // workers mid-start
+  let closed = false;
+
+  async function spawn() {
+    creating++;
+    try {
+      const worker = await create();
+      all.push(worker);
+      return worker;
+    } catch (err) {
+      // A worker that would not start cannot serve the reads parked behind it
+      // either, and leaving them parked would hang the scan. Fail them all with
+      // the real reason; the next scan builds a fresh pool.
+      for (const w of waiters.splice(0)) w.reject(err);
+      throw err;
+    } finally { creating--; }
+  }
+
+  async function acquire() {
+    if (closed) throw new Error('The OCR pool is closed.');
+    if (idle.length) return idle.pop();
+    if (all.length + creating < cap) return spawn();
+    return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
+  }
+
+  function release(worker) {
+    if (closed) return;
+    const waiting = waiters.shift();
+    if (waiting) waiting.resolve(worker);
+    else idle.push(worker);
+  }
+
+  async function run(fn) {
+    const worker = await acquire();
+    try { return await fn(worker); } finally { release(worker); }
+  }
+
+  async function dispose() {
+    closed = true;
+    for (const w of waiters.splice(0)) w.reject(new Error('The OCR pool is closed.'));
+    const workers = all.splice(0);
+    idle.length = 0;
+    await Promise.all(workers.map(w => {
+      try { return Promise.resolve(w && w.terminate && w.terminate()).catch(() => {}); }
+      catch { return null; }
+    }));
+  }
+
+  return { run, acquire, release, dispose, get size() { return cap; } };
+}
+
+let _ocrPool = null;
+// Both pools — the engine's above and the prep workers' below — are built lazily
+// and torn down again as soon as a scan finishes (see disposeOcrWorker): the only
+// place a decoded roster image could outlive the scan is a worker's heap, and
+// destroying the workers is the cheapest way to be certain nothing lingers.
+// Re-scanning re-inits the engine (~2-3s per worker, started together; the model
+// itself is cached in IndexedDB, so nothing is re-downloaded) and re-fetches the
+// prep worker's script, which the service worker has cached.
 export async function disposeOcrWorker() {
-  const pending = _ocrPromise;
-  _ocrPromise = null;
-  if (!pending) return;
-  try { const worker = await pending; await worker.terminate(); } catch { /* already gone */ }
+  const pools = [_ocrPool, _ocrPrep];
+  _ocrPool = null;
+  _ocrPrep = null;
+  await Promise.all(pools.filter(Boolean).map(p => p.dispose()));
+}
+
+// ---------- OCR: preparing a read, off the main thread ----------
+// A read is prepared in three steps — draw the region at the engine's resolution,
+// binarise it, encode it as the PNG tesseract.js is handed — and on a 12 MP strip
+// the thread doing them is busy through 316–684 ms of the 1.4–1.8 s they take
+// (measured interleaved with the version below, on one machine, with a
+// MessageChannel ping loop). That is time the app cannot start the next reading,
+// collect the last one, or repaint the bar: preparing a read was the one part of a
+// scan that could not overlap the engine. So the threshold and the encode run on
+// workers of its own (ocr-prep-worker.js) — 151–292 ms of longest stall, and
+// 0.4–0.6 s of prep — and what stays here is the draw and the readback, which is
+// where the pixels are and therefore the only place the image can be made the
+// image it has always been.
+//
+// Three at most, and on a small machine fewer: the engine's pool keeps
+// `ocrPoolSize(cores)` threads busy and the app needs one to stay alive, so prep
+// may have what is left over. It never drops below one, because prep on the main
+// thread is the thing this exists to stop — and even one worker lets the encode
+// of one read overlap the engine's read of the last.
+export const OCR_PREP_MAX = 3;
+/** How many prep workers to build on a machine with `cores` cores. */
+export function ocrPrepSize(cores) {
+  const n = Number.isFinite(cores) && cores > 0 ? Math.floor(cores) : 4;
+  return Math.max(1, Math.min(OCR_PREP_MAX, n - 1 - ocrPoolSize(n)));
+}
+
+/**
+ * One prep worker, as the pool sees it: `post` one job and wait for its blob,
+ * `terminate` to end it. Every reply is matched to its job by id, so the jobs a
+ * batch sends at once cannot be answered out of order into each other.
+ *
+ * `open` is injected so the round trip can be exercised without a browser (see
+ * the prep section in scripts/test-tesco.mjs): a job whose reply never arrives
+ * must not park its reader for the rest of the scan, so a worker that dies — or a
+ * postMessage that throws before the job left — fails every job waiting on it, at
+ * once and with the real reason.
+ */
+export function createOcrPrepWorker(open = () => new Worker('/ocr-prep-worker.js', { type: 'module' })) {
+  const worker = open();
+  const pending = new Map();
+  let seq = 0;
+  let dead = null;   // the reason this worker will never answer again, if it died
+  const failAll = err => {
+    dead = err;
+    for (const job of [...pending.values()]) job.reject(err);
+    pending.clear();
+  };
+  worker.onmessage = event => {
+    const res = event && event.data;
+    const job = res && pending.get(res.id);
+    if (!job) return;
+    pending.delete(res.id);
+    if (res.ok) job.resolve(res);
+    else job.reject(new Error(res.error || 'The prep worker could not prepare that read.'));
+  };
+  // A worker whose script failed to load, or that died mid-job, says so as a
+  // window error event rather than as a reply. Nothing is left waiting: a scan
+  // that hangs is worse than one that fails with a reason.
+  worker.onerror = event => {
+    failAll(new Error((event && event.message) || 'The prep worker failed.'));
+  };
+  return {
+    post(message, transfer = []) {
+      // A worker that has already died must not park the next read behind it for
+      // the length of the scan: the scan is failing, and it should say so now.
+      if (dead) return Promise.reject(dead);
+      return new Promise((resolve, reject) => {
+        const id = ++seq;
+        pending.set(id, { resolve, reject });
+        try { worker.postMessage({ id, ...message }, transfer); }
+        catch (err) { pending.delete(id); reject(err); }
+      });
+    },
+    terminate() {
+      failAll(new Error('The prep worker was closed.'));
+      try { worker.terminate(); } catch { /* already gone */ }
+    },
+  };
+}
+
+let _ocrPrep = null;
+function ensureOcrPrep() {
+  if (!_ocrPrep) {
+    const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 0;
+    _ocrPrep = createOcrPool({ create: createOcrPrepWorker, size: ocrPrepSize(cores) });
+  }
+  return _ocrPrep;
 }
 function loadTesseractScript() {
   if (window.Tesseract) return Promise.resolve();
@@ -1773,39 +2056,40 @@ function loadTesseractScript() {
   });
 }
 let _progressSink = () => {};
-async function ensureOcrWorker() {
-  if (!_ocrPromise) {
-    _ocrPromise = (async () => {
-      await loadTesseractScript();
-      const origin = window.location.origin;
-      const worker = await window.Tesseract.createWorker('eng', 1, {
-        workerPath: `${origin}/vendor/tesseract/worker.min.js`,
-        corePath: `${origin}/vendor/tesseract`,
-        langPath: `${origin}/vendor/tesseract`,
-        // tesseract.js otherwise wraps its worker in a blob URL, and inside a
-        // blob-based worker a relative URL has no base to resolve against, so
-        // the core cannot locate its .wasm sibling ("Failed to parse URL").
-        // Loading the worker from its real same-origin URL gives it a base,
-        // which is what lets us ship the wasm as a plain file instead of the
-        // 3.9 MB base64-inlined variant. That variant embeds the module as a
-        // data: URL the core loads, which a strict connect-src blocks — it
-        // only worked here by falling back, logging a CSP error per scan.
-        workerBlobURL: false,
-        logger: m => { if (m && typeof m.progress === 'number') _progressSink(m.progress); },
-      });
-      // How the engine is told to size its own layout work. A canvas carries no
-      // resolution, so the engine assumes 70 dpi and — taking our upscaled page at
-      // face value — treats a roster's 30px glyphs as a headline and its line
-      // spacing as a paragraph gap. 300 is the truth for a sheet upscaled to the
-      // 12 MP working budget (that is about A4 at 300 dpi), and it is what the
-      // line and word heuristics are then measured against. Set once, on the
-      // worker, because it describes the images every pass hands over.
-      await worker.setParameters({ user_defined_dpi: '300' }).catch(() => {});
-      return worker;
-    })();
-    _ocrPromise.catch(() => { _ocrPromise = null; });
+async function createOcrWorker() {
+  await loadTesseractScript();
+  const origin = window.location.origin;
+  const worker = await window.Tesseract.createWorker('eng', 1, {
+    workerPath: `${origin}/vendor/tesseract/worker.min.js`,
+    corePath: `${origin}/vendor/tesseract`,
+    langPath: `${origin}/vendor/tesseract`,
+    // tesseract.js otherwise wraps its worker in a blob URL, and inside a
+    // blob-based worker a relative URL has no base to resolve against, so the
+    // core cannot locate its .wasm sibling ("Failed to parse URL"). Loading the
+    // worker from its real same-origin URL gives it a base, which is what lets
+    // us ship the wasm as a plain file instead of the 3.9 MB base64-inlined
+    // variant. That variant embeds the module as a data: URL the core loads,
+    // which a strict connect-src blocks — it only worked here by falling back,
+    // logging a CSP error per scan.
+    workerBlobURL: false,
+    logger: m => { if (m && typeof m.progress === 'number') _progressSink(m.progress); },
+  });
+  // How the engine is told to size its own layout work. A canvas carries no
+  // resolution, so the engine assumes 70 dpi and — taking our upscaled page at
+  // face value — treats a roster's 30px glyphs as a headline and its line
+  // spacing as a paragraph gap. 300 is the truth for a sheet upscaled to the
+  // 12 MP working budget (that is about A4 at 300 dpi), and it is what the line
+  // and word heuristics are then measured against. Set once per worker, because
+  // it describes the images every pass hands over.
+  await worker.setParameters({ user_defined_dpi: '300' }).catch(() => {});
+  return worker;
+}
+async function ensureOcrPool() {
+  if (!_ocrPool) {
+    const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency : 0;
+    _ocrPool = createOcrPool({ create: createOcrWorker, size: ocrPoolSize(cores) });
   }
-  return _ocrPromise;
+  return _ocrPool;
 }
 
 // Draw the photo onto the display canvas (fit to `maxW`), releasing the decoded
@@ -1834,13 +2118,16 @@ export async function drawPhotoPreview(file, canvas, maxW = 720) {
 //   ocrStripWords()   read one strip at the resolution small glyphs need
 //   ocrRosterRow()    read the sheet until a reading carries the typed name
 //                     AND the week around it, and keep the best reading it took
+// and one piece underneath them all: preparing a read's pixels, which happens on
+// its own workers (ocrPrepSize, prepRead) so that it cannot hold the reader's
+// thread while the engine works.
 // Read one horizontal strip and return its words in ORIGINAL-image pixel
 // coordinates, so strips read separately stitch into one shared space.
 //
-// strip: [y0, y1] as fractions of image height. The decoded bitmap, the strip
-// canvas and the blob all live only inside this call — the bitmap is released
-// and the canvas zeroed before it returns, and nothing is written to storage,
-// cache, or the network.
+// strip: [y0, y1] as fractions of image height. The working image and the blob
+// live only inside this call — the region is cut, prepared on a prep worker and
+// read, and the worker's own surface goes with the scan. Nothing is written to
+// storage, cache, or the network.
 /**
  * How far the sheet is off square, in radians, read off the ink itself.
  *
@@ -2013,43 +2300,6 @@ function ocrPhotoRules(source) {
 }
 
 /**
- * Stretch a photo's own blacks and whites out to the full range, in place.
- *
- * A sheet photographed in shadow, or under a lamp that does not reach the far
- * corner, arrives with its text at 90 grey and its paper at 170: perfectly
- * legible to a person, and half the contrast the engine's binariser looks for —
- * which is how a whole roster comes back with words too faint to keep. The
- * percentiles ignore the few pixels a glare spot owns, and a photo that already
- * spans the range (lo near 0, hi near the top) is left exactly as it is, so a
- * good photo is read by the same engine it was read by before this existed.
- */
-export function ocrAutoContrast(d, sample = 4) {
-  const hist = new Uint32Array(256);
-  let n = 0;
-  for (let i = 0; i < d.length; i += 4 * Math.max(1, sample)) { hist[d[i]]++; n++; }
-  if (!n) return;
-  // Most of a sheet of paper is paper: when the median pixel is already white the
-  // photo is exposed, and stretching it would only amplify the JPEG's ringing
-  // around every stroke — which is exactly what a thin-stroke page (a monospace
-  // roster, small print) has to survive. The stretch is for the photo whose paper
-  // is grey: shot in shadow, or lit from one side.
-  let acc = 0, median = 255;
-  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * 0.5) { median = v; break; } }
-  if (median >= 235) return;
-  let lo = 0, hi = 255;
-  acc = 0;
-  for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * 0.004) { lo = v; break; } }
-  acc = 0;
-  for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= n * 0.004) { hi = v; break; } }
-  if (hi - lo < 60 || hi - lo > 245) return;
-  const span = hi - lo;
-  for (let i = 0; i < d.length; i += 4) {
-    const v = Math.max(0, Math.min(255, Math.round(((d[i] - lo) / span) * 255)));
-    d[i] = d[i + 1] = d[i + 2] = v;
-  }
-}
-
-/**
  * The page as ink and paper, thresholded LOCALLY rather than globally.
  *
  * Everything above this point treats the photo's light as one number: a single
@@ -2085,73 +2335,6 @@ export function ocrAutoContrast(d, sample = 4) {
  * Pure over a grey buffer (0 = black), so the threshold the reader uses can be
  * pinned without a camera. Returns 0 for ink and 255 for paper.
  */
-export function ocrSauvola(grey, w, h, opts = {}) {
-  if (!grey || !w || !h || grey.length < w * h) return new Uint8Array(0);
-  const k = opts.k == null ? 0.24 : opts.k;
-  const R = opts.R == null ? 128 : opts.R;
-  // The window has to be wider than a stroke (or the mean sits ON the glyph and
-  // the glyph is split into its own edges) and narrower than a column of text
-  // (or the mean becomes the page's and this is a global threshold again). A
-  // third of the shorter side is the band that holds for a roster cell; the long
-  // page passes in an explicit radius sized from the glyphs instead.
-  const r = Math.max(4, Math.min(96, Math.round(
-    opts.radius == null ? Math.min(w, h) / 3 : opts.radius)));
-  const out = new Uint8Array(w * h);
-  ocrBoxWalk(grey, w, h, r, (x, y, m, sd) => {
-    out[y * w + x] = grey[y * w + x] > m * (1 + k * (sd / R - 1)) ? 255 : 0;
-  });
-  return out;
-}
-
-/**
- * The window's mean and standard deviation at every pixel, in one pass and in
- * O(width) memory.
- *
- * The window is a square box, so its statistics separate exactly into a
- * horizontal pass over a vertical sum — two sliding sums, one column-resident
- * (`colA`/`colB`) and one walking the row. The obvious alternative, an integral
- * image, is also O(1) per pixel but costs a Float64 accumulator per pixel per
- * statistic: at the 12 MP working budget that is ~200 MB of RAM on a phone for a
- * threshold, against ~8 KB here.
- *
- * Paper runs off every edge of a photo, so the window is REPLICATED at the
- * margins rather than truncated. A truncated window has a smaller n and a smaller
- * s, so every local rule that scales with s — Sauvola's especially — goes
- * conservative exactly at the edge of the sheet, which is where a roster prints
- * its first and last day columns.
- */
-function ocrBoxWalk(grey, w, h, r, visit) {
-  const colA = new Float32Array(w), colB = new Float32Array(w);
-  const span = 2 * r + 1;
-  const n = span * span;
-  const rowAt = y => (y < 0 ? 0 : y > h - 1 ? h - 1 : y);
-  const colAt = x => (x < 0 ? 0 : x > w - 1 ? w - 1 : x);
-  for (let dy = -r; dy <= r; dy++) {
-    const base = rowAt(dy) * w;
-    for (let x = 0; x < w; x++) { const v = grey[base + x]; colA[x] += v; colB[x] += v * v; }
-  }
-  for (let y = 0; y < h; y++) {
-    if (y > 0) {
-      const add = rowAt(y + r) * w, del = rowAt(y - r - 1) * w;
-      for (let x = 0; x < w; x++) {
-        const a = grey[add + x], b = grey[del + x];
-        colA[x] += a - b; colB[x] += a * a - b * b;
-      }
-    }
-    let sa = 0, sb = 0;
-    for (let dx = -r; dx <= r; dx++) { const i = colAt(dx); sa += colA[i]; sb += colB[i]; }
-    const row = y * w;
-    for (let x = 0; x < w; x++) {
-      if (x > 0) {
-        const ai = colAt(x + r), di = colAt(x - r - 1);
-        sa += colA[ai] - colA[di]; sb += colB[ai] - colB[di];
-      }
-      const m = sa / n;
-      visit(x, y, m, Math.sqrt(Math.max(0, sb / n - m * m)));
-    }
-  }
-}
-
 /**
  * Ink as "meaningfully darker than the paper around it", by a fixed margin.
  *
@@ -2356,35 +2539,6 @@ export function rosterColumnsFromRules(vLines, cols, opts = {}) {
   };
 }
 
-/**
- * Binarise the canvas the reader just drew, before the engine sees it.
- * `view`: 'stretch' (global contrast), 'ink' (local Sauvola), 'auto'.
- * Returns the view actually used, so a read can say what it was given.
- */
-function ocrStretchCanvas(c, w, h, view = 'stretch', radius = 0) {
-  try {
-    const img = c.getImageData(0, 0, w, h);
-    const d = img.data;
-    if (view === 'stretch') {
-      ocrAutoContrast(d);
-      c.putImageData(img, 0, 0);
-      return 'stretch';
-    }
-    const grey = new Uint8Array(w * h);
-    for (let i = 0; i < grey.length; i++) grey[i] = d[i * 4];
-    const bin = ocrSauvola(grey, w, h, radius ? { radius } : {});
-    if (!bin.length) { ocrAutoContrast(d); c.putImageData(img, 0, 0); return 'stretch'; }
-    for (let i = 0; i < grey.length; i++) {
-      const v = bin[i];
-      d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v;
-      d[i * 4 + 3] = 255;
-    }
-    c.putImageData(img, 0, 0);
-    return 'ink';
-  } catch { /* a canvas that cannot be read is read as it was drawn */ }
-  return 'stretch';
-}
-
 // v5 keeps words on data.words; older builds and some images only fill blocks.
 function tesseractWords(result) {
   const words = Array.isArray(result?.data?.words) ? result.data.words : [];
@@ -2395,42 +2549,118 @@ function tesseractWords(result) {
   return [];
 }
 
-async function ocrStripWords(worker, source, canvas, strip, view = 'stretch') {
-  try {
-    const bitmap = source.bitmap;
-    const imgW = source.width, imgH = source.height;
-    const sy = Math.max(0, Math.round(strip[0] * imgH));
-    const sh = Math.max(24, Math.min(imgH - sy, Math.round((strip[1] - strip[0]) * imgH)));
-    // Upscale toward the factor that works, capped by the working budget. A small
-    // photo is the one case that wants more than 2× — its glyphs are 20px tall and
-    // a shift's own digits are what the engine gets wrong at that size — and the
-    // budget already stops the upscale from costing more than one working image.
-    const scale = Math.max(0.5, Math.min(3, Math.sqrt(OCR_WORK_PIXELS / Math.max(1, imgW * sh))));
-    canvas.width = Math.max(1, Math.round(imgW * scale));
-    canvas.height = Math.max(1, Math.round(sh * scale));
-    const c = canvas.getContext('2d', { willReadFrequently: true });
-    c.drawImage(bitmap, 0, sy, imgW, sh, 0, 0, canvas.width, canvas.height);
+/**
+ * The working image one read is handed: which region of the photo to look at, the
+ * size to draw it at, and the glyph window its threshold uses. Pure, so the one
+ * place these numbers are decided can be pinned without a photo (see
+ * scripts/test-tesco.mjs).
+ *
+ * Decided here rather than on the prep worker because the read's word boxes are
+ * mapped back through them: `sx/sy/sw/sh` are the region, `w/h` the working image
+ * it becomes, and `w/h` against `sw/sh` is the factor every coordinate coming back
+ * from the engine is scaled by. A box computed in two places is a box that can
+ * disagree with itself.
+ *
+ * Upscale toward the factor that works, capped by the working budget. A small
+ * photo is the one case that wants more than 2× — its glyphs are 20px tall and a
+ * shift's own digits are what the engine gets wrong at that size — and the budget
+ * already stops the upscale from costing more than one working image.
+ */
+export function ocrStripBox(imgW, imgH, strip, work = OCR_WORK_PIXELS) {
+  const sy = Math.max(0, Math.round(strip[0] * imgH));
+  const sh = Math.max(24, Math.min(imgH - sy, Math.round((strip[1] - strip[0]) * imgH)));
+  const scale = Math.max(0.5, Math.min(3, Math.sqrt(work / Math.max(1, imgW * sh))));
+  const w = Math.max(1, Math.round(imgW * scale));
+  const h = Math.max(1, Math.round(sh * scale));
+  return {
+    sx: 0, sy, sw: imgW, sh, w, h, scale,
     // A strip is a third of a page wide and full width, so the window that reads
     // its glyphs is sized from the glyphs themselves: about three of them, which
     // is wider than a stroke and narrower than a word.
-    ocrStretchCanvas(c, canvas.width, canvas.height, view, Math.max(10, Math.round(canvas.height * 0.035)));
+    radius: Math.max(10, Math.round(h * 0.035)),
+  };
+}
 
-    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
-    const result = await worker.recognize(blob);
-    const kx = imgW / canvas.width, ky = sh / canvas.height;
-    return tesseractWords(result).map(w => ({
-      text: w.text,
-      x0: (w.bbox?.x0 ?? 0) * kx, x1: (w.bbox?.x1 ?? 0) * kx,
-      y0: sy + (w.bbox?.y0 ?? 0) * ky, y1: sy + (w.bbox?.y1 ?? 0) * ky,
-      confidence: w.confidence,
-    }));
+/** The same for the whole-page pass: the entire sheet at the working budget. */
+export function ocrPageBox(imgW, imgH, work = OCR_WORK_PIXELS) {
+  const scale = Math.max(0.5, Math.min(3, Math.sqrt(work / Math.max(1, imgW * imgH))));
+  const w = Math.max(1, Math.round(imgW * scale));
+  const h = Math.max(1, Math.round(imgH * scale));
+  return {
+    sx: 0, sy: 0, sw: imgW, sh: imgH, w, h, scale,
+    // The whole page is where a roster's grid lives: ~30px glyphs on a sheet whose
+    // long side is up to 3× the working budget, so the window is the glyph band.
+    radius: Math.max(12, Math.round(w * 0.02)),
+  };
+}
+
+/**
+ * One read's image, prepared where it cannot block the reader.
+ *
+ * The draw and the readback stay here, because that is where the pixels are: the
+ * same `drawImage` with the same source rectangle on the same canvas as before
+ * the encode moved, so the image the engine ends up reading is the image it was
+ * always handed, pixel for pixel. Everything after the readback — the threshold,
+ * and the PNG encode that is the expensive half of a strip read — goes to a prep
+ * worker (ocr-prep-worker.js), and the buffer is transferred rather than copied,
+ * so this thread's part ends at the post.
+ *
+ * Handing the worker a cropped bitmap to draw itself would be cheaper (5 ms of
+ * this thread, the whole prep on the worker) and it was measured to shift 1,716
+ * pixels of a 12 MP strip by up to three grey levels — `drawImage` resamples a
+ * source rectangle and a pre-cut image slightly differently — which flipped the
+ * harness's `blurry` scenario through the cell pass. Three grey levels on 0.01 %
+ * of the pixels is not a difference this reader can afford.
+ */
+async function prepEncode(prep, source, box, view = 'stretch') {
+  const canvas = ocrScratchCanvas();
+  try {
+    canvas.width = Math.max(1, box.w);
+    canvas.height = Math.max(1, box.h);
+    const c = canvas.getContext('2d', { willReadFrequently: true });
+    c.drawImage(source.bitmap, box.sx, box.sy, box.sw, box.sh, 0, 0, box.w, box.h);
+    const img = c.getImageData(0, 0, box.w, box.h);
+    const read = await prep.post(
+      { type: 'binarise', data: img.data.buffer, w: box.w, h: box.h, view, radius: box.radius },
+      [img.data.buffer],
+    );
+    return read.blob;
   } finally {
-    // Runs on every path — success, a decode that threw, a cancelled scan — so
-    // the strip canvas is always zeroed. The photo itself belongs to the scan and
-    // is released once, by ocrRosterRow.
+    // Runs on every path — a draw that threw, a worker that died mid-read, a
+    // cancelled scan — so this read's copy of the photo never outlives it.
     canvas.width = 0;
     canvas.height = 0;
   }
+}
+
+// Take a prep worker for the length of one read, so its surface belongs to that
+// read alone — and so a batch of reads does not queue on one prep worker while
+// the others sit idle.
+function prepRead(pool, source, box, view = 'stretch') {
+  return pool.run(prep => prepEncode(prep, source, box, view));
+}
+
+// A drawing surface for one read in flight. The ladder's own reads (the strips and
+// the pages) have their surfaces made on a prep worker now; the cell pass still
+// draws here, and each read of it owns its surface for the same reason it always
+// did: a read is two awaits long (the blob, then recognize), so two reads sharing
+// one canvas would have the second draw over the first before it was ever encoded.
+function ocrScratchCanvas() { return document.createElement('canvas'); }
+
+async function ocrStripWords(worker, prep, source, strip, view = 'stretch') {
+  const box = ocrStripBox(source.width, source.height, strip);
+  const blob = await prepRead(prep, source, box, view);
+  const result = await worker.recognize(blob);
+  // Nothing is zeroed on the way out any more, because nothing here held pixels:
+  // the region was cut, prepared elsewhere and read, and the prep worker's own
+  // surface is released with the scan (see disposeOcrWorker).
+  const kx = box.sw / box.w, ky = box.sh / box.h;
+  return tesseractWords(result).map(w => ({
+    text: w.text,
+    x0: (w.bbox?.x0 ?? 0) * kx, x1: (w.bbox?.x1 ?? 0) * kx,
+    y0: box.sy + (w.bbox?.y0 ?? 0) * ky, y1: box.sy + (w.bbox?.y1 ?? 0) * ky,
+    confidence: w.confidence,
+  }));
 }
 
 // Read the WHOLE photo in one pass, in image pixel coordinates.
@@ -2445,33 +2675,19 @@ async function ocrStripWords(worker, source, canvas, strip, view = 'stretch') {
 // not among its words, however legible the photo is. This pass gives the engine
 // the sheet's own layout, and is what the reader falls back to when the strips
 // have not found the row.
-async function ocrPageWords(worker, source, canvas, opts = {}) {
+async function ocrPageWords(worker, prep, source, opts = {}) {
   const { view = 'stretch', psm = null } = opts;
-  try {
-    const bitmap = source.bitmap;
-    const imgW = source.width, imgH = source.height;
-    const scale = Math.max(0.5, Math.min(3, Math.sqrt(OCR_WORK_PIXELS / Math.max(1, imgW * imgH))));
-    canvas.width = Math.max(1, Math.round(imgW * scale));
-    canvas.height = Math.max(1, Math.round(imgH * scale));
-    const c = canvas.getContext('2d', { willReadFrequently: true });
-    c.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    // The whole page is where a roster's grid lives: ~30px glyphs on a sheet whose
-    // long side is up to 3× the working budget, so the window is the glyph band.
-    ocrStretchCanvas(c, canvas.width, canvas.height, view, Math.max(12, Math.round(canvas.width * 0.02)));
-    const blob = await new Promise(res => canvas.toBlob(res, 'image/png'));
-    if (psm) await worker.setParameters({ tessedit_pageseg_mode: psm });
-    const result = await worker.recognize(blob);
-    const k = imgW / canvas.width;
-    return tesseractWords(result).map(w => ({
-      text: w.text,
-      x0: (w.bbox?.x0 ?? 0) * k, x1: (w.bbox?.x1 ?? 0) * k,
-      y0: (w.bbox?.y0 ?? 0) * k, y1: (w.bbox?.y1 ?? 0) * k,
-      confidence: w.confidence,
-    }));
-  } finally {
-    canvas.width = 0;
-    canvas.height = 0;
-  }
+  const box = ocrPageBox(source.width, source.height);
+  const blob = await prepRead(prep, source, box, view);
+  if (psm) await worker.setParameters({ tessedit_pageseg_mode: psm });
+  const result = await worker.recognize(blob);
+  const k = box.sw / box.w;
+  return tesseractWords(result).map(w => ({
+    text: w.text,
+    x0: (w.bbox?.x0 ?? 0) * k, x1: (w.bbox?.x1 ?? 0) * k,
+    y0: (w.bbox?.y0 ?? 0) * k, y1: (w.bbox?.y1 ?? 0) * k,
+    confidence: w.confidence,
+  }));
 }
 
 // The vertical slices the photo is read in: half-height strips starting at 0,
@@ -2499,6 +2715,20 @@ const OCR_CELL_BG_FAINT = 8;   // for a cell in glare, where 18 finds no glyphs 
 // A cell is looked at through these views, best first, until one reads back as a
 // shift. Flat-field first: it is the only one that survives glare.
 const OCR_CELL_MODES = ['local', 'ink', 'grey'];
+
+/**
+ * Run one read — or one column's few reads — on a surface of its own, drawn into
+ * by `fn` and released here. Two reads sharing a canvas is the one thing the pool
+ * cannot survive (see ocrScratchCanvas), so a read that the pool hands a worker
+ * is handed a surface with it.
+ */
+function ocrOnScratch(pool, fn) {
+  return pool.run(async worker => {
+    const surface = ocrScratchCanvas();
+    try { return await fn(worker, surface); }
+    finally { surface.width = 0; surface.height = 0; }
+  });
+}
 
 /**
  * The same word, read twice.
@@ -2646,7 +2876,11 @@ export function ocrFlatField(d, w, h) {
 async function ocrReadCell(worker, bitmap, canvas, box, opts = {}) {
   const { accept = () => false, bg = OCR_CELL_BG, chars = '' } = opts;
   if (![box.x0, box.y0, box.x1, box.y1].every(Number.isFinite)) return { text: '', confidence: 0 };
-  await worker.setParameters({ tessedit_char_whitelist: chars });
+  // Both of these are state on the WORKER, and a cell read now lands on whichever
+  // worker the pool hands it — so everything the read needs from the engine is set
+  // with the read rather than left for the pass to have set once. '7' is "single
+  // text line", which is exactly what one cell is (see OCR_CELL_MODES).
+  await worker.setParameters({ tessedit_char_whitelist: chars, tessedit_pageseg_mode: '7' });
   try {
     let best = { text: '', confidence: 0 };
     for (const mode of OCR_CELL_MODES) {
@@ -2714,116 +2948,123 @@ export function ocrPickBand(bands, prior, maxDrift) {
 // Read the row the typed name sits on, cell by cell. Returns the cells it read
 // (already in the shape parseRosterWords emits, dated off the same grid) and
 // whether every column of that grid was attempted.
-async function ocrOwnerCells(worker, source, canvas, opts = {}) {
+//
+// The name and the day columns are read at the same time. They are independent
+// readings of one row — the name confirms WHICH row, the columns say what is on
+// it — and the crops are all cut from the same words before any read starts, so
+// the confirmation no longer holds the week behind it. The day the owner does not
+// work is exactly the day left blank, so the tail of every scan is the pass with
+// the most to read and the least to say: on a seven-column week that is eight
+// reads, which one worker used to take in turn. Reading a name the row does not
+// carry costs nothing extra — the columns are read either way, and a pass that
+// cannot confirm its row merges with the strip pass instead of replacing it.
+async function ocrOwnerCells(pool, source, opts = {}) {
   const { name, nameWord, cols, rowWords = [], medianH = 24, skew = null, progress, ruleGrid = null } = opts;
-  const cells = [];
-  // "Complete" only once the row itself is confirmed: a full grid read off the
-  // wrong row would otherwise replace the matched row's cells with another
-  // person's shifts. Unconfirmed, the pass merges instead of replacing.
-  let complete = false;
-  try {
-    // Every read in this pass is one line of one cell, which is exactly what
-    // "single text line" tells the engine to expect. The worker is disposed at
-    // the end of the scan, so the strip pass's own setting is untouched.
-    await worker.setParameters({ tessedit_pageseg_mode: '7' });
-    const bitmap = source.bitmap;
-    const imgW = source.width, imgH = source.height;
-    // Where each day starts and ends: the sheet's own ruled lines when they add
-    // up (rosterColumnsFromRules), the day names' own positions otherwise. The
-    // rules are the better answer by a lot — a 1000px line cannot be boxed wrong
-    // the way a 20px day name can — and because the rule grid is only accepted if
-    // every column the words found falls inside the span that claims it, taking it
-    // can only straighten a cell's crop, never move it onto the wrong day.
-    const bounds = (ruleGrid && ruleGrid.bounds) || rosterColumnBounds(cols);
+  const bitmap = source.bitmap;
+  const imgW = source.width, imgH = source.height;
+  // Where each day starts and ends: the sheet's own ruled lines when they add
+  // up (rosterColumnsFromRules), the day names' own positions otherwise. The
+  // rules are the better answer by a lot — a 1000px line cannot be boxed wrong
+  // the way a 20px day name can — and because the rule grid is only accepted if
+  // every column the words found falls inside the span that claims it, taking it
+  // can only straighten a cell's crop, never move it onto the wrong day.
+  const bounds = (ruleGrid && ruleGrid.bounds) || rosterColumnBounds(cols);
 
-    // Every crop is aimed by where the strip pass saw the ink, not by where the
-    // grid guessed it would be. A word box's HEIGHT can be nonsense under glare —
-    // that is why the row is not cropped to one word — but the union of a line's
-    // words is the text's own position, and a cell re-read inside its own glyphs
-    // cannot clip a long shift the way a grid box can (measured on the sample
-    // roster: the grid cell was 12px narrower than the text at each end, which is
-    // exactly where "07:00-15:00" keeps its two outermost digits).
-    const band = rowWords.filter(w => [w.x0, w.y0, w.x1, w.y1].every(Number.isFinite));
-    const boxOf = list => ({
-      x0: Math.min(...list.map(w => w.x0)), y0: Math.min(...list.map(w => w.y0)),
-      x1: Math.max(...list.map(w => w.x1)), y1: Math.max(...list.map(w => w.y1)),
-    });
-    // A crop with room around its glyphs: sideways enough to keep a stray
-    // character of the column beside it out of frame, vertically enough to hold a
-    // descender — while staying well inside the row above and below.
-    const crop = box => {
-      const padX = Math.max(2, medianH * 0.3);
-      const cy = (box.y0 + box.y1) / 2;
-      const halfH = Math.max(medianH * 0.75, (box.y1 - box.y0) / 2 + medianH * 0.25);
-      return {
-        x0: Math.max(0, box.x0 - padX), x1: Math.min(imgW, box.x1 + padX),
-        y0: Math.max(0, cy - halfH), y1: Math.min(imgH, cy + halfH),
-      };
+  // Every crop is aimed by where the strip pass saw the ink, not by where the
+  // grid guessed it would be. A word box's HEIGHT can be nonsense under glare —
+  // that is why the row is not cropped to one word — but the union of a line's
+  // words is the text's own position, and a cell re-read inside its own glyphs
+  // cannot clip a long shift the way a grid box can (measured on the sample
+  // roster: the grid cell was 12px narrower than the text at each end, which is
+  // exactly where "07:00-15:00" keeps its two outermost digits).
+  const band = rowWords.filter(w => [w.x0, w.y0, w.x1, w.y1].every(Number.isFinite));
+  const boxOf = list => ({
+    x0: Math.min(...list.map(w => w.x0)), y0: Math.min(...list.map(w => w.y0)),
+    x1: Math.max(...list.map(w => w.x1)), y1: Math.max(...list.map(w => w.y1)),
+  });
+  // A crop with room around its glyphs: sideways enough to keep a stray
+  // character of the column beside it out of frame, vertically enough to hold a
+  // descender — while staying well inside the row above and below.
+  const crop = box => {
+    const padX = Math.max(2, medianH * 0.3);
+    const cy = (box.y0 + box.y1) / 2;
+    const halfH = Math.max(medianH * 0.75, (box.y1 - box.y0) / 2 + medianH * 0.25);
+    return {
+      x0: Math.max(0, box.x0 - padX), x1: Math.min(imgW, box.x1 + padX),
+      y0: Math.max(0, cy - halfH), y1: Math.min(imgH, cy + halfH),
     };
-    const nameRight = rosterNameColumnRight(bounds);
-    const nameParts = band.filter(w => (w.x0 + w.x1) / 2 < nameRight);
-    const rowCy = (nameWord.y0 + nameWord.y1) / 2;
-    // The row's own line, from the two ends of its words: a crop for a column the
-    // strip pass saw nothing in has to sit on the line AT THAT COLUMN'S x, which
-    // on a tilted page is not where the name is (90px apart at 3° across a page).
-    //
-    // The tilt comes from the page, not from this row's own two ends. A row whose
-    // right-hand cells the strip pass missed leaves a span half a week wide, and a
-    // slope fitted to that span lands the crop for the missing columns tens of
-    // pixels off the line — over a row's own height, which is exactly enough to
-    // read the sheet's rule instead of the shift that is there. See pageSkew.
-    const lineYAt = (() => {
-      if (band.length < 2) return () => rowCy;
-      const cx = w => (w.x0 + w.x1) / 2, cy = w => (w.y0 + w.y1) / 2;
-      const slope = skew != null ? Math.max(-0.15, Math.min(0.15, skew))
-        : (() => {
-          const sorted = [...band].sort((a, b) => cx(a) - cx(b));
-          const a = sorted[0], b = sorted[sorted.length - 1];
-          const span = cx(b) - cx(a);
-          return span <= 0 ? 0 : Math.max(-0.15, Math.min(0.15, (cy(b) - cy(a)) / span));
-        })();
-      const base = band.reduce((s, w) => s + (cy(w) - slope * cx(w)), 0) / band.length;
-      return x => base + slope * x;
-    })();
+  };
+  const nameRight = rosterNameColumnRight(bounds);
+  const nameParts = band.filter(w => (w.x0 + w.x1) / 2 < nameRight);
+  const rowCy = (nameWord.y0 + nameWord.y1) / 2;
+  // The row's own line, from the two ends of its words: a crop for a column the
+  // strip pass saw nothing in has to sit on the line AT THAT COLUMN'S x, which
+  // on a tilted page is not where the name is (90px apart at 3° across a page).
+  //
+  // The tilt comes from the page, not from this row's own two ends. A row whose
+  // right-hand cells the strip pass missed leaves a span half a week wide, and a
+  // slope fitted to that span lands the crop for the missing columns tens of
+  // pixels off the line — over a row's own height, which is exactly enough to
+  // read the sheet's rule instead of the shift that is there. See pageSkew.
+  const lineYAt = (() => {
+    if (band.length < 2) return () => rowCy;
+    const cx = w => (w.x0 + w.x1) / 2, cy = w => (w.y0 + w.y1) / 2;
+    const slope = skew != null ? Math.max(-0.15, Math.min(0.15, skew))
+      : (() => {
+        const sorted = [...band].sort((a, b) => cx(a) - cx(b));
+        const a = sorted[0], b = sorted[sorted.length - 1];
+        const span = cx(b) - cx(a);
+        return span <= 0 ? 0 : Math.max(-0.15, Math.min(0.15, (cy(b) - cy(a)) / span));
+      })();
+    const base = band.reduce((s, w) => s + (cy(w) - slope * cx(w)), 0) / band.length;
+    return x => base + slope * x;
+  })();
 
+  // Confirm the row by reading its name, one word at a time: the strip carries
+  // the band column beside the name ("Parth 20"), which no whole-line compare
+  // survives. The crop is the name column as this photo has it — the words the
+  // strip pass found left of the first day — not a width guessed from the column
+  // pitch, which on the sample roster started 140px into the name and read back
+  // "harma".
+  progress(0.86, 'Checking your name on this row');
+  const nameBox = nameParts.length
+    ? crop(boxOf(nameParts))
+    : crop({ x0: nameWord.x0, y0: nameWord.y0, x1: nameWord.x1, y1: nameWord.y1 });
+  const nameTask = ocrOnScratch(pool, (worker, surface) =>
+    ocrReadCell(worker, bitmap, surface, nameBox,
+      { accept: text => String(text).split(/\s+/).some(w => nameMatches(w, name)) }))
+    .then(read => {
+      const validated = String(read.text || '').split(/\s+/).filter(Boolean).some(w => nameMatches(w, name));
+      if (!validated) progress(0.87, 'That row does not carry your name');
+      return validated;
+    });
 
-    // Confirm the row by reading its name, one word at a time: the strip carries
-    // the band column beside the name ("Parth 20"), which no whole-line compare
-    // survives. The crop is the name column as this photo has it — the words the
-    // strip pass found left of the first day — not a width guessed from the column
-    // pitch, which on the sample roster started 140px into the name and read back
-    // "harma".
-    progress(0.86, 'Checking your name on this row');
-    const nameRead = await ocrReadCell(worker, bitmap, canvas,
-      nameParts.length ? crop(boxOf(nameParts)) : crop({ x0: nameWord.x0, y0: nameWord.y0, x1: nameWord.x1, y1: nameWord.y1 }),
-      { accept: text => String(text).split(/\s+/).some(w => nameMatches(w, name)) });
-    const validated = String(nameRead.text || '').split(/\s+/).filter(Boolean).some(w => nameMatches(w, name));
-    if (!validated) progress(0.87, 'That row does not carry your name');
-
-    for (let i = 0; i < cols.length; i++) {
-      const [x0, x1] = bounds[i];
-      if (!(x1 - x0 > 20)) continue;
-      progress(0.88 + (i / cols.length) * 0.1, `Reading shift ${i + 1} of ${cols.length}`);
-      // The words that landed in this column, rules and all: a token that is pure
-      // punctuation is a rule line the engine dressed as text, so it carries no
-      // glyphs and is left out of the box its neighbours are measured by.
-      const own = band.filter(w => {
-        const cx = (w.x0 + w.x1) / 2;
-        return cx >= x0 && cx < x1 && isGlyphToken(w.text);
-      });
-      // A column with no words of its own is a day the strip pass found nothing
-      // on — a day off, or one it missed. Its crop is the grid cell this time, so
-      // the silence is still heard and "nothing here" stays a real answer.
-      const columnLine = lineYAt((x0 + x1) / 2);
-      const box = own.length
-        ? boxOf(own)
-        : { x0, x1, y0: columnLine - medianH, y1: columnLine + medianH };
+  // One job per day column, in column order, and the pool decides how many of
+  // them read at once.
+  const readable = cols.filter((_, i) => bounds[i] && bounds[i][1] - bounds[i][0] > 20).length;
+  let done = 0;
+  const readColumn = (i, x0, x1) => {
+    // The words that landed in this column, rules and all: a token that is pure
+    // punctuation is a rule line the engine dressed as text, so it carries no
+    // glyphs and is left out of the box its neighbours are measured by.
+    const own = band.filter(w => {
+      const cx = (w.x0 + w.x1) / 2;
+      return cx >= x0 && cx < x1 && isGlyphToken(w.text);
+    });
+    // A column with no words of its own is a day the strip pass found nothing
+    // on — a day off, or one it missed. Its crop is the grid cell this time, so
+    // the silence is still heard and "nothing here" stays a real answer.
+    const columnLine = lineYAt((x0 + x1) / 2);
+    const box = own.length
+      ? boxOf(own)
+      : { x0, x1, y0: columnLine - medianH, y1: columnLine + medianH };
+    return ocrOnScratch(pool, async (worker, surface) => {
       let parsed = null, read = { text: '', confidence: 0 };
       // Two sensitivities: the cell's own ink cut, then a fainter one for a cell
       // sitting in the photo's glare, where the glyphs are washed out and the
       // first cut finds nothing. Only a cell that fails pays for the second look.
       for (const bg of [OCR_CELL_BG, OCR_CELL_BG_FAINT]) {
-        read = await ocrReadCell(worker, bitmap, canvas, crop(box), {
+        read = await ocrReadCell(worker, bitmap, surface, crop(box), {
           accept: text => parseTimeCell(text) || /^\s*(off|hol|n\/?a)\b/i.test(text),
           bg, chars: OCR_CELL_CHARS,
         });
@@ -2832,21 +3073,37 @@ async function ocrOwnerCells(worker, source, canvas, opts = {}) {
         parsed = read.text ? parseCellTokens([{ text: read.text, x0: 0, x1: 1, confidence: read.confidence }], 0) : null;
         if (parsed) break;
       }
-      if (!parsed) continue;
+      if (!parsed) return null;
       const col = cols[i];
-      cells.push({
+      return {
         date: col && col.date ? isoLocalUTC(col.date) : null,
         weekday: col && col.date ? col.date.getUTCDay() : (col && col.weekday != null ? col.weekday : null),
         startMin: parsed.startMin, endMin: parsed.endMin,
         raw: read.text, confidence: read.confidence, dupe: false,
-      });
-    }
-    complete = validated && cols.length >= 7;
-  } finally {
-    canvas.width = 0;
-    canvas.height = 0;
-  }
-  return { cells, complete };
+      };
+    }).finally(() => {
+      // The day is reported as it arrives, so the bar walks the week as the reads
+      // come back rather than pretending one of them is the only one running.
+      done++;
+      progress(0.88 + (done / readable) * 0.1, `Read ${done} of ${readable} shifts`);
+    });
+  };
+  const columns = cols.map((_, i) => {
+    const span = bounds[i];
+    return span && span[1] - span[0] > 20 ? readColumn(i, span[0], span[1]) : null;
+  });
+  const jobs = [nameTask, ...columns];
+  // A read that throws still ends the scan, but its siblings are in flight: a
+  // rejection nobody is left waiting for is an error the user never asked to see.
+  const [validated, ...readCells] = await Promise.all(jobs).catch(err => {
+    for (const p of jobs) if (p) p.catch(() => {});
+    throw err;
+  });
+  const cells = readCells.filter(Boolean);
+  // "Complete" only once the row itself is confirmed: a full grid read off the
+  // wrong row would otherwise replace the matched row's cells with another
+  // person's shifts. Unconfirmed, the pass merges instead of replacing.
+  return { cells, complete: !!validated && cols.length >= 7 };
 }
 
 // Find the user's row and read it, without asking them to frame it.
@@ -2865,9 +3122,16 @@ async function ocrOwnerCells(worker, source, canvas, opts = {}) {
 // reading that merely mentions the typed name no longer ends the scan: a read can
 // carry the name and still put the week's shifts on the wrong days.
 //
-// The worker is created here and torn down in the same breath: its heap is the
-// one place a decoded image could outlive the scan, so dropping it covers
-// success, a throw mid-scan, and a scan that found nothing.
+// The worker pools are built here and torn down in the same breath: a worker's
+// heap is the one place a decoded image could outlive the scan, so dropping the
+// workers covers success, a throw mid-scan, and a scan that found nothing. Each
+// rung of the ladder is a BATCH of independent readings of one photo — the three
+// strips, then the plain page and the thresholded one, then the two quarter turns
+// — taken together on the pool and believed in the order the one-after-another
+// ladder reached them, so the batch buys the wall clock back and nothing else
+// (see createOcrPool). Each reading's pixels are prepared on a second, smaller
+// pool of prep workers on the way (see ocrPrepSize), which is what keeps the
+// reader's own thread free while a strip is being drawn, thresholded and encoded.
 export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
   const name = String(opts.name || '');
   const today = opts.today || new Date();
@@ -2882,7 +3146,8 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
   progress(0.02, 'Reading photo');
   let decoded = null, leveled = null;
   try {
-    const worker = await ensureOcrWorker();
+    const pool = await ensureOcrPool();
+    const prep = await ensureOcrPrep();
     decoded = await decodePhoto(file);
     // Level the sheet before anything is read off it, so its header and its staff
     // rows share one frame (see ocrEstimateTilt). Under a third of a degree is
@@ -2912,70 +3177,124 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
       return q;
     };
     let settled = false;
-    for (const strip of ranges) {
-      const from = 0.1 + (scanned / ranges.length) * 0.75;
-      progress(from, `Scanning part ${scanned + 1} of ${ranges.length} for your row`);
-      // While tesseract works through a strip, let its own 0→1 progress fill
-      // that strip's slice of the bar rather than jumping back to the start.
-      _progressSink = p => progress(from + (p * 0.75) / ranges.length, '');
-      const read = await ocrStripWords(worker, source, canvas, strip);
-      words.push(...read);
-      scanned++;
-      // The strips only have to FIND the row — it is the whole-page reads that
-      // settle which reading of the photo is believed, below.
-      if (name && read.some(w => nameMatches(w.text, name))) break;
+    // The strips are three independent readings of one sheet, so the pool takes
+    // all three at once: a row that sits in the last strip then costs one strip's
+    // wait instead of three. What is KEPT is exactly what the one-after-another
+    // loop kept — every strip up to and including the first that carries the typed
+    // name — because the three reads the pool ran are the same three reads, and the
+    // ones after the name was found were in flight, not extra evidence. So the
+    // answer, the reads counted behind it and the bar are the old loop's, and only
+    // the waiting is gone.
+    {
+      let done = 0;
+      // Three reads in flight have no single 0→1 for the engine's own progress to
+      // fill, so the bar steps once per strip finished rather than sliding.
+      _progressSink = () => {};
+      progress(0.1, `Scanning the photo for your row`);
+      const readStrip = async strip => {
+        try {
+          return await pool.run(worker => ocrStripWords(worker, prep, source, strip));
+        } finally {
+          done++;
+          progress(0.1 + (done / ranges.length) * 0.75, `Scanned part ${done} of ${ranges.length}`);
+        }
+      };
+      const strips = ranges.map(readStrip);
+      // A read that throws still ends the scan, as it did when they ran one after
+      // another — but its siblings are in flight, and a rejection nobody is left
+      // waiting for is an error the user never asked to see (and, once the pool is
+      // torn down under it, one about a worker that was terminated, which reads
+      // like a bug in the app). So the batch is collected before the failure goes on.
+      const reads = await Promise.all(strips).catch(err => {
+        for (const p of strips) p.catch(() => {});
+        throw err;
+      });
+      for (const read of reads) {
+        words.push(...read);
+        scanned++;
+        // The strips only have to FIND the row — it is the whole-page reads that
+        // settle which reading of the photo is believed, below.
+        if (name && read.some(w => nameMatches(w.text, name))) break;
+      }
     }
     settled = consider('strips', words).complete;
-    // Not settled: read the sheet whole. A strip has no page around it to be laid
-    // out against, and on an off-square photo that is what makes the engine drop a
-    // whole row (see ocrPageWords) — and on a photo lit from one side the strips
-    // find the name on a row whose day cells have slid into the columns beside it.
+    // Not settled: read the sheet whole, and read it as a grid at the same time. A
+    // strip has no page around it to be laid out against, and on an off-square
+    // photo that is what makes the engine drop a whole row (see ocrPageWords) — and
+    // on a photo lit from one side the strips find the name on a row whose day
+    // cells have slid into the columns beside it. The two readings answer that one
+    // question — the whole page, and the IMAGE changed rather than the request: a
+    // locally-thresholded page when the shot is lit unevenly (a lamp one side, a
+    // shadow the other), and sparse text mode either way, which is the
+    // page-segmentation setting for exactly this content ("find as much text as
+    // possible in no particular order" is a table said in Tesseract's own words).
+    //
+    // Read one after the other, the plain page's answer was the price of the
+    // thresholded one's question: on the harness's own lamp scenario the plain page
+    // reads 0 columns, so that whole first read was wait. They are taken together
+    // now, and only the readings the ladder would have reached are believed, in the
+    // order it would have reached them, so the answer is the one it gave.
     if (name && !settled) {
-      progress(0.87, 'Reading the whole page for your row');
-      _progressSink = p => progress(0.87 + p * 0.06, '');
-      const page = await ocrPageWords(worker, source, canvas);
+      const light = ocrPhotoLight(source);
+      const altTag = light.uneven ? 'page-ink' : 'page-sparse';
+      _progressSink = () => {};
+      progress(0.87, light.uneven
+        ? 'Reading the whole page, and evening out the light'
+        : 'Reading the whole page, and its grid');
+      const pages = [
+        pool.run(worker => ocrPageWords(worker, prep, source)),
+        pool.run(worker => ocrPageWords(worker, prep, source, { view: light.uneven ? 'ink' : 'stretch', psm: '11' })),
+      ];
+      const [page, alt] = await Promise.all(pages).catch(err => {
+        for (const p of pages) p.catch(() => {});
+        throw err;
+      });
       pagePass = true;
       scanned++;
       settled = consider('page', page).complete;
-    }
-    // Still not settled, and by now the two likeliest reasons are both things a
-    // better-handled image fixes rather than a better-read one: the shot is lit
-    // unevenly (a lamp one side, a shadow the other), or the sheet is a sparse
-    // grid the engine's default layout analysis refuses to cut into cells. So this
-    // pass changes the IMAGE and not the request — a locally-thresholded page when
-    // the light is uneven, and sparse text mode either way, which is the
-    // page-segmentation setting for exactly this content ("find as much text as
-    // possible in no particular order" is a table said in Tesseract's own words).
-    // Paid for only by a scan the reader has not already read whole.
-    if (name && !settled) {
-      const light = ocrPhotoLight(source);
-      progress(0.9, light.uneven ? 'Evening out the light on this photo' : 'Reading this photo as a grid');
-      _progressSink = p => progress(0.9 + p * 0.03, '');
-      const page = await ocrPageWords(worker, source, canvas, { view: light.uneven ? 'ink' : 'stretch', psm: '11' });
-      scanned++;
-      settled = consider(light.uneven ? 'page-ink' : 'page-sparse', page).complete;
+      // The grid reading is an answer only if the ladder would have got to it, and
+      // by then it was taken long ago.
+      if (!settled) { scanned++; settled = consider(altTag, alt).complete; }
     }
     // Still not settled, and the likeliest reason by far is a sheet photographed
-    // sideways: turn it back a quarter turn at a time and read the page again.
-    // Whichever frame reads best is the frame everything else is read in.
+    // sideways: turn it back a quarter turn and read the page again. Both quarter
+    // turns are taken at once — half the roster photos people take are of a
+    // landscape sheet in a portrait hand, and this is the rung that decides those
+    // — and whichever frame reads best is the frame everything else is read in.
+    // Believed in the ladder's own order, so a photo that reads upright is not
+    // re-read upside down: only the frames the ladder would have reached are scored.
     if (name && !settled) {
-      for (const turn of [90, -90]) {
-        progress(0.93, 'Turning the photo up the other way');
-        const turned = await turnPhoto(source, turn);
-        try {
-          _progressSink = p => progress(0.93 + p * 0.04, '');
-          const page = await ocrPageWords(worker, turned, canvas);
+      const turns = [90, -90];
+      progress(0.93, 'Turning the photo up the other way');
+      _progressSink = () => {};
+      const frames = await Promise.all(turns.map(turn => turnPhoto(source, turn)));
+      let won = -1;
+      try {
+        // The mode is named rather than inherited. Page-segmentation mode is state
+        // on the worker, and with more than one worker a read lands on whichever is
+        // free — so left unset, a turned page would be read in whatever mode the
+        // rung before it happened to leave on that worker, which is not a decision
+        // at all. Sparse text is the mode the ladder has always brought here ('11',
+        // set by the rung that ran just before these) and the harness reads the
+        // sideways photos in it, so it is what a turned page is read in.
+        const turned = frames.map(frame => pool.run(worker => ocrPageWords(worker, prep, frame, { psm: '11' })));
+        const reads = await Promise.all(turned).catch(err => {
+          for (const p of turned) p.catch(() => {});
+          throw err;
+        });
+        for (let i = 0; i < turns.length; i++) {
           scanned++;
-          if (consider(`turn${turn}`, page).complete) {
-            if (leveled && leveled.bitmap) leveled.bitmap.close();
-            leveled = turned;
-            source = turned;
-            settled = true;
-            break;
-          }
-        } finally {
-          if (!settled && turned.bitmap) turned.bitmap.close();
+          if (consider(`turn${turns[i]}`, reads[i]).complete) { won = i; break; }
         }
+        if (won >= 0) {
+          if (leveled && leveled.bitmap) leveled.bitmap.close();
+          leveled = frames[won];
+          source = frames[won];
+          settled = true;
+        }
+      } finally {
+        // The quarter turn the ladder did not believe is this scan's rubbish too.
+        frames.forEach((frame, i) => { if (i !== won && frame.bitmap) frame.bitmap.close(); });
       }
     }
     // The reading the rest of the scan is built on: the one that came back whole
@@ -3010,7 +3329,7 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
         const medianH = heights.length ? heights[Math.floor(heights.length / 2)] : 24;
         const owner = parsed.rows.find(r => r.matches);
         const rowWords = (owner && owner.words) || [nameWord];
-        const read = await ocrOwnerCells(worker, source, canvas, {
+        const read = await ocrOwnerCells(pool, source, {
           name, nameWord, cols, rowWords, medianH, skew: pageSkew(words, medianH), progress, ruleGrid,
         });
         cells = read.cells;
@@ -3019,9 +3338,18 @@ export async function ocrRosterRow(file, canvas, opts = {}, onProgress) {
     }
   } finally {
     _progressSink = () => {};
-    disposeOcrWorker();
+    // Every worker this scan built — the engines and the prep workers — gone with
+    // the photo: a worker's heap is the one place a decoded roster image could
+    // outlive the scan.
+    await disposeOcrWorker();
+    // The caller's canvas is only the on-screen preview now — every read draws on
+    // a prep worker's surface of its own — but it is still zeroed here on every
+    // path, so "the photo is gone" stays true of the preview the scan started from
+    // (see discardPhoto).
+    canvas.width = 0;
+    canvas.height = 0;
     // The photo and the levelled copy of it are this scan's, and neither outlives
-    // it: the worker's heap was the only other place a decoded roster sat.
+    // it either.
     if (decoded && decoded.bitmap) decoded.bitmap.close();
     if (leveled && leveled.bitmap) leveled.bitmap.close();
   }
@@ -3169,6 +3497,8 @@ export function screenTesco(ctx) {
 
   // ----- add shift -----
   screen.appendChild(buildAddCard());
+  // ----- week off -----
+  screen.appendChild(buildWeekOffCard());
   // The Add tab's magic field, in shift clothes: describe it, watch the preview
   // resolve, then add it. Same grammar-shaped chips and example chips, because
   // the two fields teach the same habit — say it, check it, save it.
@@ -3215,6 +3545,55 @@ export function screenTesco(ctx) {
       $('div', { class: 'tesco-card-title' }, 'Add shift', iconSpan('plus', 'md')),
       $('div', { class: 'tesco-form-row' }, dateIn, startIn, endIn),
       $('div', { class: 'tesco-form-row' }, noteIn, addBtn),
+      preview,
+    );
+  }
+
+  // ================= week off =================
+  // A booked week off has no clock times: it is a row that states the hours it
+  // pays and nothing else — the sheet's own shape, and what the magic entry
+  // already writes for "week off 7h". This card is the one place that asks for
+  // it outright: which week, and how many hours of pay.
+  //
+  // The row is weekOffShift's answer (module scope, harness-pinned), dated on the
+  // week's Sunday so the week card reads it back as the week it belongs to —
+  // "Sun 27 Sep · week off 7h" — and pays it at the card rate (see shiftPay: a
+  // row with hours and no times is a booked absence, not a Sunday worked). The
+  // preview is shiftPreviewLine over shiftPay, the same two functions the magic
+  // card previews with and the week row renders with, so what this card promises
+  // and what the week card pays are one piece of arithmetic rather than two that
+  // happen to agree today.
+  function buildWeekOffCard() {
+    const draft = { date: todayIso(), hours: '7' };
+    const dateIn = $('input', { type: 'date', value: draft.date, 'aria-label': 'Week off date', class: 'tesco-in', onInput: e => { draft.date = e.target.value; refreshPreview(); } });
+    // The bounds are statedHours', with 0 left out: a week off worth nothing is a
+    // mistyped week off. `step: any` so the browser never red-outlines an hours
+    // figure (7.3) that this app's own rule accepts — the two would disagree, and
+    // the app's rule is the one that writes the row.
+    const hoursIn = $('input', { type: 'number', min: '0', max: '168', step: 'any', value: draft.hours, 'aria-label': 'Week off hours', class: 'tesco-in', onInput: e => { draft.hours = e.target.value; refreshPreview(); } });
+    const preview = $('div', { class: 'muted', style: 'font-size:12px;min-height:16px;' });
+    // Rates are read live off the tab's own settings: a preview that captured
+    // them would keep quoting the card rate from before an edit.
+    function refreshPreview() {
+      const result = weekOffShift(draft.date, draft.hours);
+      if (!result.ok) { preview.textContent = result.error; return; }
+      const ratesNow = { ...TESCO_RATE_DEFAULTS, ...(ctx.getState().settings.tescoRates || {}) };
+      preview.textContent = shiftPreviewLine(result.shift, shiftPay(result.shift, ratesNow), fmt);
+    }
+    refreshPreview();
+
+    const addBtn = $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
+      const result = weekOffShift(draft.date, draft.hours);
+      if (!result.ok) { toast(result.error); return; }
+      // Committing re-renders the tab, so the card comes back with its defaults
+      // (this week, 7h) — the fields themselves need no resetting here.
+      addShifts([result.shift], 'week off');
+    } }, 'Add week off');
+
+    return $('div', { class: 'card' },
+      $('div', { class: 'tesco-card-title' }, 'Week off', iconSpan('briefcase', 'md')),
+      $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:10px;' }, 'The whole week off: pick any day of that week and the hours it pays — no clock times needed.'),
+      $('div', { class: 'tesco-form-row' }, dateIn, hoursIn, addBtn),
       preview,
     );
   }
@@ -3368,6 +3747,27 @@ export function screenTesco(ctx) {
     commitTesco(before, { ...before, shifts: [...before.shifts, ...fresh] },
       `Add ${fresh.length} ${label}${fresh.length > 1 ? 's' : ''}`,
       `Added ${fresh.length} shift${fresh.length > 1 ? 's' : ''}.`);
+    return true;
+  }
+
+  // The week's final bank pay, typed by hand on the week's carrier row. The rule
+  // is weekBankWrite's (module scope, harness-pinned): the figure is the week's,
+  // so it is written to the row it was typed on and to the week's own payslip,
+  // and cleared from every other record of that week. One commit, one undo step.
+  //
+  // Nothing here runs per keystroke — the cell commits on change — so a full
+  // render after it is safe. A value that changed nothing (clicking in and back
+  // out) is not an edit and is not toasted: the arrays come back with the very
+  // same records, which is what the identity check below asks.
+  function writeWeekBank(carrierId, raw) {
+    const before = snapshot();
+    const next = weekBankWrite(before.shifts, before.payslips, carrierId, raw);
+    const changed = next.shifts.some((s, i) => s !== before.shifts[i])
+      || next.payslips.some((p, i) => p !== before.payslips[i]);
+    if (!changed) return false;
+    const blank = raw == null || String(raw).trim() === '';
+    commitTesco(before, { ...before, shifts: next.shifts, payslips: next.payslips },
+      'Record bank pay', blank ? 'Final bank pay cleared.' : 'Final bank pay saved.');
     return true;
   }
 
@@ -3890,9 +4290,10 @@ export function screenTesco(ctx) {
       }
       openStream();
     }
-    // Every scan ends here: the pixels are already zeroed by ocrStripWords, this
-    // removes the (now empty) preview chrome and says so plainly, so "the photo
-    // is gone" is something the user can see rather than take on trust.
+    // Every scan ends here: ocrRosterRow has zeroed the canvas and terminated the
+    // workers that held the pixels, so this removes the (now empty) preview chrome
+    // and says so plainly — "the photo is gone" is something the user can see
+    // rather than take on trust.
     function discardPhoto(note) {
       file = null;
       wrap.style.display = 'none';
@@ -4073,15 +4474,23 @@ export function screenTesco(ctx) {
 
     if (w.shifts.length) {
       const list = $('div', { class: 'tesco-shiftlist' });
-      for (const s of w.shifts) list.appendChild(shiftRow(s));
+      // The week is passed down so the row that carries the week's bank figure
+      // knows it is that row (see weekBankWrite), rather than every row growing
+      // a cell that would sum with its neighbours'.
+      for (const s of w.shifts) list.appendChild(shiftRow(s, w));
       box.appendChild(list);
     }
     if (sim) {
       box.appendChild($('div', { class: 'muted', style: 'font-size:11px;margin-top:8px;' },
         `Est. PAYE ${fmt(sim.paye)} · USC ${fmt(sim.usc)} · PRSI ${fmt(sim.prsi)} · FF ${fmt(sim.pension)} → net ${fmt(sim.net)}`));
     }
-    if (actual != null) {
-      const actualEl = $('div', { class: 'tesco-actual' }, ...actualFigures(w));
+    // Shown whenever the week recorded anything — its payslips' tax, a net typed
+    // on its row, or both. A net typed on the row used to be invisible here (the
+    // line was built only for a week with a payslip) even though receivedTotal has
+    // always counted it, so the month's Received said more than the week did.
+    const figures = actualFigures(w);
+    if (figures.length) {
+      const actualEl = $('div', { class: 'tesco-actual' }, ...figures);
       box.appendChild(actualEl);
       // A payslip figure typed below moves this week's line, so it is re-filled
       // in place rather than by rebuilding the screen: replaceChildren() leaves
@@ -4103,27 +4512,52 @@ export function screenTesco(ctx) {
   // all removed in the meantime returns no figures at all, so the line hides.
   function actualFigures(w) {
     const actual = w.payslips.length ? w.paid : null;
-    if (actual == null) return [];
+    // A week's net is a week's figure whether a payslip or a shift row of that
+    // week states it, so it is shown either way — and its own line, since a week
+    // with a net but no payslip has no tax withheld to report.
+    const received = w.bankPaid;
+    if (actual == null && received == null) return [];
     // Compare like with like: a payslip total is PAYE+USC+PRSI+Future Fund, so
     // the estimate must include the pension (Future Fund) too.
     const sim = w.gross > 0 ? simulateTax(w.gross, rates) : null;
-    const delta = sim ? r2(actual - (sim.tax + sim.pension)) : null;
+    const delta = sim && actual != null ? r2(actual - (sim.tax + sim.pension)) : null;
     return [
-      $('span', { style: 'font-weight:600;font-size:12px;' }, `Tax paid ${fmt(actual)}`),
-      w.bankPaid != null ? $('span', { class: 'tesco-derived' }, `Received ${fmt(w.bankPaid)}`) : null,
+      actual == null ? null : $('span', { style: 'font-weight:600;font-size:12px;' }, `Tax paid ${fmt(actual)}`),
+      received == null ? null : $('span', { class: 'tesco-derived' }, `Received ${fmt(received)}`),
       delta == null ? null
         : $('span', { class: `tesco-chip ${Math.abs(delta) < 1 ? 'tesco-chip-good' : 'tesco-chip-warn'}` },
             `${delta >= 0 ? '+' : '−'}${fmt(Math.abs(delta)).slice(1)} vs est`),
     ];
   }
 
-  function shiftRow(s) {
+  function shiftRow(s, w) {
     const p = shiftPay(s, rates);
     // A booked week off has hours and no clock times; show that rather than a
     // mangled "–" range.
     const times = s.start && s.end
       ? `${s.start}–${s.end}${isOvernight(parseHM(s.start), parseHM(s.end)) ? '+1' : ''}`
       : 'week off';
+    // The week's final bank pay is typed on the week's carrier row — its first
+    // row by date, which is the row the sheet and the CSV put a week's figures on
+    // (see weekBankWrite). One cell for the week, not one per row: buildPayWeeks
+    // adds a week's figures up, so two typed boxes in one week would pay twice.
+    const isCarrier = !!w && w.shifts[0] === s;
+    const bankIn = isCarrier ? $('input', {
+      type: 'number', step: '0.01', inputmode: 'decimal',
+      class: 'tesco-in tesco-shift-bank-in', placeholder: '—',
+      value: w.bankPaid == null ? '' : w.bankPaid,
+      // The label names the row's own date, so it is unique in the document —
+      // and it is the pivot the scan card's "pay date" is counted from.
+      'aria-label': `Final bank pay ${prettyDateLong(s.date)}`,
+      title: 'Final bank pay — what actually reached the bank. Leave it blank if you have not been paid yet.',
+      // No onInput here on purpose (the same reason the week number above waits
+      // for change): render() rebuilds the whole screen, and a rebuilt number
+      // field has no caret to keep — the next digit would land in the wrong
+      // place. Leaving the field, or Enter, which blurs it, is the commit.
+      onChange: e => writeWeekBank(s.id, e.target.value),
+      onKeydown: e => { if (e.key === 'Enter') e.target.blur(); },
+    }) : null;
+  
     const row = $('div', { class: 'tesco-shiftrow' },
       $('span', { class: 'tesco-shift-day' }, weekdayShort(s.date)),
       $('span', { class: 'tesco-shift-time' }, times),
@@ -4131,19 +4565,27 @@ export function screenTesco(ctx) {
       // stored flag was never set by hand.
       p && p.special ? $('span', { class: 'tesco-chip' }, 'special') : null,
       $('span', { class: 'muted', style: 'font-size:11px;' }, `${p ? p.hours : '?'}h`),
-      $('span', { class: 'tesco-shift-amt' }, p ? fmt(p.gross) : '—'),
-      // Edit before delete: the destructive control keeps the end of the row, so
-      // a mistaken tap lands on the sheet rather than on a confirmation. The two
-      // travel as one group because on a very narrow phone the row wraps, and a
-      // group wraps whole and right-aligned instead of splitting across lines.
-      $('span', { class: 'tesco-shift-actions' },
-        $('button', { type: 'button', class: 'icon-btn tesco-edit', title: 'Edit shift', 'aria-label': `Edit shift ${prettyDate(s.date)} ${times}`, onClick: () => openShiftEditor(s.id) }, iconSpan('pencil', 'md')),
-        // Addressed like the pencil beside it: a `aria-label` is how a control is
-        // found (restoreFocusedField, the harness probes), so one screen must
-        // never carry two of the same — every row's delete was "Delete shift".
-        $('button', { type: 'button', class: 'icon-btn tesco-del', title: 'Delete shift', 'aria-label': `Delete shift ${prettyDate(s.date)} ${times}`, onClick: async () => {
-          if (await swalConfirm({ title: 'Delete shift?', text: `${prettyDate(s.date)} ${times}`, danger: true, confirmButtonText: 'Delete' })) deleteShift(s.id);
-        } }, '×')),
+      // The row's tail: the week's gross, the bank cell and the two buttons, as
+      // ONE group. The group wraps whole to its own line when the row runs out of
+      // room, which is what keeps the buttons on screen at a phone width (split,
+      // the delete button was the piece that fell off the card) — and on a wide
+      // screen the group's auto margin keeps the amount flush right, exactly where
+      // it was before the bank cell existed.
+      $('span', { class: 'tesco-shift-tail' },
+        $('span', { class: 'tesco-shift-amt' }, p ? fmt(p.gross) : '—'),
+        bankIn ? $('label', { class: 'tesco-shift-bank' },
+          $('span', { class: 'tesco-shift-bank-label' }, 'Bank'),
+          bankIn,
+        ) : null,
+        $('span', { class: 'tesco-shift-actions' },
+          $('button', { type: 'button', class: 'icon-btn tesco-edit', title: 'Edit shift', 'aria-label': `Edit shift ${prettyDate(s.date)} ${times}`, onClick: () => openShiftEditor(s.id) }, iconSpan('pencil', 'md')),
+          // Addressed like the pencil beside it: a `aria-label` is how a control is
+          // found (restoreFocusedField, the harness probes), so one screen must
+          // never carry two of the same — every row's delete was "Delete shift".
+          $('button', { type: 'button', class: 'icon-btn tesco-del', title: 'Delete shift', 'aria-label': `Delete shift ${prettyDate(s.date)} ${times}`, onClick: async () => {
+            if (await swalConfirm({ title: 'Delete shift?', text: `${prettyDate(s.date)} ${times}`, danger: true, confirmButtonText: 'Delete' })) deleteShift(s.id);
+          } }, '×')),
+      ),
     );
     return row;
   }
