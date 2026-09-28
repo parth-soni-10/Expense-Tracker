@@ -22,6 +22,13 @@
        scripts/test-reminder-push.mjs. Production only ever goes
        through pushSend, which passes no `deterministic`, so the
        ephemeral key and salt are random per message.
+     vapidConfig(env?) -> { ok, subject, publicKey, privateKey, source }
+       The signing pair every function uses, resolved in one place.
+       The explicitly configured pair wins when it is really a pair;
+       otherwise the pair is derived from a server-only secret the
+       deploy already has. Read the note on it before changing the
+       precedence or the secret list — the pair is the one piece of
+       configuration whose absence is invisible from inside this repo.
    ============================================================ */
 
 import { createECDH, createCipheriv, createHmac, createPrivateKey, createSign, randomBytes } from 'node:crypto';
@@ -170,6 +177,115 @@ export function encryptPayload({ p256dh, auth }, payloadUtf8, deterministic = nu
   header.writeUInt32BE(4096, 16);           // rs
   header.writeUInt8(65, 20);                // idlen
   return Buffer.concat([header, asPublic, ciphertext]);
+}
+
+/* ---------- which pair the site signs with ---------- */
+
+// P-256's group order: a private scalar must fall in [1, n-1]. A uniformly
+// random 256-bit value is essentially always below it, and the retry loop in
+// deriveVapidPair is what makes "essentially" exact rather than a bet.
+const P256_ORDER = BigInt('0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551');
+// Both labels are part of the derivation, so changing either one changes every
+// derived key — i.e. re-binds every existing subscription. Hence the version.
+const VAPID_DERIVE_INFO = 'cents/vapid/derive/v1';
+const VAPID_DERIVE_SALT = 'cents/vapid/keys/v1';
+// Only a server-only, high-entropy secret may be key material, and
+// APP_PASSWORD is deliberately NOT in this list even though every deploy has
+// one: it is eight-ish characters a human chose and the user can read it,
+// while this file is public — the password would be the only unknown, so
+// anyone holding the public key could brute-force the private half offline.
+const VAPID_DERIVE_SECRETS = ['GITHUB_TOKEN'];
+const MIN_SECRET_LENGTH = 16;
+
+/** A P-256 seed and its public point, derived from one secret. */
+function deriveVapidPair(secret) {
+  const ikm = Buffer.from(String(secret), 'utf8');
+  for (let counter = 0; counter < 255; counter += 1) {
+    const info = Buffer.concat([Buffer.from(VAPID_DERIVE_INFO, 'utf8'), Buffer.from([counter])]);
+    const seed = hkdfSha256(Buffer.from(VAPID_DERIVE_SALT, 'utf8'), ikm, info, SEED_BYTES);
+    const scalar = BigInt(`0x${seed.toString('hex')}`);
+    if (scalar > 0n && scalar < P256_ORDER) {
+      const ecdh = createECDH('prime256v1');
+      ecdh.setPrivateKey(seed);
+      return { publicKey: b64url(ecdh.getPublicKey()), privateKey: b64url(seed) };
+    }
+  }
+  return null;
+}
+
+/** True when these two strings really are one P-256 key pair. */
+function pairIsValid(publicKey, privateKey) {
+  try {
+    const point = Buffer.from(publicKey, 'base64url');
+    // 65 bytes, 0x04 — the raw uncompressed point a browser takes as
+    // applicationServerKey. Anything else is refused before it is served.
+    if (point.length !== 65 || point[0] !== 4) return false;
+    const ecdh = createECDH('prime256v1');
+    ecdh.setPrivateKey(vapidSeed(privateKey)); // throws on anything but a seed
+    return ecdh.getPublicKey().equals(point);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The VAPID pair and contact the functions sign with, resolved once.
+ *
+ * The explicit pair (VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY) is what the README
+ * tells an operator to set, and it wins — but only after it is CHECKED, which
+ * is the whole point of this function existing rather than three lines of
+ * `process.env` in each handler.
+ *
+ * A pair that is present but wrong is worse than no pair at all. This endpoint
+ * is unauthenticated by design (a browser needs the key before it can
+ * subscribe), so whatever sits in VAPID_PUBLIC_KEY is served to anyone who
+ * asks. The mistake the two names invite is pasting them swapped, which is not
+ * hypothetical: it happened on this project's own deploy, and the seed was
+ * then served in the 200 body as if it were a public key — burned, because it
+ * can sign pushes as the site, and no browser would accept it as a subscribe
+ * key either (32 bytes is not a point), so push was broken in both directions
+ * at once and the app could only report a generic failure.
+ *
+ * So: the configured pair is used only when the public half is a real point
+ * and the private half derives it. Otherwise it is ignored, loudly, and the
+ * pair is DERIVED from a secret the deploy already has — which is what makes
+ * the endpoint self-configuring, and what lets an operator retire a bad pair
+ * by deleting it rather than by pasting new values.
+ *
+ * Both halves of the pipeline resolve through here, and that is load-bearing:
+ * the endpoint that hands out the public key and the scheduled sender that
+ * signs with the private one must agree, or browsers bind subscriptions to a
+ * key nothing ever signs with and the reminder silently never arrives.
+ */
+export function vapidConfig(env = process.env) {
+  const subject = env.VAPID_SUBJECT || 'cents@example.com';
+  const publicKey = env.VAPID_PUBLIC_KEY;
+  const privateKey = env.VAPID_PRIVATE_KEY;
+
+  if (publicKey && privateKey) {
+    if (pairIsValid(publicKey, privateKey)) {
+      return { ok: true, subject, publicKey, privateKey, source: 'env' };
+    }
+    console.warn('cents: VAPID_PUBLIC_KEY + VAPID_PRIVATE_KEY are set but are not a usable P-256 pair (swapped values?) - ignoring them and deriving a pair instead');
+  } else if (publicKey || privateKey) {
+    console.warn('cents: only one of VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY is set - deriving a pair instead');
+  }
+
+  for (const name of VAPID_DERIVE_SECRETS) {
+    const secret = env[name];
+    if (typeof secret !== 'string' || secret.length < MIN_SECRET_LENGTH) continue;
+    const pair = deriveVapidPair(secret);
+    if (pair) {
+      console.log(`cents: VAPID keys derived from ${name}`);
+      return { ok: true, subject, ...pair, source: `derived:${name}` };
+    }
+  }
+
+  return {
+    ok: false,
+    error: 'no push key material: set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY '
+      + `(a matching P-256 pair) in the site env vars, or make ${VAPID_DERIVE_SECRETS.join(' / ')} available to this function so the pair can be derived from it`,
+  };
 }
 
 export function generateVapidKeys() {

@@ -18,13 +18,19 @@
    skipped — the reminder never fires hours late.
 
    Env: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT (optional).
+   The pair comes from vapidConfig() in lib/webpush.mjs — the same
+   call the subscribe endpoint makes — so the key a browser binds
+   its subscription to and the key this sender signs with cannot
+   drift apart (they must be identical or every push is discarded
+   in silence). When no usable pair is configured, one is derived
+   from a server-only secret the deploy already has.
    No app password needed: the scheduler is platform-invoked, and
    the stored records already bind each subscription to its profile
    and carry its schedule.
    ============================================================ */
 
 import { getStore } from './lib/store.mjs';
-import { pushSend } from './lib/webpush.mjs';
+import { pushSend, vapidConfig } from './lib/webpush.mjs';
 
 const PUSH_PREFIX = 'push:';
 // The cron fires every 15 minutes; a record matches when its HH:MM falls
@@ -81,13 +87,9 @@ function isDue(recordTime, now, zone) {
 }
 
 export default async (_request, _context) => {
-  const vapid = {
-    subject: process.env.VAPID_SUBJECT || 'cents@example.com',
-    publicKey: process.env.VAPID_PUBLIC_KEY,
-    privateKey: process.env.VAPID_PRIVATE_KEY,
-  };
-  if (!vapid.publicKey || !vapid.privateKey) {
-    console.error('cents reminders-send: VAPID keys not configured');
+  const vapid = vapidConfig();
+  if (!vapid.ok) {
+    console.error(`cents reminders-send: ${vapid.error}`);
     return { statusCode: 200, body: 'vapid-not-configured' };
   }
 
@@ -117,7 +119,7 @@ export default async (_request, _context) => {
       title: 'cents. — time to upload your transactions',
       body,
       tag: 'cents-daily-reminder',
-    }, vapid);
+    }, { subject: vapid.subject, publicKey: vapid.publicKey, privateKey: vapid.privateKey });
 
     if (result.ok) {
       sent += 1;

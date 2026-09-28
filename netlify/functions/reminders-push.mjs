@@ -30,13 +30,19 @@
    re-subscribing overwrites cleanly.
 
    Env: VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY (base64url, see
-   scripts/generate-vapid-keys.mjs), plus the profile's own app
-   password (see lib/profiles.mjs) for auth.
+   scripts/generate-vapid-keys.mjs) and VAPID_SUBJECT (optional).
+   Both keys are resolved through vapidConfig() in lib/webpush.mjs,
+   which uses the configured pair only when it is a real, matching
+   one and otherwise derives a pair from a server-only secret the
+   deploy already has — so push works on a site whose environment
+   was never configured by hand, and a swapped pair can never be
+   served. Also: the profile's own app password (see
+   lib/profiles.mjs) for auth.
    ============================================================ */
 
 import { createHash } from 'node:crypto';
 import { getStore } from './lib/store.mjs';
-import { pushSend } from './lib/webpush.mjs';
+import { pushSend, vapidConfig } from './lib/webpush.mjs';
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
 import { resolveProfileForAuth, profileAuthMessage, DEFAULT_PROFILE } from './lib/profiles.mjs';
 
@@ -166,15 +172,13 @@ export default async (request, _context) => {
   // Public: hand out the VAPID public key (not a secret — it ships in the
   // page anyway when subscribing).
   if (request.method === 'GET') {
-    const publicKey = process.env.VAPID_PUBLIC_KEY;
+    const vapid = vapidConfig();
     // 503, not 500: this is the site not being configured yet, not a crash, and
     // the client turns it into "push isn't switched on for this site" instead of
     // a bare HTTP error. Both keys are needed before a push can be encrypted,
     // so a public key alone is not enough to advertise.
-    if (!publicKey || !process.env.VAPID_PRIVATE_KEY) {
-      return err('Push is not configured on this site yet - set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in Netlify', 503, cors);
-    }
-    return ok({ publicKey }, 200, cors);
+    if (!vapid.ok) return err(`Push is not configured on this site yet - ${vapid.error}`, 503, cors);
+    return ok({ publicKey: vapid.publicKey }, 200, cors);
   }
 
   const throttle = failureThrottle.check(request);
@@ -215,13 +219,13 @@ export default async (request, _context) => {
       return err('No push subscription found for this profile', 404, cors);
     }
     const { key, record } = found;
-    const vapid = { subject: process.env.VAPID_SUBJECT || 'cents@example.com', publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY };
-    if (!vapid.publicKey || !vapid.privateKey) return err('VAPID keys not configured on the function', 500, cors);
+    const vapid = vapidConfig();
+    if (!vapid.ok) return err('VAPID keys not configured on the function', 500, cors);
     const result = await pushSend(record.subscription, {
       title: 'cents. — test reminder',
       body: record.profileName ? `Push works for ${record.profileName}.` : 'Push is working.',
       tag: 'cents-reminder-test',
-    }, vapid);
+    }, { subject: vapid.subject, publicKey: vapid.publicKey, privateKey: vapid.privateKey });
     if (result.gone) {
       await store.del(key);
       return err('Subscription is no longer valid - re-enable push', 410, cors);

@@ -54,7 +54,12 @@
   #   test-integrity      — the storage/merge paths cannot lose, corrupt or
   #                         resurrect data on hostile input
   #   test-reminder-push  — the push payload still matches the RFC 8291 vector,
-  #                         so a reminder can't silently stop being decryptable
+  #                         so a reminder can't silently stop being decryptable;
+  #                         the signing pair is used only when it really is a
+  #                         pair (a swapped one would otherwise be served as
+  #                         public), a derived pair actually signs, and the key
+  #                         the endpoint advertises is the key the sender signs
+  #                         with — the two must never drift apart
   #   test-motion         — a headline figure counts only when it changed and
   #                         rests on the exact total rather than an animation
   #                         frame; a route change renders and waits on nothing

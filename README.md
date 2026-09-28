@@ -78,9 +78,11 @@ The optional sync and push features need a few environment variables in Netlify 
 | `REPO_NAME` | The **private** repo each account's copy is mirrored into. |
 | `REPO_BRANCH` | Optional — branch the data file lives on. Default `main`. |
 | `REPO_FILE` | Optional — path of the mirrored data file in that repo. Default `data.json`. |
-| `VAPID_PUBLIC_KEY` | Web Push keys for the closed-app daily reminder. Both are required before the app will offer push — generate them once with `node scripts/generate-vapid-keys.mjs`. |
-| `VAPID_PRIVATE_KEY` | Keep it secret; it never ships in the page. |
-| `VAPID_SUBJECT` | Optional — contact string for the push service, e.g. `mailto:you@example.com`. |
+| `VAPID_PUBLIC_KEY` | Web Push keys for the closed-app daily reminder. **Optional** — leave both unset and a pair is derived for you (see below); otherwise generate one with `node scripts/generate-vapid-keys.mjs`. The pair is used only when the public half is a real P-256 point *and* the private half derives it, so two values pasted the wrong way round are ignored rather than served. |
+| `VAPID_PRIVATE_KEY` | Keep it secret; it never ships in the page. It is the **shorter** of the two strings — 43 characters against the public key's 87 — which is the quickest way to tell them apart. |
+| `VAPID_SUBJECT` | Optional — the `sub` claim of the VAPID JWT: a *contact* URI the push service may use to reach the operator, e.g. `mailto:you@example.com`. Nothing is ever sent to it; it is metadata on the signature, not a recipient, and the app sends no email at all. |
+
+The push keys are the one piece of configuration whose absence is invisible until someone tries to subscribe, so the site does not depend on them being set. With neither variable present the functions derive a P-256 pair from `GITHUB_TOKEN` (HKDF-SHA256 under a labelled, versioned info string) and the reminder works on a site whose environment was never touched by hand. The derivation is deterministic, which is what keeps the endpoint that hands out the public key and the scheduled sender that signs with it in agreement — browsers bind a subscription to the key it was subscribed with, and a push service rejects a JWT signed by any other key. Set the two variables to take control of the pair, but note that switching between the two sources changes it, so every device has to re-enable push once. `APP_PASSWORD` is deliberately not usable as key material: it is short and human-chosen, and the derivation is public, so it would be the only unknown left to brute-force.
 
 The build also pins `NODE_VERSION = "22"` in `netlify.toml` — the guard scripts import the app's browser modules as ES modules, and Node 18 would parse them as CommonJS and fail the deploy.
 

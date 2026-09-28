@@ -1382,8 +1382,14 @@ function openReminderSettings() {
         const r = s.pushSubscribed ? await unsubscribeReminderPush() : await subscribeReminderPush();
         btn.disabled = false;
         if (r.ok) { toast(s.pushSubscribed ? 'Push reminders off.' : 'Push reminders on — works even when the app is closed.'); draw(); return; }
-        const messages = { unsupported: 'Push is not available in this browser.', 'no-sync': 'Set up Cloud sync first.', 'not-configured': 'Push is not switched on for this site yet - add VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY in Netlify.', auth: 'Sync password was rejected - check Sync settings.', network: 'Network error - try again when online.' };
-        toast(messages[r.reason] || ('Could not ' + (s.pushSubscribed ? 'disable' : 'enable') + ' push: ' + (r.message || r.reason || 'error') + '.'));
+        const messages = { unsupported: 'Push is not available in this browser.', 'no-sync': 'Set up Cloud sync first.', 'not-configured': 'Push is not switched on for this site yet.', 'bad-key': 'This site is serving an invalid push key - the two VAPID values in Netlify look swapped.', 'subscribe-failed': 'This browser refused the push subscription.', auth: 'Sync password was rejected - check Sync settings.', network: 'Network error - try again when online.' };
+        // The reason's own sentence, plus the detail behind it whenever there is
+        // one: "network error" with the underlying failure stripped out is what
+        // hid a swapped key pair behind a reachable, 200-answering server.
+        const detail = r.message ? ` (${r.message})` : '';
+        toast(messages[r.reason]
+          ? messages[r.reason] + detail
+          : ('Could not ' + (s.pushSubscribed ? 'disable' : 'enable') + ' push: ' + (r.message || r.reason || 'error') + '.'));
         draw();
       } }, s.pushSubscribed ? 'Disable push' : 'Enable push') : null,
     );

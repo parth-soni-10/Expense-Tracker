@@ -160,6 +160,29 @@ function b64urlToBytes(b64url) {
   return bytes;
 }
 
+/**
+ * True when a server-supplied key is something a browser will accept as
+ * `applicationServerKey`: base64url for the 65-byte uncompressed P-256 point,
+ * 0x04 first.
+ *
+ * A length threshold is not this check, and the difference is not academic: the
+ * 43-character PRIVATE seed is longer than any "looks like a key" threshold, and
+ * serving it is exactly what a site with its two VAPID values swapped does. The
+ * browser then refuses the subscribe with an InvalidAccessError, and the app
+ * reported a network error — for a server that was reachable and answering 200,
+ * which sent the diagnosis off in the wrong direction for a while. So the check
+ * is the one the browser makes, and its verdict gets its own reason.
+ */
+export function validPublicKey(publicKey) {
+  if (typeof publicKey !== 'string' || publicKey.length < 80) return false;
+  try {
+    const point = b64urlToBytes(publicKey);
+    return point.length === 65 && point[0] === 4;
+  } catch {
+    return false;
+  }
+}
+
 async function pushFetch(url, init, timeoutMs = PUSH_TIMEOUT_MS) {
   return Promise.race([
     fetch(url, { cache: 'no-store', ...init }),
@@ -200,20 +223,34 @@ export async function subscribeReminderPush() {
   if (!base) return { ok: false, reason: 'invalid_endpoint' };
   try {
     const keyResp = await pushFetch(base, { method: 'GET' });
-    // The server says push has no VAPID keys yet - a setup problem, not a
-    // failure the user can retry around, so it gets its own reason.
-    if (keyResp.status === 503) return { ok: false, reason: 'not-configured' };
+    // The server says push has no key material yet - a setup problem, not a
+    // failure the user can retry around, so it gets its own reason. Its body
+    // names the way out (which variables to set, or which secret to expose),
+    // so that is carried rather than paraphrased.
+    if (keyResp.status === 503) {
+      const body = await keyResp.json().catch(() => null);
+      const detail = typeof body?.error === 'string' ? body.error.replace(/\.?\s*$/, '') : null;
+      return { ok: false, reason: 'not-configured', message: detail };
+    }
     if (!keyResp.ok) return { ok: false, reason: 'http', message: `key HTTP ${keyResp.status}` };
     const { publicKey } = await keyResp.json();
-    if (typeof publicKey !== 'string' || publicKey.length < 40) return { ok: false, reason: 'http', message: 'bad VAPID key' };
+    if (!validPublicKey(publicKey)) return { ok: false, reason: 'bad-key' };
 
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
     if (!sub) {
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: b64urlToBytes(publicKey),
-      });
+      // A refusal here is the browser's own verdict — an invalid key, a denied
+      // permission, iOS before the app is on the Home Screen — and calling it a
+      // network failure is a misreport, not a simplification.
+      try {
+        sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: b64urlToBytes(publicKey),
+        });
+      } catch (e) {
+        const detail = [e?.name, e?.message].filter(Boolean).join(': ');
+        return { ok: false, reason: 'subscribe-failed', message: detail || 'subscribe failed' };
+      }
     }
     const subJson = sub.toJSON();
     let profileName = null;
