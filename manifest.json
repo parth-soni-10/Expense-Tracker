@@ -1,6 +1,7 @@
 {
   "name": "cents.",
   "short_name": "cents.",
+  "gcm_sender_id": "103953800507",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#101210",

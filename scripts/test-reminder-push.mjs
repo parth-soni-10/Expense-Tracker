@@ -32,6 +32,7 @@
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 // ---------- fake push service (decrypts like a real one) ----------
 const ua = crypto.createECDH('prime256v1');
@@ -244,6 +245,36 @@ const { validPublicKey } = await import('../reminders.js');
 check('the client accepts a real public key', validPublicKey(keys.publicKey) === true);
 check('and refuses the private seed served as one', validPublicKey(keys.privateKey) === false);
 check('and refuses a truncated key', validPublicKey(keys.publicKey.slice(0, 40)) === false);
+
+// ---------- 0d. what a Chromium-based Android browser requires ----------
+// Chrome on Android subscribes from a plain tab (unlike iOS, which needs the
+// app added to the Home Screen first), so it is the surface a phone test most
+// often lands on — and it asks for two things the iOS path does not:
+//   * the notification permission to be GRANTED, asked for from the click,
+//     because subscribe() is refused outright when it is denied and the prompt
+//     itself is only allowed inside a user gesture;
+//   * a gcm_sender_id in the web app manifest, for the Android browsers that
+//     still take the GCM path (Samsung Internet, Opera). The value is Chrome's
+//     own push sender id, which is public and the same for every site — a
+//     project-specific number here is a subscription no push service accepts.
+const manifest = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+check('the manifest carries the sender id Chromium Android looks for',
+  manifest.gcm_sender_id === '103953800507', String(manifest.gcm_sender_id));
+const swSource = readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
+check('the worker shows the notification a push delivers',
+  /addEventListener\('push'/.test(swSource) && /showNotification\(/.test(swSource));
+check('and tapping it opens the app', /addEventListener\('notificationclick'/.test(swSource));
+const remindersSource = readFileSync(new URL('../reminders.js', import.meta.url), 'utf8');
+check('the subscribe is userVisibleOnly, which Chrome requires',
+  /userVisibleOnly:\s*true/.test(remindersSource));
+// Scoped to the subscribe function: the same call appears elsewhere in the
+// file, and "somewhere before it" is not the order that matters.
+const fnStart = remindersSource.indexOf('export async function subscribeReminderPush');
+const askAt = remindersSource.indexOf('await requestNotificationPermission()', fnStart);
+const subscribeAt = remindersSource.indexOf('pushManager.subscribe', fnStart);
+check('and permission is asked for first, inside the same call',
+  fnStart > -1 && askAt > fnStart && subscribeAt > fnStart && askAt < subscribeAt,
+  `ask@${askAt} subscribe@${subscribeAt} fn@${fnStart}`);
 
 // ---------- 1. GET returns the VAPID public key ----------
 const keyResp = await call(pushHandler, 'GET');

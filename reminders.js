@@ -236,6 +236,23 @@ export async function subscribeReminderPush() {
     const { publicKey } = await keyResp.json();
     if (!validPublicKey(publicKey)) return { ok: false, reason: 'bad-key' };
 
+    // Ask for notification permission HERE, before subscribing, and inside the
+    // click that got us here — a Chromium-based browser refuses a subscribe
+    // whose permission is denied, and the prompt is only allowed from a user
+    // gesture. Letting subscribe() make the request turns a permission problem
+    // into a browser-specific error that names the wrong thing.
+    //
+    // Chrome on Android is the surface this matters most on: it subscribes
+    // from a plain tab (iOS needs the app on the Home Screen first), so it is
+    // the one that reaches a permission prompt this app never asked for.
+    const permission = await requestNotificationPermission();
+    if (permission !== 'granted') {
+      // A previously denied permission cannot be re-prompted at all, so the
+      // way out is the browser's own site settings — a different instruction
+      // from "tap Allow", which is why they are different reasons.
+      return { ok: false, reason: permission === 'denied' ? 'permission-blocked' : 'permission-denied' };
+    }
+
     const reg = await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
     if (!sub) {

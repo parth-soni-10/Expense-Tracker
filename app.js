@@ -1382,7 +1382,7 @@ function openReminderSettings() {
         const r = s.pushSubscribed ? await unsubscribeReminderPush() : await subscribeReminderPush();
         btn.disabled = false;
         if (r.ok) { toast(s.pushSubscribed ? 'Push reminders off.' : 'Push reminders on — works even when the app is closed.'); draw(); return; }
-        const messages = { unsupported: 'Push is not available in this browser.', 'no-sync': 'Set up Cloud sync first.', 'not-configured': 'Push is not switched on for this site yet.', 'bad-key': 'This site is serving an invalid push key - the two VAPID values in Netlify look swapped.', 'subscribe-failed': 'This browser refused the push subscription.', auth: 'Sync password was rejected - check Sync settings.', network: 'Network error - try again when online.' };
+        const messages = { unsupported: 'Push is not available in this browser.', 'no-sync': 'Set up Cloud sync first.', 'not-configured': 'Push is not switched on for this site yet.', 'bad-key': 'This site is serving an invalid push key - the two VAPID values in Netlify look swapped.', 'permission-denied': 'Notifications were not allowed - tap Enable push again and choose Allow.', 'permission-blocked': 'Notifications are blocked for this site - allow them in the browser\'s site settings, then tap Enable push again.', 'subscribe-failed': 'This browser refused the push subscription.', auth: 'Sync password was rejected - check Sync settings.', network: 'Network error - try again when online.' };
         // The reason's own sentence, plus the detail behind it whenever there is
         // one: "network error" with the underlying failure stripped out is what
         // hid a swapped key pair behind a reachable, 200-answering server.
