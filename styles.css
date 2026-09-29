@@ -891,15 +891,16 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   .app-header.is-sticky.head-hidden { transform: translateY(-100%); }
 }
 
-/* ── Progressive blur edges (phones) ──
-   A masked backdrop-filter band at each edge melts content into the chrome,
-   ramping from a strong blur at the screen edge to none where it meets the
-   page. Kept to phones, where the two edges that need depth (top of the
-   scrolling header, bottom tab dock) are the ones without an opaque surface
-   filling them. The bands are thin and sit *below* the header and dock in z,
-   so the large opaque surfaces stay large opaque surfaces — only the strips
-   between them composite. Without backdrop-filter support the tint alone
-   still dissolves the edge. */
+/* ── Progressive fade edges (phones) ──
+   A masked tint band at each edge melts content into the chrome, ramping from
+   a strong tint at the screen edge to none where it meets the page. Kept to
+   phones, where the two edges that need depth (top of the scrolling header,
+   bottom tab dock) are the ones without an opaque surface filling them. The
+   bands are thin and sit *below* the header and dock in z, so the large opaque
+   surfaces stay large opaque surfaces — only the strips between them paint.
+   These used to carry a backdrop-filter blur; that is gone (see the note on the
+   spans below), so this is now the page's only edge treatment and it costs a
+   tint and a mask rather than a page sample per scrolled frame. */
 /* Off until the phone breakpoint claims them, so no empty boxes ever enter
    the flow at laptop widths. */
 .edge-blur { display: none; }
@@ -920,23 +921,26 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   /* Revealed by the scroll handler in app.js once the page has moved. */
   html.edge-scrolled .edge-blur-top { opacity: 1; }
   .edge-blur-bottom { bottom: 0; height: 120px; }
+  /* No backdrop-filter here, and that is the same trade as the sticky header on
+     desktop (see the note above it): a fixed, masked strip that re-samples the
+     page behind it does that work on every scrolled frame, for the whole length
+     of the page. The strips were the only backdrop-filter left in this file,
+     which is why every device now takes the path this block already described as
+     the no-support fallback — the tint alone dissolves the edge. The mask stays:
+     it is what turns a flat strip into a fade, and it costs no re-sampling. */
   .edge-blur-top span:nth-child(1) {
-    backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
     mask-image: linear-gradient(to bottom, #000 0%, transparent 100%);
     -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 100%);
   }
   .edge-blur-top span:nth-child(2) {
-    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
     mask-image: linear-gradient(to bottom, #000 0%, transparent 54%);
     -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 54%);
   }
   .edge-blur-bottom span:nth-child(1) {
-    backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px);
     mask-image: linear-gradient(to top, #000 0%, transparent 100%);
     -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 100%);
   }
   .edge-blur-bottom span:nth-child(2) {
-    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
     mask-image: linear-gradient(to top, #000 0%, transparent 44%);
     -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 44%);
   }
@@ -1100,6 +1104,13 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   .bottom-tab {
     display: flex; flex-direction: column; align-items: center; gap: 3px;
     padding: 6px 10px; border-radius: 14px;
+    /* `flex: 1` below cannot actually shrink a flex item past its min-content
+       width, and its min-content is the longest label word — so six tabs once
+       the Tesco tab is switched on came to 323px inside a 277px dock and the
+       last one hung off the screen edge instead of compressing. That is what
+       `min-width: 0` unlocks; the label's own ellipsis guard is what keeps a
+       tab from spilling if a seventh is ever added. */
+    min-width: 0;
     font-size: 10px; font-weight: 600;
     color: var(--muted);
     background: transparent; border: none;
@@ -1115,7 +1126,20 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
     box-shadow: inset 0 0 0 1px var(--hairline-a);
   }
   .bottom-tab:active { transform: scale(0.92); }
+  .bottom-tab > span {
+    max-width: 100%; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .shell { padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px)) !important; }
+}
+/* Six labels at a 22px icon and 10px letters do not fit a dock that is 320-479px
+   wide: at that size the label "Balances" alone wants 44px and the tab has 30.
+   Something has to give, and it is the label's type and the padding, not the tab
+   — a label trimmed to "Balanc…" still reads, a tab hanging off the screen edge
+   cannot be tapped at all. Measured from 320px up with all six tabs on. */
+@media (max-width: 479px) {
+  .bottom-tab-bar { left: 8px; right: 8px; }
+  .bottom-tab { padding: 6px 4px; font-size: 9px; }
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1394,6 +1418,13 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   contain-intrinsic-size: auto 54px;
 }
 .balance-editor-edit-controls { flex: 1 1 auto; }
+/* The meta line beside an account's name ("recorded loads €0.00 · spending …").
+   It was an inline `white-space: nowrap`, and that is the one thing a phone rule
+   cannot override: below 480px this row stacks (see the block further down) and
+   the line, 202px of nowrap text behind the account name, then pushed the row
+   22px past its own card at a 320px viewport. Wrapping only where the row is
+   stacked — above 640px there is room to keep it on one line beside the name. */
+.balance-row-meta { font-size: 10px; white-space: nowrap; }
 
 .history-row:focus-visible,
 .history-action-btn:focus-visible,
@@ -1423,6 +1454,28 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 
 .insight-bar-row { content-visibility: auto; contain-intrinsic-size: 38px; }
 
+/* ── The stat row ──
+   Four headline figures for the range. This grid lives here rather than inline
+   because a phone has to be able to change it: the inline `gap`/`margin-bottom`
+   it used to carry outrank the media query below, so the phone rule was dead
+   text. `min-width: 0` on the card and on the value is what actually keeps a
+   figure inside its box — a grid item is `min-width: auto` by default, which
+   lets its content push the track wider than the grid meant it to be. */
+.insight-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 20px;
+  margin-bottom: 32px;
+}
+.stat-card { padding: 20px 16px; min-width: 0; }
+/* The value is set at a size statValueSize() chooses. A pixel font-size rides
+   the .display-num line-height of 24px, which was written for 30px type: a long
+   value at 18px floated in that band, and a wrapped one put its second line
+   exactly 24px down — inside the first line's own glyphs. */
+.stat-value { overflow-wrap: anywhere; min-width: 0; line-height: 1.15; }
+/* Separates the two range pickers while they sit side by side. */
+.range-sep { font-size: 13px; display: inline-flex; }
+
 /* The Load / Reconcile / history row actions per account. Sized here rather
    than inline: the inline padding used to outrank the mobile rule below, so
    these chips stayed 22×19 on phones — under the 24×24 WCAG 2.2 AA target. */
@@ -1437,12 +1490,21 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   .balance-row-actions { gap: 8px; }
   .pulse-grid .display-num { font-size: 16px !important; }
   .insight-narrative-text { font-size: 19px; }
+  /* The stat row is a summary, not the page. Four stacked cards at the desktop
+     gap and padding came to ~420px of a phone screen, over half of it, in
+     support of four figures. */
+  .insight-stats { gap: 10px; margin-bottom: 24px; }
+  .stat-card { padding: 14px 14px; }
+  /* The pickers cannot share a phone's width, so they wrap — and the separator
+     then trails the first one, separating nothing. */
+  .range-sep { display: none; }
   .history-action-btn { padding: 9px 10px; }
   .balance-editor-row { align-items: flex-start !important; }
   .balance-editor-edit-controls { justify-content: flex-end; }
   .balance-editor-edit-controls input[type="date"] { max-width: 124px; }
   /* Comfortable tap targets for the small Load/Reconcile/Clear row buttons */
   .balance-editor-controls .btn-link { padding: 8px 10px; font-size: 12px; }
+  .balance-row-meta { white-space: normal; }
   /* The due-this-week strip chips trigger a money action - keep them tappable */
   button[aria-label^="Mark "] { padding: 8px 12px; font-size: 11px; }
 }
@@ -1644,7 +1706,11 @@ body .flatpickr-time .numInputWrapper span.arrowDown:after { border-color: var(-
 .menu-trigger .menu-trigger-icon {
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
-  transition: transform 0.25s cubic-bezier(0.2,0.8,0.2,1), opacity 0.2s;
+  /* 160ms, not 250ms: this morph is the LAST thing moving after a tap on the
+     trigger, so it set the felt latency of the whole menu (the panel and the
+     level are done in 120ms). A burger-to-X rotation is legible well below a
+     quarter second, and it is the tap's own feedback rather than decoration. */
+  transition: transform 0.16s cubic-bezier(0.2,0.8,0.2,1), opacity 0.14s;
 }
 .menu-trigger .icon-close { opacity: 0; transform: rotate(-90deg) scale(0.5); }
 .menu-trigger[aria-expanded="true"] .icon-burger { opacity: 0; transform: rotate(90deg) scale(0.5); }
@@ -1669,9 +1735,9 @@ html.modal-open { overflow: hidden; }
   position: absolute; inset: 0;
   background: rgba(16, 18, 16, 0.45);
   pointer-events: none;
-  animation: menuBackdropIn 0.15s ease-out;
+  animation: menuBackdropIn 0.12s ease-out;
 }
-.menu-backdrop.closing::before { animation: menuBackdropOut 0.15s ease-in forwards; }
+.menu-backdrop.closing::before { animation: menuBackdropOut 0.12s ease-in forwards; }
 @keyframes menuBackdropIn  { from { opacity: 0; } to { opacity: 1; } }
 @keyframes menuBackdropOut { to   { opacity: 0; } }
 
@@ -1689,13 +1755,13 @@ html.modal-open { overflow: hidden; }
   border-left: 1px solid var(--line);
   box-shadow: var(--shadow-xl), inset 0 1px 0 var(--glass-highlight);
   display: flex; flex-direction: column;
-  animation: menuPanelIn 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  animation: menuPanelIn 0.12s cubic-bezier(0.22, 1, 0.36, 1);
   overflow: hidden;
   /* No will-change here: transform/opacity animations composite on their own,
      and leaving will-change on the open panel forced a large permanent
      compositor layer that re-rasterized on every hover repaint (desktop). */
 }
-.menu-panel.closing { animation: menuPanelOut 0.15s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
+.menu-panel.closing { animation: menuPanelOut 0.11s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
 /* Slide only (no opacity): fading the panel would show the dark scrim through
    it and read as the menu turning grey. It stays opaque white the whole way. */
 @keyframes menuPanelIn  { from { transform: translateX(28px); } to { transform: none; } }
@@ -1713,10 +1779,10 @@ html.modal-open { overflow: hidden; }
 /* The drill animations composite via transform/opacity; a persistent
    will-change on the level kept a nested layer alive and made row hover
    repaints re-rasterize the whole level instead of the one hovered row. */
-.menu-level.in-right { animation: levelInRight 0.16s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.menu-level.in-left  { animation: levelInLeft  0.16s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.menu-level.out-left { animation: levelOutLeft 0.15s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
-.menu-level.out-right{ animation: levelOutRight 0.15s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
+.menu-level.in-right { animation: levelInRight 0.12s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.menu-level.in-left  { animation: levelInLeft  0.12s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.menu-level.out-left { animation: levelOutLeft 0.11s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
+.menu-level.out-right{ animation: levelOutRight 0.11s cubic-bezier(0.4, 0, 0.6, 1) forwards; }
 @keyframes levelInRight  { from { transform: translateX(28px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes levelInLeft   { from { transform: translateX(-28px); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes levelOutLeft  { to   { transform: translateX(-24px); opacity: 0; } }
@@ -1756,20 +1822,15 @@ html.modal-open { overflow: hidden; }
   text-decoration: none;
   transition: background-color 0.12s var(--ease-out), color 0.12s var(--ease-out), transform 0.1s var(--ease-out);
 }
-.menu-level:not(.shown) .menu-row { opacity: 0; }
-.menu-level.shown .menu-row { animation: menuRowIn 0.16s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.menu-level.shown .menu-row:nth-child(1) { animation-delay: 0.02s; }
-.menu-level.shown .menu-row:nth-child(2) { animation-delay: 0.035s; }
-.menu-level.shown .menu-row:nth-child(3) { animation-delay: 0.05s; }
-.menu-level.shown .menu-row:nth-child(4) { animation-delay: 0.065s; }
-.menu-level.shown .menu-row:nth-child(5) { animation-delay: 0.08s; }
-.menu-level.shown .menu-row:nth-child(6) { animation-delay: 0.095s; }
-.menu-level.shown .menu-row:nth-child(7) { animation-delay: 0.11s; }
-.menu-level.shown .menu-row:nth-child(8) { animation-delay: 0.125s; }
-@keyframes menuRowIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: none; }
-}
+/* No per-row entrance. Every row used to spring in on its own, one after
+   another (menuRowIn, 0.16s, with eight nth-child delays ramping to 0.125s), on
+   top of the level's own slide. Measured on a menu open and on every drill: 19-21
+   live animations and 285ms before the panel stopped moving, for rows the user
+   had just asked to see. That is the same trade the screen entrance lost — an
+   animation that reads as latency rather than information — so the rows now
+   arrive with the panel and the only thing that moves is the level, which is the
+   part that says which direction you just travelled. The menu settles in 120ms
+   with three animations instead. Pinned in scripts/test-motion.mjs. */
 /* Rows stay white on hover and click; a soft shadow gives each row a subtle
    lift, and the icon chip + chevron carry the emerald hover cue. The old
    grey fill made the whole menu read as "going grey" on press. */
@@ -2063,6 +2124,21 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   .history-method-wrap { grid-column: 2; grid-row: 3; }
   .history-actions { grid-column: 3; grid-row: 3; }
   .history-audio { width: 100%; }
+}
+
+/* Below 360px the two action buttons and the figures can no longer share a row.
+   The third track is `auto`, so it is sized by its widest cell — and the buttons
+   are far wider than any figure ("Exclude budget" is 106px on its own), while
+   the middle track is the `1fr` and so is the one that gives. Measured at a
+   320px viewport: the middle column came out 28px wide and the method pill
+   ("Revolut Main", 77px) painted straight over the button beside it in the same
+   grid row — an overlap of painted text, not a tight gap, confirmed by measuring
+   the text ranges. Giving the buttons a line of their own frees the figures'
+   column to size to the figures (72px) and the middle column to 133px. The same
+   row fits as it is from 360px up, so this is scoped to where it actually
+   breaks rather than to the whole phone range. */
+@media (max-width: 359px) {
+  .history-actions { grid-column: 2 / 4; grid-row: 4; }
 }
 
 

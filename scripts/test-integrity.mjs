@@ -44,6 +44,7 @@ const { csvCell, csvUnquote, csvDocument, CSV_BOM } = await import('../csv.js');
 const { getPrivacyPin } = await import('../settings.js');
 const { mergeStates } = await import('../sync-merge.js');
 const { paidHours, shiftPay, simulateTax, tescoCsv, parseTescoCsv } = await import('../tesco.js');
+const { readFileSync } = await import('node:fs');
 
 let pass = 0;
 const failures = [];
@@ -503,6 +504,118 @@ check('the text itself has no byte-order mark', entriesCsv(stateOf([])).charCode
 check('a document with no entries is still a file with a header', csvLines([]).length === 1);
 check('a hostile document cannot throw the export',
   noThrow('entriesCsv(junk)', () => entriesCsv({ entries: [null, 42, 'x', { date: '2026-09-20' }] })) !== undefined);
+
+// ------------------------------------- 12. a payment method the user owns
+// The methods an entry may carry are the built-ins plus the user's own
+// (settings.customMethods). Removing one from the pickers is a TOMBSTONE
+// (settings.methodHidden), never a deletion, and two of these four rules are
+// ledger-destroying paths if they break:
+//   * validateEntry DROPS an entry whose method it does not know, so a removal
+//     that took the id out of the allowed set would delete that entry's history
+//     at the next load — a deletion that never appears as one;
+//   * an entry being EDITED must keep offering the method it was recorded with,
+//     because the form resets its value to the first option that is offered, so
+//     a removed method would silently move the money on Save.
+// The first is asserted through storage.js here; the second only exists in
+// app.js, which cannot be imported in Node (it touches the DOM on evaluation),
+// so it is pinned against the source text — the same technique
+// scripts/test-motion.mjs uses for paintFigure.
+const ownMethod = (id) => ({ entries: [{ id: `m-${id}`, date: '2026-09-20', type: 'expense', category: 'gro', details: 'x', amount: 1, method: id, note: '', createdAt: '2026-09-20T10:00:00.000Z' }] });
+const methodState = (raw) => validateState(raw);
+
+const added = methodState({ ...ownMethod('boi'), settings: { customMethods: [{ id: 'boi', label: 'Bank of Ireland' }] } });
+check('a method the user added round-trips, and its entry with it',
+  added.settings.customMethods.length === 1 && added.entries.length === 1,
+  `${JSON.stringify(added.settings.customMethods)} / ${added.entries.length} entry`);
+
+const removed = methodState({
+  entries: [...ownMethod('boi').entries, ...ownMethod('LG').entries, ...ownMethod('Cash').entries],
+  settings: { customMethods: [{ id: 'boi', label: 'Bank of Ireland' }], methodHidden: { boi: true, LG: true, Cash: true, nope: true, AIB: false, RS: 'yes', TG: 1 } },
+});
+check('an entry whose method was removed from the pickers is KEPT, not dropped',
+  removed.entries.length === 3, `${removed.entries.length} of 3 kept`);
+check('a method storage.js has never heard of is still refused',
+  methodState(ownMethod('Nonsense')).entries.length === 0);
+check('the flag map keeps a known id with a boolean, and drops everything else',
+  JSON.stringify(Object.entries(removed.settings.methodHidden).sort())
+    === JSON.stringify([['AIB', false], ['Cash', true], ['LG', true], ['boi', true]]),
+  JSON.stringify(removed.settings.methodHidden));
+check('a method storage.js never heard of cannot be flagged at all',
+  removed.settings.methodHidden.nope === undefined);
+// The false is a value, not an absence, and it has to survive validation — it is
+// the whole reason a restore can beat the other device's true in a merge.
+check('a restored (false) flag survives the load rather than being pruned away',
+  removed.settings.methodHidden.AIB === false, JSON.stringify(removed.settings.methodHidden.AIB));
+check('an id that collides with a built-in is not a second method',
+  methodState({ entries: [], settings: { customMethods: [{ id: 'Cash', label: 'cash' }, { id: 'CASH', label: 'cash two' }] } }).settings.customMethods.length === 0,
+  JSON.stringify(methodState({ entries: [], settings: { customMethods: [{ id: 'Cash', label: 'cash' }, { id: 'CASH', label: 'cash two' }] } }).settings.customMethods));
+check('junk in either list cannot throw the load',
+  noThrow('customMethods junk', () => methodState({ entries: [], settings: { customMethods: 'nope', methodHidden: 42 } })) !== undefined);
+
+// A merge unions the catalogue (a method added on either device survives) and
+// takes the tombstone per key from the fresher side — which is what lets a
+// removal travel from one device and a RESTORE travel back. Note what is not
+// unioned: the catalogue, because a removal cannot be expressed by deleting
+// from a list that a union would refill.
+const newer = { lastLocalChangeAt: '2026-09-21T12:00:00.000Z' };
+const older = { lastLocalChangeAt: '2026-09-20T12:00:00.000Z' };
+const catalogue = (settings, when) => stateOf([], settings, when);
+const unioned = mergeStates(
+  catalogue({ customMethods: [{ id: 'a', label: 'A' }], methodHidden: { a: true } }, older),
+  catalogue({ customMethods: [{ id: 'b', label: 'B' }] }, newer),
+).settings;
+check('the method catalogue unions across devices',
+  (unioned.customMethods || []).map(m => m.id).join(',') === 'a,b', JSON.stringify(unioned.customMethods));
+check('a removal on the older device survives a merge', unioned.methodHidden?.a === true, JSON.stringify(unioned.methodHidden));
+// The reason a restore is written as false rather than as a deleted key: a
+// spread can overwrite a key but never remove one, so an absence would lose to
+// the other side's true here and the method would come back hidden on its own.
+const restored = mergeStates(
+  catalogue({ customMethods: [{ id: 'a', label: 'A' }], methodHidden: { a: true } }, older),
+  catalogue({ customMethods: [{ id: 'a', label: 'A' }], methodHidden: { a: false } }, newer),
+).settings;
+check('and a restore on the fresher device beats the other side\u2019s removal',
+  restored.methodHidden?.a === false, JSON.stringify(restored.methodHidden));
+const restoredOlder = mergeStates(
+  catalogue({ customMethods: [{ id: 'a', label: 'A' }], methodHidden: {} }, older),
+  catalogue({ customMethods: [{ id: 'a', label: 'A' }], methodHidden: { a: false } }, newer),
+).settings;
+check('a restore stands even when the other side never touched the method',
+  restoredOlder.methodHidden?.a === false, JSON.stringify(restoredOlder.methodHidden));
+check('and a removal simply overrides it the other way',
+  mergeStates(
+    catalogue({ customMethods: [{ id: 'a', label: 'A' }], methodHidden: { a: false } }, older),
+    catalogue({ customMethods: [{ id: 'a', label: 'A' }], methodHidden: { a: true } }, newer),
+  ).settings.methodHidden?.a === true);
+
+// The wiring in app.js that keeps the rules above true in the UI.
+const appSource = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+check('no picker is built from the seed list (the user\u2019s own methods would vanish)',
+  !/\bMETHODS\.map\s*\(/.test(appSource),
+  (appSource.match(/\bMETHODS\.map\s*\(/g) || []).join(', '));
+check('a method label resolves through the document, not a seed-only lookup',
+  /function methodLabel\(id\)\s*{\s*return methodById\(id\)\?/.test(appSource));
+check('the shared entry form keeps the current method for an entry being EDITED',
+  /const ids = initial \? methodPickerIds\(data\.method/.test(appSource));
+// Named sites rather than a count: validateState() already re-allows a
+// document's own methods, so these two calls are belt-and-braces — but they are
+// the readable statement of the rule, and the count of "how many calls exist"
+// would be satisfied by any one of them surviving. The boot pair keeps the app
+// consistent with the document it just loaded; adoptState is the import /
+// restore / cloud path, and it must not leave the previous document's list in
+// place while the new one's entries are validated on the way in.
+const syncsMethodsWithin = (marker, span = 1200) => {
+  const at = appSource.indexOf(marker);
+  return at >= 0 && /updateAllowedMethods\(/.test(appSource.slice(at, at + span));
+};
+check('the boot set stays in sync with the document that was loaded',
+  syncsMethodsWithin('// Keep storage.js validation sets in sync'));
+check('adopting a document (import, restore, cloud) re-allows its own methods',
+  syncsMethodsWithin('function adoptState('));
+check('and adding one through the manager does too, before it is saved',
+  /state\.settings\.customMethods\.push\(\{ id, label: raw \}\);\s*[\s\S]{0,700}?updateAllowedMethods\(/.test(appSource));
+check('the manager is reachable from the menu',
+  /label: 'Payment methods'[^}]*openMethodManager\(\)/.test(appSource));
 
 // ---------------------------------------------------------------- report
 if (failures.length) {

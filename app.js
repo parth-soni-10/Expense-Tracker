@@ -2,7 +2,7 @@
    Expense Tracker - editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #balances | #insights
    ============================================================ */
-import { loadState, saveState, resetToBlank, exportJSON, exportEntriesCsv, validateState, uid, updateAllowedCategories, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, takeStorageNotice, loadStateFor, patchProfileSettings, parseBackup, foreignWriteNeeded, readStateText, unreadableBackup, MAX_BACKUP_BYTES, downloadText } from './storage.js';
+import { loadState, saveState, resetToBlank, exportJSON, exportEntriesCsv, validateState, uid, updateAllowedCategories, updateAllowedMethods, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, takeStorageNotice, loadStateFor, patchProfileSettings, parseBackup, foreignWriteNeeded, readStateText, unreadableBackup, MAX_BACKUP_BYTES, downloadText } from './storage.js';
 import { CATEGORIES, METHODS, TABS, HIDEABLE_TABS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
@@ -240,8 +240,12 @@ if (state.entries.some(e => 'settled' in e)) {
   saveState(state);
 }
 
-// Keep storage.js validation set in sync with seed + custom categories.
+// Keep storage.js validation sets in sync with seed + the user's own. Both
+// matter for the same reason: validateEntry DROPS a row whose category or
+// method id is unknown to storage.js, so a set that lags the document deletes
+// the entries that used the missing id on the next load.
 updateAllowedCategories([...CATEGORIES, ...(state.settings.customCategories || [])].map(c => c.id));
+updateAllowedMethods(everyMethod().map(m => m.id));
 function localDateKey(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
@@ -1108,6 +1112,7 @@ function loadProfileIntoApp() {
   stopSyncPolling();
   state = loadState();
   updateAllowedCategories([...CATEGORIES, ...(state.settings.customCategories || [])].map(c => c.id));
+  updateAllowedMethods(everyMethod().map(m => m.id));
   clearBalanceCaches();
   pinUnlocked = false;
   // In-memory state that belongs to the profile we are leaving. `_lastAction`
@@ -1977,6 +1982,7 @@ function adoptState(raw) {
   clearBalanceCaches();
   saveState(state);
   updateAllowedCategories(allCategories().map(c => c.id));
+  updateAllowedMethods(everyMethod().map(m => m.id));
 }
 
 // A cloud response that arrives after the user switched profiles belongs to
@@ -2548,15 +2554,41 @@ window.addEventListener('offline', () => { notifySyncChange(); toast('Offline - 
 subscribeSync(renderSyncIndicator);
 
 // ---------- utilities ----------
-const METHOD_BY_ID = new Map(METHODS.map(method => [method.id, method]));
 
+/** Every payment method this document knows: the built-ins then the user's own
+ *  (settings.customMethods, the add/remove manager in the menu). A method the
+ *  user removed from the pickers is still in here on purpose — history has to
+ *  be able to name it, and validateEntry keeps accepting it. allMethods() is
+ *  what a picker is offered. */
+function everyMethod() {
+  return [...METHODS, ...(state.settings.customMethods || [])];
+}
+function methodById(id) {
+  return everyMethod().find(method => method.id === id) || null;
+}
+/** The methods a picker offers: everyMethod() minus the ones the user took out
+ *  of the pickers (settings.methodHidden). */
+function allMethods() {
+  const hidden = state.settings.methodHidden || {};
+  return everyMethod().filter(method => hidden[method.id] !== true);
+}
+/** Ids for a picker whose current value is `selected`. A method removed from
+ *  the pickers still has to be OFFERED for the entry that was recorded with it,
+ *  or opening that entry and saving would quietly move it to another account.
+ *  `base` is what the picker would offer otherwise (allMethods(), or the three
+ *  credit accounts for an income entry). */
+function methodPickerIds(selected, base = allMethods()) {
+  const ids = base.map(method => method.id);
+  if (selected && !ids.includes(selected)) ids.push(selected);
+  return ids;
+}
 function methodShort(id) {
-  const method = METHOD_BY_ID.get(id);
+  const method = methodById(id);
   if (!method) return id;
   return method.label.includes(' · ') ? method.label.split(' · ')[1] : method.label;
 }
 function methodLabel(id) {
-  return METHOD_BY_ID.get(id)?.label || id;
+  return methodById(id)?.label || id;
 }
 
 /** Merge built-in categories with user-added custom ones. */
@@ -3062,7 +3094,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
           $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:6px 12px;flex-wrap:wrap;min-width:0;' },
             $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' },
               $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
-              secondary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, secondary) : null,
+              secondary ? $('span', { class: 'muted balance-row-meta' }, secondary) : null,
               isGiftCard ? $('span', { style: 'font-size:10px;background:var(--accent-soft);color:var(--accent);padding:2px 7px;border-radius:var(--radius);' }, 'Reconcile') : null,
             ),
             $('div', { class: 'balance-editor-controls balance-editor-edit-controls', style: 'display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;min-width:0;' },
@@ -3083,8 +3115,8 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
       $('div', { style: 'display:flex;align-items:center;gap:10px;min-width:0;flex:1;' },
         $('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${balance >= 0 ? 'var(--positive)' : 'var(--negative)'};flex-shrink:0;` }),
         $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
-        secondary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, secondary) : null,
-        summary ? $('span', { class: 'muted', style: 'font-size:10px;white-space:nowrap;' }, `reconciled ${friendlyDate(summary.point.date)}`) : null,
+        secondary ? $('span', { class: 'muted balance-row-meta' }, secondary) : null,
+        summary ? $('span', { class: 'muted balance-row-meta' }, `reconciled ${friendlyDate(summary.point.date)}`) : null,
       ),
       $('div', { class: 'balance-editor-controls', style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;min-width:0;' },
         $('div', { style: 'text-align:right;' },
@@ -5032,6 +5064,9 @@ function buildMenuLevel(id) {
     )));
     list.append($('div', { class: 'menu-sep' }));
     list.append(menuRowEl({ icon: 'clock', label: 'Recurring & bills', onClick: () => { closeAppMenu(); openRecurringManager(); } }));
+    // Beside "Recurring & bills" because it is the same kind of thing: a list the
+    // user owns and keeps, rather than a setting.
+    list.append(menuRowEl({ icon: 'wallet', label: 'Payment methods', note: 'Add or remove how you pay', onClick: () => { closeAppMenu(); openMethodManager(); } }));
     if (canInstallApp()) {
       list.append(menuRowEl({ icon: 'download', label: 'Install app', onClick: () => { closeAppMenu(); promptInstall(); } }));
     }
@@ -5136,8 +5171,11 @@ function closeAppMenu() {
   if (trigger) trigger.setAttribute('aria-expanded', 'false');
   backdrop.classList.add('closing');
   panel.classList.add('closing');
-  // 240ms matches the 0.2s closing animations + a small buffer.
-  setTimeout(() => backdrop.remove(), 240);
+  // 160ms: the closing animations are 0.11s (menuPanelOut / menuSheetOut) and
+  // this has to outlast them — removing the panel mid-animation is what would
+  // make the menu vanish instead of leave — but not by much, since the window is
+  // also how long a stale backdrop can sit in the DOM if the user reopens fast.
+  setTimeout(() => backdrop.remove(), 160);
   if (trigger) queueMicrotask(() => trigger.focus({ preventScroll: true }));
 }
 
@@ -5180,11 +5218,10 @@ function menuDrill(id) {
   }
   track.append(level);
   if (stack[stack.length - 1] !== id) stack.push(id);
-  // Apply .shown synchronously so the stagger never shows a blank frame;
-  // the CSS animation (with fill-mode both) starts rows hidden and springs
-  // them in without any pop-in flicker.
-  level.classList.add('shown');
-  if (old) setTimeout(() => { if (old.parentNode === track) old.remove(); }, 240);
+  // No class to apply here any more. This used to arm the per-row entrance
+  // synchronously (so the stagger never showed a blank frame); the rows now
+  // arrive with the level, and the level's own slide is the only motion left.
+  if (old) setTimeout(() => { if (old.parentNode === track) old.remove(); }, 160);
 }
 
 function menuBack() {
@@ -5197,13 +5234,13 @@ function menuBack() {
   const prev = buildMenuLevel(prevId);
   current.classList.add('out-right');
   track.insertBefore(prev, current);
-  prev.classList.add('in-left', 'shown');
+  prev.classList.add('in-left');
   requestAnimationFrame(() => {
     // Keep keyboard/screen-reader users anchored after the level swap.
     const target = prev.querySelector('.menu-back') || prev.querySelector('.menu-row');
     if (target) target.focus({ preventScroll: true });
   });
-  setTimeout(() => current.remove(), 240);
+  setTimeout(() => current.remove(), 160);
 }
 
 function menuRefreshLevel(id) {
@@ -5213,7 +5250,7 @@ function menuRefreshLevel(id) {
   const current = levels[levels.length - 1];
   if (!current || current.dataset.level !== id) return;
   const fresh = buildMenuLevel(id);
-  fresh.classList.add('in-right', 'shown');
+  fresh.classList.add('in-right');
   track.replaceChild(fresh, current);
   if (stack[stack.length - 1] !== id) stack.push(id);
 }
@@ -5280,12 +5317,18 @@ function formView({ initial = null, onSubmit, onCancel }) {
 
   // Named methodLabelEl so it doesn't shadow the global methodLabel(id) helper.
   const methodLabelEl = $('label', { class: 'eyebrow', for: 'f-method' }, 'Method');
-  const methodOpts = () => (isCredit() ? creditMethods : METHODS);
+  const methodOpts = () => (isCredit() ? creditMethods : allMethods());
   const methodSel = $('select', { 'aria-label': 'Payment method', id: 'f-method', onChange: (e) => data.method = e.target.value });
   const methodSection = $('div');
   function rebuildMethodOpts() {
     methodLabelEl.textContent = isCredit() ? 'Income sent to' : 'Method';
-    const ids = methodOpts().map(m => m.id);
+    // The line below is a silent reassignment, and that is correct for a NEW
+    // entry (option 1 is what an unfilled form should say) but destructive for
+    // one being edited: the reset would move the money to an account the user
+    // never chose the moment they pressed Save. So an existing entry keeps its
+    // own method in the list, even when it was removed from the pickers since,
+    // or is not one of the credit accounts.
+    const ids = initial ? methodPickerIds(data.method, methodOpts()) : methodOpts().map(m => m.id);
     appendMethodOptions(methodSel, ids, data.method);
     if (!ids.includes(data.method)) { data.method = ids[0]; }
   }
@@ -5295,7 +5338,7 @@ function formView({ initial = null, onSubmit, onCancel }) {
   // the single Method select is replaced by a list of (method, amount) rows.
   let splitOn = false;
   const splitRows = [];
-  const SLICE_METHODS = METHODS.map(m => m.id);
+  const SLICE_METHODS = allMethods().map(m => m.id);
   const splitToggle = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;margin-top:8px;min-height:24px;', onClick: () => {
     splitOn = !splitOn;
     if (splitOn && splitRows.length === 0) {
@@ -5340,11 +5383,12 @@ function formView({ initial = null, onSubmit, onCancel }) {
   const transferFromSel = $('select', { 'aria-label': 'From account', onChange: (e) => data.transferFrom = e.target.value });
   const transferToSel = $('select', { 'aria-label': 'To account', onChange: (e) => data.transferTo = e.target.value });
   function rebuildTransferOpts() {
-    const ids = METHODS.map(m => m.id);
-    appendMethodOptions(transferFromSel, ids, data.transferFrom);
-    appendMethodOptions(transferToSel, ids, data.transferTo);
-    if (!ids.includes(data.transferFrom)) data.transferFrom = ids[0];
-    if (!ids.includes(data.transferTo)) data.transferTo = ids[0];
+    const fromIds = methodPickerIds(data.transferFrom);
+    const toIds = methodPickerIds(data.transferTo);
+    appendMethodOptions(transferFromSel, fromIds, data.transferFrom);
+    appendMethodOptions(transferToSel, toIds, data.transferTo);
+    if (!fromIds.includes(data.transferFrom)) data.transferFrom = fromIds[0];
+    if (!toIds.includes(data.transferTo)) data.transferTo = toIds[0];
   }
   rebuildTransferOpts();
   const transferSection = $('div', { style: 'display:none;' },
@@ -5888,7 +5932,7 @@ function screenDashboard() {
               }, title: 'Remove recurring' }, '×'),
               $('span', { style: `display:inline-block;width:7px;height:7px;border-radius:50%;background:${isOverdue ? 'var(--negative)' : isDueSoon ? 'var(--accent)' : 'var(--muted)'};flex-shrink:0;box-shadow:${isDueSoon ? '0 0 0 3px var(--accent-glow)' : 'none'};` }),
               $('span', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, r.details),
-              $('span', { class: 'pill', style: 'border-color:transparent;font-size:10px;flex-shrink:0;' }, r.method),
+              $('span', { class: 'pill', style: 'border-color:transparent;font-size:10px;flex-shrink:0;' }, methodShort(r.method)),
               $('span', { class: 'muted', style: 'font-size:11px;flex-shrink:0;' }, friendlyDate(r.nextDate)),
               isDueSoon ? $('span', { class: 'pill', style: 'border-color:var(--accent);color:var(--accent);font-size:10px;flex-shrink:0;' }, daysAway === 0 ? 'today' : `in ${daysAway}d`) : null,
             ),
@@ -6077,7 +6121,7 @@ function screenDashboard() {
       tabVisible('balances') ? $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage ', iconSpan('arrow-right', 'sm')) : null,
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },     ...GIFT_CARD_IDS.map(id => {
-         const m = METHODS.find(x => x.id === id);
+         const m = methodById(id);
          const totals = computeGiftCardBalance(state.entries, id);
          return renderBalanceEditorRow(id, {
            label: m?.label?.includes(' · ') ? m.label.split(' · ')[1] : (m?.label || id),            secondary: totals.loaded || totals.spent
@@ -6273,6 +6317,155 @@ function voucherWidget() {
 // The dashboard card only lists rules whose next occurrence falls within the
 // current month; this modal lists every rule regardless of when it is next
 // due, sorted by next occurrence, with edit/remove/new in one place.
+// ---------- modal: payment methods ----------
+// Add, remove and restore the methods every picker offers. Two rules make this
+// safe to use freely, and both exist because the alternative loses money data:
+//   1. A built-in cannot be deleted, only hidden. The Balances screen keys a
+//      row, a checkpoint series and the account math to 'AIB'/'Revolut'/'RS',
+//      the gift-card totals to 'TG'/'LG'/'AG' and the budget filters to 'RS',
+//      so removing one would leave those features pointing at nothing.
+//   2. Removing anything is a tombstone (settings.methodHidden), never a
+//      deletion. validateEntry DROPS an entry whose method storage.js does not
+//      know, so a delete that really removed the id would delete that entry the
+//      next time the document loaded — and the list a cloud merge unions by id
+//      would resurrect it anyway. A tombstone keeps the id valid, keeps history
+//      named, and travels both ways (see storage.js / sync-merge.js).
+function openMethodManager() {
+  const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
+  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Payment methods', tabindex: '-1', style: 'max-width:520px;display:flex;flex-direction:column;max-height:88vh;' });
+  bg.appendChild(modal);
+  document.body.appendChild(bg);
+
+  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); render(); };
+  const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
+  document.addEventListener('keydown', onEsc, true);
+
+  // How many records name each method — entries, plus a recurring bill, which
+  // names one too and would lose its selection if the method went away. This is
+  // what the row uses to say whether removing it touches anything.
+  const usage = new Map();
+  const bump = (id) => usage.set(id, (usage.get(id) || 0) + 1);
+  for (const entry of state.entries) bump(entry.method);
+  for (const rec of (state.settings.recurring || [])) bump(rec.method);
+  const usageText = (id) => {
+    const n = usage.get(id) || 0;
+    return n === 0 ? 'not used yet' : `used by ${n} record${n === 1 ? '' : 's'}`;
+  };
+  const isBase = (id) => METHODS.some(m => m.id === id);
+  const isRemoved = (id) => (state.settings.methodHidden || {})[id] === true;
+
+  const nameInput = $('input', { type: 'text', placeholder: 'e.g. Credit Union, Apple Pay', 'aria-label': 'New method name', autocomplete: 'off', maxlength: '40', style: 'flex:1;min-width:0;' });
+  const addError = $('div', { class: 'muted', style: 'font-size:11px;margin-top:4px;min-height:14px;' }, '');
+  function addMethod() {
+    const raw = nameInput.value.trim();
+    if (!raw) { addError.textContent = 'Enter a name for the method.'; nameInput.focus(); return; }
+    if (everyMethod().some(m => m.label.toLowerCase() === raw.toLowerCase())) {
+      addError.textContent = 'That method already exists.';
+      nameInput.focus();
+      return;
+    }
+    addError.textContent = '';
+    let id = raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'method';
+    if (everyMethod().some(m => m.id.toLowerCase() === id.toLowerCase())) id = `${id}-${uid().slice(-3)}`;
+    if (!state.settings.customMethods) state.settings.customMethods = [];
+    state.settings.customMethods.push({ id, label: raw });
+    // Offered immediately: a name the user just typed is not something a stale
+    // flag for the same slug gets to keep out of the pickers. Written as an
+    // explicit false for the reason setRemoved() gives.
+    if (state.settings.methodHidden?.[id]) {
+      state.settings.methodHidden = { ...state.settings.methodHidden, [id]: false };
+    }
+    updateAllowedMethods(everyMethod().map(m => m.id));
+    trackAction(() => { state.settings.customMethods = state.settings.customMethods.filter(m => m.id !== id); persist(); }, `Added method "${raw}"`);
+    persist();
+    nameInput.value = '';
+    toast(`Added method "${raw}".`);
+    refresh();
+  }
+  nameInput.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') { ev.preventDefault(); addMethod(); }
+  });
+
+  function setRemoved(id, removed) {
+    const before = { ...(state.settings.methodHidden || {}) };
+    // `false`, never a deleted key: the cloud merge is a per-key spread, which
+    // can overwrite a key but cannot remove one, so a restore written as an
+    // absence would lose to the other device's `true` on every sync and the
+    // method would come back hidden on its own (see normalizeMethodHidden).
+    state.settings.methodHidden = { ...before, [id]: removed };
+    // Nothing about which ids are VALID changes here (a removed method stays
+    // valid so its history survives), but a stale id in the allowed set is the
+    // one way storage.js could accept something it should not.
+    updateAllowedMethods(everyMethod().map(m => m.id));
+    persist();
+    refresh();
+    return before;
+  }
+
+  const rowFor = (method) => {
+    const removed = isRemoved(method.id);
+    const n = usage.get(method.id) || 0;
+    const verb = removed ? 'Restore' : (isBase(method.id) ? 'Hide' : 'Delete');
+    return $('div', { style: 'display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background-color:color-mix(in srgb, var(--card) 92%, transparent);' },
+      $('div', { style: `min-width:0;flex:1;${removed ? 'opacity:0.6;' : ''}` },
+        $('div', { style: 'font-size:13px;font-weight:500;line-height:1.35;overflow-wrap:anywhere;' }, method.label),
+        $('div', { class: 'muted', style: 'font-size:11px;margin-top:2px;overflow-wrap:anywhere;' },
+          `${isBase(method.id) ? 'Built-in' : 'Your own'} · ${usageText(method.id)}`),
+      ),
+      $('button', { type: 'button', class: 'btn-link', 'aria-label': `${verb} ${method.label}`, style: `font-size:12px;min-height:32px;flex-shrink:0;${removed || isBase(method.id) ? '' : 'color:var(--negative);'}`, onClick: () => {
+        const before = setRemoved(method.id, !removed);
+        if (removed) {
+          trackAction(() => { state.settings.methodHidden = before; persist(); }, `Restored method "${method.label}"`);
+          toast(`Restored "${method.label}".`);
+        } else {
+          trackAction(() => { state.settings.methodHidden = before; persist(); }, `Removed method "${method.label}"`);
+          // Say what a delete of a used method actually does, at the moment it
+          // is asked for: the records keep it, only the pickers lose it.
+          toast(n === 0 ? `Deleted "${method.label}".`
+            : `Removed "${method.label}" from the pickers — ${n} record${n === 1 ? '' : 's'} still name it.`);
+        }
+      } }, verb));
+  };
+
+  const listEl = $('div', { style: 'overflow-y:auto;flex:1;min-height:0;margin:0 -4px;padding:0 4px;display:flex;flex-direction:column;gap:8px;' });
+  const refresh = () => {
+    listEl.textContent = '';
+    const offered = everyMethod().filter(m => !isRemoved(m.id));
+    const removed = everyMethod().filter(m => isRemoved(m.id));
+    for (const method of offered) listEl.appendChild(rowFor(method));
+    if (removed.length) {
+      listEl.appendChild($('div', { class: 'eyebrow', style: 'margin-top:10px;' }, 'Removed from the pickers'));
+      for (const method of removed) listEl.appendChild(rowFor(method));
+    }
+    // Keep the page beneath the modal in step: the pickers it just changed are
+    // re-rendered by close(), but the undo chip is drawn now.
+    const fabHost = document.querySelector('main');
+    const oldFab = fabHost ? fabHost.querySelector('.undo-fab') : null;
+    const newFab = renderUndoFab();
+    if (newFab) { if (oldFab) oldFab.replaceWith(newFab); else if (fabHost) fabHost.appendChild(newFab); }
+    else if (oldFab) oldFab.remove();
+  };
+
+  modal.append(
+    $('div', { style: 'display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px;' },
+      $('div', null,
+        $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:24px;margin:0;' }, 'Payment methods'),
+        $('div', { class: 'muted', style: 'font-size:11px;margin-top:4px;line-height:1.45;' },
+          'What the entry form offers. Removing one only takes it out of the pickers — records you already saved keep it.'),
+      ),
+      $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
+    ),
+    $('div', { style: 'display:flex;gap:8px;align-items:center;' }, nameInput,
+      $('button', { type: 'button', class: 'btn btn-ghost', style: 'flex-shrink:0;', onClick: addMethod }, 'Add')),
+    addError,
+    listEl,
+  );
+  refresh();
+  // The add field is the reason this modal is opened; focus it so a method can
+  // be typed without a second tap.
+  queueMicrotask(() => { if (nameInput.isConnected) nameInput.focus(); });
+}
+
 function openRecurringManager() {
   const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
   const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Manage recurring transactions', tabindex: '-1', style: 'max-width:560px;display:flex;flex-direction:column;max-height:88vh;' });
@@ -6394,7 +6587,7 @@ function openNewRecurring(existing = null, onClosed = null) {
   const amtInput = $('input', { type: 'text', inputmode: 'decimal', placeholder: '0.00', 'aria-label': 'Amount', onInput: (e) => data.amount = e.target.value });
   const descInput = $('input', { type: 'text', placeholder: 'e.g. Rent, Netflix', 'aria-label': 'Description', onInput: (e) => data.details = e.target.value });
   const methodSel = $('select', { 'aria-label': 'Method', onChange: (e) => data.method = e.target.value },
-    ...METHODS.map(m => $('option', { value: m.id }, m.label)),
+    ...methodPickerIds(data.method).map(id => $('option', { value: id }, methodLabel(id))),
   );
   const catSel = $('select', { 'aria-label': 'Category', onChange: (e) => data.category = e.target.value },
     ...allCategories().map(c => $('option', { value: c.id }, c.label)),
@@ -6916,7 +7109,7 @@ function screenHistory() {
     if (count === 0 && activeMethod !== key) continue;
     methodFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': key, 'data-active': activeMethod === key ? 'true' : 'false', 'aria-pressed': activeMethod === key ? 'true' : 'false', onClick: () => update({ method: key }) }, `${group.label} · ${count}`));
   }
-  for (const method of METHODS) {
+  for (const method of everyMethod()) {
     const count = methodCounts[method.id] || 0;
     if (count === 0 && activeMethod !== method.id) continue;
     methodFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': method.id, 'data-active': activeMethod === method.id ? 'true' : 'false', 'aria-pressed': activeMethod === method.id ? 'true' : 'false', onClick: () => update({ method: method.id }) }, `${methodShort(method.id)} · ${count}`));
@@ -7020,7 +7213,7 @@ function screenHistory() {
     if (!ids.length) return;
     openBulkPickerModal({
       title: `Account for ${ids.length} entr${ids.length === 1 ? 'y' : 'ies'}`,
-      options: METHODS.map(m => ({ id: m.id, label: m.label })),
+      options: allMethods().map(m => ({ id: m.id, label: m.label })),
       onPick: (value) => applyBulkField(ids, 'method', value),
     });
   }
@@ -7253,7 +7446,7 @@ function screenBalances() {
     $('div', { class: 'muted', style: 'font-size:11px;margin-bottom:8px;' }, 'The same reconciliation editor is used for every balance.'),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
       ...GIFT_CARD_IDS.map(id => {
-        const method = METHODS.find(m => m.id === id);
+        const method = methodById(id);
         const totals = computeGiftCardBalance(state.entries, id);
         return renderBalanceEditorRow(id, {
           label: method?.label?.includes(' · ') ? method.label.split(' · ')[1] : (method?.label || id),
@@ -7338,7 +7531,7 @@ function screenInsights() {
     $('h1', { class: 'page-title' }, 'Where it goes.'),
     $('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' },
       fromInput,
-      $('span', { class: 'muted', style: 'font-size:13px;display:inline-flex;' }, iconSpan('arrow-right', 'sm')),
+      $('span', { class: 'muted range-sep' }, iconSpan('arrow-right', 'sm')),
       toInput,
       (fromParam || toParam) ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:12px;', onClick: () => { location.hash = 'insights'; } }, 'Reset') : null,
     ),
@@ -7404,8 +7597,8 @@ function screenInsights() {
     c.appendChild(emptyStateCard({ icon: 'chart', title: 'No data yet', blurb: 'Log a few expenses and your spending story, heatmap and charts will appear here.', actionLabel: 'Add your first entry', actionHref: '#add' }));
   }
 
-  c.appendChild($('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:20px;margin-bottom:32px;' },
-    statCard('Average / month', avg),
+  c.appendChild($('div', { class: 'insight-stats' },
+    statCard('Average / month', fmt(avg)),
     statCard('Top method', topMethodEntry ? `${(methodShort(topMethodEntry[0]))} · ${fmt(topMethodEntry[1])}` : '-'),
     statCard('Entries', String(recent.filter(isSpendingEntry).length)),
     statCard('Categories active', String(new Set(recent.filter(isSpendingEntry).map(e => e.category)).size)),
@@ -7580,9 +7773,22 @@ function screenInsights() {
 
   return c;
 }
+// A stat card's value is one headline, and not every headline is a total: the
+// top method reads "AIB bank · €2475.99". Set at a total's 30px that wrapped
+// onto a second line, overran its card and dominated the row, so the size
+// follows the value's own length. What it must NOT do is decide the value: a
+// figure arrives here already formatted (fmt(avg), never the raw float, which
+// printed 5924.6900000000005) and the third tier is there so that a longer
+// value than the row expected still fits the narrowest card the grid makes.
+function statValueSize(value) {
+  const n = String(value ?? '').length;
+  if (n <= 10) return 30;
+  if (n <= 16) return 22;
+  return 18;
+}
 function statCard(label, value) {
-  const numEl = $('div', { class: 'display-num', style: 'font-size:30px;margin-top:8px;' }, value);
-  return $('div', { class: 'card', style: 'padding:20px 16px;' },
+  const numEl = $('div', { class: 'display-num stat-value', style: `font-size:${statValueSize(value)}px;margin-top:8px;` }, value);
+  return $('div', { class: 'card stat-card' },
     $('div', { class: 'eyebrow' }, label),
     numEl,
   );
@@ -8063,7 +8269,6 @@ function openEdit(id) {
 function openLegEditor(leg) {
   const splitId = leg.splitId;
   const isCredit = leg.type === 'credit';
-  const allMethodIds = METHODS.map(m => m.id);
 
   const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
   const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Edit split slice', tabindex: '-1', style: 'max-width:400px;' });
@@ -8075,7 +8280,7 @@ function openLegEditor(leg) {
   document.addEventListener('keydown', onEsc, true);
 
   const sel = $('select', { 'aria-label': 'Slice method', style: 'width:100%;' });
-  appendMethodOptions(sel, allMethodIds, leg.method);
+  appendMethodOptions(sel, methodPickerIds(leg.method), leg.method);
   sel.value = leg.method;
   const amt = $('input', { type: 'text', inputmode: 'decimal', value: String(leg.amount), 'aria-label': 'Slice amount', autocomplete: 'off', style: 'width:100%;text-align:right;' });
 
@@ -8125,7 +8330,6 @@ function openSplitEditor(legs) {
   const splitId = legs[0].splitId;
   const type = legs[0].type || 'expense';
   const isCredit = type === 'credit';
-  const allMethodIds = METHODS.map(m => m.id);
   let rows = legs.map(l => ({ id: l.id, method: l.method, amount: String(l.amount) }));
 
   const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
@@ -8154,7 +8358,7 @@ function openSplitEditor(legs) {
       // Numbered per row, like the quick-capture split above: two slices must not
       // answer to one aria-label.
       const sel = $('select', { 'aria-label': `Split method ${i + 1}`, onchange: () => { r.method = sel.value; } });
-      appendMethodOptions(sel, allMethodIds, r.method);
+      appendMethodOptions(sel, methodPickerIds(r.method), r.method);
       sel.value = r.method;
       const amt = $('input', { type: 'text', inputmode: 'decimal', value: r.amount, 'aria-label': `Slice amount ${i + 1}`, autocomplete: 'off', style: 'width:110px;text-align:right;', oninput: (ev) => { r.amount = ev.target.value; updateTotal(); } });
       const rm = $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 9px;font-size:11px;', 'aria-label': `Remove slice ${i + 1}`, onClick: () => { if (rows.length <= 1) return; rows = rows.filter(x => x !== r); redraw(); updateTotal(); } }, 'Remove');

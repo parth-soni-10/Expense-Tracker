@@ -156,6 +156,64 @@ if (!/!url\.pathname\.startsWith\(\s*'\/\.netlify\/'\s*\)/.test(swCode)) {
   fail('sw.js must keep the /.netlify/ exclusion — without it the synced document is written to Cache Storage and replayed later as a stale cloud copy.');
 }
 
+// ---- 2b. the build baseline outlives the worker ---------------------------
+// "A redeploy reaches the device" rests on the worker diffing the document it
+// just fetched against the one it saw last. That baseline lived in a Map in the
+// worker's own scope, and a service worker is torn down after about thirty
+// seconds idle — so after a phone had been in a pocket for a few days the
+// worker that saw the previous build was gone, the next check looked like a
+// first sighting, and the branch that records one reports nothing on purpose.
+// The one case the mechanism exists for (a PWA that has not navigated since the
+// deploy) therefore kept showing the old build until it was killed by hand. The
+// baseline is in Cache Storage now, which is the part a refactor would quietly
+// undo — so it is pinned here, where a source read can say so.
+if (/^\s*const buildSeen\s*=/m.test(swCode)) {
+  fail('sw.js holds the build baseline in a worker-scope variable again: a worker is torn down '
+    + 'after ~30s idle, so the first check after every restart looks like a first sighting and a '
+    + 'PWA that has not navigated since a redeploy is never told about it. Keep it in Cache Storage.');
+}
+if (!/const BUILD_CACHE = '[^']+'/.test(swCode) || !/const BUILD_KEY = '[^']+'/.test(swCode)) {
+  fail('sw.js names no BUILD_CACHE/BUILD_KEY — the build baseline needs a key of its own to be '
+    + 'readable after the worker that wrote it is gone.');
+}
+// Both halves, named separately: a baseline that is written but never read back
+// compares against nothing and reports nothing, which looks exactly like the
+// mechanism working (no crash, no notification).
+if (!/caches\.open\(BUILD_CACHE\)\)\.match\(BUILD_KEY\)/.test(swCode)) {
+  fail('sw.js never reads the build baseline back out of Cache Storage — a baseline that is only '
+    + 'written compares against nothing, and the device is told about no deploy at all.');
+}
+if (!/caches\.open\(BUILD_CACHE\)\)\.put\(new Request\(BUILD_KEY\)/.test(swCode)) {
+  fail('sw.js never records the build it just served, so every check would look like a redeploy.');
+}
+// A version bump must delete the shell cache and must NOT delete the baseline:
+// the baseline's whole job is to survive the deploy that changed the shell.
+if (!/k !== CACHE && k !== BUILD_CACHE/.test(swCode)) {
+  fail('sw.js\'s activate sweeps every cache but CACHE, which deletes the build baseline on the '
+    + 'one deploy where it is needed — the deploy that changed the shell.');
+}
+// Both entry points — a navigation, and a tab asking on refocus — have to go
+// through the one comparison, or one of them silently skips the baseline. Each
+// is asserted by its own shape rather than by counting calls, since a call that
+// no longer guards anything is the failure mode.
+if (!/if \(await noteBuild\(text\)\) await tellClients\(/.test(swCode)) {
+  fail('sw.js\'s navigation path no longer compares the served document against the baseline — a '
+    + 'background tab that has not navigated never learns about a redeploy.');
+}
+if (!/if \(!\(await noteBuild\(text\)\)\) return;/.test(swCode)) {
+  fail('sw.js\'s refocus path no longer checks whether the build actually changed — it would either '
+    + 'reload every tab on every check or tell nobody, and a PWA is the case this exists for.');
+}
+// The clone has to be taken in the same tick as the response: the page consumes
+// it the moment the promise settles, and a clone taken after that throws.
+if (!/maybeBroadcastBuildChange\(e\.request, res\.clone\(\)\)/.test(swCode)) {
+  fail('sw.js diffs the build off the live response instead of a clone taken before the page can '
+    + 'consume it — the clone throws ("body already used") and the redeploy notification is lost.');
+}
+if (!/async function tellClients\(url\)/.test(swCode) || !/type: 'centsNewBuild'/.test(swCode)) {
+  fail('sw.js no longer tells the open tabs about a changed build.');
+}
+
 // ---- 3. the worker script is never taken from cache -----------------------
 if (!/serviceWorker\.register\(/.test(htmlCode)) {
   fail('index.html does not register a service worker.');

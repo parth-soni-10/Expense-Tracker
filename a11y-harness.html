@@ -283,7 +283,7 @@ async function go(route) {
        step for it would report "skipped" on every ordinary run. A skip has to
        mean "this device could not reach it", not "this device never has it". */
 const MODAL_OPENERS = [
-  'openAdminPanel', 'openRecurringManager', 'openAvatarPicker',
+  'openAdminPanel', 'openRecurringManager', 'openMethodManager', 'openAvatarPicker',
   'openReminderSettings', 'openPinSettings', 'openSyncSettings',
 ];
 
@@ -330,6 +330,7 @@ const STEPS = [
     } },
   { name: 'menu · data', open: async () => { await openByText('', '.menu-trigger'); return openByText('Data', '.menu-row'); } },
   { name: 'modal · recurring & bills', open: async () => { await openByText('', '.menu-trigger'); return openByText('Recurring', '.menu-row'); } },
+  { name: 'modal · payment methods', open: async () => { await openByText('', '.menu-trigger'); return openByText('Payment methods', '.menu-row'); } },
   { name: 'modal · daily reminder', open: async () => { await openByText('', '.menu-trigger'); return openByText('Daily reminder', '.menu-row'); } },
   { name: 'modal · profile picture', open: async () => { await openByText('', '.menu-trigger'); return openByText('Profile picture', '.menu-row'); } },
   { name: 'modal · admin panel', open: () => openByText('', '.admin-trigger') },

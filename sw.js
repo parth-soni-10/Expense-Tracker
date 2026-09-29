@@ -12,6 +12,15 @@
  * cached copy when offline. It never serves stale content while online.
  */
 const CACHE = 'cents-v24';
+// The build this device was last served on a navigation, so a redeploy can be
+// told apart from a first visit. Its OWN cache, and `activate` deliberately does
+// not sweep it: the shell cache above is versioned and a bump has to delete it,
+// but the baseline has exactly the opposite job — it must survive the deploy
+// that changed the shell, or the first check after a bump is a first sighting
+// again. See "which build this device last saw" at the foot of this file for why
+// it is in Cache Storage rather than a variable.
+const BUILD_CACHE = 'cents-build';
+const BUILD_KEY = '/__cents-build';
 // The Tesco Pay ENGINE is on the boot path (it feeds the dashboard figures); the
 // screen beside it is fetched on the first visit to the tab, so it has to be
 // warm for that visit to work offline.
@@ -61,7 +70,7 @@ self.addEventListener('install', () => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== BUILD_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -89,9 +98,13 @@ self.addEventListener('fetch', (e) => {
     fetch(e.request, { cache: 'no-store' })
       .then((res) => {
         if (res && res.ok && cacheable) {
+          // Both clones are taken in THIS tick. The page consumes the response
+          // the moment this promise settles, and a clone taken after that
+          // throws ("body already used") — which is the other way the redeploy
+          // notification below goes missing without a word.
           const copy = res.clone();
           caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
-          maybeBroadcastBuildChange(e.request, res);
+          if (e.request.mode === 'navigate') maybeBroadcastBuildChange(e.request, res.clone());
         }
         return res;
       })
@@ -105,32 +118,74 @@ self.addEventListener('fetch', (e) => {
   );
 });
 
-// Remember the body of every navigation document we've served this SW
-// instance. If a fresh fetch comes back with a different body, the site was
-// redeployed — tell any open, controlled tab to reload so it leaves the old
-// build behind instead of showing stale UI until the user manually refreshes.
-const buildSeen = new Map(); // url -> text
-async function maybeBroadcastBuildChange(request, response) {
-  if (request.mode !== 'navigate') return;
-  if (!self.clients || typeof self.clients.matchAll !== 'function') return;
-  const url = new URL(request.url).href;
+// ── Which build this device last saw ─────────────────────────────
+// A redeploy swaps the served index.html. The worker diffs the document it just
+// fetched against the one it saw last and tells the open tabs, so a tab that has
+// not navigated reloads instead of showing the previous build.
+//
+// THAT BASELINE HAS TO OUTLIVE THE WORKER. It used to be a Map in the worker's
+// own scope, and a service worker is torn down after about thirty seconds idle —
+// so by the time a phone has been in a pocket for a few days, the worker that
+// saw the last build is long gone. Held in memory only, the first check after
+// every restart looked like "no baseline yet", and the branch below records a
+// first sighting silently on purpose. So the ONE case this machinery exists for —
+// a PWA that has not navigated since the deploy — stored the new build, reported
+// nothing, and kept showing the old one until the app was killed by hand. It is
+// in Cache Storage now, and it is read fresh on every comparison rather than
+// mirrored, because two sources of truth for this is a race waiting to happen.
+
+/** The body of the navigation document this device was last served, or null. */
+async function lastBuild() {
   try {
-    const text = await response.clone().text();
-    const prev = buildSeen.get(url);
-    // No baseline yet (first navigation under this worker) — record it and
-    // stop, so adopting a fresh SW mid-session doesn't force a pointless
-    // reload. Only a real body change (a redeploy) triggers a broadcast.
-    if (prev === undefined) { buildSeen.set(url, text); return; }
-    if (prev !== text) {
-      buildSeen.set(url, text);
-      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: false });
-      for (const client of clients) {
-        client.postMessage({ type: 'centsNewBuild', url });
-      }
-    }
+    const hit = await (await caches.open(BUILD_CACHE)).match(BUILD_KEY);
+    return hit ? await hit.text() : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
+ * Record the build now being served and answer whether that is a CHANGE — i.e.
+ * whether the tabs need telling. A first sighting (no baseline at all, which is
+ * a new device rather than a redeploy) is recorded silently; only a redeploy
+ * that arrives after a baseline exists reports one.
+ */
+async function noteBuild(text) {
+  const prev = await lastBuild();
+  if (prev === text) return false;
+  try {
+    await (await caches.open(BUILD_CACHE)).put(new Request(BUILD_KEY), new Response(text));
+  } catch (err) {
+    // A baseline that can't be written only costs a missed notification later.
+  }
+  return prev !== null;
+}
+
+async function tellClients(url) {
+  if (!self.clients || typeof self.clients.matchAll !== 'function') return;
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: false });
+  for (const client of clients) {
+    client.postMessage({ type: 'centsNewBuild', url });
+  }
+}
+
+// A navigation. The tab that asked is being handed this very document, so it is
+// already getting the new build; the broadcast is for the OTHER tabs — a
+// background tab that has not navigated is the one left showing the previous
+// build. The served document can receive it too when it is already a client, and
+// that is harmless: its reload lands on a baseline that now matches, and the app
+// declines to reload while a modal or a field is busy, so it can happen at most
+// once per deploy. `response` is a clone the caller took before the page could
+// consume the body.
+async function maybeBroadcastBuildChange(request, response) {
+  let text;
+  try {
+    text = await response.text();
   } catch (err) {
     // A body that can't be read shouldn't break serving the page.
+    return;
   }
+  if (await noteBuild(text)) await tellClients(new URL(request.url).href);
 }
 
 // ── Push-driven update checks ────────────────────────────────────
@@ -151,14 +206,11 @@ self.addEventListener('message', (event) => {
       const copy = res.clone();
       const text = await res.text();
       const url = new URL('/index.html', self.location.origin).href;
-      const prev = buildSeen.get(url);
-      buildSeen.set(url, text);
-      if (prev === undefined || prev === text) return;
+      if (!(await noteBuild(text))) return;
       // Also refresh the cached navigation fallback so an offline open after
       // this point boots the new build, not the stale one.
       caches.open(CACHE).then((c) => c.put(new Request('/index.html'), copy)).catch(() => {});
-      const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: false });
-      for (const client of clients) client.postMessage({ type: 'centsNewBuild', url });
+      await tellClients(url);
     })
     .catch(() => {});
 });

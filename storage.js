@@ -45,7 +45,14 @@ export const uid = () =>
 
 const BASE_CATEGORIES = ['gro', 'travel', 'misc', 'rent', 'GC'];
 const CATEGORIES_OK = new Set(BASE_CATEGORIES);
-const METHODS_OK    = new Set(['AIB','Revolut','RS','TG','LG','AG','Cash']);
+// Built-in payment methods. They are structural: the Balances screen keys a
+// row, a checkpoint series and the account math to 'AIB'/'Revolut'/'RS', the
+// gift-card totals to 'TG'/'LG'/'AG', and the budget filters to 'RS'. None of
+// them can be REMOVED — but a user who does not use one can hide it from the
+// pickers (settings.methodHidden), and it keeps validating and keeps naming the
+// history that used it. See updateAllowedMethods().
+const BASE_METHODS = ['AIB','Revolut','RS','TG','LG','AG','Cash'];
+const METHODS_OK   = new Set(BASE_METHODS);
 const TYPES_OK      = new Set(['expense', 'credit', 'transfer', 'note']);
 // Recurring transfers need two linked legs and are not represented by the
 // recurring editor. Keeping only single-leg recurring financial entries avoids
@@ -61,6 +68,20 @@ export function updateAllowedCategories(ids) {
   for (const id of BASE_CATEGORIES) CATEGORIES_OK.add(id);
   for (const id of Array.isArray(ids) ? ids : []) {
     if (typeof id === 'string' && id) CATEGORIES_OK.add(id);
+  }
+}
+
+/** Let validateEntry accept custom-method ids the user added at runtime, and —
+ *  this is the load-bearing half — keep accepting the ones they removed from
+ *  the pickers. validateEntry DROPS an entry whose method is unknown, so a
+ *  removal that took the id out of here would delete that entry's whole history
+ *  on the next load. Removing a method is a tombstone (settings.methodHidden),
+ *  never a removal from this set. */
+export function updateAllowedMethods(ids) {
+  METHODS_OK.clear();
+  for (const id of BASE_METHODS) METHODS_OK.add(id);
+  for (const id of Array.isArray(ids) ? ids : []) {
+    if (typeof id === 'string' && id) METHODS_OK.add(id);
   }
 }
 
@@ -258,6 +279,50 @@ function normalizeCustomCategories(raw) {
     out.push({ id, label: label.slice(0, 80) });
     return out;
   }, []);
+}
+
+/** User-added payment methods. Mirrors normalizeCustomCategories: an id that
+ *  cannot collide with a built-in (compared case-insensitively, because the
+ *  built-ins are mixed-case and the add flow slugs to lowercase) and a label
+ *  carried as typed. */
+function normalizeCustomMethods(raw) {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set(BASE_METHODS.map(id => id.toLowerCase()));
+  return raw.reduce((out, method) => {
+    if (!method || typeof method !== 'object') return out;
+    const id = typeof method.id === 'string' ? method.id.trim() : '';
+    const label = typeof method.label === 'string' ? method.label.trim() : '';
+    if (!id || !label || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/i.test(id)) return out;
+    if (seen.has(id.toLowerCase())) return out;
+    seen.add(id.toLowerCase());
+    out.push({ id, label: label.slice(0, 80) });
+    return out;
+  }, []);
+}
+
+/** `{ [methodId]: true|false }` — whether each method is out of the pickers.
+ *  A flag rather than a removal, for the two reasons in updateAllowedMethods()
+ *  and sync-merge.js: an entry that already used the method has to keep
+ *  validating, and a method deleted from customMethods alone would resurrect
+ *  from the cloud copy, which unions that list by id.
+ *
+ *  `false` is a VALUE, not an absent key, and that is load-bearing. The merge is
+ *  a per-key last-write-wins spread, and a spread can add or overwrite a key but
+ *  never delete one — so "shown again" written as a deletion could never beat the
+ *  other device's `true`, and a Restore would be re-asserted by every sync for as
+ *  long as a second device held the flag. Written as an explicit false, the
+ *  fresher side simply overwrites it, in both directions. It also means a stale
+ *  false key is harmless (false is the default state), where a stale true one
+ *  would hide a method the user brought back. Keys outside the allowed set are
+ *  junk and are dropped. */
+function normalizeMethodHidden(raw, knownIds) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (typeof value !== 'boolean' || !knownIds.has(id)) continue;
+    out[id] = value;
+  }
+  return out;
 }
 
 function normalizeTransferGroups(entries) {
@@ -495,6 +560,12 @@ export function validateState(s) {
   const rawSettings = s.settings && typeof s.settings === 'object' && !Array.isArray(s.settings) ? s.settings : {};
   const customCategories = normalizeCustomCategories(rawSettings.customCategories);
   updateAllowedCategories(customCategories.map(category => category.id));
+  // Both method lists are resolved before any entry is validated: METHODS_OK is
+  // what validateEntry checks membership against, so it has to carry the
+  // user's own methods (and every hidden one) by the time the map below runs.
+  const customMethods = normalizeCustomMethods(rawSettings.customMethods);
+  updateAllowedMethods(customMethods.map(method => method.id));
+  const methodHidden = normalizeMethodHidden(rawSettings.methodHidden, METHODS_OK);
   const usedIds = new Set();
   out.entries = normalizeTransferGroups(s.entries.map(entry => {
     const clean = validateEntry(entry);
@@ -545,6 +616,8 @@ export function validateState(s) {
       ? safeSettings.currency.trim().slice(0, 8)
       : SEED_SETTINGS.currency,
     customCategories,
+    customMethods,
+    methodHidden,
     recurring: normalizeRecurring(safeSettings.recurring, customCategories.map(category => category.id)),
     coins: normalizeCoins(safeSettings.coins),
     tescoVouchers: normalizeVoucherAmount(safeSettings.tescoVouchers),

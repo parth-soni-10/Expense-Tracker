@@ -35,7 +35,17 @@
  * app.js the same way `paintFigure` is and run against a fake `render`, so the
  * claim that a navigation renders once and arms nothing is checked, not assumed.
  *
- * The third is the chart popup wiring contract: the attributes the charts emit
+ * The third is the menu's motion budget. Every row used to spring in on its own,
+ * staggered through eight nth-child delays, on top of the level's slide: 19-21
+ * live animations and 285ms to settle on every open and every drill, measured.
+ * The rows arrive with the panel now and only the level's directional slide is
+ * left, so what is pinned is the absence of the per-row entrance and the presence
+ * of a 0.2s ceiling on every duration in the menu section — the felt latency is
+ * the thing that regresses quietly, one rule at a time. The same section carries
+ * the file's last backdrop-filter, now gone: a fixed masked band that re-samples
+ * the page behind it does that on every scrolled frame.
+ *
+ * The fourth is the chart popup wiring contract: the attributes the charts emit
  * have to be covered by a `wireChartTips` selector, or a mark is silently
  * unreadable. The trigger itself is tippy's and is not checkable here — a
  * headless bridge emits no hover at all — so this is the half that can be.
@@ -228,6 +238,43 @@ ok('and no keyframes are left named for an entry animation',
 // already there (the bulk bar, an empty state) still fade in.
 ok('screenIn is still there for the things that appear into a screen',
   /@keyframes screenIn/.test(css) && /\.bulk-bar \{ animation: screenIn/.test(css), true);
+
+// ---------- the menu's motion budget ----------
+// The menu was the slowest thing in the app and nobody had measured it. Every
+// row sprang in on its own (menuRowIn, staggered through eight nth-child delays
+// ramping to 0.125s) on top of the level's slide, so a menu open AND every drill
+// ran 19-21 live animations and took 285ms to come to rest — for 15 rows the user
+// had just asked to see. Measured at a phone viewport, before and after: it now
+// settles in 160ms with 6 animations, and the last thing moving is the trigger's
+// own burger-to-X morph, which is the tap's feedback. So the budget below is the
+// point: every duration in the menu section has to stay inside 0.2s or the felt
+// latency creeps back in one rule at a time.
+// Comments are stripped first, and that is not tidiness: the notes in
+// styles.css name what was removed (menuRowIn, the stagger, backdrop-filter), so
+// a search for those names finds the explanation of their absence and fails. The
+// assertions have to be about rules. The slice markers ARE comments, so the
+// slice comes off `css` and only then has its comments removed.
+const rulesOf = (text) => text.replace(/\/\*[\s\S]*?\*\//g, '');
+const cssRules = rulesOf(css);
+const menuSection = rulesOf(css.slice(css.indexOf('Animated drill-down menu'), css.indexOf('Visual polish')));
+ok('the menu section was found in styles.css', menuSection.length > 800, true);
+const menuDecls = [...menuSection.matchAll(/(?:^|[;{\s])(?:animation|animation-name|transition|animation-delay):([^;}]+)/g)].map(m => m[1]);
+const menuDurations = menuDecls.flatMap(v => [...v.matchAll(/(\d*\.?\d+)s(?![a-z])/g)].map(m => Number(m[1])));
+ok('and it declares motion durations at all', menuDurations.length >= 6, true);
+ok('every duration in the menu is inside a 0.2s budget', menuDurations.filter(d => d > 0.2), []);
+ok('the rows no longer animate in on their own', /menuRowIn|\.menu-level\.shown/.test(cssRules), false);
+ok('and nothing in the menu is staggered', /nth-child\(\d+\)\s*\{\s*animation-delay/.test(cssRules), false);
+ok('and app.js no longer arms a per-row entrance', /classList\.add\('shown'\)/.test(src), false);
+
+// The phone edge bands are decorative, and each one was a full-page backdrop
+// sample per scrolled frame — the same trade the sticky header and the modal
+// scrims already lost. The rule is now the whole file's: no element re-samples
+// the page behind it. The bands themselves stay; this removed their cost, not
+// the design.
+ok('no declaration anywhere re-samples the page behind an element',
+  /backdrop-filter\s*:/.test(cssRules), false);
+ok('and the phone edge treatment itself is still there',
+  /\.edge-blur-top span/.test(cssRules) && /\.edge-blur-bottom span/.test(cssRules), true);
 
 // ---------- the chart popup wiring contract ----------
 // A chart mark's popup is the only way to read it — a bar is a shape, not a table

@@ -10,8 +10,9 @@
                    mutationHistory.at > createdAt).
      * Settings  — scalar values (monthlyBudget, currency, coins)
                    come from the side with the later lastLocalChangeAt;
-                   additive collections (customCategories, recurring,
-                   balanceCheckpoints) are unioned.
+                   additive collections (customCategories, customMethods,
+                   recurring, balanceCheckpoints) are unioned, and
+                   methodHidden is per-key last-write-wins.
      * Deletions — tombstones in settings.deletedEntryIds. Any entry
                    whose id is tombstoned on EITHER side is dropped.
                    Unknown settings keys pass through both validators
@@ -151,6 +152,17 @@ function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresher) {
   return {
     ...newer,
     customCategories: unionById(older.customCategories, newer.customCategories),
+    // customMethods is additive for the same reason customCategories is — a
+    // method added on either device survives. Note what is NOT here: removing a
+    // method must not delete it from this list, because the union would pull it
+    // straight back from the other side. A removal is the methodHidden tombstone
+    // below, and it travels either way because it is per-key LWW.
+    customMethods: unionById(older.customMethods, newer.customMethods),
+    // Per-key LWW, and the direction matters: the fresher side spread LAST, so
+    // a key it dropped (a method restored to the pickers) beats the other
+    // side's `true`, while a `true` the fresher side still holds beats the
+    // other side's absence. Both removal and restore therefore sync.
+    methodHidden: { ...(older.methodHidden || {}), ...(newer.methodHidden || {}) },
     recurring: mergeRecurring(older.recurring, newer.recurring),
     balanceCheckpoints: mergeCheckpoints(localSettings.balanceCheckpoints, cloudSettings.balanceCheckpoints),
     coins: mergeCoins(localSettings.coins, cloudSettings.coins),

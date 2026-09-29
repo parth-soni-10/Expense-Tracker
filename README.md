@@ -13,6 +13,7 @@ A calm, private expense tracker that runs right in your browser. No app store, n
 - **Log expenses just by typing** — e.g. `lidl groceries 4.47 revolut`. The app works out the amount, category, and payment method for you.
 - **Keep a budget** — set a monthly target and see your spend, what's left, and a "safe to spend today" number at a glance.
 - **Track balances** — bank accounts (AIB, Revolut) and gift cards (Tesco, Lidl, Aldi), reconciled against your real statements.
+- **Use your own payment methods** — **☰ → Payment methods** lists every method the entry form offers (the bank accounts, the gift cards, cash) beside the ones you add yourself (*Credit Union*, *Apple Pay*, whatever you actually pay with). Add a name and it appears in every picker at once — the entry form, transfers, split payments, recurring bills and the History filter. **Delete** takes one out of the pickers (a built-in says **Hide**, because the balance screen reconciles against it); either way the records you already saved keep the method they were recorded with and the row moves under *Removed from the pickers* with **Restore**, so tidying the list up can never cost you history.
 - **Never miss a bill** — rent, subscriptions, and paydays as recurring reminders, with one-tap marking done.
 - **Undo anything** — every action can be undone, even after a reload.
 - **Take the tour** — a genuinely empty app offers a short guided walk through the tabs on first run (never sprung on someone who already has entries), and **☰ → Take the tour** opens it again whenever you like. The walkthrough library is fetched on the first tour, so it costs nothing until you ask for it.
@@ -116,6 +117,10 @@ Hand-written CSS, no framework, one emerald accent. The palette, the radii and t
 
 **Switching tabs is instant, and that is a measured property rather than a preference.** A route change renders the next screen and stops there: no screen entrance, no staggered cards, no view transition. It used to hand the change to the View Transitions API, which cost far more than its animation — a browser will not run the update callback until it has captured the old state, and capturing needs a compositor frame, so a document that cannot produce one waited out the whole 250ms fallback budget before drawing anything. On a non-compositing webview that was **~270ms per tab switch, ~250 of it the budget, against ~36ms** for the same navigation with no transition — before counting the 180/220ms cross-fade on the engines where it did work. `scripts/test-motion.mjs` pins the machinery's absence, so it cannot come back quietly.
 
+**The same rule was then applied to the menu, which nobody had measured.** Every row used to spring in on its own — eight staggered delays ramping to 0.125s — on top of the panel's slide, so opening the menu *and* every drill into a sub-level ran **19–21 live animations and took 285ms to come to rest**, for rows you had just asked to see. The rows now arrive with the panel, and the only motion left is the level's directional slide and the trigger's burger-to-X morph, which is the tap's own feedback. It settles in **160ms with 6 animations**. Every duration in that section is held under a 0.2s ceiling by the guard, so the latency cannot creep back one rule at a time.
+
+The animated backgrounds went the same way. The phone edge bands carried the last `backdrop-filter` in the stylesheet; a fixed, masked strip that re-samples the page behind it does that work on **every scrolled frame, for the whole length of the page**. The header, the modal scrims and the dark toggle had each already given theirs up for exactly this reason, so the bands now dissolve the edge with a tint and a mask — the same treatment the file described as its no-support fallback. There are no `backdrop-filter` declarations left anywhere, and that is pinned too.
+
 Charts can be **read**, not just looked at. Hover (or tap) a month on the *Month by month* bars for that month's spending and income together, a slice of the category donut for its share and its money, or one of the spend chart's coloured days for the date and the total. The month's whole column is the target, not the 10px bar.
 
 Headline figures **count when they change**: the month total, the running balance and the net-worth figure on the home screen tween from the value you last saw to the new one, and the last frame writes the formatted result — a total can never come to rest on an animation frame. A figure that has not changed does not move at all (every keystroke repaints the screen), and one you have never seen simply arrives rather than counting up from zero. You can see it by adding an entry and going back to the home screen.
@@ -132,12 +137,13 @@ node scripts/check-netlify-config.mjs  # netlify.toml's shape, its scheduled fun
 node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
 node scripts/check-image-hygiene.mjs   # the roster photo can never be persisted
 node scripts/check-csp-hashes.mjs      # every inline boot script is hashed in the CSP
-node scripts/check-freshness.mjs       # every app asset revalidates; no 404 rule can hit an app file
+node scripts/check-freshness.mjs       # a deploy reaches the device: every asset revalidates, the worker is network-first, and the build baseline a redeploy is detected against lives in Cache Storage rather than in the worker's own memory
 node scripts/check-icon-refs.mjs       # every icon lookup resolves (a miss renders an empty element, silently)
 node scripts/check-boot-payload.mjs    # what the app parses before first paint stays the shell + the pay arithmetic; every lazy import() resolves
 node scripts/check-a11y.mjs            # the a11y harness still covers every route, menu level and menu modal; no icon-only nav control is unnamed
+node scripts/check-mobile-layout.mjs   # a stat value reaches its card formatted and sized for its own length; the card and the value cannot spill it; six dock tabs compress instead of hanging off the screen
 
-node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or resurrect data
+node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or resurrect data (including the payment methods you own)
 node scripts/test-profiles.mjs         # profiles stay isolated, and their cloud credentials never fall back
 node scripts/test-tesco.mjs            # the pay/tax engine still matches the workbook's figures
 node scripts/test-sync.mjs             # the sync contract still round-trips all state
