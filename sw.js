@@ -47,7 +47,6 @@ const SHELL = [
   // here: 6 MB of wasm + traineddata, fetched on the first scan — a cold offline
   // scan cannot work regardless, so precaching it would cost every user.
   '/ocr-pixels.js',
-  '/tour.js',
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',

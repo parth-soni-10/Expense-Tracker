@@ -13,7 +13,6 @@ import { getReminderSettings, patchReminderSettings, startReminderScheduler, onR
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
 import { monthSummary, TESCO_RATE_DEFAULTS, weekStartOf, shiftPay, r2, isoLocal } from './tesco-pay.js';
-import { startTour } from './tour.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
@@ -497,7 +496,6 @@ function completeUnlock() {
   startInitSync();
   offerPersistedUndo();
   flushNotices();
-  maybeStartFirstRunTour();
   if (pendingSetupLinkToast) {
     toast(pendingSetupLinkToast);
     pendingSetupLinkToast = null;
@@ -1192,6 +1190,10 @@ function showProfilePicker({ cancellable = false } = {}) {
     } }, 'Manage users') : null,
   );
   const bg = $('div', { class: 'modal-bg profile-picker-bg', style: 'z-index:10002;background:rgba(0,0,0,.82);' }, card);
+  // A picker that cannot be cancelled is not something the back gesture may
+  // dismiss: the owner still has to choose. Opting out means it never gets a
+  // history entry, so back keeps its ordinary meaning here.
+  if (!cancellable) bg.dataset.noBack = 'true';
   if (cancellable) {
     bg.addEventListener('click', ev => { if (ev.target === bg) close(); });
     document.addEventListener('keydown', onKey, true);
@@ -1457,36 +1459,135 @@ function stackModal(bg) {
   document.body.appendChild(bg);
 }
 
-// ---------- the tour (driver.js) ----------
-// Offered from the menu at any time, and started once on an app that is genuinely
-// empty — never sprung on someone who already has a year of entries, which is why
-// `tourSeen` is written when it ends rather than when it is offered. The steps (and
-// the reason they are anchored on the nav) are tour.js's own; this is only the
-// wiring, and a tour that cannot be loaded says so instead of doing nothing.
-function markTourSeen() {
-  if (state.settings.tourSeen) return;
-  state.settings.tourSeen = true;
-  persist();
+/* ── Android's back gesture closes a sheet ──
+   Every sheet here is a `.modal-bg` (nineteen call sites) or the menu's
+   `.menu-backdrop`, and each one owns its own `close()` closure. Rather than
+   thread a history hook through twenty call sites, ONE observer watches the
+   body for a sheet appearing and pushes a history entry for it — the same
+   shape as wireModalFocusTrap() below, and for the same reason: a sheet added
+   later is covered without anyone remembering to ask.
+
+   A popstate then closes the top one through the convention every sheet
+   already implements — Escape (each modal guards it with isTopModal, so only
+   the topmost answers) with a click on the backdrop as the fallback — so back
+   does exactly what Escape does, and the new behaviour cannot drift from the
+   old one.
+
+   Four rules, each a way this goes wrong:
+   1. The lock is never closable by back. `.pin-lock-bg` is a `.modal-bg` like
+      any other, and honouring back there would let a stray press dismiss the
+      lock screen.
+   2. Onboarding is exempt too: a stray press mid-setup must not walk the user
+      out of a half-filled first run (it has a visible Skip button for that).
+   3. A sheet can opt out with `data-no-back`, and then it pushes no entry at
+      all, so back keeps exactly its old meaning. The profile picker sets it
+      when it is not cancellable — an owner who must choose an account cannot
+      press their way out of it.
+   4. A sheet that closes ITSELF (Save, Cancel, a backdrop tap) gives its entry
+      back, and only when that entry is still the top of the stack. The
+      deferral to a later task is what makes that check meaningful: the menu's
+      own rows close it AND navigate, so by the time the task runs the browser
+      has pushed the navigation entry and ours is no longer on top — popping
+      then would undo the navigation the user just asked for.
+
+   The known limit: an entry left under such a navigation is still on the
+   stack, so the FIRST back press is spent dismissing it (it pops to a URL that
+   is already the current one, so nothing visible happens) and the second
+   leaves the app. */
+const BACK_SURFACE_SELECTOR = '.modal-bg, .menu-backdrop';
+function backExempt(el) {
+  return el.classList.contains('pin-lock-bg')
+    || el.classList.contains('onboarding-bg')
+    || el.dataset.noBack === 'true';
 }
-async function startAppTour() {
-  const result = await startTour({
-    routes: ROUTES.filter(tabVisible),
-    loadVendor,
-    onEnd: () => markTourSeen(),
-  });
-  if (result === 'unavailable') toast('The tour could not be loaded.');
-  return result;
+/** Sheets that own a history entry, in DOM order — the last is the topmost. */
+const backSurfaces = () => [...document.querySelectorAll(`${BACK_SURFACE_SELECTOR}[data-back-entry]`)];
+let backDepth = 0; // our entries currently on the history stack
+let backMine = 0;  // pops this file caused itself, to be ignored
+
+function pushBackEntry(el) {
+  el.dataset.backEntry = '1';
+  backDepth++;
+  try { history.pushState({ centsSurface: true }, ''); }
+  catch { backDepth--; delete el.dataset.backEntry; } // no history API: no gesture
 }
-// Only for a first run: nothing logged, nothing booked, no checkpoint — the app the
-// onboarding overlay has just finished introducing.
-function maybeStartFirstRunTour() {
-  if (state.settings.tourSeen || !pinUnlocked || needsOnboarding()) return;
-  if (state.entries.length || (state.tesco && state.tesco.shifts || []).length) return;
-  const points = Object.values(state.settings.balanceCheckpoints || {});
-  if (points.some(p => Array.isArray(p) && p.length)) return;
-  // Behind the boot paint, not in front of it: the dashboard's own entrance is the
-  // thing the first step is describing.
-  setTimeout(() => { startAppTour(); }, 450);
+
+/** Close the topmost sheet the way a person would. Both exits are the sheet's
+ *  own, so nothing here needs to know how any particular sheet shuts. */
+function closeTopBackSurface() {
+  const top = backSurfaces().pop();
+  if (!top) return false;
+  top.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  if (top.isConnected) top.click(); // the backdrop's own onClick
+  return true;
+}
+
+/** Give a self-closed sheet's entry back — but only if it is still on top, and
+ *  on a later task, because the same click may have navigated (see rule 4). */
+function returnBackEntry() {
+  setTimeout(() => {
+    if (backDepth <= 0 || !history.state?.centsSurface) return;
+    backDepth--;
+    backMine++;
+    history.back();
+  }, 0);
+}
+
+function wireBackGesture() {
+  new MutationObserver(records => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (!(node instanceof Element)) continue;
+        for (const el of [node, ...node.querySelectorAll(BACK_SURFACE_SELECTOR)]) {
+          if (!el.matches?.(BACK_SURFACE_SELECTOR) || backExempt(el) || el.dataset.backEntry) continue;
+          pushBackEntry(el);
+        }
+      }
+      for (const node of record.removedNodes) {
+        if (!(node instanceof Element)) continue;
+        // A sheet can be removed as part of a larger subtree, so every entry it
+        // held has to be given back — one return per marked element, not per
+        // removed node.
+        if (node.dataset.backEntry) returnBackEntry();
+        for (let i = node.querySelectorAll('[data-back-entry]').length; i > 0; i--) returnBackEntry();
+      }
+    }
+  }).observe(document.body, { childList: true });
+  // A sheet already open when this is installed (the onboarding overlay mounts
+  // during boot) still owns its entry.
+  for (const el of document.querySelectorAll(BACK_SURFACE_SELECTOR)) {
+    if (!backExempt(el) && !el.dataset.backEntry) pushBackEntry(el);
+  }
+}
+
+window.addEventListener('popstate', () => {
+  if (backMine > 0) { backMine--; return; }
+  if (backDepth <= 0) return;
+  backDepth--;
+  if (!closeTopBackSurface()) backDepth++; // nothing to close: not our press to spend
+});
+
+/* ── text shared into the app from the share sheet ──
+   manifest.json registers a share_target, so another app's Share → cents.
+   arrives as a query on this URL (?title=…&text=…&url=…), ahead of the #add
+   fragment the target names. It is PUT IN the Magic entry, never saved: the
+   text is whatever the other app chose to send ("€18.50 at Tesco 12/09"), and
+   the parser plus its live preview is what turns that into an entry the user
+   can read and confirm first. Consumed once, in the Add screen, because the
+   app may still be locked when it arrives — the screen does not exist until it
+   is unlocked — and because a reload must not prefill it a second time. */
+let pendingShare = null;
+function readSharedText() {
+  let text = '';
+  try {
+    const params = new URLSearchParams(location.search);
+    text = ['title', 'text', 'url'].map(key => params.get(key)).filter(Boolean).join(' ').trim();
+  } catch { /* no URL API: nothing was shared */ }
+  if (!text) return;
+  pendingShare = text;
+  // The query is not part of this app's address — dropping it is what stops a
+  // reload prefilling the same share again.
+  try { history.replaceState(history.state, '', location.pathname + location.hash); } catch {}
 }
 
 // ---------- modal focus trap (focus-trap + tabbable) ----------
@@ -5078,9 +5179,6 @@ function buildMenuLevel(id) {
     // other way in, and it is behind the lock.
     list.append(menuRowEl({ icon: 'photo', label: 'Profile picture', onClick: () => { closeAppMenu(); openAvatarPicker(activeProfile()); } }));
     list.append(menuRowEl({ icon: 'clock', label: 'Daily reminder', onClick: () => { closeAppMenu(); openReminderSettings(); } }));
-    // The tour is a row rather than a first-run-only event: it is the cheapest way
-    // to see what a tab is for, and the one place a hidden tab is explained.
-    list.append(menuRowEl({ icon: 'sparkle', label: 'Take the tour', onClick: () => { closeAppMenu(); startAppTour(); } }));
     list.append(menuRowEl({ icon: 'appearance', label: 'Appearance', chevron: true, onClick: () => menuDrill('appearance') }));
     list.append(menuRowEl({ icon: 'lock', label: 'Privacy & security', chevron: true, onClick: () => menuDrill('privacy') }));
     list.append(menuRowEl({ icon: 'cloud', label: 'Cloud sync', chevron: true, onClick: () => menuDrill('sync') }));
@@ -6901,6 +6999,19 @@ function screenAdd() {
       magicInput.focus();
     } }, ex.label)),
   );
+  // A line shared into the app (share_target) lands here, once: the screen may
+  // not have existed when it arrived (the app can be locked at that point), and
+  // `pendingShare` is cleared as it is consumed so no re-render can prefill it
+  // twice. Nothing is stored — the preview names what the line will become and
+  // the user still presses Add.
+  if (pendingShare) {
+    const shared = pendingShare;
+    pendingShare = null;
+    magicInput.value = shared;
+    renderMagicPreview(shared);
+    queueMicrotask(() => { if (magicInput.isConnected) magicInput.focus(); });
+    toast('Shared into the quick entry — check the preview, then Add.');
+  }
   // Every entry that leaves this screen goes through here, so adding is
   // undoable like any other write: the slot removes exactly the legs that were
   // just created and tombstones them, so a later cloud merge can't restore
@@ -9317,6 +9428,12 @@ window.addEventListener('DOMContentLoaded', () => {
   // syncModalFocusTrap) — installed at boot rather than by each modal, so a modal
   // added later is trapped without remembering to ask.
   wireModalFocusTrap();
+  // Android's back gesture closes the top sheet, and a line shared into the app
+  // is handed to the Add screen. Both are installed here rather than by the
+  // sheets themselves, for the reason the focus trap is: a surface added later
+  // is covered without anyone remembering to ask.
+  wireBackGesture();
+  readSharedText();
   // Ask the browser to keep this origin's storage. A no-op once granted (and
   // silent when the browser has no such API): the ledger is the whole of the
   // app's data, so "best-effort" storage is the one thing worth asking for.
@@ -9411,9 +9528,6 @@ window.addEventListener('DOMContentLoaded', () => {
   }
   showProfileGate();
   render();
-  // A brand-new app gets the tour once, after the dashboard has drawn (the overlay
-  // paths above guard themselves).
-  maybeStartFirstRunTour();
   // Anything the storage layer could not do (an unreadable document) is
   // reported once the UI is up; raiseNotice defers it behind any overlay.
   const storageNotice = takeStorageNotice();
@@ -9424,7 +9538,6 @@ window.addEventListener('DOMContentLoaded', () => {
 // Expose tiny global for DevTools tinkering
 window.__cents = {
   resetToBlank, render, toast,
-  startTour: startAppTour,
   initSync, scheduleSyncPush, doAutoPush,
   renderSyncIndicator, openSyncSettings,
   syncPull, syncPush,

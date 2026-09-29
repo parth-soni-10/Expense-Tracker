@@ -102,12 +102,10 @@ if (!menuBlock) fail('app.js no longer has buildMenuLevel() — the harness\'s M
 const openers = new Set(menuBlock ? [...menuBlock[1].matchAll(/\b((?:open|show|start)[A-Z][\w$]*)\s*\(/g)].map(m => m[1]) : []);
 // Not audited, and each for a reason this file states rather than assumes:
 //   openRestorePicker  — the OS file dialog, which a page cannot see or dismiss;
-//   startAppTour       — driver.js popovers live on <body>, outside every scope
-//                        a11y-harness.html reads;
 //   showProfilePicker  — the menu row and the header chip that open it exist only
 //                        when the device holds more than one profile, so a step
 //                        for it would report "skipped" on every ordinary run.
-const UNAUDITABLE = new Set(['openRestorePicker', 'startAppTour', 'showProfilePicker']);
+const UNAUDITABLE = new Set(['openRestorePicker', 'showProfilePicker']);
 const declared = new Set([...harness.matchAll(/const MODAL_OPENERS = \[([\s\S]*?)\];/g)]
   .flatMap(m => [...m[1].matchAll(/'([^']+)'/g)].map(x => x[1])));
 if (!declared.size) fail(`${HARNESS}: no MODAL_OPENERS list — this guard reads which menu modals are audited from it.`);

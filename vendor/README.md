@@ -18,8 +18,6 @@ falls back to native behaviour.
 | `fuse.min.js`           | Fuse.js (fuzzy search) | 6.6.2 | Apache-2.0 | https://github.com/krisk/Fuse                |
 | `tabbable.umd.min.js`   | tabbable         | 6.5.0     | MIT     | https://github.com/focus-trap/tabbable                    |
 | `focus-trap.umd.min.js` | focus-trap       | 8.2.2     | MIT     | https://github.com/focus-trap/focus-trap                  |
-| `driver.js.iife.js`     | driver.js (product tour) | 1.8.0 | MIT | https://github.com/kamranahmedse/driver.js              |
-| `driver.css`            | driver.js styles | 1.8.0     | MIT     | https://github.com/kamranahmedse/driver.js                |
 | `xlsx.mini.min.js`      | SheetJS (workbook import) | 0.18.5 | Apache-2.0 | https://git.sheetjs.com/sheetjs/sheetjs           |
 
 ### `tesseract/` — roster OCR (Tesco Pay tab)
@@ -63,13 +61,12 @@ the streaming compiler requires — a mislabelled response is rejected outright.
 `index.html` loads **only `sweetalert2.min.js`** eagerly (confirm dialogs are
 used by every destructive action). Everything else — flatpickr (+ its CSS),
 tippy + Popper, SortableJS, canvas-confetti, anime.js, Fuse, tabbable +
-focus-trap, driver.js (+ its CSS, themed in `styles.css`) and SheetJS — is
-**fetched lazily on first use** by `loadVendor()` in `app.js`, so the initial
-page load downloads ~200KB less JavaScript. `vendor/*` files still ship with
-the site; they're just requested on demand (e.g. the first time a date field is
-opened, the heatmap renders, a category chip list is shown, confetti fires, the
-insights donut animates, a search field is typed in, a modal opens for the first
-time, the tour is started on the Tesco tab, or a workbook is imported).
+focus-trap and SheetJS — is **fetched lazily on first use** by `loadVendor()` in
+`app.js`, so the initial page load downloads ~200KB less JavaScript. `vendor/*`
+files still ship with the site; they're just requested on demand (e.g. the first
+time a date field is opened, the heatmap renders, a category chip list is shown,
+confetti fires, the insights donut animates, a search field is typed in, a modal
+opens for the first time, or a workbook is imported).
 
 `xlsx.mini.min.js` is the **mini** build on purpose: it reads `.xlsx`/`.xlsm`
 and skips the writers, the codepage tables and the legacy `.xls` (BIFF) reader,

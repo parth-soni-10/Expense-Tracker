@@ -140,6 +140,14 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); -webkit-font-smoothing: antialiased; }
 html, body { transition: none; }
+/* The page's own scroll is the only scroll. Without this, the installed app is
+   a web page in two visible ways: a pull down at the top of a screen fires
+   Chrome's pull-to-refresh (reloading the app mid-scroll, which no native app
+   does), and a two-finger horizontal swipe starts a history navigation that
+   competes with the cards' own swipe-to-dismiss. `none` on both axes turns off
+   overscroll *chaining* only — in-page scrolling, rubber-banding inside a
+   scrollable sheet and every touch handler the app binds are untouched. */
+html, body { overscroll-behavior: none; }
 /* Mobile tap feel: no grey highlight flash on tap, no double-tap zoom delay,
    and no text-selection flash when hammering buttons quickly. */
 html { -webkit-tap-highlight-color: transparent; }
@@ -2465,46 +2473,3 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
   /* Stacked full-width rows are the primary touch target on a phone. */
   .profile-row .profile-row-actions .btn { flex: 1; min-height: 44px; }
 }
-
-
-/* ---------- driver.js (the tour) ----------
-   Vendored theme notes: driver.css is written light — #fff popover, #2d2d2d text,
-   #ccc borders, a white arrow — with no prefers-color-scheme block, so in a dark
-   theme it lands as a white card over a dark app. Every rule below is prefixed with
-   `html` on purpose: loadVendor appends the vendor stylesheet to <head> AFTER this
-   one, so at equal specificity (`.driver-popover`) the vendor would win. Colours come
-   from the app's own tokens, which flip with the theme, so there is one override set
-   rather than two.
-   The arrow's transparent sides are re-stated because the base rule below sets all
-   four border colours at a higher specificity than driver.css's per-side rules. */
-html .driver-popover {
-  background: var(--card);
-  color: var(--ink);
-  font-family: inherit;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-xl);
-  max-width: 330px;
-}
-html .driver-popover-title { font-size: 15px; font-weight: 600; line-height: 1.35; }
-html .driver-popover-description { font-size: 13px; line-height: 1.55; color: var(--muted); }
-html .driver-popover-close-btn { color: var(--muted); }
-html .driver-popover-close-btn:hover,
-html .driver-popover-close-btn:focus { color: var(--ink); }
-html .driver-popover-progress-text { color: var(--muted); font-size: 11px; }
-html .driver-popover-footer-btn {
-  background: transparent;
-  color: var(--ink);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  font-family: inherit;
-  font-size: 12px;
-  padding: 5px 11px;
-}
-html .driver-popover-footer-btn:hover,
-html .driver-popover-footer-btn:focus { background: var(--bg); }
-html .driver-popover-arrow { border-color: var(--card); }
-html .driver-popover-arrow-side-left { border-top-color: transparent; border-bottom-color: transparent; border-right-color: transparent; }
-html .driver-popover-arrow-side-right { border-top-color: transparent; border-bottom-color: transparent; border-left-color: transparent; }
-html .driver-popover-arrow-side-top { border-bottom-color: transparent; border-left-color: transparent; border-right-color: transparent; }
-html .driver-popover-arrow-side-bottom { border-top-color: transparent; border-left-color: transparent; border-right-color: transparent; }

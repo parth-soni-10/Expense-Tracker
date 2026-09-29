@@ -116,8 +116,15 @@ const rootDir = fileURLToPath(root);
   for (const name of readdirSync(dir)) {
     // Dotfiles and dot-directories (.git, .github, .gitignore, .env, .DS_Store)
     // are never served by the CDN, so they need no rule of their own; the live
-    // site 404s them.
-    if (name.startsWith('.')) continue;
+    // site 404s them — with ONE exception, because the blanket claim above was
+    // simply wrong about it. /.well-known/ is a standard, publicly served path:
+    // Digital Asset Links for an installable app package lives there and
+    // nowhere else. So it is walked like any other directory, and a file in it
+    // is held to the same standard as the rest of the deploy — which is what
+    // stops the one file whose absence fails *silently* (an unverified app
+    // opens in a browser tab with a URL bar, instead of as the installed app)
+    // from being served with the wrong content type or a week-long cache.
+    if (name.startsWith('.') && name !== '.well-known') continue;
     const full = join(dir, name);
     if (statSync(full).isDirectory()) { walk(full); continue; }
     const rel = relative(rootDir, full).split(sep).join('/');

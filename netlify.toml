@@ -9,7 +9,7 @@
 
 [build]
   publish = "."
-  # Sixteen guardrails, all pure-Node and fast:
+  # Eighteen guardrails, all pure-Node and fast:
   #   check-netlify-config — THIS file is shaped the way Netlify's schema
   #                          requires (see the note on the scheduled function
   #                          below), every scheduled function it names exists,
@@ -33,6 +33,14 @@
   #                         reads (`$` drops a non-string `innerHTML` in silence,
   #                         so a miss renders an empty element, not an error:
   #                         the header's admin circle shipped blank that way)
+  #   check-app-shell     — an installed copy behaves like an app rather than a
+  #                         page in a window: the manifest identifies it and
+  #                         every icon/screenshot it names is really there at
+  #                         the size it claims, a launcher shortcut and the
+  #                         share target point at routes the router still has
+  #                         (checked against seed.js's own TABS), Android's back
+  #                         gesture closes the top sheet without ever dismissing
+  #                         the lock, and the page cannot be pull-to-refreshed
   #   check-a11y          — the accessibility audit is a browser page
   #                         (a11y-harness.html), so this is what stops it doing
   #                         nothing: every route/menu level/menu modal must still
@@ -67,13 +75,12 @@
   #                         CSS for either cannot come back); every chart mark is
   #                         covered by a tooltip (app.js's browser-free surface,
   #                         lifted out of the file's own text)
-  #   test-ui-libs        — the four vendored UI libraries (Fuse, focus-trap +
-  #                         tabbable, driver.js, SheetJS) still do what the app
-  #                         assumes: the search RANKS through the vendored Fuse
-  #                         itself, the field stays live without it, the focus
-  #                         trap keeps its load order and its Escape rules, the
-  #                         tour stages lazily on the live nav, and every
-  #                         vendor/ path the code names resolves on disk
+  #   test-ui-libs        — the three vendored UI libraries (Fuse, focus-trap +
+  #                         tabbable, SheetJS) still do what the app assumes: the
+  #                         search RANKS through the vendored Fuse itself, the
+  #                         field stays live without it, the focus trap keeps its
+  #                         load order and its Escape rules, and every vendor/
+  #                         path the code names resolves on disk
   #   check-mobile-layout — a figure cannot leave the box it is drawn in: a stat
   #                         card's value arrives already formatted and at a size
   #                         its own length chose, the card and the value can
@@ -81,7 +88,7 @@
   #                         six dock tabs compress instead of hanging off the
   #                         screen edge (the failure found on the Insights
   #                         screen at a phone width)
-  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/check-icon-refs.mjs && node scripts/check-boot-payload.mjs && node scripts/check-a11y.mjs && node scripts/check-mobile-layout.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-cloud.mjs && node scripts/test-reminder-push.mjs && node scripts/test-motion.mjs && node scripts/test-ui-libs.mjs"
+  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/check-icon-refs.mjs && node scripts/check-boot-payload.mjs && node scripts/check-app-shell.mjs && node scripts/check-a11y.mjs && node scripts/check-mobile-layout.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-cloud.mjs && node scripts/test-reminder-push.mjs && node scripts/test-motion.mjs && node scripts/test-ui-libs.mjs"
 
   # Pin the build runtime. scripts/test-tesco.mjs imports tesco.js — a plain
   # .js browser module, and this repo has no package.json (no-build model), so
@@ -235,6 +242,25 @@
   for = "/"
   [headers.values]
     Content-Type = "text/html; charset=utf-8"
+    Cache-Control = "no-cache, must-revalidate"
+    X-Content-Type-Options = "nosniff"
+
+# /.well-known/ is the one dot-directory a CDN does serve, and it is the only
+# place a Digital Asset Links file can live. Rule and comment both exist now
+# because the file does not (yet): shipping an app package needs an
+# assetlinks.json at this exact path, and the failure without one is silent —
+# an unverified app opens as a plain browser tab with a URL bar instead of as
+# the installed app, which reads as a bug rather than a missing file. The
+# content type is not optional (Google's verifier rejects a file served as
+# text/plain), and revalidating rather than caching means a corrected signing
+# fingerprint takes effect on the next fetch instead of on the next day — the
+# same reason every other asset here revalidates. check-freshness.mjs now walks
+# this directory instead of skipping every dot-entry, so a file dropped in here
+# is held to that rule rather than to the platform default.
+[[headers]]
+  for = "/.well-known/*"
+  [headers.values]
+    Content-Type = "application/json; charset=utf-8"
     Cache-Control = "no-cache, must-revalidate"
     X-Content-Type-Options = "nosniff"
 

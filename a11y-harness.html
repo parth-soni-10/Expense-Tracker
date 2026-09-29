@@ -273,11 +273,9 @@ async function go(route) {
    scripts/check-a11y.mjs reads this list and asserts it against the openers in
    app.js's buildMenuLevel(): a new menu item that opens a modal has to be added
    here AND given a step below, so a surface cannot ship unaudited.
-   Three openers are deliberately not here, and the guard knows why:
+   Two openers are deliberately not here, and the guard knows why:
      · openRestorePicker — it opens the OS file dialog, which this page cannot
        see or dismiss;
-     · startAppTour — driver.js appends its popovers to <body>, outside every
-       scope read below, so there is nothing here for this page to audit;
      · showProfilePicker — the menu row and the header chip that reach it are
        both rendered only when the device holds more than one profile, so a
        step for it would report "skipped" on every ordinary run. A skip has to

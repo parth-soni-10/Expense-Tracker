@@ -42,18 +42,20 @@ const BOOT_MODULES = [
   '/sync-merge.js',
   '/profiles.js',
   '/reminders.js',
-  '/tour.js',
   '/tesco-pay.js',
 ];
 // Modules that must NOT be in the boot closure: the ones the lazy paths own.
 const DEFERRED_MODULES = ['/tesco.js', '/ocr-pixels.js', '/ocr-prep-worker.js'];
 
 // Decoded JS parsed before the first paint, with headroom for growth (~4 %).
-// Measured today: 649 KB — app.js 508 KB + storage/sync/profiles/reminders/tour
-// and the small ones + tesco-pay.js 22 KB + csv.js 3 KB. The number to watch is not the
-// ceiling, it is the shape: this should stay "the shell and arithmetic", with
-// every screen and every library behind import().
-const BOOT_JS_BUDGET = 675 * 1024;
+// Measured today: 663 KB — app.js 525 KB (the back-gesture wiring and the
+// share-target reader, both of which must be installed at boot to cover a sheet
+// that opens later) + storage/sync/profiles/reminders and the small ones +
+// tesco-pay.js 22 KB + csv.js 3 KB. The number to watch is not the ceiling, it
+// is the shape: this should stay "the shell and arithmetic", with every screen
+// and every library behind import() — and ~4 % is the whole of the allowance, so
+// a new eager import (240 KB for tesco.js) still fails loudly.
+const BOOT_JS_BUDGET = 690 * 1024;
 
 /** Every static dependency of a module's own text: `import … from 'x'`,
  *  `import 'x'` and `export … from 'x'` (a re-export loads the module just as

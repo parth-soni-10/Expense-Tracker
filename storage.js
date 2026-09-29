@@ -625,10 +625,12 @@ export function validateState(s) {
     tescoRates: normalizeTescoRates(safeSettings.tescoRates),
     tescoWeekNos: normalizeWeekNos(safeSettings.tescoWeekNos),
     enabledTabs: normalizeEnabledTabs(safeSettings.enabledTabs),
-    // Booleans are stored as booleans; a document that never had this key is false
-    // (a fresh app has not offered the tour yet).
-    tourSeen: safeSettings.tourSeen === true,
   };
+  // `tourSeen` was the walkthrough's flag. The tour is gone, so the key is shed
+  // rather than carried as a dead setting that would sync between devices forever
+  // (the spread above copies unknown keys through, so this delete is the only
+  // thing that removes one an older build wrote).
+  delete out.settings.tourSeen;
   out.tesco = normalizeTesco(s.tesco);
   out.schemaVersion = 2;
   return out;

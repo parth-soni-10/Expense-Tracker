@@ -1,15 +1,74 @@
 {
-  "name": "cents.",
+  "id": "/",
+  "name": "cents. — expense tracker",
   "short_name": "cents.",
-  "gcm_sender_id": "103953800507",
+  "description": "A local-first expense tracker. Log spending by typing it, track balances, budgets and gift cards, and read Tesco payslips from a photo of the roster. Your ledger lives on your device.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "portrait",
   "background_color": "#101210",
   "theme_color": "#101210",
+  "categories": ["finance", "productivity", "utilities"],
+  "launch_handler": { "client_mode": "navigate-existing" },
+  "gcm_sender_id": "103953800507",
+  "dir": "ltr",
+  "lang": "en",
+  "prefer_related_applications": false,
   "icons": [
     { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
     { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
-  ]
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshots/dashboard-desktop.png",
+      "sizes": "1424x805",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "The dashboard: this month's spend, budget left, and the Tesco line"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Add an entry",
+      "short_name": "Add",
+      "description": "Log a spend or income without opening the dashboard",
+      "url": "/#add",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "History",
+      "short_name": "History",
+      "description": "Search and edit what you have logged",
+      "url": "/#history",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Tesco Pay",
+      "short_name": "Tesco",
+      "description": "Shifts, payslips and the roster photo reader",
+      "url": "/#tesco",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Insights",
+      "short_name": "Insights",
+      "description": "Where the money actually went",
+      "url": "/#insights",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ],
+  "share_target": {
+    "action": "/#add",
+    "method": "GET",
+    "enctype": "application/x-www-form-urlencoded",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  }
 }
