@@ -34,7 +34,59 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
-// ---------- fake push service (decrypts like a real one) ----------
+// ---------- verifying the VAPID JWT, the way a push service does ----------
+// The harness used to record the Authorization header and assert the `k` inside
+// it, and nothing more — so the SIGNATURE was never checked anywhere, and a JWS
+// assembled from DER's own integer bytes (63/65/66 bytes instead of ES256's
+// fixed 64) travelled this whole suite as a success while every real push
+// service rejected it. That shipped: a phone that showed nothing, for a push the
+// app called sent. This is the check that closes the blind spot, and the fake
+// service below applies it to EVERY request it receives.
+const b64u = (s) => Buffer.from(s, 'base64url');
+
+/** DER SEQUENCE of two INTEGERs, from a raw r || s signature (to re-verify). */
+function rawToDer(raw) {
+  const int = (buf) => {
+    let b = buf;
+    while (b.length > 1 && b[0] === 0) b = b.subarray(1);
+    if (b[0] & 0x80) b = Buffer.concat([Buffer.from([0]), b]);
+    return Buffer.concat([Buffer.from([0x02, b.length]), b]);
+  };
+  const body = Buffer.concat([int(raw.subarray(0, 32)), int(raw.subarray(32, 64))]);
+  return Buffer.concat([Buffer.from([0x30, body.length]), body]);
+}
+
+/** Why this Authorization header is not good enough for this audience, or null.
+ *  Every reason is one a push service would refuse on. */
+function vapidFailure(auth, audience) {
+  const m = /^vapid t=([^,]+),\s*k=(.+)$/.exec(String(auth || ''));
+  if (!m) return `authorization is not "vapid t=…, k=…": ${auth}`;
+  const [, token, k] = m;
+  const [h, c, s] = token.split('.');
+  if (!h || !c || !s) return `JWT has ${token.split('.').length} parts`;
+  let header; let claims; let sig;
+  try {
+    header = JSON.parse(b64u(h).toString('utf8'));
+    claims = JSON.parse(b64u(c).toString('utf8'));
+    sig = b64u(s);
+  } catch (e) { return `JWT is not decodable: ${e.message}`; }
+  if (header.alg !== 'ES256') return `alg=${header.alg}`;
+  const point = b64u(k);
+  if (point.length !== 65 || point[0] !== 4) return `k is ${point.length} bytes`;
+  // The one that shipped: ES256 is r || s, 32 bytes each, always.
+  if (sig.length !== 64) return `signature is ${sig.length} bytes, not 64 (r and s must each be 32)`;
+  const pub = crypto.createPublicKey({
+    key: { kty: 'EC', crv: 'P-256', x: point.subarray(1, 33).toString('base64url'), y: point.subarray(33, 65).toString('base64url') },
+    format: 'jwk',
+  });
+  if (!crypto.createVerify('SHA256').update(`${h}.${c}`).verify(pub, rawToDer(sig))) return 'signature does not verify';
+  if (claims.aud !== audience) return `aud=${claims.aud}, want ${audience}`;
+  if (!(claims.exp > Math.floor(Date.now() / 1000))) return `exp=${claims.exp} is in the past`;
+  if (typeof claims.sub !== 'string' || !/^(mailto:|https:)/.test(claims.sub)) return `sub=${claims.sub}`;
+  return null;
+}
+
+// ---------- fake push service (verifies + decrypts like a real one) ----------
 const ua = crypto.createECDH('prime256v1');
 ua.generateKeys();
 const AUTH = crypto.randomBytes(16);
@@ -50,6 +102,11 @@ const fakePushServer = http.createServer((req, res) => {
   req.on('data', c => chunks.push(c));
   req.on('end', () => {
     lastAuth = req.headers.authorization || null;
+    // Authentication comes first, as it does on a real service: a request whose
+    // VAPID JWT does not hold up never reaches the endpoint's own state, so a
+    // broken signature shows up as a 401 and a delivery the suite does not see.
+    const badAuth = vapidFailure(lastAuth, `http://${req.headers.host}`);
+    if (badAuth) { res.writeHead(401, { 'Content-Type': 'text/plain' }); res.end(badAuth); return; }
     if (!endpointAlive) { res.writeHead(410); res.end(); return; }
     try {
       const body = Buffer.concat(chunks);
@@ -137,6 +194,24 @@ const text = (r) => r.text();
 const results = {};
 const check = (name, pass) => { results[name] = !!pass; if (!pass) console.log(`  ✗ ${name}`); };
 
+// ---------- 0e. every signature is a well-formed ES256 JWS ----------
+// A single signature proves nothing here, which is how the bug below shipped:
+// DER's INTEGER encoding drops a leading zero byte or adds a sign byte about
+// three times in four, so copying those bytes into the JWS produces a
+// 63/65/66-byte signature MOST of the time and a valid-looking one the rest —
+// a one-shot check would pass a quarter of the time and, worse, the suite had
+// no check at all. Twenty-four signings, each verified by the fake service as a
+// real one verifies it, make a miss a 4 × 10^-15 coincidence.
+let signedOk = 0;
+for (let i = 0; i < 24; i += 1) {
+  const r = await pushSend(subscription, { title: 'signature batch', body: 'b', tag: `batch-${i}` }, {
+    subject: 'mailto:test@example.com', publicKey: keys.publicKey, privateKey: keys.privateKey,
+  });
+  if (r.ok) signedOk += 1;
+}
+check('every VAPID signature is a 64-byte ES256 JWS a push service accepts', signedOk === 24, `${signedOk}/24 accepted`);
+received.length = 0;
+
 // ---------- 0. RFC 8291 section 5 / appendix A test vector ----------
 // Fixed salt, sender private key and receiver keys from the RFC, so this is
 // the only assertion here whose expected value comes from outside this repo.
@@ -162,9 +237,19 @@ check('rfc8291-test-vector', vectorBody ===
 // deploy-only failure: the build drew such a key and died inside a scheduled
 // run. Both halves are pinned here — a seed in that short shape still signs,
 // and the generator never emits one.
-const droppedZero = Buffer.alloc(31, 7).toString('base64url'); // 42 chars: the shape a dropped zero byte produces
+// A REAL pair whose scalar begins with a zero byte, so the short form is a key
+// rather than a made-up string: the signing path pads the seed back to 32
+// bytes, and the JWT it signs now has to verify against the point that seed
+// really owns (the fake push service checks that — see vapidFailure).
+const paddedSeed = Buffer.concat([Buffer.alloc(1, 0), Buffer.from(keys.privateKey, 'base64url').subarray(1)]);
+const droppedZero = paddedSeed.subarray(1).toString('base64url'); // 42 chars: the shape a dropped zero byte produces
+const droppedPublic = (() => {
+  const ecdh = crypto.createECDH('prime256v1');
+  ecdh.setPrivateKey(paddedSeed);
+  return ecdh.getPublicKey().toString('base64url');
+})();
 const droppedZeroSign = await pushSend(subscription, { title: 'cents. — test reminder', body: 'key padding' }, {
-  subject: 'mailto:test@example.com', publicKey: keys.publicKey, privateKey: droppedZero,
+  subject: 'mailto:test@example.com', publicKey: droppedPublic, privateKey: droppedZero,
 }).then(
   r => r.ok === true,
   e => e.message, // a throw here IS the regression; report it instead of dying

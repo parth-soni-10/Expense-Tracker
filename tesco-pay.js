@@ -313,6 +313,62 @@ function receivedTotal(weeks, rates, today) {
     return sum + weekReceived(w, rates);
   }, 0));
 }
+/**
+ * What each pay date brought, keyed by the date the money landed (`payDateOf` —
+ * the week's Sunday + 11, the Thursday the sheet pays on). This is the join
+ * between the Tesco Pay tab and the ledger's Tesco pay tracker: the tracker's
+ * entry for a Thursday is the same figure as the tab's own Received for the week
+ * that was paid on it, rather than a second opinion about one payment.
+ *
+ * Only a week with something RECORDED is offered, and the source travels with
+ * the amount so a caller can say which: `bank` is a typed Final Bank Pay — money
+ * the user watched land — and `recorded` is the week's own arithmetic, gross
+ * minus the tax its payslips withheld (the sheet's Calculated Income). A week
+ * with nothing recorded yet is left out on purpose: its simulated net is an
+ * estimate, and an estimate written into the ledger as income is a wrong figure
+ * the user never sees arrive (the month card may count it as received — the
+ * ledger must not, which is why the two diverge here and only here).
+ *
+ * A week that brought nothing in is left out too — a zero-amount ledger entry is
+ * not a payment.
+ */
+export function receivedByPayDate(shifts, payslips, rates) {
+  const out = {};
+  for (const w of buildPayWeeks(shifts, payslips, rates)) {
+    const source = w.bankPaid != null ? 'bank' : w.payslips.length ? 'recorded' : null;
+    if (!source) continue;
+    const amount = weekReceived(w, rates);
+    if (!(amount > 0)) continue;
+    out[payDateOf(w.weekStart)] = { amount, source };
+  }
+  return out;
+}
+
+// The week card's "vs est" chip: how far the week's recorded money sits from the
+// estimate printed above it, and which of the estimate's figures it was measured
+// against — a comparison of two different bases is a number that belongs to
+// neither line, which is how a week recording a €469.78 bank figure against an
+// estimated €69.11 of withholding printed "+0.81 vs est" beside a net estimate of
+// €470.59. The precedence is the recorded line's own, top down:
+//   * a net that reached the bank is measured against the estimate's NET, the two
+//     figures a week can be checked side by side against a statement ("Received
+//     €469.78" against "→ net €470.59") — and it is the only base that means
+//     anything on a week whose bank figure arrived with no payslip of its own;
+//   * a week with a payslip and no bank figure has only its withholding to go on,
+//     and a payslip total is PAYE+USC+PRSI+Future Fund, so what it is measured
+//     against is the estimate's tax PLUS its pension (never the net, a different
+//     figure entirely).
+// The sign says which way: negative is money short of the estimate, so a caller
+// can print `−0.81 vs est net` without deciding anything for itself. Null when the
+// week recorded nothing to compare or has no gross to estimate from.
+export function weekVsEstimate(w, rates) {
+  if (!w || !(w.gross > 0)) return null;
+  const sim = simulateTax(w.gross, rates);
+  if (w.bankPaid != null) return { against: 'net', delta: r2(w.bankPaid - sim.net) };
+  const paid = w.payslips && w.payslips.length ? w.paid : null;
+  return paid == null ? null : { against: 'tax', delta: r2(paid - (sim.tax + sim.pension)) };
+}
+
 // ---------- a week's final bank pay: one figure, one home ----------
 /**
  * Where a week's final bank pay is written.

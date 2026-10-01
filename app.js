@@ -12,7 +12,7 @@ import { getReminderSettings, patchReminderSettings, startReminderScheduler, onR
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
-import { monthSummary, TESCO_RATE_DEFAULTS, weekStartOf, shiftPay, r2, isoLocal } from './tesco-pay.js';
+import { monthSummary, TESCO_RATE_DEFAULTS, weekStartOf, shiftPay, r2, isoLocal, receivedByPayDate } from './tesco-pay.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
@@ -3893,17 +3893,39 @@ function upcomingOccurrences(rec, horizonDays = 30) {
 }
 
 // ---------- Tesco pay helpers ----------
-function fillThursday(dateStr) {
+// The figure the tracker repeated before it could read Tesco Pay: the last Tesco
+// pay entry's amount, used only for a Thursday the tab has no recorded week for.
+function lastTescoPayAmount() {
   const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG' && !isBalanceAdjustmentEntry(e));
-  const defaultAmt = lastTesco ? lastTesco.amount : 0;
-  if (defaultAmt > 0) {
+  return lastTesco ? lastTesco.amount : 0;
+}
+
+/** Tesco Pay's own received figure for every pay date it has one for, keyed by
+ *  the Thursday the money lands — `payDateOf` of a week's Sunday, which is the
+ *  date the ledger's entry carries, so a Thursday's entry and the tab's Received
+ *  for that week are one figure rather than two opinions about one payment.
+ *  A week with nothing recorded is absent on purpose: `receivedByPayDate` will
+ *  not hand the ledger an estimate to write down as income. */
+function tescoReceivedByDate() {
+  const t = state.tesco || {};
+  const rates = { ...TESCO_RATE_DEFAULTS, ...(state.settings.tescoRates || {}) };
+  return receivedByPayDate(t.shifts || [], t.payslips || [], rates);
+}
+
+function fillThursday(dateStr) {
+  // Tesco Pay's figure for the week paid on this Thursday beats repeating the
+  // last one — that is the whole point of the tracker: the entry records what
+  // landed, and the tab already knows it.
+  const fromTesco = tescoReceivedByDate()[dateStr];
+  const amt = fromTesco ? fromTesco.amount : lastTescoPayAmount();
+  if (amt > 0) {
     const eid = uid();
-    const tescoEntry = { id: eid, createdAt: nowIso(), date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' };
+    const tescoEntry = { id: eid, createdAt: nowIso(), date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' };
     state.entries.push(tescoEntry);
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
     trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); tombstoneIds([eid]); persist(); }, `Tesco ${friendlyDate(dateStr)}`, [tescoEntry]);
-    toast(`Filled Tesco pay for ${friendlyDate(dateStr)} - ${fmt(defaultAmt)}`);
+    toast(`Filled Tesco pay for ${friendlyDate(dateStr)} - ${fmt(amt)}`);
     render();
   } else {
     openTescoFillModal(dateStr, []);
@@ -3911,30 +3933,37 @@ function fillThursday(dateStr) {
 }
 
 function autoFillAll(unpaidThursdays) {
-  const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG' && !isBalanceAdjustmentEntry(e));
-  const defaultAmt = lastTesco ? lastTesco.amount : 0;
-  if (defaultAmt > 0 && unpaidThursdays.length > 0) {
-    const created = [];
-    const createdEntries = unpaidThursdays.map(d => {
-      const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: defaultAmt, method: 'TG', note: '' };
-      created.push(entry.id);
-      state.entries.push(entry);
-      return entry;
-    });
-    state.entries.sort((a, b) => a.date.localeCompare(b.date));
-    persist();
-    trackAction(() => {
-      state.entries = state.entries.filter(e => !created.includes(e.id));
-      tombstoneIds(created);
-      persist();
-    }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`, createdEntries);
-    toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays - ${fmt(defaultAmt)} each`);
-    render();
-  } else if (unpaidThursdays.length === 0) {
-    toast('All Thursdays are already filled.');
-  } else {
-    openTescoFillModal(null, unpaidThursdays);
+  const fromTesco = tescoReceivedByDate();
+  const fallbackAmt = lastTescoPayAmount();
+  const amountFor = d => (fromTesco[d] ? fromTesco[d].amount : fallbackAmt);
+  // Per Thursday, not one figure for all of them: Tesco Pay knows some of these
+  // weeks and not others, and the ones it knows are filled with what that week
+  // actually brought rather than with whatever the last entry happened to be.
+  const fillable = unpaidThursdays.filter(d => amountFor(d) > 0);
+  const unknown = unpaidThursdays.filter(d => !(amountFor(d) > 0));
+  if (!fillable.length) {
+    if (!unpaidThursdays.length) { toast('All Thursdays are already filled.'); return; }
+    // Nothing to read and no previous figure to repeat: ask, as before.
+    openTescoFillModal(null, unknown);
+    return;
   }
+  const created = [];
+  const createdEntries = fillable.map(d => {
+    const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amountFor(d), method: 'TG', note: '' };
+    created.push(entry.id);
+    state.entries.push(entry);
+    return entry;
+  });
+  state.entries.sort((a, b) => a.date.localeCompare(b.date));
+  persist();
+  trackAction(() => {
+    state.entries = state.entries.filter(e => !created.includes(e.id));
+    tombstoneIds(created);
+    persist();
+  }, `Auto-fill ${fillable.length} Tesco pay Thursdays`, createdEntries);
+  const total = fillable.reduce((sum, d) => sum + amountFor(d), 0);
+  toast(`Auto-filled ${fillable.length} Tesco pay Thursdays - ${fmt(total)}${unknown.length ? ` (${unknown.length} left to fill)` : ''}`);
+  render();
 }
 
 function openTescoFillModal(prefillDate, unpaidThursdays) {
@@ -6241,13 +6270,17 @@ function screenDashboard() {
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const unpaidThursdays = thursdays.filter(d => !incomeByDate[d] && d <= todayStr);
   const paidTotal = thursdays.reduce((sum, d) => sum + (incomeByDate[d] || 0), 0);
+  // What Tesco Pay has recorded for each pay date, so a Thursday is filled with
+  // the week that was paid on it rather than with the last amount typed. The key
+  // IS the date the entry carries: a week's Sunday + 11, the Thursday it lands.
+  const payDateAmounts = tescoReceivedByDate();
 
   const payCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
       $('span', { class: 'eyebrow' }, 'Tesco pay · Thursdays'),
       $('div', { style: 'display:flex;align-items:center;gap:10px;' },
         $('span', { class: 'muted', style: 'font-size:11px;' }, `${thursdays.filter(d => !!incomeByDate[d]).length}/${thursdays.length} paid`),
-        unpaidThursdays.length > 0 ? $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:4px 12px;font-size:11px;', onClick: () => autoFillAll(unpaidThursdays) }, `Auto-fill (${unpaidThursdays.length})`) : null,
+        unpaidThursdays.length > 0 ? $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:4px 12px;font-size:11px;', title: 'Fill each unpaid Thursday with what Tesco Pay recorded for the week that was paid on it, and with the last amount where it has nothing', onClick: () => autoFillAll(unpaidThursdays) }, `Auto-fill (${unpaidThursdays.length})`) : null,
       ),
     ),
     thursdays.length === 0
@@ -6278,6 +6311,14 @@ function screenDashboard() {
                 $('span', { class: 'display-num', style: `font-size:14px;color:${paid ? 'var(--positive)' : 'var(--muted)'};` },
                   paid ? `+${fmt(incomeByDate[d])}` : '-',
                 ),
+                // What Fill will use, shown before it is used: Tesco Pay's figure
+                // for the week this Thursday pays, when it has one to read.
+                canFill && payDateAmounts[d] ? $('span', {
+                  class: 'muted', style: 'font-size:11px;',
+                  title: payDateAmounts[d].source === 'bank'
+                    ? 'Tesco Pay: the final bank pay recorded for the week that was paid on this Thursday'
+                    : "Tesco Pay: that week's gross minus the tax its payslips withheld",
+                }, fmt(payDateAmounts[d].amount)) : null,
                 canFill ? $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:3px 10px;font-size:10px;min-height:24px;', onClick: () => fillThursday(d) }, 'Fill') : null,
               ),
             );

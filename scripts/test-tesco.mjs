@@ -21,7 +21,7 @@ import {
   TESCO_RATE_DEFAULTS,
   tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf, payslipWeekNumberOf,
   parseShiftText, shiftPreviewLine,
-  storedShift, storedPayslip, applyShiftEdit, weekOffShift, weekBankWrite,
+  storedShift, storedPayslip, applyShiftEdit, weekOffShift, weekBankWrite, weekVsEstimate, receivedByPayDate,
   rosterColumnBounds, parseCellTokens,
   sheetRowsToCsv, workbookToCsv,
   pageSkew, dedupeWords, columnAnchors, resolveColumnDates, parseDateToken, columnDatingAgreement,
@@ -1114,6 +1114,85 @@ ok('the bankTyped figure exports on the carrier row and reads back on it',
     return [backRow.bankPay, parseTescoCsv(file).shifts.find(s => s.date === '2026-09-21').bankPay];
   })(),
   [505.4, undefined]);
+
+// ---------- the week card's "vs est" chip ----------
+// The chip reconciles the week's RECORDED money with the estimate printed above
+// it, and the two have to be the same base. The reported week recorded a payslip
+// total of €69.92 (PAYE+USC+PRSI+FF) and a bank figure of €469.78, against an
+// estimate of PAYE €31.01 · USC €7.33 · PRSI €22.67 · FF €8.10 → net €470.59:
+// measured against the net it is €469.78 − €470.59 = −0.81, money short of the
+// estimate. Measuring the bank figure against the withholding total (or the
+// payslip against the net) gives a number belonging to neither line — which is
+// how this printed "+0.81 vs est" beside the wrong base for months.
+ok('the estimate the chip measures against is the card’s own line',
+  (() => { const s = simulateTax(539.7, null); return [s.paye, s.usc, s.prsi, s.pension, s.net]; })(),
+  [31.01, 7.33, 22.67, 8.1, 470.59]);
+const chipShifts = [{ id: 'v1', date: '2026-09-20', start: '09:00', end: '17:00', gross: 539.7, bankPay: 469.78 }];
+const chipSlips = [{ id: 'v1p', weekStart: '2026-09-20', paye: 31.82, usc: 7.33, prsi: 22.67, futureFund: 8.1 }];
+const chipWeek = buildPayWeeks(chipShifts, chipSlips, null)[0];
+ok('the reported week: payslip total €69.92', chipWeek.paid, 69.92);
+ok('the chip measures the RECEIVED net against the estimate’s net',
+  weekVsEstimate(chipWeek, null), { against: 'net', delta: -0.81 });
+// The old base, pinned so the difference is on the record rather than in a note:
+// this is the +0.81 the card used to print, taken off the wrong comparison.
+ok('the withholding against the estimate was the old, wrong base',
+  r2(chipWeek.paid - (simulateTax(539.7, null).tax + simulateTax(539.7, null).pension)), 0.81);
+// A week with a payslip and no bank figure has only its withholding to compare —
+// and a payslip total is PAYE+USC+PRSI+FF, so that base is the estimate's tax plus
+// its pension, never the net (which is a different figure entirely).
+ok('with no bank figure the chip falls back to the withholding, and names it',
+  weekVsEstimate(buildPayWeeks(chipShifts.map(({ bankPay, ...s }) => s), chipSlips, null)[0], null),
+  { against: 'tax', delta: 0.81 });
+// A payslip week with no shift rows has no gross to estimate from at all, so there
+// is no chip: its tax alone says nothing about what it was taken out of.
+ok('a payslip-only week has no gross to estimate from, so no chip',
+  weekVsEstimate(buildPayWeeks([], chipSlips, null)[0], null), null);
+// A net typed on a week with no payslip is money in the bank like any other, and
+// the chip is the one figure on the line that can be checked against the estimate.
+ok('a bank figure with no payslip still gets the net chip',
+  weekVsEstimate(buildPayWeeks([{ id: 'v2', date: '2026-09-20', start: '09:00', end: '17:00', gross: 539.7, bankPay: 470.59 }], [], null)[0], null),
+  { against: 'net', delta: 0 });
+ok('a week that recorded nothing has no chip',
+  weekVsEstimate(buildPayWeeks(chipShifts.map(({ bankPay, ...s }) => s), [], null)[0], null), null);
+
+// ---------- what each pay date brought ----------
+// The dashboard's Tesco pay tracker fills a Thursday's ledger entry from Tesco
+// Pay, and the join is the pay date — a week's Sunday + 11, the Thursday the
+// money lands (payDateOf) — so the entry and the tab's own “Received” for that
+// week are one figure. Only a week with something RECORDED is offered, and the
+// source rides along so the row can say which: `bank` is a typed Final Bank Pay
+// (what the user watched land), `recorded` is the sheet's own Calculated Income
+// (gross − the tax its payslips withheld). A week with nothing recorded yet is
+// deliberately absent: its simulated net is an ESTIMATE, and an estimate written
+// into the ledger as income is a wrong figure nobody sees arrive.
+const payMap = receivedByPayDate(chipShifts, chipSlips, null);
+ok('the key is the week’s Sunday + 11, and that date is a Thursday',
+  [Object.keys(payMap), new Date('2026-10-01T00:00:00Z').getUTCDay()], [['2026-10-01'], 4]);
+ok('a recorded bank figure is what that pay date brought',
+  payMap['2026-10-01'], { amount: 469.78, source: 'bank' });
+// 539.70 − 69.92 = 469.78: with no bank figure the week’s own arithmetic stands
+// in, and 470.59 (the estimate) is NOT what the ledger would be offered.
+ok('with no bank figure the week’s own arithmetic stands in, and is named as such',
+  receivedByPayDate(chipShifts.map(({ bankPay, ...s }) => s), chipSlips, null)['2026-10-01'],
+  { amount: 469.78, source: 'recorded' });
+// The one deliberate divergence from the month card, pinned beside it below.
+ok('a week with shifts only is left out rather than offered an estimate',
+  receivedByPayDate(chipShifts.map(({ bankPay, ...s }) => s), [], null), {});
+ok('a week whose records add up to nothing to pay is left out too',
+  receivedByPayDate([], chipSlips, null), {});
+// A refund week is money in — the case the engine’s own header names — so it is
+// a figure like any other, at its own pay date.
+ok('a payslip-only refund week is money in, at its pay date',
+  receivedByPayDate([], [{ id: 'r1', weekStart: '2026-09-20', paye: -50, usc: 0, prsi: 0, futureFund: 0 }], null)['2026-10-01'],
+  { amount: 50, source: 'recorded' });
+// The ledger fill and the month card read the same week through the same rule:
+// 469.78 is both what the tab says was received and what the tracker fills.
+ok('and the month card’s Received for that week is the same figure',
+  monthSummary(chipShifts, chipSlips, null, 2026, 9, '2026-10-01').received, 469.78);
+ok('while a shift-only week the ledger is not offered is still counted by the month card',
+  [monthSummary([{ id: 'n1', date: '2026-09-20', start: '09:00', end: '17:00', gross: 539.7 }], [], null, 2026, 9, '2026-10-01').received,
+   receivedByPayDate([{ id: 'n1', date: '2026-09-20', start: '09:00', end: '17:00', gross: 539.7 }], [], null)],
+  [470.59, {}]);
 
 // ---------- the sheet's own geometry ----------
 // The tilt of the page, taken from the words: a line written at 2.5° has to come

@@ -112,7 +112,22 @@ function vapidAuthorization({ audience, subject, publicKey, privateKey, expirySe
   const r = der.subarray(4, 4 + rLen);
   const sLen = der[5 + rLen];
   const s = der.subarray(6 + rLen, 6 + rLen + sLen);
-  const raw = Buffer.concat([r, s]);
+  // JWS wants the signature as the FIXED-WIDTH pair r || s — 32 bytes each
+  // (RFC 7518 section 3.4) — and node hands back DER instead. DER's INTEGER
+  // encoding is minimal: it drops a leading zero byte from a value that does
+  // not need one, and ADDS a zero sign byte to a value whose top bit is set,
+  // so each integer comes back 31, 32 or 33 bytes long. Copying DER's own
+  // bytes through is therefore a malformed signature most of the time —
+  // measured at 74% of signings (of 400: 199 came back 65 bytes, 95 came back
+  // 66, one was 64 with its two halves still the wrong ones) — and a push
+  // service rejects a JWT whose signature is not the fixed-width pair, with no
+  // notification on the phone for a message this repo reported as sent. Each
+  // integer is the same number as its LAST 32 bytes either way.
+  const fixed = (int) => {
+    const bytes = int.length > 32 ? int.subarray(int.length - 32) : int;
+    return bytes.length === 32 ? bytes : Buffer.concat([Buffer.alloc(32 - bytes.length), bytes]);
+  };
+  const raw = Buffer.concat([fixed(r), fixed(s)]);
   return `vapid t=${signingInput}.${raw.toString('base64url')}, k=${publicKey}`;
 }
 

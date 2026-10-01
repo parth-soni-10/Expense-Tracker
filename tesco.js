@@ -50,12 +50,14 @@ import {
   paidHours, isOvernight, isSunday, statedHours, shiftPay, simulateTax,
   weekStartOf, payDateOf, weekNumberOf, payslipWeekNumberOf, isoWeekNumber,
   nextWeekStart, buildPayWeeks, weekBankWrite, monthSummary, lifetimeTotals, payslipTotal,
+  weekVsEstimate, receivedByPayDate,
 } from './tesco-pay.js';
 export {
   TESCO_RATE_DEFAULTS, r2, pad2, isoLocal, todayIso, parseHM, fmtHM, isoToUtcMidnight, dateOk,
   paidHours, isOvernight, isSunday, statedHours, shiftPay, simulateTax,
   weekStartOf, payDateOf, weekNumberOf, payslipWeekNumberOf, isoWeekNumber,
   nextWeekStart, buildPayWeeks, weekBankWrite, monthSummary, lifetimeTotals, payslipTotal,
+  weekVsEstimate, receivedByPayDate,
 };
 
 // The photo is read as a few overlapping horizontal strips rather than one
@@ -4338,7 +4340,11 @@ export function screenTesco(ctx) {
   }
 
   // The week's recorded figures: the tax + Future Fund its payslips withheld, the
-  // net that reached the bank, and how far the total sits from the estimate.
+  // net that reached the bank, and how far the recorded money sits from the
+  // estimate above it. weekVsEstimate owns that comparison — including WHICH of the
+  // estimate's figures it is against (the net for a bank figure, the withholding
+  // for a payslip-only week) — so the chip and the harness cannot disagree about
+  // what "vs est" means, and the chip names the base it used.
   // Named, not just totalled: "Payslip total €72.11" beside "Received €478.42" left
   // the reader to guess what the first figure was — and a week whose payslips were
   // all removed in the meantime returns no figures at all, so the line hides.
@@ -4349,16 +4355,13 @@ export function screenTesco(ctx) {
     // with a net but no payslip has no tax withheld to report.
     const received = w.bankPaid;
     if (actual == null && received == null) return [];
-    // Compare like with like: a payslip total is PAYE+USC+PRSI+Future Fund, so
-    // the estimate must include the pension (Future Fund) too.
-    const sim = w.gross > 0 ? simulateTax(w.gross, rates) : null;
-    const delta = sim && actual != null ? r2(actual - (sim.tax + sim.pension)) : null;
+    const vs = weekVsEstimate(w, rates);
     return [
       actual == null ? null : $('span', { style: 'font-weight:600;font-size:12px;' }, `Tax paid ${fmt(actual)}`),
       received == null ? null : $('span', { class: 'tesco-derived' }, `Received ${fmt(received)}`),
-      delta == null ? null
-        : $('span', { class: `tesco-chip ${Math.abs(delta) < 1 ? 'tesco-chip-good' : 'tesco-chip-warn'}` },
-            `${delta >= 0 ? '+' : '−'}${fmt(Math.abs(delta)).slice(1)} vs est`),
+      vs == null ? null
+        : $('span', { class: `tesco-chip ${Math.abs(vs.delta) < 1 ? 'tesco-chip-good' : 'tesco-chip-warn'}` },
+            `${vs.delta >= 0 ? '+' : '−'}${fmt(Math.abs(vs.delta)).slice(1)} vs est ${vs.against}`),
     ];
   }
 

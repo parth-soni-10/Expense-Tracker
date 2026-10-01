@@ -39,8 +39,6 @@ const check = (name, ok, detail = '') => {
   if (ok) { pass++; return; }
   failures.push(detail ? `${name} — ${detail}` : name);
 };
-const fail = (name, detail = '') => check(name, false, detail);
-
 const manifest = JSON.parse(read('manifest.json'));
 const appSource = read('app.js');
 const css = read('styles.css');

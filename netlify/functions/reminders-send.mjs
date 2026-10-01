@@ -102,7 +102,7 @@ export default async (_request, _context) => {
     return { statusCode: 200, body: 'store-error' };
   }
 
-  let sent = 0, pruned = 0, considered = 0;
+  let sent = 0, pruned = 0, considered = 0, rejected = 0;
   for (const key of keys) {
     const record = await store.getJSON(key).catch(() => null);
     if (!record || !record.subscription) continue;
@@ -127,13 +127,21 @@ export default async (_request, _context) => {
     } else if (result.gone) {
       pruned += 1;
       await store.del(key).catch(() => {});
+    } else if (result.status) {
+      // The service answered and said no — told apart from a network failure
+      // (no status) because this one does not heal on the next run.
+      rejected += 1;
     }
     // Transient push-service failures: do not mark fired; the next slot's
     // run may succeed. (Slightly wider delivery window beats silent loss.)
   }
 
   // One-line run summary in Netlify's function logs (useful when debugging
-  // "why didn't my phone get the reminder").
-  console.log(`cents reminders-send: considered=${considered} sent=${sent} pruned=${pruned}`);
+  // "why didn't my phone get the reminder"). `rejected` is counted separately
+  // because a push service refusing every message — a VAPID key that no longer
+  // matches the subscription, most often — is not something the next 15-minute
+  // run fixes, and it used to be invisible here: the summary said sent=0 and
+  // nothing else.
+  console.log(`cents reminders-send: considered=${considered} sent=${sent} pruned=${pruned} rejected=${rejected}`);
   return { statusCode: 200, body: `sent=${sent}` };
 };

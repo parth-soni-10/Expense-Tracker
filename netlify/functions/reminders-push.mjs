@@ -230,7 +230,12 @@ export default async (request, _context) => {
       await store.del(key);
       return err('Subscription is no longer valid - re-enable push', 410, cors);
     }
-    if (!result.ok) return err('Push service rejected the test message', 502, cors);
+    // The status rides along: a 401/403 here is the push service refusing our
+    // VAPID signature (a key that no longer matches the subscription the browser
+    // holds), which is a different problem from a 5xx at the far end — and the
+    // first one is invisible without the code, because the app only has a
+    // "nothing arrived" to report.
+    if (!result.ok) return err(`Push service rejected the test message${result.status ? ` (HTTP ${result.status})` : ''}`, 502, cors);
     return ok({ sent: true }, 200, cors);
   }
 

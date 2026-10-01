@@ -48,10 +48,11 @@ const BOOT_MODULES = [
 const DEFERRED_MODULES = ['/tesco.js', '/ocr-pixels.js', '/ocr-prep-worker.js'];
 
 // Decoded JS parsed before the first paint, with headroom for growth (~4 %).
-// Measured today: 663 KB — app.js 525 KB (the back-gesture wiring and the
-// share-target reader, both of which must be installed at boot to cover a sheet
-// that opens later) + storage/sync/profiles/reminders and the small ones +
-// tesco-pay.js 22 KB + csv.js 3 KB. The number to watch is not the ceiling, it
+// Measured today: 669 KB — app.js 528 KB (the back-gesture wiring, the
+// share-target reader and the Tesco pay tracker's pay-date join, all of which
+// must be installed at boot — a sheet can open before any screen is built) +
+// storage/sync/profiles/reminders and the small ones + tesco-pay.js 25 KB +
+// csv.js 3 KB. The number to watch is not the ceiling, it
 // is the shape: this should stay "the shell and arithmetic", with every screen
 // and every library behind import() — and ~4 % is the whole of the allowance, so
 // a new eager import (240 KB for tesco.js) still fails loudly.
