@@ -74,6 +74,31 @@ check('it is a finance app as far as a store listing is concerned',
 // on a phone.
 check('the installed app is portrait', manifest.orientation === 'portrait', String(manifest.orientation));
 
+// ------------------------------------- 1b. one name, and the title carries it
+// An installed window's title bar is composed by the browser, not by the app:
+// Chromium's WebAppBrowserController::GetTitle shows "<app name> - <page title>"
+// unless the page title already starts with the app name, in which case it shows
+// the page title alone. So a tagline the app name does not prefix is printed
+// TWICE — renaming the manifest to "cents. — expense tracker" while the document
+// stayed "cents. - personal expense tracker" produced exactly that in a real
+// window: "cents. — expense tracker - cents. - personal expense tracker".
+// A tagline with the name in front of it reads once whichever way the rule is
+// read, and this is the assertion that keeps it that way through the next rename.
+const html = read('index.html');
+const docTitle = ((html.match(/<title>([^<]*)<\/title>/) || [])[1] || '').trim();
+const metaContent = (name) => {
+  const m = html.match(new RegExp(`<meta name="${name}" content="([^"]*)"`));
+  return m ? m[1] : '';
+};
+check('index.html declares a document title', !!docTitle, docTitle);
+check('the document title starts with the manifest name, so an installed title bar cannot print it twice',
+  !!docTitle && docTitle.startsWith(manifest.name), `"${docTitle}" does not start with "${manifest.name}"`);
+check('and with the short name, which is what a browser composes with when it shortens the app name',
+  !!docTitle && docTitle.startsWith(manifest.short_name), `"${docTitle}" does not start with "${manifest.short_name}"`);
+check('the iOS home-screen label is the same short name the launcher shows',
+  metaContent('apple-mobile-web-app-title') === manifest.short_name,
+  `"${metaContent('apple-mobile-web-app-title')}" vs "${manifest.short_name}"`);
+
 // ------------------------------------------------- 2. icons that are really there
 /** The PNG header's own width/height, so a declared `sizes` cannot lie. */
 function pngSize(src) {
