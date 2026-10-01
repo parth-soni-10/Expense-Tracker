@@ -21,7 +21,7 @@ import {
   TESCO_RATE_DEFAULTS,
   tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf, payslipWeekNumberOf,
   parseShiftText, shiftPreviewLine,
-  storedShift, storedPayslip, applyShiftEdit, weekOffShift, weekBankWrite, weekVsEstimate, receivedByPayDate,
+  storedShift, storedPayslip, applyShiftEdit, weekOffShift, weekBankWrite, weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites,
   rosterColumnBounds, parseCellTokens,
   sheetRowsToCsv, workbookToCsv,
   pageSkew, dedupeWords, columnAnchors, resolveColumnDates, parseDateToken, columnDatingAgreement,
@@ -1193,6 +1193,104 @@ ok('while a shift-only week the ledger is not offered is still counted by the mo
   [monthSummary([{ id: 'n1', date: '2026-09-20', start: '09:00', end: '17:00', gross: 539.7 }], [], null, 2026, 9, '2026-10-01').received,
    receivedByPayDate([{ id: 'n1', date: '2026-09-20', start: '09:00', end: '17:00', gross: 539.7 }], [], null)],
   [470.59, {}]);
+
+// ---------- the ledger lines a recording owes ----------
+// The automatic half of the tracker above: a pay date with a recorded figure and
+// nothing on it in the ledger gets its Balances line without anyone pressing
+// Fill. settings.tescoPayLedger is the record of which line this app wrote, and
+// it carries the whole weight of the three rules below — it is what lets a
+// CORRECTED week follow without overwriting a line the user edited by hand, and
+// what keeps a line the user DELETED from being written back on the next
+// recording of that week.
+const twoDates = { '2026-10-01': { amount: 469.78, source: 'bank' }, '2026-10-08': { amount: 450, source: 'recorded' } };
+const payEntry = (id, date, amount) => ({ id, date, type: 'credit', category: 'misc', details: 'Tesco pay', amount, method: 'TG', note: '' });
+ok('a recorded pay date the ledger is silent on is a line to write, oldest first',
+  tescoPayLedgerWrites(twoDates, [], {}).create,
+  [{ date: '2026-10-01', amount: 469.78, source: 'bank' }, { date: '2026-10-08', amount: 450, source: 'recorded' }]);
+ok('a date the user already has income on is theirs, and nothing is written over it',
+  tescoPayLedgerWrites(twoDates, [payEntry('e1', '2026-10-01', 500)], {}).create,
+  [{ date: '2026-10-08', amount: 450, source: 'recorded' }]);
+// A transfer's credit leg is not income — app.js's isIncomeEntry says so, and the
+// Balances tracker counts a date paid by the same rule — so it cannot stand in
+// for the pay and must not stop the line.
+ok('a transfer leg on the date does not count as the date being paid',
+  tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } },
+    [{ ...payEntry('e1', '2026-10-01', 469.78), transferId: 't1' }], {}).create,
+  [{ date: '2026-10-01', amount: 469.78, source: 'bank' }]);
+// Deleting the line has to stick. Without the record this is simply an unpaid
+// date, and the next recording of that week would put back what the user removed.
+ok('a line this app wrote whose entry is gone is never written again',
+  tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } }, [],
+    { '2026-10-01': { id: 'w1', amount: 469.78 } }),
+  { create: [], update: [] });
+// The recording HAS moved here (450 → 469.78), which is the case that would
+// overwrite the user's figure if the line were followed by id alone.
+ok('and neither is one the user has given their own figure',
+  tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } },
+    [payEntry('w1', '2026-10-01', 400)], { '2026-10-01': { id: 'w1', amount: 450 } }),
+  { create: [], update: [] });
+ok('a corrected recording follows the line this app wrote',
+  tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } },
+    [payEntry('w1', '2026-10-01', 450)], { '2026-10-01': { id: 'w1', amount: 450 } }).update,
+  [{ date: '2026-10-01', id: 'w1', amount: 469.78, source: 'bank' }]);
+ok('while a recording that has not moved leaves the line exactly as it is',
+  tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } },
+    [payEntry('w1', '2026-10-01', 469.78)], { '2026-10-01': { id: 'w1', amount: 469.78 } }),
+  { create: [], update: [] });
+// A week with nothing recorded is absent from receivedByPayDate, so the week
+// card's estimate can never reach the ledger through this path either.
+ok('an unrecorded week is never written', tescoPayLedgerWrites({}, [], {}), { create: [], update: [] });
+let ledgerJunk = null;
+try { ledgerJunk = tescoPayLedgerWrites(twoDates, 'nope', 42).create.length; } catch { ledgerJunk = 'threw'; }
+ok('junk in the ledger or the record cannot throw the rule', ledgerJunk, 2);
+// Applying the plan is what the next pass reads — the entry it made and the mark
+// it left — so running it twice must write once. This is the property the whole
+// feature rests on: a recording that fires again (a settle after another
+// keystroke, a commit after a shift edit) must not add a second line.
+const secondPass = (() => {
+  const plan = tescoPayLedgerWrites(twoDates, [], {});
+  const entries = plan.create.map((w, i) => payEntry(`n${i}`, w.date, w.amount));
+  const marks = Object.fromEntries(plan.create.map((w, i) => [w.date, { id: `n${i}`, amount: w.amount }]));
+  return tescoPayLedgerWrites(twoDates, entries, marks);
+})();
+ok('and the plan is idempotent: applied, the next pass writes nothing', secondPass, { create: [], update: [] });
+
+// The wiring those rules need to reach a real recording. app.js owns the write
+// (and its undo) because the ledger is the app shell's, not the lazy Tesco
+// module's; the module calls it with the tables just written. Pinned against the
+// source text for the same reason test-motion.mjs pins paintFigure: app.js cannot
+// be imported here, it touches the DOM as it evaluates.
+const appSource = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+const reconStart = appSource.indexOf('function recordTescoPayToLedger()');
+const reconNext = appSource.indexOf('\nfunction ', reconStart + 10);
+const reconSrc = reconStart === -1 ? '' : appSource.slice(reconStart, reconNext === -1 ? appSource.length : reconNext);
+ok('the reconciler exists in the app shell', reconStart !== -1 && reconSrc.length > 500, true);
+// The caller owns the undo step — a Tesco commit folds this into its own, and a
+// payslip settle takes one of its own — so taking one in here would stack two.
+ok('it does not take its own undo step', !/trackAction\(/.test(reconSrc), true);
+ok('its undo gives the pay date back, so recording that week again writes again',
+  /state\.settings\.tescoPayLedger = wasMarks;/.test(reconSrc), true);
+ok('and a line it made is tombstoned, so a merge cannot bring the undone one back',
+  /tombstoneIds\(\[\.\.\.gone\]\)/.test(reconSrc), true);
+// One kind of line in the ledger, not two: the automatic entry is the shape Fill
+// has always written, so the dashboard, the CSV and the budget rules see the same
+// thing whichever way the money got there.
+ok('the entry it writes is the one Fill writes',
+  /type: 'credit'/.test(reconSrc) && /category: 'misc'/.test(reconSrc)
+  && /details: 'Tesco pay'/.test(reconSrc) && /method: 'TG'/.test(reconSrc), true);
+const tescoSource = readFileSync(new URL('../tesco.js', import.meta.url), 'utf8');
+ok('the screen is handed the reconciler', /recordTescoPayToLedger,\n\s*\}\)\)/.test(appSource)
+  || /recordTescoPayToLedger,/.test(appSource.slice(Math.max(0, appSource.indexOf('screenTesco({')), appSource.indexOf('screenTesco({') + 900)), true);
+// A recording made through the tab (an import, a Final Bank Pay) is ONE undo step
+// even though it moved the ledger too.
+ok('a Tesco commit folds the ledger write into its own undo step',
+  /const ledger = ctx\.recordTescoPayToLedger[\s\S]{0,900}?if \(ledger\) ledger\.undo\(\);/.test(tescoSource), true);
+ok('and says in the toast what reached the ledger',
+  /toast\(ledger \? `\$\{message\} \$\{ledger\.note\}` : message, undo, 'Undo'\)/.test(tescoSource), true);
+// A payslip typed into the card has no commit behind it — those fields settle on
+// a timer so a caret survives — so that path reconciles on its own settle.
+ok('a payslip figure typed into the card reconciles on its own settle',
+  /payslipPaintPending = false;[\s\S]{0,900}?recordTescoPayToLedger/.test(tescoSource), true);
 
 // ---------- the sheet's own geometry ----------
 // The tilt of the page, taken from the words: a line written at 2.5° has to come

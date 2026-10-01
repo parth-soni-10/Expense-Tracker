@@ -12,7 +12,7 @@ import { getReminderSettings, patchReminderSettings, startReminderScheduler, onR
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
-import { monthSummary, TESCO_RATE_DEFAULTS, weekStartOf, shiftPay, r2, isoLocal, receivedByPayDate } from './tesco-pay.js';
+import { monthSummary, TESCO_RATE_DEFAULTS, weekStartOf, shiftPay, r2, isoLocal, receivedByPayDate, tescoPayLedgerWrites } from './tesco-pay.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
@@ -3910,6 +3910,81 @@ function tescoReceivedByDate() {
   const t = state.tesco || {};
   const rates = { ...TESCO_RATE_DEFAULTS, ...(state.settings.tescoRates || {}) };
   return receivedByPayDate(t.shifts || [], t.payslips || [], rates);
+}
+
+/** What a ledger reconciliation did, in words, for the toast that announces it.
+ *  One line for the common case (a recording, so money arrived) and a count when
+ *  a first run catches up several weeks at once. */
+function tescoPayNote(created, updated) {
+  const parts = [];
+  if (created.length === 1) parts.push(`added ${fmt(created[0].amount)}`);
+  else if (created.length) parts.push(`added ${created.length} weeks`);
+  if (updated.length === 1) parts.push(`updated ${fmt(updated[0].amount)}`);
+  else if (updated.length) parts.push(`updated ${updated.length} lines`);
+  const words = parts.join(' and ');
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)} to Balances.`;
+}
+
+/** The ledger's side of a Tesco recording, so the money reaches Balances without
+ *  anyone pressing Fill. The rules — create only where the ledger is silent,
+ *  follow the recorded figure while the line is still the one this app wrote,
+ *  and never bring a deleted line back — live in tesco-pay.js's
+ *  `tescoPayLedgerWrites` and are pinned in scripts/test-tesco.mjs. What is here
+ *  is the write itself: one entry per pay date, `Tesco pay` on method TG and
+ *  category misc, exactly the shape Fill has always written, plus the settings
+ *  record of what was written (settings.tescoPayLedger, validated in storage.js
+ *  and merged per date in sync-merge.js).
+ *
+ *  Answers `{ undo, note }` for the caller to fold into its own action — a Tesco
+ *  commit makes it ONE undo step, and a payslip typed into the card makes it its
+ *  own — or null when the recording told the ledger nothing new. Nothing here
+ *  calls trackAction: the caller owns that, and two actions must not be stacked. */
+function recordTescoPayToLedger() {
+  const t = state.tesco || {};
+  const rates = { ...TESCO_RATE_DEFAULTS, ...(state.settings.tescoRates || {}) };
+  const recorded = receivedByPayDate(t.shifts || [], t.payslips || [], rates);
+  const marks = state.settings.tescoPayLedger || {};
+  const plan = tescoPayLedgerWrites(recorded, state.entries, marks);
+  if (!plan.create.length && !plan.update.length) return null;
+  const wasMarks = { ...marks };
+  const wasAmounts = [];
+  const nextMarks = { ...marks };
+  const created = [];
+  for (const write of plan.create) {
+    const entry = {
+      id: uid(), createdAt: nowIso(), date: write.date, type: 'credit',
+      category: 'misc', details: 'Tesco pay', amount: write.amount, method: 'TG', note: '',
+    };
+    state.entries.push(entry);
+    created.push(entry);
+    nextMarks[write.date] = { id: entry.id, amount: write.amount };
+  }
+  const updated = [];
+  for (const write of plan.update) {
+    const entry = state.entries.find(e => e.id === write.id);
+    if (!entry) continue;
+    wasAmounts.push([entry.id, entry.amount]);
+    entry.amount = write.amount;
+    updated.push(entry);
+    nextMarks[write.date] = { id: write.id, amount: write.amount };
+  }
+  state.settings.tescoPayLedger = nextMarks;
+  state.entries.sort((a, b) => a.date.localeCompare(b.date));
+  persist();
+  const undo = () => {
+    const gone = new Set(created.map(e => e.id));
+    state.entries = state.entries.filter(e => !gone.has(e.id));
+    for (const [id, amount] of wasAmounts) {
+      const entry = state.entries.find(e => e.id === id);
+      if (entry) entry.amount = amount;
+    }
+    // The record goes back with the line it describes, or undoing and recording
+    // again would look like a deletion and write nothing.
+    state.settings.tescoPayLedger = wasMarks;
+    tombstoneIds([...gone]);
+    persist();
+  };
+  return { undo, note: tescoPayNote(created, updated) };
 }
 
 function fillThursday(dateStr) {
@@ -9248,6 +9323,9 @@ function _render() {
           // card is the one thing in tesco.js that fetches a library of its own
           // (SheetJS).
           getState: () => state, $, iconSpan, toast, persist, render, trackAction, swalConfirm, fmt, stackModal, isTopModal, loadVendor,
+          // The ledger's half of a Tesco commit: recording a week's pay writes
+          // its Balances entry in the same undo step (see the function above).
+          recordTescoPayToLedger,
         }));
       } else {
         screen.appendChild(tescoLoadingCard());

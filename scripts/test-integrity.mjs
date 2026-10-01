@@ -617,6 +617,63 @@ check('and adding one through the manager does too, before it is saved',
 check('the manager is reachable from the menu',
   /label: 'Payment methods'[^}]*openMethodManager\(\)/.test(appSource));
 
+// ------------------- 13. what the ledger has already been told about Tesco pay
+// settings.tescoPayLedger is `{ [payDate]: { id, amount } }` — the Balances line
+// this app wrote for a pay date, and the figure it wrote it at
+// (tescoPayLedgerWrites in tesco-pay.js is the rule that reads it). It carries
+// three behaviours, and each is a bug if the load or the merge loses it: a
+// corrected week follows the line this app wrote, a line the user edited by hand
+// does not, and a line the user DELETED is never written back.
+const ledgerState = (record) => validateState(stateOf([], { tescoPayLedger: record })).settings.tescoPayLedger;
+const wired = ledgerState({ '2026-10-01': { id: 'w1', amount: 469.78 } });
+check('a written line round-trips with its entry id and amount',
+  wired['2026-10-01']?.id === 'w1' && wired['2026-10-01'].amount === 469.78,
+  JSON.stringify(wired));
+const junkLedger = ledgerState({
+  '2026-10-01': { id: 'w1', amount: 469.78 },
+  'not-a-date': { id: 'w2', amount: 10 },
+  '2026-10-02': { id: '', amount: 10 },
+  '2026-10-03': { id: 'w3' },
+  '2026-10-04': { id: 'w4', amount: 0 },
+  '2026-10-05': { id: 'w5', amount: 12.345 },
+  '2026-10-06': { id: 'w6', amount: -5 },
+  '2026-10-07': 'nope',
+  '2026-10-08': { id: 'x'.repeat(201), amount: 10 },
+});
+check('a malformed line is dropped rather than repaired',
+  JSON.stringify(junkLedger) === JSON.stringify({ '2026-10-01': { id: 'w1', amount: 469.78 } }),
+  JSON.stringify(junkLedger));
+check('and junk in the whole setting cannot throw the load',
+  noThrow('tescoPayLedger junk', () => ledgerState(42)) !== undefined
+  && JSON.stringify(ledgerState('x')) === '{}');
+// A date key that survives is what makes a deleted line stay deleted, so the two
+// sides of a merge must not be able to lose one another: a date only ONE device
+// has survives, and a shared date takes the fresher side's pair whole.
+const ledgerMerge = (localRecord, cloudRecord, localFresher) => mergeStates(
+  catalogue({ tescoPayLedger: localRecord }, localFresher ? newer : older),
+  catalogue({ tescoPayLedger: cloudRecord }, localFresher ? older : newer),
+).settings.tescoPayLedger;
+const bothSides = ledgerMerge({ '2026-10-01': { id: 'a1', amount: 450 } }, { '2026-10-08': { id: 'b1', amount: 460 } }, true);
+check('a line written only on one device survives the merge',
+  bothSides['2026-10-01']?.id === 'a1' && bothSides['2026-10-08']?.id === 'b1',
+  JSON.stringify(bothSides));
+check('and a date both sides wrote takes the fresher pair as one value',
+  JSON.stringify(ledgerMerge({ '2026-10-01': { id: 'a1', amount: 450 } }, { '2026-10-01': { id: 'b1', amount: 469.78 } }, true)['2026-10-01'])
+    === JSON.stringify({ id: 'a1', amount: 450 }),
+  JSON.stringify(ledgerMerge({ '2026-10-01': { id: 'a1', amount: 450 } }, { '2026-10-01': { id: 'b1', amount: 469.78 } }, false)['2026-10-01']));
+// The record is the reason a delete sticks, so it must not be the thing that
+// grows without bound: the pay tables it shadows hold 500 weeks, and anything
+// older than the cap could never be read again anyway.
+const manyDates = {};
+for (let i = 0; i < 530; i++) {
+  const d = new Date(Date.UTC(2020, 0, 2));
+  d.setUTCDate(d.getUTCDate() + i * 7);
+  manyDates[d.toISOString().slice(0, 10)] = { id: `id${i}`, amount: 100 };
+}
+check('the record is bounded, keeping the newest pay dates',
+  (() => { const kept = ledgerState(manyDates); const dates = Object.keys(kept).sort(); return [dates.length, dates.includes('2020-01-02'), dates.includes(dates[dates.length - 1])]; })(),
+  [520, false, true]);
+
 // ---------------------------------------------------------------- report
 if (failures.length) {
   console.error(`test-integrity: ${failures.length} FAILED, ${pass} passed`);

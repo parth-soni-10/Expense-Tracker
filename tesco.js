@@ -50,14 +50,14 @@ import {
   paidHours, isOvernight, isSunday, statedHours, shiftPay, simulateTax,
   weekStartOf, payDateOf, weekNumberOf, payslipWeekNumberOf, isoWeekNumber,
   nextWeekStart, buildPayWeeks, weekBankWrite, monthSummary, lifetimeTotals, payslipTotal,
-  weekVsEstimate, receivedByPayDate,
+  weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites,
 } from './tesco-pay.js';
 export {
   TESCO_RATE_DEFAULTS, r2, pad2, isoLocal, todayIso, parseHM, fmtHM, isoToUtcMidnight, dateOk,
   paidHours, isOvernight, isSunday, statedHours, shiftPay, simulateTax,
   weekStartOf, payDateOf, weekNumberOf, payslipWeekNumberOf, isoWeekNumber,
   nextWeekStart, buildPayWeeks, weekBankWrite, monthSummary, lifetimeTotals, payslipTotal,
-  weekVsEstimate, receivedByPayDate,
+  weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites,
 };
 
 // The photo is read as a few overlapping horizontal strips rather than one
@@ -3272,8 +3272,17 @@ export function screenTesco(ctx) {
       return;
     }
     payslipPaintPending = false;
+    // A payslip figure typed into the card is a recording too, and it has no
+    // commit behind it (these fields settle on a timer so a caret survives — see
+    // the note above), so the ledger follows here instead, as its own action and
+    // only when the figure actually moved. Nothing at all happens while the week
+    // holds no recorded pay: the week card's estimate is not money the ledger may
+    // write down (tescoPayLedgerWrites sees no entry for it in receivedByPayDate).
+    const ledger = ctx.recordTescoPayToLedger ? ctx.recordTescoPayToLedger() : null;
+    if (ledger) trackAction(ledger.undo, 'Tesco pay to Balances');
     persist();
     render();
+    if (ledger) toast(ledger.note, ledger.undo, 'Undo');
   }
   function shifts() { return t.shifts || []; }
   function payslips() { return t.payslips || []; }
@@ -3562,16 +3571,24 @@ export function screenTesco(ctx) {
     table.shifts = [...next.shifts].sort((a, b) => a.date.localeCompare(b.date));
     table.payslips = [...next.payslips].sort((a, b) => a.weekStart.localeCompare(b.weekStart));
     ctx.getState().settings.tescoWeekNos = { ...next.weekNos };
+    // The ledger's half of the recording, in the SAME undo step and read from the
+    // tables just written: a week Tesco Pay has recorded pay for gets (or
+    // follows) its Balances line here, so recording the pay IS the line landing
+    // and one Undo takes both back. null when the recording told the ledger
+    // nothing it did not already know — which is every shift-only commit, since a
+    // shift is not money until a payslip or a bank figure says what it paid.
+    const ledger = ctx.recordTescoPayToLedger ? ctx.recordTescoPayToLedger() : null;
     const undo = () => {
       const cur = ctx.getState();
       cur.tesco.shifts = before.shifts;
       cur.tesco.payslips = before.payslips;
       cur.settings.tescoWeekNos = { ...before.weekNos };
+      if (ledger) ledger.undo();
       persist(); render();
     };
     trackAction(undo, label);
     persist(); render();
-    toast(message, undo, 'Undo');
+    toast(ledger ? `${message} ${ledger.note}` : message, undo, 'Undo');
   }
 
   function addShifts(list, label = 'shift') {

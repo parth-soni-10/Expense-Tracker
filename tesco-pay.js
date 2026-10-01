@@ -344,6 +344,59 @@ export function receivedByPayDate(shifts, payslips, rates) {
   return out;
 }
 
+/**
+ * The ledger lines a Tesco recording owes — the automatic half of the tracker
+ * above. `recorded` is receivedByPayDate's map, `entries` the ledger's own, and
+ * `written` this app's record of what it has already written
+ * (`settings.tescoPayLedger`: pay date → `{ id, amount }`, the line and the
+ * figure it was written at).
+ *
+ * Three rules, and each one closes a way the ledger could disagree with the tab:
+ *   * a pay date with a recorded figure and NOTHING on it in the ledger is a
+ *     create — unless an income entry already sits on that date, which is the
+ *     user's own line (a Fill, or a payslip typed into the Add screen) and wins;
+ *   * a pay date this app wrote before is followed only while the line is still
+ *     the one it wrote: the entry is there, at the amount written. A line the
+ *     user has since edited by hand is theirs to keep, so a correction to the
+ *     week does not overwrite their figure;
+ *   * a pay date in `written` whose entry is gone is a line the user DELETED.
+ *     It is never created again — which is the whole reason the record is worth
+ *     keeping, since without it the next recording of that week would undo the
+ *     deletion and the money would keep coming back.
+ *
+ * Nothing here ever removes a ledger entry: the ledger is the user's, and a
+ * recording that disappears (a week's payslips deleted, a bank figure cleared)
+ * leaves the money it already paid where it is.
+ *
+ * The "is this date already paid?" test mirrors app.js's isIncomeEntry for the
+ * yes/no it needs — a credit that is not half of a transfer. A same-date entry
+ * of the user's own is the only thing it stops a line for, so reading it too
+ * widely can only ever hold a line back, never double one up.
+ */
+export function tescoPayLedgerWrites(recorded, entries, written) {
+  const create = [];
+  const update = [];
+  const marks = written && typeof written === 'object' && !Array.isArray(written) ? written : {};
+  const rows = Array.isArray(entries) ? entries : [];
+  const paidDates = new Set(rows.filter(e => e && e.type === 'credit' && !e.transferId).map(e => e.date));
+  const byId = new Map(rows.filter(e => e && typeof e.id === 'string').map(e => [e.id, e]));
+  for (const date of Object.keys(recorded || {}).sort()) {
+    const amount = r2(Number(recorded[date] && recorded[date].amount));
+    if (!(amount > 0)) continue;
+    const mark = marks[date];
+    if (!mark) {
+      if (!paidDates.has(date)) create.push({ date, amount, source: recorded[date].source });
+      continue;
+    }
+    const line = byId.get(mark.id);
+    if (!line) continue;                                     // deleted: it stays deleted
+    if (Number(line.amount) !== Number(mark.amount)) continue; // edited by hand: their figure
+    if (amount === Number(mark.amount)) continue;             // the recording has not moved
+    update.push({ date, id: mark.id, amount, source: recorded[date].source });
+  }
+  return { create, update };
+}
+
 // The week card's "vs est" chip: how far the week's recorded money sits from the
 // estimate printed above it, and which of the estimate's figures it was measured
 // against — a comparison of two different bases is a number that belongs to

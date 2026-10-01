@@ -325,6 +325,41 @@ function normalizeMethodHidden(raw, knownIds) {
   return out;
 }
 
+/** What the ledger has already been told about Tesco pay, per pay date:
+ *  `{ [payDate]: { id, amount } }` — the line this app wrote for that pay date
+ *  and the figure it wrote it at. The rule that reads it is
+ *  tescoPayLedgerWrites in tesco-pay.js.
+ *
+ *  A date listed here is never written again, and that is what makes DELETING
+ *  the line stick: without the record, the next recording of that week would
+ *  write the entry back and the money would keep returning. It also carries the
+ *  id, so a line the user has since edited by hand is recognisable as theirs.
+ *
+ *  Anything malformed is dropped rather than repaired. An unreadable record
+ *  would let a deleted line come back, and a wrong amount would let the app
+ *  follow a figure it never wrote. */
+function normalizeTescoPayLedger(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out = {};
+  for (const [date, value] of Object.entries(raw)) {
+    if (!isValidCheckpointDate(date)) continue;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const id = typeof value.id === 'string' && value.id && value.id.length <= 200 ? value.id : null;
+    const amount = Number(value.amount);
+    if (!id) continue;
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) continue;
+    if (Math.round(amount * 100) / 100 !== amount) continue;
+    out[date] = { id, amount };
+  }
+  // Bounded like the pay tables it shadows, oldest dates first: a date this old
+  // is one Tesco Pay still holds a week for, so the record would never be read.
+  const dates = Object.keys(out).sort();
+  if (dates.length > TESCO_PAY_LEDGER_MAX) {
+    for (const date of dates.slice(0, dates.length - TESCO_PAY_LEDGER_MAX)) delete out[date];
+  }
+  return out;
+}
+
 function normalizeTransferGroups(entries) {
   const groups = new Map();
   for (const entry of entries) {
@@ -434,6 +469,10 @@ const TESCO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TESCO_TIME_RE = /^\d{1,2}:\d{2}$/;
 const TESCO_MAX_SHIFTS = 2000;
 const TESCO_MAX_PAYSLIPS = 500;
+// Pay dates the ledger has been told about (settings.tescoPayLedger). A decade
+// of weekly pays is ~520; anything older than the pay tables it shadows could
+// never be consulted anyway.
+const TESCO_PAY_LEDGER_MAX = 520;
 // At least as large as the biggest tab, because "Delete all weeks" tombstones
 // every row of both tables in one go — a smaller cap would trim away part of
 // that burst on the next load and let the wiped weeks return from the cloud.
@@ -624,6 +663,7 @@ export function validateState(s) {
     categoryBudgets: normalizeCategoryBudgets(rawSettings.categoryBudgets, CATEGORIES_OK),
     tescoRates: normalizeTescoRates(safeSettings.tescoRates),
     tescoWeekNos: normalizeWeekNos(safeSettings.tescoWeekNos),
+    tescoPayLedger: normalizeTescoPayLedger(safeSettings.tescoPayLedger),
     enabledTabs: normalizeEnabledTabs(safeSettings.enabledTabs),
   };
   // `tourSeen` was the walkthrough's flag. The tour is gone, so the key is shed

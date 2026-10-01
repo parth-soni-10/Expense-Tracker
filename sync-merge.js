@@ -176,6 +176,13 @@ function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresher) {
     // tescoWeekNos is per-week too: a week number typed on either device
     // survives, and the fresher side wins a clash for the same week.
     tescoWeekNos: { ...(older.tescoWeekNos || {}), ...(newer.tescoWeekNos || {}) },
+    // tescoPayLedger is what the ledger has already been told about Tesco pay,
+    // per pay date — the line this app wrote and the figure it wrote it at.
+    // Per-key LWW, like methodHidden, and a date only ONE side has survives the
+    // union: that is what keeps a line the other device deleted from being
+    // written back by the merge. The id and the amount travel together as one
+    // value, so neither can be paired with the other side's figure.
+    tescoPayLedger: { ...(older.tescoPayLedger || {}), ...(newer.tescoPayLedger || {}) },
     // enabledTabs is a POLICY, not a collection: unioning it would let any
     // device that still lists a tab re-grant it after the admin hid it. The
     // fresher side wins outright — with the fallback for a side that predates
