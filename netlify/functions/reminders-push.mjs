@@ -14,7 +14,10 @@
           turned the reminder off, or the browser revoked it).
           Same auth.
    PUT   → sends an immediate test push to the caller's stored
-           subscription. Same auth.
+           subscription. Same auth. A record that is only seconds old is
+           not judged dead by a 404/410 from the push service — the send
+           is retried once, and answered 425 while the registration is
+           still arriving (pushSendWarming in lib/webpush.mjs).
 
    Why the app password gates this: a subscription endpoint URL is
    a capability — anyone who has it can push to that browser. We
@@ -42,7 +45,7 @@
 
 import { createHash } from 'node:crypto';
 import { getStore } from './lib/store.mjs';
-import { pushSend, vapidConfig } from './lib/webpush.mjs';
+import { pushSendWarming, vapidConfig, PUSH_WARMUP_RETRY_MS } from './lib/webpush.mjs';
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
 import { resolveProfileForAuth, profileAuthMessage, DEFAULT_PROFILE } from './lib/profiles.mjs';
 
@@ -221,14 +224,24 @@ export default async (request, _context) => {
     const { key, record } = found;
     const vapid = vapidConfig();
     if (!vapid.ok) return err('VAPID keys not configured on the function', 500, cors);
-    const result = await pushSend(record.subscription, {
+    const result = await pushSendWarming(record.subscription, {
       title: 'cents. — test reminder',
       body: record.profileName ? `Push works for ${record.profileName}.` : 'Push is working.',
       tag: 'cents-reminder-test',
-    }, { subject: vapid.subject, publicKey: vapid.publicKey, privateKey: vapid.privateKey });
+    }, { subject: vapid.subject, publicKey: vapid.publicKey, privateKey: vapid.privateKey },
+    { createdAt: record.createdAt });
     if (result.gone) {
       await store.del(key);
       return err('Subscription is no longer valid - re-enable push', 410, cors);
+    }
+    // A device that pressed Enable push and then Send test push within the same
+    // breath. Nothing is wrong and nothing is deleted: the push service has not
+    // been told about the registration yet (measured at under a second on real
+    // FCM, and pushSendWarming already asked a second time). So the answer says
+    // "in a moment", not "re-enable push" — the app keeps push switched on.
+    if (result.warming) {
+      return err('This device is still registering with the push service - try again in a moment', 425,
+        { ...cors, 'Retry-After': String(Math.ceil(PUSH_WARMUP_RETRY_MS / 1000)) });
     }
     // The status rides along: a 401/403 here is the push service refusing our
     // VAPID signature (a key that no longer matches the subscription the browser

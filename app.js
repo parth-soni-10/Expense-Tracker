@@ -1406,7 +1406,7 @@ function openReminderSettings() {
         const r = await sendTestPush();
         ev.currentTarget.disabled = false;
         if (r.ok) { toast('Test push sent - check your system notifications.'); return; }
-        const messages = { 'not-subscribed': 'Enable push first.', stale: 'Subscription expired - push was disabled, enable it again.', auth: 'Sync password was rejected.' };
+        const messages = { 'not-subscribed': 'Enable push first.', stale: 'Subscription expired - push was disabled, enable it again.', auth: 'Sync password was rejected.', warming: 'This device is still registering for push - tap again in a moment.' };
         toast(messages[r.reason] || ('Test push failed: ' + (r.message || r.reason || 'error') + '.'));
         draw();
       } }, 'Send test push')) : null;

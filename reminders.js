@@ -335,6 +335,13 @@ export async function sendTestPush() {
       body: JSON.stringify({ endpoint: s.pushEndpoint }),
     });
     if (resp.ok) return { ok: true };
+    // 425 is the server saying "this device is still registering with the push
+    // service" — a test push fired straight after Enable push, before the
+    // push service has been told about the registration. Push stays ON: the
+    // subscription is healthy, so nothing is unsubscribed and the user is not
+    // sent back to Enable push over a device that is fine (the server has
+    // already asked the service a second time — see pushSendWarming).
+    if (resp.status === 425) return { ok: false, reason: 'warming' };
     if (resp.status === 410) {
       patchReminderSettings({ pushSubscribed: false, pushEndpoint: null });
       return { ok: false, reason: 'stale', message: 'Subscription expired - re-enable push.' };

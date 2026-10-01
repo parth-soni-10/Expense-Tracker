@@ -12,6 +12,8 @@
  *   1-11. browser subscribe → server store → scheduled dispatch → delivery
  *         to a FAKE local push service → dead-subscription pruning →
  *         unsubscribe → two profiles on one device
+ *   7c. a device that has only just subscribed: 404/410 on a record seconds old
+ *         is not a death verdict (a measurement of real FCM is in the section)
  *   12. the dispatcher reads the record's own clock, not UTC's
  *   13. the key the browser is handed is the key the dispatcher signs with
  *
@@ -92,6 +94,12 @@ ua.generateKeys();
 const AUTH = crypto.randomBytes(16);
 let received = [];
 let endpointAlive = true;
+// A registration the service has not been told about YET — a device that
+// subscribed a moment ago, which is exactly what a real FCM answers 404/410 to.
+// Counted down, so the app's retry meets a service that has caught up;
+// Infinity keeps it cold for the cases that must never settle.
+let unregistered = 0;
+let endpointHits = 0;
 // A push service that answers and says NO, with this status. The other way a
 // delivery fails is not an answer at all (an endpoint with nothing behind it,
 // no status) and the app has to tell the two apart — see 7b.
@@ -112,6 +120,11 @@ const fakePushServer = http.createServer((req, res) => {
     const badAuth = vapidFailure(lastAuth, `http://${req.headers.host}`);
     if (badAuth) { res.writeHead(401, { 'Content-Type': 'text/plain' }); res.end(badAuth); return; }
     if (!endpointAlive) { res.writeHead(410); res.end(); return; }
+    endpointHits += 1;
+    if (unregistered > 0) {
+      if (unregistered !== Infinity) unregistered -= 1;
+      res.writeHead(410); res.end(); return;
+    }
     // Authenticated, so the request is real — now the service's own answer.
     if (refuseWith) { res.writeHead(refuseWith, { 'Content-Type': 'text/plain' }); res.end('no'); return; }
     try {
@@ -198,7 +211,13 @@ function call(handler, method, body, extraHeaders = {}) {
 const text = (r) => r.text();
 
 const results = {};
-const check = (name, pass) => { results[name] = !!pass; if (!pass) console.log(`  ✗ ${name}`); };
+// `detail` is only printed when a check fails, and several calls below have
+// always passed one — it used to be dropped on the floor, which is the wrong
+// time to lose the only evidence of what was met.
+const check = (name, pass, detail) => {
+  results[name] = !!pass;
+  if (!pass) console.log(`  \u2717 ${name}${detail === undefined ? '' : ` \u2014 ${detail}`}`);
+};
 
 // ---------- 0e. every signature is a well-formed ES256 JWS ----------
 // A single signature proves nothing here, which is how the bug below shipped:
@@ -520,6 +539,117 @@ check('a service it could not reach is transient, not refused',
   /sent=0\b/.test(unreachableRun) && /rejected=0\b/.test(unreachableRun), unreachableRun);
 // Leave the store as section 8 expects to find it.
 await store.del('push:unreachable-test');
+
+// ---------- 7c. a device that has only just subscribed ----------
+// Pressing Enable push and Send test push in the same breath used to be answered
+// by the push service with 404/410 — a registration it has not been told about
+// yet — and that verdict is the app's own "this device is dead, drop it" signal.
+// So the one flow this feature exists for deleted the stored subscription and
+// told the user to re-enable push, for a device that was perfectly healthy.
+//
+// Measured against real FCM, one first-ever subscription per browser: a push at
+// 0.01 s and at 0.51 s after subscribe() came back 404/410; the same push at 1 s,
+// and at every longer delay, was accepted. The verdict is therefore decided by
+// AGE: a gone on a record younger than the warm-up is asked once more, and
+// reported as `warming` — never as `gone`, because callers delete on that key —
+// if the service still does not know it. An established record keeps the old
+// meaning, so a browser that really did unsubscribe is still pruned.
+const { subscriptionWarmingUp, pushSendWarming, PUSH_WARMUP_MS } = await import('../netlify/functions/lib/webpush.mjs');
+const vapidForCall = { subject: 'mailto:test@example.com', publicKey: keys.publicKey, privateKey: keys.privateKey };
+const warmSubscription = { endpoint: `http://localhost:${pushPort}/fake-push`, keys: subscription.keys };
+const nowMs = Date.now();
+check('a subscription seconds old is warming up',
+  subscriptionWarmingUp(new Date(nowMs - 2000).toISOString(), nowMs) === true);
+check('one older than the window is not',
+  subscriptionWarmingUp(new Date(nowMs - PUSH_WARMUP_MS - 1000).toISOString(), nowMs) === false);
+check('and a stamp that cannot be read is not warming either',
+  subscriptionWarmingUp(undefined, nowMs) === false
+  && subscriptionWarmingUp('not a date', nowMs) === false
+  && subscriptionWarmingUp(new Date(nowMs + 60000).toISOString(), nowMs) === false);
+
+// (a) the retry itself: the service does not know the registration on the first
+// ask and does on the second — one record, two attempts, one delivery.
+unregistered = 1;
+endpointHits = 0;
+received.length = 0;
+const warmed = await pushSendWarming(warmSubscription, { title: 'cents. — warm-up', body: 'x', tag: 'cents-warmup' },
+  vapidForCall, { createdAt: new Date().toISOString(), sleep: async () => {} });
+check('a gone on a seconds-old subscription is asked again',
+  warmed.ok === true && endpointHits === 2, `${JSON.stringify(warmed)} after ${endpointHits} attempt(s)`);
+check('and the second ask delivers exactly one push',
+  received.length === 1, `delivered ${received.length}`);
+
+// (b) the same through the endpoint the app actually calls: press Enable push,
+// then Send test push, and the test works.
+unregistered = 1;
+endpointHits = 0;
+await call(pushHandler, 'POST', { subscription, time: '20:00', zone: 'UTC' });
+received.length = 0;
+const warmTest = await call(pushHandler, 'PUT', { endpoint: subscription.endpoint });
+check('Send test push straight after Enable push succeeds',
+  warmTest.status === 200 && received.length === 1, `${warmTest.status}, delivered ${received.length}`);
+check('and the stored subscription is still there after it',
+  (await store.list('push:')).length === 1, `${(await store.list('push:')).length} record(s)`);
+
+// (c) a service still cold after the retry: the answer is "in a moment", not
+// "re-enable push", and nothing is deleted.
+unregistered = Infinity;
+received.length = 0;
+const coldTest = await call(pushHandler, 'PUT', { endpoint: subscription.endpoint });
+const coldBody = await text(coldTest);
+check('a subscription the service still does not know is answered 425, not 410',
+  coldTest.status === 425 && /still registering/.test(coldBody), `${coldTest.status} ${coldBody}`);
+check('and it names how long to wait', coldTest.headers.get('retry-after') === '2', String(coldTest.headers.get('retry-after')));
+check('and the record survives it, so a healthy device is not unsubscribed by a test',
+  (await store.list('push:')).length === 1, `${(await store.list('push:')).length} record(s)`);
+const cold = await pushSendWarming(warmSubscription, { title: 'x', body: 'x', tag: 'cents-warmup' },
+  vapidForCall, { createdAt: new Date().toISOString(), sleep: async () => {} });
+check('and a warming result carries no `gone` key for a caller to prune on',
+  cold.ok === false && cold.warming === true && !('gone' in cold), JSON.stringify(cold));
+
+// (d) the age gate must not make every push immortal: an ESTABLISHED record that
+// the service says is gone is still pruned and still answered 410.
+const [establishedKey] = (await store.list('push:')).map(k => k.key);
+await store.setJSON(establishedKey, {
+  ...(await store.getJSON(establishedKey)),
+  createdAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+});
+const established = await call(pushHandler, 'PUT', { endpoint: subscription.endpoint });
+check('an established subscription is still pruned on 410',
+  established.status === 410 && (await store.list('push:')).length === 0, `${established.status}`);
+unregistered = 0;
+
+// (e) the scheduled run must not prune one either, and must say what it met —
+// `sent=0` on its own is the same line for "nothing was due" and "the device was
+// not registered yet".
+await call(pushHandler, 'POST', { subscription, time: utcNow, zone: 'UTC' });
+unregistered = Infinity;
+received.length = 0;
+const warmRun = await captureRun();
+check('the scheduled run does not prune a warming subscription',
+  /warming=1\b/.test(warmRun) && /pruned=0\b/.test(warmRun) && (await store.list('push:')).length === 1, warmRun);
+unregistered = 0;
+for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k); // section 8 expects an empty store
+
+// The client half of the same rule, pinned from source: reminders.js reads
+// localStorage and app.js touches the DOM on evaluation, so neither can be
+// imported here. What must hold is the ORDER — 425 is its own reason, and only
+// the real 410 may clear the stored subscription — because a test push that
+// switches push OFF over a healthy device is the bug this section exists for.
+const remindersSrc = readFileSync(new URL('../reminders.js', import.meta.url), 'utf8');
+const testPushSrc = remindersSrc.slice(remindersSrc.indexOf('export async function sendTestPush'),
+  remindersSrc.indexOf('export async function updateReminderPushTime'));
+check('the app reads 425 as "still warming", not as a dead subscription',
+  /status === 425\)\s*return \{ ok: false, reason: 'warming' \};/.test(testPushSrc),
+  (testPushSrc.match(/status === 425[^;]*;/) || ['no 425 branch in sendTestPush'])[0]);
+const warmAt = testPushSrc.indexOf("reason: 'warming'");
+const clearAt = testPushSrc.indexOf('patchReminderSettings({ pushSubscribed: false');
+check('and takes that verdict before anything clears the stored subscription',
+  warmAt > -1 && clearAt > warmAt, `warming at ${warmAt}, clearing at ${clearAt}`);
+check('and only the real 410 still clears it',
+  testPushSrc.split('patchReminderSettings({ pushSubscribed: false').length - 1 === 1);
+check('and the reminder modal has a sentence for that reason',
+  /warming: '/.test(readFileSync(new URL('../app.js', import.meta.url), 'utf8')));
 
 // ---------- 8. unsubscribe removes the record ----------
 await call(pushHandler, 'POST', {

@@ -9,7 +9,9 @@
        stored IANA zone (fallback: UTC),
      - if that matches the record's time (within this run's slot)
        and it has not fired today already, push the reminder,
-     - prune dead subscriptions (push service 404/410).
+     - prune dead subscriptions (push service 404/410) — but only
+       once the record is past pushSendWarming's warm-up, because a
+       registration seconds old is not registered YET, not dead.
 
    "Not fired today" is tracked per subscription with the last
    fired LOCAL date; the scheduled run straddling midnight of the
@@ -30,7 +32,7 @@
    ============================================================ */
 
 import { getStore } from './lib/store.mjs';
-import { pushSend, vapidConfig } from './lib/webpush.mjs';
+import { pushSendWarming, vapidConfig } from './lib/webpush.mjs';
 
 const PUSH_PREFIX = 'push:';
 // The cron fires every 15 minutes; a record matches when its HH:MM falls
@@ -102,7 +104,7 @@ export default async (_request, _context) => {
     return { statusCode: 200, body: 'store-error' };
   }
 
-  let sent = 0, pruned = 0, considered = 0, rejected = 0;
+  let sent = 0, pruned = 0, warming = 0, considered = 0, rejected = 0;
   for (const key of keys) {
     const record = await store.getJSON(key).catch(() => null);
     if (!record || !record.subscription) continue;
@@ -115,11 +117,12 @@ export default async (_request, _context) => {
     const body = record.profileName
       ? `Quick tally for ${record.profileName} — it takes a minute.`
       : 'Log today\'s spending while it\'s fresh.';
-    const result = await pushSend(record.subscription, {
+    const result = await pushSendWarming(record.subscription, {
       title: 'cents. — time to upload your transactions',
       body,
       tag: 'cents-daily-reminder',
-    }, { subject: vapid.subject, publicKey: vapid.publicKey, privateKey: vapid.privateKey });
+    }, { subject: vapid.subject, publicKey: vapid.publicKey, privateKey: vapid.privateKey },
+    { createdAt: record.createdAt });
 
     if (result.ok) {
       sent += 1;
@@ -127,6 +130,13 @@ export default async (_request, _context) => {
     } else if (result.gone) {
       pruned += 1;
       await store.del(key).catch(() => {});
+    } else if (result.warming) {
+      // A registration the push service has not been told about yet (a device
+      // subscribed seconds ago). The record is kept — deleting it is the one
+      // outcome that loses the user's setup — and it is counted, so a run that
+      // delivered nothing still says what it met. Deliberately no lastFiredDate:
+      // the reminder was not delivered.
+      warming += 1;
     } else if (result.status) {
       // The service answered and said no — told apart from a network failure
       // (no status) because this one does not heal on the next run.
@@ -141,7 +151,9 @@ export default async (_request, _context) => {
   // because a push service refusing every message — a VAPID key that no longer
   // matches the subscription, most often — is not something the next 15-minute
   // run fixes, and it used to be invisible here: the summary said sent=0 and
-  // nothing else.
-  console.log(`cents reminders-send: considered=${considered} sent=${sent} pruned=${pruned} rejected=${rejected}`);
+  // nothing else. `warming` is the transient version of the same question — a
+  // device whose registration the push service did not know yet, which the
+  // next slot will very likely deliver to.
+  console.log(`cents reminders-send: considered=${considered} sent=${sent} pruned=${pruned} warming=${warming} rejected=${rejected}`);
   return { statusCode: 200, body: `sent=${sent}` };
 };

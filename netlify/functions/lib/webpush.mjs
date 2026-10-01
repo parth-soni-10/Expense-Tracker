@@ -343,3 +343,64 @@ export async function pushSend(subscription, payloadObject, vapid) {
     return { ok: false, gone: false };
   }
 }
+
+/* ---------- a subscription too new for "gone" to mean dead ----------
+
+   A push service does not know a registration the moment subscribe() resolves.
+   Measured against real FCM, one first-ever subscription per browser: a push
+   sent 0.01 s and 0.51 s after subscribe() came back 404/410, and the same push
+   at 1 s — and at every longer delay — was accepted. Chrome hands out the
+   endpoint locally and registers it a moment later.
+
+   404/410 is the app's own "this device is dead, drop it" signal, so taken at
+   face value the one thing this project wants to work — press Enable push,
+   then Send test push straight away — deleted the stored subscription and told
+   the user to re-enable push, for a device that was perfectly healthy. My own
+   live run opened with exactly that: the daily sender's first attempt at a
+   second-old record answered 404, pruned it, and the next run had nothing to
+   send to.
+
+   So which verdict is which is decided by AGE. A gone on a record younger than
+   the warm-up is not a death: ask once more after the measured window has
+   passed, and if it is still unknown, say so — `warming`, with NO `gone` key,
+   because callers delete the record on that key. An established subscription
+   keeps the old meaning, so a browser that really did unsubscribe is still
+   pruned on the next run.
+
+   Two details that are load-bearing: a record with no readable createdAt is
+   NOT warm (an unreadable stamp must not make every push immortal, and it is
+   also how a hand-written record in the test suite reaches the prune path),
+   and the retry is injectable so the suite can exercise both attempts without
+   sleeping.
+*/
+export const PUSH_WARMUP_MS = 30 * 1000;
+export const PUSH_WARMUP_RETRY_MS = 2 * 1000;
+
+/** True when this record is too young for a push service's "gone" to be believed. */
+export function subscriptionWarmingUp(createdAt, now = Date.now(), warmupMs = PUSH_WARMUP_MS) {
+  const born = typeof createdAt === 'string' ? Date.parse(createdAt) : NaN;
+  if (!Number.isFinite(born)) return false;
+  const age = now - born;
+  return age >= 0 && age < warmupMs;
+}
+
+/**
+ * pushSend for a stored record: a `gone` verdict on a subscription that is
+ * still warming up is retried once, and reported as `{ ok: false, warming:
+ * true }` (never `gone`) if the service still does not know it.
+ */
+export async function pushSendWarming(subscription, payloadObject, vapid, options = {}) {
+  const {
+    createdAt = null,
+    warmupMs = PUSH_WARMUP_MS,
+    retryMs = PUSH_WARMUP_RETRY_MS,
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  } = options;
+  const first = await pushSend(subscription, payloadObject, vapid);
+  if (first.ok || !first.gone) return first;
+  if (!subscriptionWarmingUp(createdAt, Date.now(), warmupMs)) return first;
+  await sleep(retryMs);
+  const second = await pushSend(subscription, payloadObject, vapid);
+  if (second.ok || !second.gone) return second;
+  return { ok: false, warming: true };
+}
