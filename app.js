@@ -1570,7 +1570,7 @@ window.addEventListener('popstate', () => {
 /* ── text shared into the app from the share sheet ──
    manifest.json registers a share_target, so another app's Share → cents.
    arrives as a query on this URL (?title=…&text=…&url=…), ahead of the #add
-   fragment the target names. It is PUT IN the Magic entry, never saved: the
+   fragment the target names. It is PUT IN the Quick entry, never saved: the
    text is whatever the other app chose to send ("€18.50 at Tesco 12/09"), and
    the parser plus its live preview is what turns that into an entry the user
    can read and confirm first. Consumed once, in the Add screen, because the
@@ -3373,7 +3373,7 @@ function catTotalsForEntries(entries) {
 function isBalanceAdjustmentEntry(entry) {
   if (!entry || typeof entry.details !== 'string') return false;
   // Compared case-insensitively: the balance editor writes "Aldi withdrawal"
-  // and the magic field title-cases the same phrase to "Aldi Withdrawal", and
+  // and the quick field title-cases the same phrase to "Aldi Withdrawal", and
   // both describe the same adjustment - one of them must not count as spending.
   const details = entry.details.trim().toLowerCase();
   const short = methodShort(entry.method).toLowerCase();
@@ -4198,41 +4198,6 @@ function renderUndoFab() {
   );
 }
 
-// ---------- confetti ----------
-function triggerConfetti() {
-  // The only caller (screenDashboard) already guards confetti to once per
-  // month via window.__confettiMonth, so no extra guard is needed here.
-  const colors = ['#157A4A','#35B877','#8FD3B3','#E3E3DC','#FFFFFF','#8C928A'];
-  // Prefer canvas-confetti when it's loaded: layered bursts with physics.
-  if (typeof window.confetti === 'function') {
-    const base = { colors, zIndex: 9999, disableForReducedMotion: true, gravity: 0.9, decay: 0.93, scalar: 0.9 };
-    window.confetti({ ...base, particleCount: 60, spread: 360, startVelocity: 28, ticks: 90, origin: { x: 0.5, y: 0.75 } });
-    setTimeout(() => window.confetti({ ...base, particleCount: 26, angle: 60, spread: 60, startVelocity: 42, ticks: 110, origin: { x: 0, y: 0.8 } }), 200);
-    setTimeout(() => window.confetti({ ...base, particleCount: 26, angle: 120, spread: 60, startVelocity: 42, ticks: 110, origin: { x: 1, y: 0.8 } }), 350);
-    return;
-  }
-  // Lazy-load canvas-confetti; the DOM fallback below covers a load failure.
-  loadVendor('confetti', { js: 'vendor/confetti.browser.min.js' })
-    .then(() => { if (typeof window.confetti === 'function') triggerConfetti(); else domConfetti(colors); })
-    .catch(() => domConfetti(colors));
-}
-
-// DOM confetti fallback when the library is missing or fails to load.
-function domConfetti(colors) {
-  for (let i = 0; i < 60; i++) {
-    const piece = document.createElement('div');
-    piece.className = 'confetti-piece';
-    piece.style.left = Math.random() * 100 + '%';
-    piece.style.animationDelay = Math.random() * 1.5 + 's';
-    piece.style.animationDuration = (2 + Math.random() * 2) + 's';
-    piece.style.background = colors[Math.floor(Math.random() * colors.length)];
-    piece.style.width = (5 + Math.random() * 8) + 'px';
-    piece.style.height = (5 + Math.random() * 8) + 'px';
-    document.body.appendChild(piece);
-    setTimeout(() => piece.remove(), 4000);
-  }
-}
-
 // ---------- fuzzy search ----------
 function fuzzyMatch(text, query) {
   if (!query) return true;
@@ -4531,7 +4496,7 @@ function parseNaturalLanguage(text) {
   // both sides), duplicate words collapse, and content words are title-cased
   // - so "Spent €18.50 at Tesco from Revolut yesterday" → "Tesco" while
   // "pint of Guinness" keeps its meaning.
-  const details = cleanMagicDescription(raw, amountText);
+  const details = cleanQuickDescription(raw, amountText);
   const guessed = parseReceiptLine(details);
   // An explicit transfer between two tracked methods - "transfer 50 from AIB
   // to Revolut". Requiring both ends (and a transfer verb) keeps shopping
@@ -4546,7 +4511,7 @@ function parseNaturalLanguage(text) {
   }
   if (isTransferToCard) {
     // Move the value from the payment account into the gift card. `method` is
-    // kept (the card) so the preview/chips render; addMagic uses `transfer`
+    // kept (the card) so the preview/chips render; addQuick uses `transfer`
     // to build the two-leg transfer pair.
     return { date, type: 'transfer', transfer: { from: fundingSource, to: brand }, amount, details, category: 'GC', method: brand };
   }
@@ -4566,7 +4531,7 @@ function parseNaturalLanguage(text) {
     };
     let cleanRaw = raw;
     for (const s of splices) { const mv = methodWords[s.method]; if (mv) cleanRaw = cleanRaw.replace(mv, ' '); }
-    const splitDetails = cleanMagicDescription(cleanRaw, '') || 'Entry';
+    const splitDetails = cleanQuickDescription(cleanRaw, '') || 'Entry';
     return {
       date, type: isCredit ? 'credit' : 'expense', amount: splitTotal, details: splitDetails,
       category: isCredit ? 'misc' : guessed.category, method: splices[0].method, split: splices,
@@ -4575,12 +4540,12 @@ function parseNaturalLanguage(text) {
   return { date, type: isCredit ? 'credit' : 'expense', amount, details, category: isCredit ? 'misc' : guessed.category, method };
 }
 
-// ── Magic-entry description cleaner ──
+// ── Quick-entry description cleaner ──
 // Two-phase best-effort cleaner: strip provable value-noise first (amount,
 // currency, dates, ordinals, numbers, units, payment channels, verbs,
 // articles), then keep the meaningful words - prepositions only when they sit
 // between two content words, no consecutive duplicates, title-cased.
-const MAGIC_STOP = new Set([
+const QUICK_STOP = new Set([
   'the', 'a', 'an', 'i', 'my', 'our', 'some', 'any', 'just', 'only',
   'about', 'around', 'approx', 'approximately', 'am', 'pm',
   'income', 'received', 'salary', 'paid', 'got', 'paycheck', 'wage', 'wages',
@@ -4589,24 +4554,24 @@ const MAGIC_STOP = new Set([
 ]);
 // Functional prepositions: pure glue that only survives between two content
 // words ("pint of Guinness"). They never start a description on their own.
-const MAGIC_PREPS = new Set([
+const QUICK_PREPS = new Set([
   'at', 'from', 'on', 'using', 'via', 'with', 'for', 'in', 'to', 'of', 'by',
   'per', 'each',
 ]);
 // Positional words that double as the first word of real brand names
 // ("In & Out", "On The Run", "The Point"). They are preserved at the start of
 // a description when what follows looks like a proper noun (capitalised).
-const MAGIC_BRAND_START = new Set(['the', 'a', 'an', 'in', 'on']);
+const QUICK_BRAND_START = new Set(['the', 'a', 'an', 'in', 'on']);
 // Connectors that join two words of a name ("Fish & Chips", "Bar and Grill").
-const MAGIC_CONNECTORS = new Set(['&', 'and']);
-const MAGIC_EDGE_PUNCT = /^[,.;:!?()\[\]"'\-—-]+|[,.;:!?()\[\]"'\-—-]+$/g;
+const QUICK_CONNECTORS = new Set(['&', 'and']);
+const QUICK_EDGE_PUNCT = /^[,.;:!?()\[\]"'\-—-]+|[,.;:!?()\[\]"'\-—-]+$/g;
 // Prepositions and connectors stay lowercase mid-description ("Pint of Guinness").
-const MAGIC_LOWERCASE = new Set([...MAGIC_PREPS, 'and']);
+const QUICK_LOWERCASE = new Set([...QUICK_PREPS, 'and']);
 function isContentToken(t) {
-  return !!t && /[a-z0-9]/i.test(t) && !MAGIC_CONNECTORS.has(t.toLowerCase())
-    && !MAGIC_STOP.has(t.toLowerCase()) && !MAGIC_PREPS.has(t.toLowerCase());
+  return !!t && /[a-z0-9]/i.test(t) && !QUICK_CONNECTORS.has(t.toLowerCase())
+    && !QUICK_STOP.has(t.toLowerCase()) && !QUICK_PREPS.has(t.toLowerCase());
 }
-function cleanMagicDescription(raw, amountText) {
+function cleanQuickDescription(raw, amountText) {
   let s = String(raw || '')
     .replace(amountText ? amountText : '', ' ')
     .replace(/[€£$]/g, ' ')
@@ -4627,7 +4592,7 @@ function cleanMagicDescription(raw, amountText) {
   // place a brand-start "In"/"On"/"The" may legitimately appear.
   const atHead = () => !kept.some(isContentToken);
   for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i].replace(MAGIC_EDGE_PUNCT, '');
+    const t = tokens[i].replace(QUICK_EDGE_PUNCT, '');
     const low = t.toLowerCase();
 
     // Connector: keep when it visibly joins two words ("Fish & Chips",
@@ -4635,34 +4600,34 @@ function cleanMagicDescription(raw, amountText) {
     // Checked before the symbol filter so "&" survives. The left neighbour
     // must actually be the last KEPT word - a dropped stop word ("bought &
     // sold") must not let a leading "&" through.
-    if (t && MAGIC_CONNECTORS.has(low)) {
-      const left = tokens[i - 1]?.replace(MAGIC_EDGE_PUNCT, '');
-      const right = tokens[i + 1]?.replace(MAGIC_EDGE_PUNCT, '');
+    if (t && QUICK_CONNECTORS.has(low)) {
+      const left = tokens[i - 1]?.replace(QUICK_EDGE_PUNCT, '');
+      const right = tokens[i + 1]?.replace(QUICK_EDGE_PUNCT, '');
       if (kept.length && kept[kept.length - 1] === left
         && right && /[a-z0-9]/i.test(right)) kept.push(t);
       continue;
     }
     if (!t || !/[a-z0-9]/i.test(t)) continue;                                   // pure-symbol tokens
 
-    if (MAGIC_STOP.has(low)) {
+    if (QUICK_STOP.has(low)) {
       // Verbs and filler always drop. Articles keep their place only when they
       // precede a capitalised proper noun - "The Point", even mid-description
       // ("coffee at The Point") - never for a generic noun ("the rent" →
       // "rent", because "rent" is lowercase).
       const next = nextContentToken(tokens, i);
-      if (MAGIC_BRAND_START.has(low) && next && /[A-Z]/.test(next.charAt(0))) {
+      if (QUICK_BRAND_START.has(low) && next && /[A-Z]/.test(next.charAt(0))) {
         kept.push(t);
       }
       continue;
     }
 
-    if (MAGIC_PREPS.has(low)) {
+    if (QUICK_PREPS.has(low)) {
       // Prepositions survive mid-string between two content words, or at the
       // head of a proper-noun name ("In & Out") - but plain glue like
       // "at Tesco" / "from Revolut" is dropped.
       const prevContent = kept.length > 0 && isContentToken(kept[kept.length - 1]);
       const next = nextContentToken(tokens, i);
-      const brandStart = atHead() && MAGIC_BRAND_START.has(low) && next && /[A-Z]/.test(next.charAt(0));
+      const brandStart = atHead() && QUICK_BRAND_START.has(low) && next && /[A-Z]/.test(next.charAt(0));
       if ((prevContent && next) || brandStart) kept.push(t);
       continue;
     }
@@ -4674,13 +4639,13 @@ function cleanMagicDescription(raw, amountText) {
   let details = kept.join(' ')
     .replace(/\s*([,;:.])/g, '$1 ')
     .replace(/\s+/g, ' ')
-    .replace(MAGIC_EDGE_PUNCT, '')
+    .replace(QUICK_EDGE_PUNCT, '')
     .trim();
   if (!details) return 'Entry';
   // Title-case content words; keep prepositions/"and" lowercase mid-string, and
   // never mangle all-caps brands ("M&S", "IKEA", "B&Q").
   return details.split(' ').map((w, idx) => {
-    if (idx > 0 && MAGIC_LOWERCASE.has(w.toLowerCase())) return w.toLowerCase();
+    if (idx > 0 && QUICK_LOWERCASE.has(w.toLowerCase())) return w.toLowerCase();
     if (!/[a-z]/.test(w)) return w;                                             // all-caps token stays untouched
     return w.charAt(0).toUpperCase() + w.slice(1);
   }).join(' ');
@@ -4739,7 +4704,7 @@ function tryParseSplitSlices(lower) {
 
 function nextContentToken(tokens, from) {
   for (let j = from + 1; j < tokens.length; j++) {
-    const nt = tokens[j].replace(MAGIC_EDGE_PUNCT, '');
+    const nt = tokens[j].replace(QUICK_EDGE_PUNCT, '');
     if (nt && isContentToken(nt)) return nt;
   }
   return null;
@@ -6038,17 +6003,6 @@ function screenDashboard() {
       $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 20px;' },
         $('div', { class: 'budget-bar-fill', style: `height:100%;width:${pct}%;background:${pct > 90 ? 'var(--negative)' : 'var(--accent)'};transition:width .5s cubic-bezier(0.2,0.8,0.2,1);border-radius:99px;` }),
       ),
-        // Confetti on last day of month if under budget (once per session)
-        ...((() => {
-          const confettiMonth = monthKey(localDateKey(now));
-          const lastMonth = window.__confettiMonth;
-          const lastDay = new Date(Date.UTC(now.getFullYear(), now.getMonth() + 1, 0)).getUTCDate();
-          if (pct <= 100 && now.getDate() === lastDay && lastMonth !== confettiMonth) {
-            setTimeout(triggerConfetti, 600);
-            window.__confettiMonth = confettiMonth;
-          }
-          return [];
-        })()),
       // The Pulse block already carries Spent/Projected/Remaining/Avg-day/Burn;
       // keep only what it doesn't, as one compact line instead of a stat grid.
       $('div', { style: `display:flex;flex-wrap:wrap;gap:4px 20px;padding-top:14px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);` },
@@ -6132,7 +6086,7 @@ function screenDashboard() {
                 trackAction(() => { state.settings.recurring.push(...removed); persist(); }, `Removed recurring "${r.details}"`);
                 persist(); toast(`Removed recurring "${r.details}".`); render();
               }, title: 'Remove recurring' }, '×'),
-              $('span', { style: `display:inline-block;width:7px;height:7px;border-radius:50%;background:${isOverdue ? 'var(--negative)' : isDueSoon ? 'var(--accent)' : 'var(--muted)'};flex-shrink:0;box-shadow:${isDueSoon ? '0 0 0 3px var(--accent-glow)' : 'none'};` }),
+              $('span', { style: `display:inline-block;width:7px;height:7px;border-radius:50%;background:${isOverdue ? 'var(--negative)' : isDueSoon ? 'var(--accent)' : 'var(--muted)'};flex-shrink:0;box-shadow:${isDueSoon ? '0 0 0 3px var(--accent-fade)' : 'none'};` }),
               $('span', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, r.details),
               $('span', { class: 'pill', style: 'border-color:transparent;font-size:10px;flex-shrink:0;' }, methodShort(r.method)),
               $('span', { class: 'muted', style: 'font-size:11px;flex-shrink:0;' }, friendlyDate(r.nextDate)),
@@ -7043,19 +6997,19 @@ function screenAdd() {
   if (state.entries.length === 0) {
     c.appendChild($('div', { class: 'card', style: 'max-width:540px;margin:0 auto 20px;padding:20px 16px;text-align:center;' },
       $('div', { class: 'serif', style: 'font-size:19px;' }, 'You’re starting fresh.'),
-      $('div', { class: 'muted', style: 'font-size:12px;margin-top:4px;' }, 'Every tracker begins with one entry. Add your first one below - the magic field understands plain English.'),
+      $('div', { class: 'muted', style: 'font-size:12px;margin-top:4px;' }, 'Every tracker begins with one entry. Add your first one below - the quick field understands plain English.'),
     ));
   }
 
   // Natural-language and structured voice entry. The preview is a live parse:
   // a gentle on-ramp hint when empty, the parser's guidance when it can't find
   // an amount, and the fully resolved entry the moment it can.
-  const magicPreview = $('div', { class: 'muted', style: 'font-size:12px;min-height:18px;margin-bottom:10px;' });
+  const quickPreview = $('div', { class: 'muted', style: 'font-size:12px;min-height:18px;margin-bottom:10px;' });
   // Live detection chips - each part of the grammar lights up the moment the
   // parser resolves it, so the input teaches itself as you type.
   const detectRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;' });
   const detectParts = ['Amount', 'Category', 'Account', 'Date'].map(name => {
-    const el = $('span', { class: 'magic-detect-chip', 'aria-hidden': 'true', style: 'display:inline-flex;align-items:center;gap:5px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted);transition:border-color .15s,color .15s,background .15s;' }, name);
+    const el = $('span', { class: 'quick-detect-chip', 'aria-hidden': 'true', style: 'display:inline-flex;align-items:center;gap:5px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;font-weight:600;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted);transition:border-color .15s,color .15s,background .15s;' }, name);
     detectRow.append(el);
     return { name, el };
   });
@@ -7075,23 +7029,23 @@ function screenAdd() {
       d.el.append(good ? iconSpan('check-circle', 'sm') : $('span', { 'aria-hidden': 'true', style: 'font-size:9px;line-height:1;' }, '·'), $('span', {}, ' ' + d.name));
     }
   };
-  const renderMagicPreview = (text) => {
+  const renderQuickPreview = (text) => {
     const parsed = parseNaturalLanguage(text);
     if (!String(text || '').trim()) {
-      magicPreview.textContent = 'Start with an amount - the preview fills in as you type.';
-      magicPreview.style.color = '';
+      quickPreview.textContent = 'Start with an amount - the preview fills in as you type.';
+      quickPreview.style.color = '';
       syncDetectChips(null);
       return;
     }
     if (parsed?.error) {
-      magicPreview.textContent = parsed.error;
-      magicPreview.style.color = 'var(--negative)';
+      quickPreview.textContent = parsed.error;
+      quickPreview.style.color = 'var(--negative)';
       syncDetectChips(null);
       return;
     }
-    magicPreview.style.color = '';
+    quickPreview.style.color = '';
     syncDetectChips(parsed);
-    magicPreview.textContent = parsed
+    quickPreview.textContent = parsed
       ? (parsed.type === 'transfer'
         ? `Transfer · ${methodShort(parsed.transfer.from)} → ${methodShort(parsed.transfer.to)} · ${fmt(parsed.amount)} · ${parsed.details} · ${friendlyDate(parsed.date)}`
         : (parsed.split && parsed.split.length >= 2
@@ -7099,8 +7053,8 @@ function screenAdd() {
           : `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}`))
       : '';
   };
-  const magicInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => renderMagicPreview(e.target.value) });
-  const magicExamples = [
+  const quickInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => renderQuickPreview(e.target.value) });
+  const quickExamples = [
     { label: 'coffee 3.50 cash', hint: 'paid in cash' },
     { label: 'groceries 24: 10 cash, 14 revolut', hint: 'split payment' },
     { label: 'tesco shop 6: 2 aldi, 4 revolut', hint: 'split across a gift card and an account' },
@@ -7108,11 +7062,11 @@ function screenAdd() {
     { label: 'rent 850 from AIB', hint: 'a bill from an account' },
   ];
 
-  const magicChips = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;' },
-    ...magicExamples.map(ex => $('button', { type: 'button', class: 'magic-chip', 'aria-label': `Example: ${ex.label} (${ex.hint})`, onClick: () => {
-      magicInput.value = ex.label;
-      renderMagicPreview(magicInput.value);
-      magicInput.focus();
+  const quickChips = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;' },
+    ...quickExamples.map(ex => $('button', { type: 'button', class: 'quick-chip', 'aria-label': `Example: ${ex.label} (${ex.hint})`, onClick: () => {
+      quickInput.value = ex.label;
+      renderQuickPreview(quickInput.value);
+      quickInput.focus();
     } }, ex.label)),
   );
   // A line shared into the app (share_target) lands here, once: the screen may
@@ -7123,9 +7077,9 @@ function screenAdd() {
   if (pendingShare) {
     const shared = pendingShare;
     pendingShare = null;
-    magicInput.value = shared;
-    renderMagicPreview(shared);
-    queueMicrotask(() => { if (magicInput.isConnected) magicInput.focus(); });
+    quickInput.value = shared;
+    renderQuickPreview(shared);
+    queueMicrotask(() => { if (quickInput.isConnected) quickInput.focus(); });
     toast('Shared into the quick entry — check the preview, then Add.');
   }
   // Every entry that leaves this screen goes through here, so adding is
@@ -7151,9 +7105,9 @@ function screenAdd() {
     persist();
   };
 
-  const addMagic = () => {
-    const parsed = parseNaturalLanguage(magicInput.value);
-    if (!parsed || parsed.error) { toast(parsed?.error || 'Describe an entry first.'); magicInput.focus(); return; }
+  const addQuick = () => {
+    const parsed = parseNaturalLanguage(quickInput.value);
+    if (!parsed || parsed.error) { toast(parsed?.error || 'Describe an entry first.'); quickInput.focus(); return; }
     if (parsed.type === 'transfer') {
       // Funding a gift card with a payment account is a two-leg transfer: the
       // payment account is debited and the card is credited, sharing one id.
@@ -7198,19 +7152,19 @@ function screenAdd() {
     const recognition = new Recognition();
     recognition.lang = 'en-IE'; recognition.interimResults = false; recognition.maxAlternatives = 1;
     voiceInputBtn.textContent = 'Listening…'; voiceInputBtn.disabled = true;
-    recognition.onresult = ev => { magicInput.value = ev.results[0][0].transcript; magicInput.dispatchEvent(new Event('input')); };
+    recognition.onresult = ev => { quickInput.value = ev.results[0][0].transcript; quickInput.dispatchEvent(new Event('input')); };
     recognition.onerror = () => toast('Could not hear that. Try again.');
     recognition.onend = () => { restoreVoiceLabel(); voiceInputBtn.disabled = false; };
     recognition.start();
   } }, iconSpan('mic', 'sm'), ' Voice');
   c.appendChild($('div', { class: 'card', style: `max-width:540px;margin:0 auto 20px;padding:${isNarrow() ? '18px 16px' : '22px 16px'};` },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:6px;' }, 'Magic entry'),
+    $('div', { class: 'eyebrow', style: 'margin-bottom:6px;' }, 'Quick entry'),
     $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:10px;' }, 'Describe it naturally, check the preview, then add it.'),
-    magicChips,
-    magicInput,
+    quickChips,
+    quickInput,
     detectRow,
-    magicPreview,
-    $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' }, voiceInputBtn, $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: addMagic }, 'Add entry')),
+    quickPreview,
+    $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' }, voiceInputBtn, $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: addQuick }, 'Add entry')),
   ));
 
   const form = formView({
@@ -8032,24 +7986,6 @@ function bar(label, value, max, isMax) {
   );
 }
 
-// Draw-in the donut segments with anime.js; loads the library lazily on
-// first use. If the segments were detached by a re-render mid-load, or the
-// library fails, the final (fully-drawn) state is set instead.
-function drawDonutAnimated(segments) {
-  if (typeof anime !== 'undefined') {
-    anime({ targets: segments, strokeDashoffset: el => el._finalOff, duration: 1000, delay: anime.stagger(90), easing: 'easeOutQuart' });
-    return;
-  }
-  const settle = () => segments.forEach(seg => seg.setAttribute('stroke-dashoffset', String(seg._finalOff)));
-  loadVendor('anime', { js: 'vendor/anime.min.js' })
-    .then(() => {
-      if (typeof anime !== 'undefined' && segments.every(seg => seg.isConnected)) {
-        anime({ targets: segments, strokeDashoffset: el => el._finalOff, duration: 1000, delay: anime.stagger(90), easing: 'easeOutQuart' });
-      } else settle();
-    })
-    .catch(settle);
-}
-
 // ---------- category bars with sparkline ----------
 /** Monthly spending totals for a category over the last N months. */
 function categorySparkData(catId, months = 12) {
@@ -8106,14 +8042,10 @@ function donutChart(rows) {
     acc += frac;
     return seg;
   });
-  // Draw-in animation via anime.js; reduced-motion and missing-library
-  // fallbacks land on the final state immediately. anime.js is fetched
-  // lazily on first use; until it arrives the donut just shows final state.
-  if (!_reduceMotion) {
-    drawDonutAnimated(segments);
-  } else {
-    segments.forEach(seg => seg.setAttribute('stroke-dashoffset', String(seg._finalOff)));
-  }
+  // No draw-in: every segment is set to its final offset as it is built. A
+  // sweep here replayed on every repaint of the card, and a chart is a figure
+  // the reader has come to read rather than an arrival to announce.
+  segments.forEach(seg => seg.setAttribute('stroke-dashoffset', String(seg._finalOff)));
   const legend = rows.map(([cat, val], i) => {
     const pct = Math.round((val / total) * 100);
     // The legend prints the share; the popup is where the money is.
@@ -9433,17 +9365,6 @@ function _render() {
       lastScroll = now;
     };
     window.addEventListener('scroll', () => {
-      if (window.innerWidth < 640) {
-        // Phone edge treatment. The top progressive-blur band paints above the
-        // page shell, and the in-flow header sits inside that shell, so the
-        // header cannot out-stack the band — blurring it as it left the screen
-        // smeared the logo. So the band waits until the header has scrolled
-        // fully off (`__hdrBottom` is its document-space bottom, measured once
-        // per render) and only then fades in: the logo stays crisp on the way
-        // out, and content melts as it reaches the edge.
-        document.documentElement.classList.toggle('edge-scrolled', window.scrollY >= Math.max(6, window.__hdrBottom || 0));
-        return;
-      }
       const hdr = window.__stickyHdr;
       if (!hdr || !hdr.isConnected) {
         window.__stickyHdr = document.querySelector('.app-header');
@@ -9452,57 +9373,9 @@ function _render() {
       }
       if (rafId === null) rafId = requestAnimationFrame(applySticky);
     }, { passive: true });
-    // A resize can re-wrap the header (the layout's only wrapping row), so the
-    // phone edge treatment's scroll threshold has to be re-measured - the
-    // render-time cache would otherwise be stale after an orientation change.
-    window.addEventListener('resize', () => {
-      const hdr = document.querySelector('.app-header');
-      if (hdr) window.__hdrBottom = Math.round(hdr.getBoundingClientRect().bottom + window.scrollY);
-    }, { passive: true });
   }
   // Refresh the cached element - the header is rebuilt on every render.
   window.__stickyHdr = document.querySelector('.app-header');
-  // Document-space bottom of the header, for the phone edge treatment above:
-  // the scroll handler compares against it instead of reading layout per event.
-  window.__hdrBottom = window.__stickyHdr
-    ? Math.round(window.__stickyHdr.getBoundingClientRect().bottom + window.scrollY)
-    : 0;
-}
-
-// Watermelon-style mouse spotlight: feeds --mx/--my CSS vars so the hovered
-// card draws a radial glow that follows the cursor (see .card::after).
-// Desktop-only (fine pointers) and rAF-throttled so touch scroll and rapid
-// moves never read layout or write styles more than once per frame.
-function initCardSpotlight() {
-  if (window.__centsSpotlight) return;
-  window.__centsSpotlight = true;
-  const fine = typeof matchMedia === 'function' && matchMedia('(hover: hover) and (pointer: fine)').matches;
-  if (!fine) return;
-  let rafId = null;
-  // Repainting the card's radial gradient is the most expensive thing the
-  // page does while the mouse is moving (a full-surface paint per frame), so
-  // the glow is throttled to ~25fps and sub-10px micro-moves are skipped —
-  // the eye can't track the glow faster than that, and the page stays fluid.
-  let lastSpot = { card: null, x: -1e9, y: -1e9, t: 0 };
-  document.addEventListener('pointermove', (e) => {
-    if (rafId !== null) return;
-    rafId = requestAnimationFrame(() => {
-      rafId = null;
-      const target = e.target;
-      const card = target && target.closest ? target.closest('.card') : null;
-      if (!card || !card.isConnected) return;
-      const rect = card.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      const now = performance.now();
-      if (card === lastSpot.card
-        && Math.abs(x - lastSpot.x) < 10 && Math.abs(y - lastSpot.y) < 10
-        && now - lastSpot.t < 40) return;
-      lastSpot = { card, x, y, t: now };
-      card.style.setProperty('--mx', `${x}px`);
-      card.style.setProperty('--my', `${y}px`);
-    });
-  }, { passive: true });
 }
 
 // ---- PWA install prompt ----
@@ -9625,7 +9498,6 @@ window.addEventListener('DOMContentLoaded', () => {
       || !!document.body.querySelector('.swal2-container');
     document.documentElement.classList.toggle('modal-open', open);
   }).observe(document.body, { childList: true });
-  initCardSpotlight();
   // Boot: the PIN lock (or first-run onboarding) resolves first. Cloud sync
   // and the persisted-undo offer still start after unlock. The reminder
   // scheduler runs regardless of lock state so a reminder can never be

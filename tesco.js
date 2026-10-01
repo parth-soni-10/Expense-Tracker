@@ -433,7 +433,7 @@ export function storedShift(s, id, at) {
  * picked. A pay week runs Sunday → Saturday (WEEK_START_DOW), so the Sunday is the
  * date that says which week this is, and the week card reads a row's date back as
  * its weekday: "Sun 27 Sep · week off 7h". The shape is the sheet's own week-off
- * rows and what the magic entry writes for `week off 7h` — hours, no clock times,
+ * rows and what the quick entry writes for `week off 7h` — hours, no clock times,
  * the same note — so a week off added here exports, imports and merges exactly
  * like one that arrived in a file.
  *
@@ -541,7 +541,7 @@ export function storedPayslip(p, id, at) {
 }
 
 // ---------- quick entry: a shift typed as a sentence ----------
-// The Tesco tab's magic entry: one shift per line, written the way the shift is
+// The Tesco tab's quick entry: one shift per line, written the way the shift is
 // remembered rather than the way a form wants it — "mon 8-4 stock take",
 // "yesterday 12:30-20:15", "fri 20:00-01:00", "week off 7h". Pure text → rows,
 // so the harness can pin the grammar the way it pins the spreadsheet's
@@ -3342,10 +3342,10 @@ export function screenTesco(ctx) {
   screen.appendChild(buildAddCard());
   // ----- week off -----
   screen.appendChild(buildWeekOffCard());
-  // The Add tab's magic field, in shift clothes: describe it, watch the preview
+  // The Add tab's quick field, in shift clothes: describe it, watch the preview
   // resolve, then add it. Same grammar-shaped chips and example chips, because
   // the two fields teach the same habit — say it, check it, save it.
-  screen.appendChild(buildMagicCard());
+  screen.appendChild(buildQuickCard());
   // ----- roster scan -----
   screen.appendChild(buildScanCard());
   // ----- pay weeks -----
@@ -3394,7 +3394,7 @@ export function screenTesco(ctx) {
 
   // ================= week off =================
   // A booked week off has no clock times: it is a row that states the hours it
-  // pays and nothing else — the sheet's own shape, and what the magic entry
+  // pays and nothing else — the sheet's own shape, and what the quick entry
   // already writes for "week off 7h". This card is the one place that asks for
   // it outright: which week, and how many hours of pay.
   //
@@ -3402,7 +3402,7 @@ export function screenTesco(ctx) {
   // week's Sunday so the week card reads it back as the week it belongs to —
   // "Sun 27 Sep · week off 7h" — and pays it at the card rate (see shiftPay: a
   // row with hours and no times is a booked absence, not a Sunday worked). The
-  // preview is shiftPreviewLine over shiftPay, the same two functions the magic
+  // preview is shiftPreviewLine over shiftPay, the same two functions the quick
   // card previews with and the week row renders with, so what this card promises
   // and what the week card pays are one piece of arithmetic rather than two that
   // happen to agree today.
@@ -3441,16 +3441,16 @@ export function screenTesco(ctx) {
     );
   }
 
-  // ================= magic entry =================
+  // ================= quick entry =================
   // The parser is parseShiftText (module scope, harness-pinned); this card only
   // shows what it understood before anything is written. That preview matters
   // more here than on the Add tab: a mis-read time is a mis-paid week, and the
   // row it writes is worth real money.
-  function buildMagicCard() {
+  function buildQuickCard() {
     const preview = $('div', { class: 'muted', style: 'font-size:12px;min-height:18px;' });
     const detectRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin:0 0 8px;' });
     const detectParts = ['Date', 'Start', 'End', 'Special'].map(name => {
-      const el = $('span', { class: 'magic-detect-chip', 'aria-hidden': 'true' }, name);
+      const el = $('span', { class: 'quick-detect-chip', 'aria-hidden': 'true' }, name);
       detectRow.append(el);
       return { name, el };
     });
@@ -3467,7 +3467,7 @@ export function screenTesco(ctx) {
         Special: shifts.some(s => !!s.special),
       };
       for (const part of detectParts) {
-        part.el.classList.toggle('magic-detect-chip-on', !!on[part.name]);
+        part.el.classList.toggle('quick-detect-chip-on', !!on[part.name]);
         part.el.replaceChildren(on[part.name] ? iconSpan('check-circle', 'sm') : document.createTextNode('·'),
           $('span', {}, ' ' + part.name));
       }
@@ -3504,8 +3504,8 @@ export function screenTesco(ctx) {
       { label: 'week off 7h', hint: 'a booked week off, no clock times' },
       { label: '13/09 9-5 special', hint: 'a bank holiday abroad or a Sunday you worked' },
     ];
-    const chips = $('div', { class: 'tesco-magic-chips' },
-      ...examples.map(ex => $('button', { type: 'button', class: 'magic-chip', 'aria-label': `Example: ${ex.label} (${ex.hint})`, onClick: () => {
+    const chips = $('div', { class: 'tesco-quick-chips' },
+      ...examples.map(ex => $('button', { type: 'button', class: 'quick-chip', 'aria-label': `Example: ${ex.label} (${ex.hint})`, onClick: () => {
         input.value = ex.label;
         renderPreview(ex.label);
         input.focus();
@@ -3514,7 +3514,7 @@ export function screenTesco(ctx) {
     renderPreview('');
 
     return $('div', { class: 'card' },
-      $('div', { class: 'tesco-card-title' }, 'Magic entry', iconSpan('sparkle', 'md')),
+      $('div', { class: 'tesco-card-title' }, 'Quick entry', iconSpan('sparkle', 'md')),
       $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:10px;' }, 'One shift per line, written the way you remember it — check the preview, then add it.'),
       chips,
       input,
@@ -3726,7 +3726,7 @@ export function screenTesco(ctx) {
   // be unreadable on a phone, and every commit rebuilds the week card, which no
   // field holding a caret survives (see the payslip notes above). The sheet
   // validates through applyShiftEdit and previews the row with
-  // shiftPreviewLine — the same pair the magic entry uses — so what Save writes
+  // shiftPreviewLine — the same pair the quick entry uses — so what Save writes
   // is on screen before it is written, and the rules are the importer's own.
   function openShiftEditor(id) {
     const target = shifts().find(s => s.id === id);

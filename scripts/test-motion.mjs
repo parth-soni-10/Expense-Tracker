@@ -266,15 +266,35 @@ ok('the rows no longer animate in on their own', /menuRowIn|\.menu-level\.shown/
 ok('and nothing in the menu is staggered', /nth-child\(\d+\)\s*\{\s*animation-delay/.test(cssRules), false);
 ok('and app.js no longer arms a per-row entrance', /classList\.add\('shown'\)/.test(src), false);
 
-// The phone edge bands are decorative, and each one was a full-page backdrop
+// The phone edge bands were decorative, and each one was a full-page backdrop
 // sample per scrolled frame — the same trade the sticky header and the modal
-// scrims already lost. The rule is now the whole file's: no element re-samples
-// the page behind it. The bands themselves stay; this removed their cost, not
-// the design.
+// scrims already lost. The rule is the whole file's: no element re-samples the
+// page behind it. The bands themselves went in the slop pass, which is that trade
+// taken one step further: a masked tint costs no re-sampling, but it still costs
+// a painted strip on every scrolled frame plus a scroll listener and a header
+// measurement to reveal it — ornament on a page whose surfaces are already flat.
 ok('no declaration anywhere re-samples the page behind an element',
   /backdrop-filter\s*:/.test(cssRules), false);
-ok('and the phone edge treatment itself is still there',
-  /\.edge-blur-top span/.test(cssRules) && /\.edge-blur-bottom span/.test(cssRules), true);
+ok('and the phone edge bands are gone, with everything that existed to drive them',
+  /edge-blur|edge-scrolled|__hdrBottom/.test(cssRules + src), false);
+
+// ---------- the flourishes, pinned absent ----------
+// Every one of these was a delight rather than information: confetti at the
+// month's end, a disk popping into a checkmark on Save, a checkmark popping on
+// Paid, a donut drawing itself in, and a spotlight following the cursor across
+// every card. They are pinned as ABSENT because each is a plausible-looking
+// addition in review ("just a 0.3s pop") that buys a repaint on a screen someone
+// is trying to read, and two of them carried a vendored library with them. The
+// tests look at rules as well as call sites, so restoring one means deleting an
+// assertion rather than quietly re-adding a rule.
+ok('no confetti — not the burst, not the DOM fallback, not the keyframes',
+  /triggerConfetti|domConfetti|confettiFall|\.confetti-piece/.test(cssRules + src), false);
+ok('and neither of the two pop animations is back',
+  /@keyframes (savePop|checkPop)/.test(cssRules), false);
+ok('and nothing loads anime.js to draw the donut in',
+  /anime\.min\.js|drawDonutAnimated/.test(src), false);
+ok('and no card follows the cursor around',
+  /initCardSpotlight|--mx|var\(--my/.test(cssRules + src), false);
 
 // ---------- the chart popup wiring contract ----------
 // A chart mark's popup is the only way to read it — a bar is a shape, not a table
@@ -295,5 +315,5 @@ ok('and there is a wiring call per chart scope that needs one',
 
 console.log(fails.length
   ? `test-motion: ${fails.length} FAILED\n\n${fails.join('\n')}`
-  : `test-motion: OK — ${pass} assertions passed (a figure counts when it changes and rests on its exact total; a route change renders and waits on nothing; every chart mark is wired to a popup)`);
+  : `test-motion: OK — ${pass} assertions passed (a figure counts when it changes and rests on its exact total; a route change renders and waits on nothing; every chart mark is wired to a popup; nothing animates for its own sake)`);
 process.exitCode = fails.length ? 1 : 0;

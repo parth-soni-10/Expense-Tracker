@@ -11,8 +11,6 @@ falls back to native behaviour.
 | `popper.min.js`         | @popperjs/core   | 2.11.8    | MIT     | https://github.com/floating-ui/floating-ui                |
 | `tippy-bundle.umd.min.js` | tippy.js (bundle, needs Popper global) | 6.x | MIT | https://github.com/atomiks/tippyjs |
 | `Sortable.min.js`       | SortableJS       | 1.15.2    | MIT     | https://github.com/SortableJS/Sortable                    |
-| `confetti.browser.min.js` | canvas-confetti | 1.9.3    | ISC     | https://github.com/catdad/canvas-confetti                 |
-| `anime.min.js`          | anime.js         | 3.2.2     | MIT     | https://github.com/juliangarnier/anime                    |
 | `flatpickr.min.js`      | flatpickr        | 4.6.13    | MIT     | https://github.com/flatpickr/flatpickr                    |
 | `flatpickr.min.css`     | flatpickr styles | 4.6.13    | MIT     | https://github.com/flatpickr/flatpickr                    |
 | `fuse.min.js`           | Fuse.js (fuzzy search) | 6.6.2 | Apache-2.0 | https://github.com/krisk/Fuse                |
@@ -60,13 +58,17 @@ the streaming compiler requires — a mislabelled response is rejected outright.
 
 `index.html` loads **only `sweetalert2.min.js`** eagerly (confirm dialogs are
 used by every destructive action). Everything else — flatpickr (+ its CSS),
-tippy + Popper, SortableJS, canvas-confetti, anime.js, Fuse, tabbable +
-focus-trap and SheetJS — is **fetched lazily on first use** by `loadVendor()` in
-`app.js`, so the initial page load downloads ~200KB less JavaScript. `vendor/*`
-files still ship with the site; they're just requested on demand (e.g. the first
-time a date field is opened, the heatmap renders, a category chip list is shown,
-confetti fires, the insights donut animates, a search field is typed in, a modal
-opens for the first time, or a workbook is imported).
+tippy + Popper, SortableJS, Fuse, tabbable + focus-trap and SheetJS — is
+**fetched lazily on first use** by `loadVendor()` in `app.js`, so the initial
+page load downloads ~200KB less JavaScript. `vendor/*` files still ship with the
+site; they're just requested on demand (e.g. the first time a date field is
+opened, the heatmap renders, a category chip list is shown, a search field is
+typed in, a modal opens for the first time, or a workbook is imported).
+
+canvas-confetti and anime.js were vendored here for a month-end confetti burst
+and the Insights donut's draw-in. Both were removed (and both files deleted) in
+the slop pass: neither was information, and each bought a repaint on a screen the
+reader was trying to read.
 
 `xlsx.mini.min.js` is the **mini** build on purpose: it reads `.xlsx`/`.xlsm`
 and skips the writers, the codepage tables and the legacy `.xls` (BIFF) reader,

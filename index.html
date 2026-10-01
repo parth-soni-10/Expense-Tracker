@@ -221,16 +221,6 @@
   <noscript>
     <div style="padding:32px;font-family:'Space Grotesk',system-ui,sans-serif;">This app needs JavaScript enabled to run.</div>
   </noscript>
-  <!-- Progressive blur edges (phones only). Decorative, fixed and
-       pointer-transparent: a thin masked backdrop-filter band melts content as
-       it approaches the top edge and as it slides under the floating tab dock.
-       Deliberately thin — the expensive version this app avoids is a
-       translucent *sticky header*, a bar that re-composites on every scroll
-       frame. The top band also stays hidden until the page has actually moved
-       (html.edge-scrolled, set in app.js), so the in-flow header is never
-       blurred while it is still sitting at the top. -->
-  <div class="edge-blur edge-blur-top" aria-hidden="true"><span></span><span></span></div>
-  <div class="edge-blur edge-blur-bottom" aria-hidden="true"><span></span><span></span></div>
   <div id="app"></div>
   <!-- Instant splash: paints the cents. mark with zero network requests while
        the 370 KB module downloads, so a cold mobile open never stares at a

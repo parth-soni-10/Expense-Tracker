@@ -88,7 +88,7 @@
   #                         six dock tabs compress instead of hanging off the
   #                         screen edge (the failure found on the Insights
   #                         screen at a phone width)
-  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/check-icon-refs.mjs && node scripts/check-boot-payload.mjs && node scripts/check-app-shell.mjs && node scripts/check-a11y.mjs && node scripts/check-mobile-layout.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-cloud.mjs && node scripts/test-reminder-push.mjs && node scripts/test-motion.mjs && node scripts/test-ui-libs.mjs"
+  command = "node scripts/check-netlify-config.mjs && node scripts/check-sw-shell.mjs && node scripts/check-image-hygiene.mjs && node scripts/check-csp-hashes.mjs && node scripts/check-freshness.mjs && node scripts/check-icon-refs.mjs && node scripts/check-boot-payload.mjs && node scripts/check-app-shell.mjs && node scripts/check-a11y.mjs && node scripts/check-mobile-layout.mjs && node scripts/check-css-tokens.mjs && node scripts/test-integrity.mjs && node scripts/test-profiles.mjs && node scripts/test-tesco.mjs && node scripts/test-sync.mjs && node scripts/test-cloud.mjs && node scripts/test-reminder-push.mjs && node scripts/test-motion.mjs && node scripts/test-ui-libs.mjs"
 
   # Pin the build runtime. scripts/test-tesco.mjs imports tesco.js — a plain
   # .js browser module, and this repo has no package.json (no-build model), so

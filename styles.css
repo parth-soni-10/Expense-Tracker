@@ -37,9 +37,8 @@
   --muted: #6E6E67;
   --line: #E3E3DC;
   --accent: #157A4A;
-  --accent-2: #157A4A;
   --accent-soft: #E9F2EC;
-  --accent-glow: rgba(21, 122, 74, 0.12);
+  --accent-fade: rgba(21, 122, 74, 0.12);
   --positive: #157A4A;
   --negative: #C0392B;
 
@@ -51,25 +50,15 @@
   --filter-h: 28px;
   --filter-radius: 6px;
 
-  /* Brand fill - solid emerald (kept as a single value so every
-     `background: var(--gradient)` surface renders flat) */
-  --gradient: #157A4A;
-
-  /* Ledger surfaces are solid - no glass blur tokens */
-  --glass-highlight: rgba(255, 255, 255, 0);
-  --card-glass: #FFFFFF;
-
   /* Hairline stops - emerald tint used sparingly for focus rings */
   --hairline-a: rgba(21, 122, 74, 0.30);
-  --hairline-b: rgba(21, 122, 74, 0.10);
-  --hairline-c: rgba(21, 122, 74, 0.18);
 
   /* Shadows - near-flat, hairline + tiny lift only */
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.07);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.09);
   --shadow-xl: 0 16px 40px rgba(0, 0, 0, 0.12);
-  --shadow-glow: 0 0 0 1px var(--hairline-a);
+  --ring: 0 0 0 1px var(--hairline-a);
 
   --radius: 6px;
   --radius-lg: 10px;
@@ -84,7 +73,6 @@
 
   /* Motion tokens — calm, professional micro-interactions */
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
-  --ease-spring: cubic-bezier(0.34, 1.35, 0.64, 1);
 }
 
 /* ── Dark mode — warm espresso night ── */
@@ -99,29 +87,21 @@
   --muted: #8C928A;
   --line: #272B26;
   --accent: #35B877;
-  --accent-2: #35B877;
   --accent-soft: #1C2A20;
-  --accent-glow: rgba(53, 184, 119, 0.14);
+  --accent-fade: rgba(53, 184, 119, 0.14);
   --positive: #3EC98A;
   --negative: #F06A5B;
 
   --chart-line: #35B877;
   --chart-bar: #35B877;
 
-  --gradient: #35B877;
-
-  --glass-highlight: rgba(255, 255, 255, 0.05);
-  --card-glass: #171A17;
-
   --hairline-a: rgba(53, 184, 119, 0.34);
-  --hairline-b: rgba(53, 184, 119, 0.12);
-  --hairline-c: rgba(53, 184, 119, 0.22);
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.40);
   --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45);
   --shadow-lg: 0 8px 26px rgba(0, 0, 0, 0.50);
   --shadow-xl: 0 16px 44px rgba(0, 0, 0, 0.55);
-  --shadow-glow: 0 0 0 1px var(--hairline-a);
+  --ring: 0 0 0 1px var(--hairline-a);
 }
 
 [data-theme="dark"] .modal-bg { background: rgba(0, 0, 0, 0.74); }
@@ -195,49 +175,7 @@ body {
   min-height: 100dvh;
   position: relative;
   overflow-x: hidden;
-  /* Haikei-style generative mesh — layered radial glows pinned to the layer
-     behind every card. Painted once, no per-frame work while scrolling. */
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"),
-    radial-gradient(ellipse 90% 60% at 15% -5%, var(--accent-glow), transparent 55%),
-    radial-gradient(ellipse 70% 70% at 110% 25%, rgba(194, 65, 12, 0.06), transparent 55%),
-    radial-gradient(ellipse 60% 70% at -10% 90%, rgba(217, 119, 6, 0.05), transparent 55%),
-    radial-gradient(ellipse 80% 60% at 85% 100%, var(--accent-glow), transparent 55%);
 }
-[data-theme="dark"] body {
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E"),
-    radial-gradient(ellipse 90% 60% at 15% -5%, var(--accent-glow), transparent 55%),
-    radial-gradient(ellipse 70% 70% at 110% 25%, rgba(242, 146, 90, 0.05), transparent 55%),
-    radial-gradient(ellipse 60% 70% at -10% 90%, rgba(245, 158, 11, 0.04), transparent 55%),
-    radial-gradient(ellipse 80% 60% at 85% 100%, var(--accent-glow), transparent 55%);
-}
-/* Ambient gradient orbs — static. The old drift animation was the app's only
-   always-on compositor cost: two 40-46vmax layers animated on a 46s/58s loop
-   meant two full-screen layers composited every frame, forever, even while
-   typing in a form. Stopped in place, the glow is identical with zero cost. */
-body::before, body::after {
-  content: '';
-  position: fixed;
-  z-index: 0;
-  pointer-events: none;
-  border-radius: 50%;
-  opacity: 0.5;
-}
-body::before {
-  width: 46vmax; height: 46vmax;
-  top: -12vmax; left: -10vmax;
-  background: radial-gradient(circle at 35% 35%, var(--accent-glow), transparent 62%);
-}
-body::after {
-  width: 40vmax; height: 40vmax;
-  bottom: -14vmax; right: -8vmax;
-  background: radial-gradient(circle at 60% 60%, color-mix(in srgb, var(--accent-2) 12%, transparent), transparent 62%);
-}
-/* Note: background-attachment: fixed is deliberately NOT used on the body.
-   It forces Chrome to re-rasterize the large radial gradients on every scroll
-   frame, which is the classic "laggy scroll" culprit. The gradients scroll
-   with the page (tiled + cached). */
 
 h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
 a { color: inherit; text-decoration: none; }
@@ -258,8 +196,8 @@ button { font-family: inherit; cursor: pointer; }
 /* Display font - Space Grotesk - the cents. brand voice */
 .serif {
   font-family: 'Space Grotesk', system-ui, sans-serif;
-  
-  letter-spacing: -0.02em;
+  font-style: normal;
+  letter-spacing: -0.01em;
 }
 /* The hero total counts when it changes (see paintFigure). Tabular figures stop
    the number's own width shifting as the digits roll, which is what makes a
@@ -267,15 +205,15 @@ button { font-family: inherit; cursor: pointer; }
 .dashboard-total { font-variant-numeric: tabular-nums; }
 /* Metrics — Inter 18/24 semi bold, -0.1px tracking (the ledger face) */
 .display-num {
-  font-family: 'Space Grotesk', system-ui, sans-serif;
+  font-family: 'IBM Plex Mono', 'Space Grotesk', monospace;
   font-feature-settings: 'tnum';
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.1px;
-  font-weight: 600;
+  font-weight: 500;
   font-size: 18px;
   line-height: 24px;
 }
-.tnum { font-variant-numeric: tabular-nums; font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 500; letter-spacing: -0.1px; }
+.tnum { font-variant-numeric: tabular-nums; font-family: 'IBM Plex Mono', 'Space Grotesk', monospace; font-weight: 500; letter-spacing: -0.1px; }
 
 /* ── Shared micro-interaction timing ──
    Calm and fast: hovers glide at 0.14–0.15s, presses land in ~0.12s. The old
@@ -298,49 +236,18 @@ button { font-family: inherit; cursor: pointer; }
 }
 
 /* ============================================================
-   Cards — glass with gradient hairline + mouse spotlight
+   Cards — one solid surface with a hairline border
    ============================================================ */
+
 .card {
   position: relative;
-  background: var(--card-glass);
-  border: 1px solid transparent;
-  background-clip: padding-box;
+  background: var(--card);
+  border: 1px solid var(--line);
   border-radius: var(--radius-card);
   padding: 18px 16px;
-  box-shadow: var(--shadow-sm), inset 0 1px 0 var(--glass-highlight);
-  transition: transform 0.25s var(--ease-out), box-shadow 0.25s, background 0.2s;
+  box-shadow: none;
+  transition: background 0.2s;
 }
-/* Gradient hairline border */
-.card::before {
-  content: '';
-  position: absolute; inset: 0;
-  border-radius: inherit;
-  padding: 1px;
-  background: linear-gradient(155deg, var(--hairline-a), var(--hairline-b) 45%, var(--hairline-c));
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
-  opacity: 0.6;
-  transition: opacity 0.3s;
-}
-.card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md), var(--shadow-glow), inset 0 1px 0 var(--glass-highlight);
-}
-.card:hover::before { opacity: 1; }
-/* Mouse-tracked spotlight (CSS vars fed by app.js) */
-.card::after {
-  content: '';
-  position: absolute; inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.35s;
-  background: radial-gradient(340px circle at var(--mx, 50%) var(--my, 0%), var(--accent-glow), transparent 62%);
-}
-.card:hover::after { opacity: 1; }
 
 /* ============================================================
    Forms
@@ -368,7 +275,7 @@ select {
   border-radius: var(--radius);
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-glow); }
+select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-fade); }
 
 /* ============================================================
    Buttons
@@ -383,27 +290,16 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   background: transparent;
   transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.12s var(--ease-out), box-shadow 0.2s;
 }
-/* Primary — gradient pill with a shine sweep */
+/* Primary — a solid emerald fill */
 .btn-primary {
   position: relative;
   overflow: hidden;
-  background: var(--gradient);
+  background: var(--accent);
   color: #FFFFFF;
-  border-radius: 999px;
-  box-shadow: var(--shadow-glow);
-  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.2s var(--ease-spring), box-shadow 0.2s;
+  border-radius: var(--radius);
+  box-shadow: none;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, transform 0.12s var(--ease-out);
 }
-.btn-primary::after {
-  content: '';
-  position: absolute; top: 0; left: -70%;
-  width: 45%; height: 100%;
-  background: linear-gradient(105deg, transparent, rgba(255, 255, 255, 0.5), transparent);
-  transform: skewX(-20deg);
-  pointer-events: none;
-}
-.btn-primary:hover { transform: translateY(-1px) scale(1.02); box-shadow: 0 14px 40px -8px var(--accent-glow); }
-.btn-primary:hover::after { animation: btnShine 0.9s ease; }
-@keyframes btnShine { to { left: 130%; } }
 .btn-ghost {
   color: var(--ink);
   border-color: var(--line);
@@ -437,8 +333,8 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .btn-link:hover { border-bottom-color: var(--accent); opacity: 0.85; }
 .btn-link:active { opacity: 0.6; transform: translateY(1px); }
 
-/* Magic-entry example chips — tappable on-ramps that fill the parser field */
-.magic-chip {
+/* Quick-entry example chips — tappable on-ramps that fill the parser field */
+.quick-chip {
   font-size: 12px;
   padding: 6px 12px;
   border: 1px solid var(--line);
@@ -450,22 +346,22 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   font-weight: 500;
   transition: border-color 0.15s, color 0.15s, background 0.15s, transform 0.12s var(--ease-out);
 }
-/* The live parse chips. The Add tab's magic field styles its own inline; the
+/* The live parse chips. The Add tab's quick field styles its own inline; the
    Tesco tab's shift field reuses them from here, so the two teach the same
    visual language with one definition. */
-.magic-detect-chip {
+.quick-detect-chip {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600;
   padding: 4px 10px; border-radius: 999px;
   border: 1px solid var(--line); color: var(--muted);
   transition: border-color 0.15s, color 0.15s, background 0.15s;
 }
-.magic-detect-chip-on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-.tesco-magic-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.quick-detect-chip-on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.tesco-quick-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 
-.magic-chip:hover { border-color: var(--accent); color: var(--accent); }
-.magic-chip:active { transform: scale(0.97); }
-.magic-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.quick-chip:hover { border-color: var(--accent); color: var(--accent); }
+.quick-chip:active { transform: scale(0.97); }
+.quick-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ============================================================
    Pills
@@ -478,10 +374,10 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   letter-spacing: 0.06em;
   text-transform: uppercase;
   font-weight: 600;
-  background: var(--card-glass);
+  background: var(--card);
   transition: transform 0.14s var(--ease-out), background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.2s;
 }
-.pill:hover { border-color: var(--accent); color: var(--accent); box-shadow: var(--shadow-glow); }
+.pill:hover { border-color: var(--accent); color: var(--accent); box-shadow: var(--ring); }
 .pill-cat {
   font-family: inherit; text-transform: none; letter-spacing: normal;
   font-size: 13px; line-height: 16px; font-weight: 500;
@@ -490,10 +386,10 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 }
 .pill-cat:hover { background: var(--accent-soft); border-color: var(--accent); }
 .pill-cat[data-active="true"] {
-  background: var(--gradient);
+  background: var(--accent);
   color: #FFFFFF;
   border-color: transparent;
-  box-shadow: var(--shadow-glow);
+  box-shadow: var(--ring);
 }
 
 /* ============================================================
@@ -526,7 +422,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   font-size: 12px; font-weight: 600;
   padding: 6px 14px;
   border-radius: 999px;
-  background: var(--card-glass);
+  background: var(--card);
   border: 1px solid var(--line);
   cursor: pointer;
   font-family: inherit;
@@ -556,18 +452,13 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   flex-shrink: 0;
 }
 .app-header .logo .mark {
-  width: 44px; height: 44px; border-radius: 14px;
-  background: var(--gradient);
+  width: 44px; height: 44px; border-radius: var(--radius);
+  background: var(--accent);
   color: #FFFFFF;
   display: grid; place-items: center;
-  font-family: 'Space Grotesk', system-ui, sans-serif; 
+  font-family: 'Space Grotesk', system-ui, sans-serif;
   font-size: 22px; font-weight: 500;
-  box-shadow: var(--shadow-glow), inset 0 1px 0 rgba(255,255,255,0.35);
-  transition: transform 0.25s var(--ease-spring), box-shadow 0.25s;
-}
-.app-header .logo:hover .mark {
-  transform: scale(1.09) rotate(-4deg);
-  box-shadow: 0 16px 44px -8px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.35);
+  box-shadow: none;
 }
 
 /* Dark toggle + menu trigger — glass circles */
@@ -576,7 +467,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   width: 40px; height: 40px;
   border: 1px solid var(--line);
   border-radius: 50%;
-  background: var(--card-glass);
+  background: var(--card);
   color: var(--ink);
   cursor: pointer;
   position: relative;
@@ -627,17 +518,11 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 }
 .page-title {
   font-family: 'Space Grotesk', system-ui, sans-serif;
-   font-weight: 400;
+  font-style: normal;
+  font-weight: 600;
   font-size: 38px; line-height: 1.05;
   letter-spacing: -0.02em;
   color: var(--ink);
-}
-@supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  .page-title {
-    background: linear-gradient(120deg, var(--ink) 30%, var(--accent));
-    -webkit-background-clip: text; background-clip: text;
-    -webkit-text-fill-color: transparent;
-  }
 }
 .page-lede { color: var(--muted); font-size: 14px; }
 .page-section > .card, .dashboard-section > .card { margin-bottom: var(--page-gap) !important; }
@@ -679,35 +564,12 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .dashboard-hero {
   position: relative;
   align-items: flex-end;
-  background: linear-gradient(135deg, var(--card-glass), color-mix(in srgb, var(--accent-soft) 55%, transparent));
-  border: 1px solid transparent;
-  background-clip: padding-box;
+  background: var(--card);
+  border: 1px solid var(--line);
   border-radius: var(--radius-xl);
   padding: 26px 30px;
   overflow: hidden;
-  /* No backdrop blur: the hero sits in the viewport on scroll, and a blur
-     there would re-sample the moving backdrop on every frame. The translucent
-     gradient fill already reads as frosted glass. */
-  box-shadow: var(--shadow-lg), var(--shadow-glow), inset 0 1px 0 var(--glass-highlight);
   margin-bottom: 32px;
-}
-.dashboard-hero::before {
-  content: '';
-  position: absolute;
-  top: -70%; right: -15%;
-  width: 75%; height: 240%;
-  background: radial-gradient(closest-side, var(--accent-glow), transparent 70%);
-  pointer-events: none;
-}
-.dashboard-hero::after {
-  content: '';
-  position: absolute; inset: 0; border-radius: inherit; padding: 1px;
-  background: linear-gradient(155deg, var(--hairline-a), var(--hairline-b) 45%, var(--hairline-c));
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
 }
 .dashboard-hero > * { position: relative; }
 .dashboard-hero .dashboard-total { line-height: 1; margin: 8px 0 0; }
@@ -741,10 +603,9 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
      re-rasterize the blurred backdrop behind it. Solid reads identical and
      repaints stay cheap and localized. */
   background: var(--card);
-  border: 1px solid transparent;
-  background-clip: padding-box;
+  border: 1px solid var(--line);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-xl), inset 0 1px 0 var(--glass-highlight);
+  box-shadow: var(--shadow-lg);
   width: 100%; max-width: 540px;
   padding: 32px;
   /* A scrolled modal must not chain its scroll to the page behind it. */
@@ -752,16 +613,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   max-height: 90vh; overflow: auto;
   animation: modalIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
-}
-.modal::before {
-  content: '';
-  position: absolute; inset: 0; border-radius: inherit; padding: 1px;
-  background: linear-gradient(155deg, var(--hairline-a), var(--hairline-b) 45%, var(--hairline-c));
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
 }
 @keyframes modalIn {
   from { transform: translateY(26px) scale(0.96); opacity: 0; }
@@ -793,7 +644,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .toast .toast-undo {
   font-family: 'Space Grotesk', system-ui, sans-serif;
   font-style: normal; font-size: 12px;
-  color: var(--accent-2); cursor: pointer; font-weight: 700;
+  color: var(--accent); cursor: pointer; font-weight: 700;
   white-space: nowrap; padding: 3px 10px;
   border-radius: 999px; background: rgba(255,255,255,0.08);
   transition: background 0.2s;
@@ -843,19 +694,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   to   { transform: none; opacity: 1; }
 }
 
-/* ── Confetti ── */
-@keyframes confettiFall {
-  0%   { transform: translateY(-10vh) rotate(0deg) scale(1); opacity: 1; }
-  80%  { opacity: 0.6; }
-  100% { transform: translateY(110vh) rotate(720deg) scale(0.4); opacity: 0; }
-}
-.confetti-piece {
-  position: fixed; top: -10px; z-index: 100;
-  width: 8px; height: 8px; border-radius: 2px;
-  animation: confettiFall 2.8s ease-in forwards;
-  pointer-events: none;
-}
-
 .budget-bar-fill { background-size: 100% 100%; }
 
 /* ── Tiny helpers ── */
@@ -875,7 +713,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .heat-cell:hover {
   transform: scale(1.25);
   z-index: 1;
-  box-shadow: var(--shadow-md), 0 0 14px var(--accent-glow);
+  box-shadow: var(--shadow-md), 0 0 14px var(--accent-fade);
 }
 .heat-cell:focus-visible {
   outline: 2px solid var(--accent);
@@ -897,66 +735,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
     will-change: transform;
   }
   .app-header.is-sticky.head-hidden { transform: translateY(-100%); }
-}
-
-/* ── Progressive fade edges (phones) ──
-   A masked tint band at each edge melts content into the chrome, ramping from
-   a strong tint at the screen edge to none where it meets the page. Kept to
-   phones, where the two edges that need depth (top of the scrolling header,
-   bottom tab dock) are the ones without an opaque surface filling them. The
-   bands are thin and sit *below* the header and dock in z, so the large opaque
-   surfaces stay large opaque surfaces — only the strips between them paint.
-   These used to carry a backdrop-filter blur; that is gone (see the note on the
-   spans below), so this is now the page's only edge treatment and it costs a
-   tint and a mask rather than a page sample per scrolled frame. */
-/* Off until the phone breakpoint claims them, so no empty boxes ever enter
-   the flow at laptop widths. */
-.edge-blur { display: none; }
-@media (max-width: 639px) {
-  .edge-blur {
-    display: block;
-    position: fixed; left: 0; right: 0; z-index: 30;
-    pointer-events: none;
-  }
-  .edge-blur span {
-    position: absolute; inset: 0;
-    background: color-mix(in srgb, var(--bg) 58%, transparent);
-  }
-  .edge-blur-top {
-    top: 0; height: 48px;
-    opacity: 0; transition: opacity 0.25s var(--ease-out);
-  }
-  /* Revealed by the scroll handler in app.js once the page has moved. */
-  html.edge-scrolled .edge-blur-top { opacity: 1; }
-  .edge-blur-bottom { bottom: 0; height: 120px; }
-  /* No backdrop-filter here, and that is the same trade as the sticky header on
-     desktop (see the note above it): a fixed, masked strip that re-samples the
-     page behind it does that work on every scrolled frame, for the whole length
-     of the page. The strips were the only backdrop-filter left in this file,
-     which is why every device now takes the path this block already described as
-     the no-support fallback — the tint alone dissolves the edge. The mask stays:
-     it is what turns a flat strip into a fade, and it costs no re-sampling. */
-  .edge-blur-top span:nth-child(1) {
-    mask-image: linear-gradient(to bottom, #000 0%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 100%);
-  }
-  .edge-blur-top span:nth-child(2) {
-    mask-image: linear-gradient(to bottom, #000 0%, transparent 54%);
-    -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 54%);
-  }
-  .edge-blur-bottom span:nth-child(1) {
-    mask-image: linear-gradient(to top, #000 0%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 100%);
-  }
-  .edge-blur-bottom span:nth-child(2) {
-    mask-image: linear-gradient(to top, #000 0%, transparent 44%);
-    -webkit-mask-image: linear-gradient(to top, #000 0%, transparent 44%);
-  }
-}
-/* The edges are decorative depth, so anyone who has asked the OS for less
-   transparency gets the plain surfaces instead. */
-@media (prefers-reduced-transparency: reduce) {
-  .edge-blur { display: none !important; }
 }
 
 /* ============================================================
@@ -1017,7 +795,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .history-method.pill:hover { border-color: transparent; background: transparent; }
 .split-leg {
   display: inline-flex; align-items: center; gap: 4px;
-  border: 1px solid var(--line); background: var(--surface);
+  border: 1px solid var(--line); background: var(--card);
   border-radius: 6px; padding: 2px 7px; font-size: 11px;
   color: var(--ink); cursor: pointer; white-space: nowrap;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
@@ -1104,7 +882,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: 22px;
-    box-shadow: var(--shadow-lg), inset 0 1px 0 var(--glass-highlight);
+    box-shadow: var(--shadow-lg);
     padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
     justify-content: space-around;
     align-items: center;
@@ -1190,22 +968,15 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .bottom-tab[aria-current="page"] .tab-icon-outline { opacity: 0; transform: scale(1.5); }
 .bottom-tab[aria-current="page"] .tab-icon-filled { opacity: 1; transform: scale(1); }
 
-/* ── Save button: disk → checkmark morph ── */
-@keyframes savePop {
-  0%   { transform: scale(1); }
-  30%  { transform: scale(1.25); }
-  60%  { transform: scale(0.9); }
-  100% { transform: scale(1); }
-}
+/* ── Save button: disk → checkmark swap ── */
 .btn-save-icon {
   display: inline-flex; width: 16px; height: 16px;
-  transition: transform 0.25s cubic-bezier(0.2,0.8,0.2,1.2);
+  transition: transform 0.2s var(--ease-out);
   vertical-align: middle; flex-shrink: 0;
 }
 .btn-save-icon svg { width: 100%; height: 100%; }
-.btn-save-icon .icon-save-line { transition: stroke-dashoffset 0.3s cubic-bezier(0.2,0.8,0.2,1), opacity 0.25s; }
-.btn-save-icon .icon-check { opacity: 0; transform: scale(0.5); transition: opacity 0.3s, transform 0.25s cubic-bezier(0.2,0.8,0.2,1.2); }
-.btn-save-icon.saved { animation: savePop 0.5s cubic-bezier(0.2,0.8,0.2,1.2); }
+.btn-save-icon .icon-save-line { transition: stroke-dashoffset 0.3s var(--ease-out), opacity 0.25s; }
+.btn-save-icon .icon-check { opacity: 0; transform: scale(0.5); transition: opacity 0.2s, transform 0.2s var(--ease-out); }
 .btn-save-icon.saved .icon-save-line { opacity: 0; }
 .btn-save-icon.saved .icon-check { opacity: 1; transform: scale(1); }
 
@@ -1223,14 +994,9 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .btn-primary:hover .btn-new-icon .icon-plus-v { transform: rotate(90deg); opacity: 0; }
 .btn-primary:hover .btn-new-icon .icon-plus-h { transform: translateX(2px); }
 
-/* ── Paid button: checkmark pop morph ── */
-@keyframes checkPop {
-  0%   { transform: scale(0); opacity: 0; }
-  50%  { transform: scale(1.3); opacity: 1; }
-  100% { transform: scale(1); opacity: 1; }
-}
+/* ── Paid button: checkmark ── */
 .btn-paid-icon { display: inline-flex; width: 13px; height: 13px; vertical-align: middle; flex-shrink: 0; }
-.rec-row.paid-anim .btn-paid-icon .icon-paid-check { animation: checkPop 0.3s cubic-bezier(0.2,0.8,0.2,1.2) forwards; }
+.rec-row.paid-anim .btn-paid-icon .icon-paid-check { opacity: 1; transform: none; }
 .icon-paid-check { opacity: 0; transform: scale(0); }
 
 /* ── Sync icon: cloud → refresh → checkmark morph chain ── */
@@ -1378,13 +1144,9 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .financial-pulse {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, var(--card-glass), color-mix(in srgb, var(--accent-soft) 45%, transparent));
-}
-.financial-pulse::before {
-  content: '';
-  position: absolute; inset: 0;
-  background: radial-gradient(560px 160px at 85% -30%, var(--accent-glow), transparent 60%);
-  pointer-events: none;
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: none;
 }
 .pulse-heading {
   position: relative;
@@ -1418,7 +1180,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
   cursor: pointer;
   transition: background .18s, border-color .18s, color .18s, transform .18s;
 }
-.history-action-btn:hover { background: var(--accent-soft); border-color: var(--hairline-a); box-shadow: var(--shadow-glow); }
+.history-action-btn:hover { background: var(--accent-soft); border-color: var(--hairline-a); box-shadow: var(--ring); }
 .history-action-btn:active { transform: scale(.95); }
 .balance-editor-row {
   min-width: 0;
@@ -1449,13 +1211,9 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-g
 .insight-narrative {
   position: relative;
   overflow: hidden;
-  background: linear-gradient(135deg, var(--card-glass), color-mix(in srgb, var(--accent-soft) 40%, transparent));
-}
-.insight-narrative::before {
-  content: '';
-  position: absolute; inset: 0;
-  background: radial-gradient(480px 140px at 15% -40%, var(--accent-glow), transparent 60%);
-  pointer-events: none;
+  background: var(--card);
+  border: 1px solid var(--line);
+  box-shadow: none;
 }
 .insight-narrative-text { position: relative; max-width: 680px; margin: 10px 0 0; font-size: 22px; line-height: 1.2; }
 .insight-narrative-note { position: relative; margin-top: 12px; font-size: 12px; }
@@ -1572,16 +1330,15 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
   /* Solid: a translucent confirm re-samples its backdrop on every button
      hover/repaint. Near-opaque reads identically. */
   background: var(--card);
-  border: 1px solid transparent;
-  background-clip: padding-box;
+  border: 1px solid var(--line);
   border-radius: var(--radius-xl);
   padding: 30px;
   font-family: 'Space Grotesk', system-ui, sans-serif;
-  box-shadow: var(--shadow-xl), inset 0 1px 0 var(--glass-highlight);
+  box-shadow: var(--shadow-xl);
 }
 .swal-title {
   font-family: 'Space Grotesk', system-ui, sans-serif;
-   font-weight: 400;
+  font-weight: 600;
   font-size: 24px;
   color: var(--ink);
 }
@@ -1593,8 +1350,7 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
   transition: transform 0.12s var(--ease-out), box-shadow 0.15s, background 0.15s;
 }
 .swal-confirm:active, .swal-cancel:active { transform: scale(0.96); }
-.swal-confirm { background: var(--gradient); color: #ffffff; box-shadow: var(--shadow-glow); }
-.swal-confirm:hover { transform: translateY(-1px); box-shadow: 0 14px 40px -8px var(--accent-glow); }
+.swal-confirm { background: var(--accent); color: #ffffff; box-shadow: none; }
 .swal-confirm.swal-danger { background: var(--negative); color: #ffffff; box-shadow: 0 10px 34px -10px rgba(185,28,28,0.4); }
 .swal-cancel {
   background: transparent; color: var(--muted);
@@ -1663,7 +1419,7 @@ body .flatpickr-day { color: var(--ink); border-radius: 9px; }
 body .flatpickr-day:not(.flatpickr-disabled):not(.flatpickr-nextmonth):not(.flatpickr-prevmonth):hover { background: var(--accent-soft); }
 body .flatpickr-day.selected,
 body .flatpickr-day.selected:hover,
-body .flatpickr-day.selected:focus { background: var(--gradient); border-color: transparent; color: #ffffff; }
+body .flatpickr-day.selected:focus { background: var(--accent); border-color: transparent; color: #ffffff; }
 body .flatpickr-day.today { border-color: var(--accent); }
 body .flatpickr-day.today:hover { background: var(--accent-soft); }
 body .flatpickr-day.prevMonthDay, body .flatpickr-day.nextMonthDay { color: var(--muted); opacity: 0.55; }
@@ -1688,16 +1444,16 @@ body .flatpickr-time .numInputWrapper span.arrowDown:after { border-color: var(-
 .cal-cell { aspect-ratio: 1; border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; }
 .cal-empty { visibility: hidden; }
 .cal-day {
-  border: 1px solid var(--line); background: var(--card-glass);
+  border: 1px solid var(--line); background: var(--card);
   cursor: pointer; color: var(--ink);
   font-family: inherit; font-size: 12px; font-weight: 600;
   border-radius: 12px;
   transition: transform 0.12s var(--ease-out), background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
-.cal-day:hover { background: var(--accent-soft); transform: scale(1.05); border-color: var(--hairline-a); box-shadow: var(--shadow-glow); }
+.cal-day:hover { background: var(--accent-soft); transform: scale(1.05); border-color: var(--hairline-a); }
 .cal-day:active { transform: scale(0.94); }
 .cal-day[data-today] { box-shadow: 0 0 0 1.5px var(--accent); }
-.cal-day[data-selected] { background: var(--gradient); border-color: transparent; color: #ffffff; box-shadow: var(--shadow-glow); }
+.cal-day[data-selected] { background: var(--accent); border-color: transparent; color: #ffffff; box-shadow: var(--ring); }
 .cal-num { line-height: 1; }
 .cal-dot { border-radius: 50%; background: var(--accent); opacity: .85; }
 
@@ -1761,7 +1517,7 @@ html.modal-open { overflow: hidden; }
      ::before scrim; otherwise the scrim dims the whole white panel grey. */
   position: relative;
   border-left: 1px solid var(--line);
-  box-shadow: var(--shadow-xl), inset 0 1px 0 var(--glass-highlight);
+  box-shadow: var(--shadow-xl);
   display: flex; flex-direction: column;
   animation: menuPanelIn 0.12s cubic-bezier(0.22, 1, 0.36, 1);
   overflow: hidden;
@@ -1934,13 +1690,6 @@ html.modal-open { overflow: hidden; }
 .icon.sm svg { width: 12px; height: 12px; }
 .icon.md svg { width: 14px; height: 14px; }
 
-/* Header wordmark — ink fading into the warm accent, like .page-title */
-.logo-wordmark {
-  background: linear-gradient(115deg, var(--ink) 55%, var(--accent-2));
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent; color: transparent;
-}
-
 /* Signed-number chips — soft tinted pills for balances that can go either way */
 .signed-chip {
   display: inline-flex; align-items: center;
@@ -1962,14 +1711,6 @@ html.modal-open { overflow: hidden; }
 
 /* Empty-state motif — soft accent blob behind the illustrated icon */
 .empty-state { position: relative; overflow: hidden; }
-.empty-state::after {
-  content: '';
-  position: absolute; top: -50px; left: 50%; transform: translateX(-50%);
-  width: 210px; height: 210px; border-radius: 50%;
-  background: radial-gradient(closest-side, var(--accent-glow), transparent 70%);
-  pointer-events: none;
-}
-.empty-state > * { position: relative; }
 .empty-icon { opacity: 0.5; }
 
 /* Tabular figures on every financial surface */
@@ -2004,93 +1745,17 @@ input:focus-visible, textarea:focus-visible {
    Ledger skin - flat surfaces, hairline rules, one accent
    ============================================================ */
 
-/* Flat background: no mesh noise, no drifting blobs */
-body, [data-theme="dark"] body { background-image: none; }
-body::before, body::after { display: none; }
-
-/* Typography: Space Grotesk display, IBM Plex Mono numerals */
-
 /* Headings never leave one word stranded on its own line, and body copy keeps
    its last line from a single orphan. Both are hints — a browser that does not
    support them lays the text out exactly as before. */
 h1, h2, h3, h4, .pulse-status { text-wrap: balance; }
 p, li, .muted { text-wrap: pretty; }
-body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
-.serif {
-  font-family: 'Space Grotesk', system-ui, sans-serif;
-  font-style: normal;
-  letter-spacing: -0.01em;
-}
-.display-num, .tnum {
-  font-family: 'IBM Plex Mono', 'Space Grotesk', monospace;
-  font-weight: 500;
-}
-.toast { font-family: 'Space Grotesk', system-ui, sans-serif; font-style: normal; }
-.toast .toast-undo { font-family: 'Space Grotesk', system-ui, sans-serif; }
-.empty { font-family: 'Space Grotesk', system-ui, sans-serif; font-style: normal; font-size: 15px; }
-.page-title {
-  font-family: 'Space Grotesk', system-ui, sans-serif;
-  font-style: normal; font-weight: 600;
-}
-@supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  .page-title { background: none; -webkit-text-fill-color: currentColor; }
-}
-.logo-wordmark { background: none; -webkit-text-fill-color: currentColor; color: inherit; }
-.swal-title { font-family: 'Space Grotesk', system-ui, sans-serif; font-style: normal; font-weight: 600; }
-
-/* Cards: solid surface + hairline border, no glass/gradient/spotlight */
-.card {
-  background: var(--card);
-  border: 1px solid var(--line);
-  box-shadow: none;
-}
-.card::before, .card::after { display: none; }
-.card:hover { transform: none; box-shadow: none; }
-
-/* Primary button: solid emerald, no shine sweep */
-.btn-primary {
-  background: var(--accent);
-  color: #ffffff;
-  border-radius: var(--radius);
-  box-shadow: none;
-}
-.btn-primary::after { display: none; }
-.btn-primary:hover { transform: none; box-shadow: none; }
-
-/* Header mark: solid emerald square */
-.app-header .logo .mark {
-  background: var(--accent);
-  color: #ffffff;
-  border-radius: var(--radius);
-  font-family: 'Space Grotesk', system-ui, sans-serif;
-  font-style: normal;
-  box-shadow: none;
-}
-.app-header .logo:hover .mark { transform: none; box-shadow: none; }
-
-/* Hero / pulse / insight: flat surfaces with hairlines */
-.dashboard-hero, .financial-pulse, .insight-narrative {
-  background: var(--card);
-  border: 1px solid var(--line);
-  box-shadow: none;
-}
-.dashboard-hero::before, .dashboard-hero::after,
-.financial-pulse::before, .insight-narrative::before { display: none; }
-
-/* Modal: solid surface + hairline, no gradient edge */
-.modal {
-  background: var(--card);
-  border: 1px solid var(--line);
-  box-shadow: var(--shadow-lg);
-}
-.modal::before { display: none; }
+/* Type faces are declared once, on the rules themselves: Space Grotesk for
+   display and body copy, IBM Plex Mono for every figure (.display-num/.tnum). */
 
 /* Selected calendar day + date picker + dialogs: solid emerald, white text */
 .cal-day[data-selected] { color: #ffffff; }
 .flatpickr-day.selected, .flatpickr-day.selected:hover, .flatpickr-day.selected:focus { color: #ffffff; }
-.swal-confirm { background: var(--accent); color: #ffffff; box-shadow: none; }
-.swal-confirm:hover { transform: none; box-shadow: none; }
-.swal-popup { border: 1px solid var(--line); background: var(--card); }
 
 /* Filled buttons and chips take white text in light mode, where the accent is
    deep (#157A4A, 5.4:1) and the danger fill is #C0392B (5.4:1). Dark mode
@@ -2106,7 +1771,6 @@ body { font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif; }
 [data-theme="dark"] .swal-confirm.swal-danger { color: #101210; }
 
 /* Rows and cells: flat on hover, no emerald ring wash */
-.cal-day:hover { box-shadow: none; }
 .history-row:hover { box-shadow: inset 0 0 0 1px var(--line); }
 
 /* ============================================================

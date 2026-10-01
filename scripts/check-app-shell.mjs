@@ -183,8 +183,8 @@ check('the shared text is read out of the query string, in the reader itself',
   && /\['title', 'text', 'url'\]/.test(shareBlock[0])
   && /if \(!text\) return;/.test(shareBlock[0]),
   shareBlock ? 'reader found but not reading the query' : 'no readSharedText()');
-check('the shared line is handed to the Magic entry, not stored',
-  /magicInput\.value = shared;/.test(appSource) && /renderMagicPreview\(shared\)/.test(appSource));
+check('the shared line is handed to the Quick entry, not stored',
+  /quickInput\.value = shared;/.test(appSource) && /renderQuickPreview\(shared\)/.test(appSource));
 // One session slot, and the three lines that consume it all live inside the Add
 // screen: the app can be locked when the share arrives, so the screen — and the
 // box the text goes into — may not exist until the user unlocks it.
@@ -194,7 +194,7 @@ check('the shared line is consumed in the Add screen, not on the way in',
   addScreenAt > 0 && consumedAt > addScreenAt
   && (appSource.match(/let pendingShare = null;/g) || []).length === 1
   && /if \(pendingShare\) \{/.test(appSource)
-  && appSource.indexOf('magicInput.value = shared;') > addScreenAt,
+  && appSource.indexOf('quickInput.value = shared;') > addScreenAt,
   `slot(s): ${(appSource.match(/let pendingShare = null;/g) || []).length}, guarded: ${/if \(pendingShare\) \{/.test(appSource)}`);
 check('the query is dropped from the address, so a reload cannot re-prefill it',
   /history\.replaceState\(history\.state, '', location\.pathname \+ location\.hash\)/.test(appSource));

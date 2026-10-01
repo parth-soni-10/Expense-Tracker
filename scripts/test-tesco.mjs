@@ -64,7 +64,7 @@ ok('Sunday special auto-applies', shiftPay({ ...s, date: '2026-09-20' }, null).s
 ok('manual special flag pays ×1.5 on a weekday', shiftPay({ ...s, special: true }, null).gross, 151.62);
 // The Sunday multiplier is a premium for WORKING Sunday, so it follows the clock
 // times. A row with hours and no times is a booked week off (the sheet's own shape
-// and the magic entry's), and the Week off card dates it on the week's Sunday so
+// and the quick entry's), and the Week off card dates it on the week's Sunday so
 // the week is unambiguous — which once paid a 7h week off at €151.62 instead of
 // €101.08, silently. A row that carries the flag itself still pays the premium.
 const weekOffRow = { date: '2026-09-20', start: '', end: '', hours: 7, note: 'week off' };
@@ -826,7 +826,7 @@ ok('a scan with no owner (an older build) is dropped rather than shown',
 ok('an empty slot stays empty', scanSlotForProfile(null, 'sam'), null);
 
 // ---------- quick entry: a shift typed as a sentence ----------
-// The grammar the Tesco tab's magic entry promises. Today is pinned to Thursday
+// The grammar the Tesco tab's quick entry promises. Today is pinned to Thursday
 // 24 Sep 2026 — the Thursday a payslip lands on — so every weekday relative to
 // it is checkable by hand: the Monday before it is the 21st, the Friday 18th.
 const QUICK_DAY = '2026-09-24';
@@ -1002,9 +1002,9 @@ ok('a week off is dated on its week’s Sunday',
 ok('a date already on the Sunday stays put', weekOff('2026-09-20', '7').shift.date, '2026-09-20');
 ok('and any day of that week lands on the same Sunday',
   [weekOff('2026-09-22', '7').shift.date, weekOff('2026-09-26', '7').shift.date], ['2026-09-20', '2026-09-20']);
-// The row is the sheet's own week-off shape and what the magic entry writes for
+// The row is the sheet's own week-off shape and what the quick entry writes for
 // "week off 7h": hours, no clock times, the same note, no special flag.
-ok('the row it writes is the magic entry’s own week-off row',
+ok('the row it writes is the quick entry’s own week-off row',
   (() => { const s = weekOff('2026-09-24', '7.5').shift; return [s.start, s.end, s.hours, s.note, s.special]; })(),
   ['', '', 7.5, 'week off', false]);
 ok('so it prices at the card rate and reads back as the week card will show it',
