@@ -92,6 +92,10 @@ ua.generateKeys();
 const AUTH = crypto.randomBytes(16);
 let received = [];
 let endpointAlive = true;
+// A push service that answers and says NO, with this status. The other way a
+// delivery fails is not an answer at all (an endpoint with nothing behind it,
+// no status) and the app has to tell the two apart — see 7b.
+let refuseWith = null;
 // The VAPID Authorization header of the most recent request. A real push
 // service checks it, which is why it is worth asserting: the key the browser
 // was handed and the key the dispatcher signs with must be the same one, or
@@ -108,6 +112,8 @@ const fakePushServer = http.createServer((req, res) => {
     const badAuth = vapidFailure(lastAuth, `http://${req.headers.host}`);
     if (badAuth) { res.writeHead(401, { 'Content-Type': 'text/plain' }); res.end(badAuth); return; }
     if (!endpointAlive) { res.writeHead(410); res.end(); return; }
+    // Authenticated, so the request is real — now the service's own answer.
+    if (refuseWith) { res.writeHead(refuseWith, { 'Content-Type': 'text/plain' }); res.end('no'); return; }
     try {
       const body = Buffer.concat(chunks);
       // aes128gcm header: salt(16) | rs(4) | idlen(1) | as_public(idlen)
@@ -461,6 +467,59 @@ const sendResp2 = await sendHandler(null, {});
 endpointAlive = true;
 const pruneKeys = (await store.list('push:')).map(k => k.key);
 check('dead-subscription-pruned', !pruneKeys.includes('push:prune-test') && sendResp2 !== null);
+
+// ---------- 7b. a service that says no, told apart from one that is gone ----------
+// Two ways a delivery ends that are NOT "the subscription is dead": the service
+// answered and refused (a status — a subscription bound to a key the sender no
+// longer signs with, most often, which no later run will heal) and the service
+// could not be reached (no status — transient, and the next slot may deliver it).
+// The app has to say which, because a phone that shows nothing is the symptom of
+// both: the test push names the status, and the scheduled run's one-line summary
+// counts what was refused — `sent=0` on its own was the same line for a push
+// service that refused everything and one that had nothing to send.
+await store.setJSON('push:refuse-test', {
+  time: utcNow, zone: 'UTC', lastFiredDate: '1999-01-01',
+  subscription: { endpoint: `http://localhost:${pushPort}/fake-push`, keys: subscription.keys },
+});
+refuseWith = 503;
+const refusedTest = await call(pushHandler, 'PUT', { endpoint: subscription.endpoint });
+const refusedBody = await text(refusedTest);
+check('a refused test push names the status the push service gave',
+  refusedTest.status === 502 && refusedBody.includes('(HTTP 503)'), `${refusedTest.status} ${refusedBody}`);
+const runLogs = [];
+const realLog = console.log;
+const captureRun = async () => {
+  runLogs.length = 0;
+  console.log = (...args) => { runLogs.push(args.join(' ')); };
+  try { await sendHandler(null, {}); } finally { console.log = realLog; }
+  return runLogs.join(' | ');
+};
+const refusedRun = await captureRun();
+check('the scheduled run counts a service that refused',
+  /sent=0\b/.test(refusedRun) && /rejected=1\b/.test(refusedRun), refusedRun);
+// An endpoint with nothing behind it is the other state — the connection is
+// refused, so there is no status and nothing to count as refused; the record
+// stays due precisely so the next slot can try again. A port that was just
+// closed is the honest way to reproduce that (destroying the socket on the
+// server side is not: the client's fetch then waits for a response that never
+// comes rather than failing).
+// Out of the store before the next run, or it would be delivered to a service
+// that is answering again, and that run would not be a clean 'nothing sent'.
+await store.del('push:refuse-test');
+refuseWith = null;
+const deadPort = await new Promise((resolve) => {
+  const probe = http.createServer();
+  probe.listen(0, () => { const p = probe.address().port; probe.close(() => resolve(p)); });
+});
+await store.setJSON('push:unreachable-test', {
+  time: utcNow, zone: 'UTC', lastFiredDate: '1999-01-01',
+  subscription: { endpoint: `http://localhost:${deadPort}/fake-push`, keys: subscription.keys },
+});
+const unreachableRun = await captureRun();
+check('a service it could not reach is transient, not refused',
+  /sent=0\b/.test(unreachableRun) && /rejected=0\b/.test(unreachableRun), unreachableRun);
+// Leave the store as section 8 expects to find it.
+await store.del('push:unreachable-test');
 
 // ---------- 8. unsubscribe removes the record ----------
 await call(pushHandler, 'POST', {
