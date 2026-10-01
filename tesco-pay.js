@@ -345,6 +345,26 @@ export function receivedByPayDate(shifts, payslips, rates) {
 }
 
 /**
+ * Where a recorded Tesco pay lands in the ledger: the account the payslip pays
+ * INTO, which is the bank — never the Tesco gift card.
+ *
+ * The method id decides more than a label. `balanceDelta` treats a credit on a
+ * TG/LG/AG method as a card LOAD, so a week's wages written on TG did three
+ * wrong things at once: the money was added to the Tesco card's balance instead
+ * of the account's, it was counted as `loaded` on that card ("recorded loads"
+ * read as if the user had topped the card up), and the account the money
+ * actually arrived in was short by the whole week.
+ *
+ * One constant, read by every writer — the per-row Fill, Auto-fill, the amount
+ * modal and the automatic recording — because four copies of a method id is
+ * four chances for one of them to disagree about where someone's wages go.
+ * `'AIB'` is a built-in in seed.js's METHODS, so it is always a valid method id
+ * whatever the user has removed from their pickers (a hidden method still
+ * resolves, and a dropped entry is irreversible — see updateAllowedMethods).
+ */
+export const TESCO_PAY_METHOD = 'AIB';
+
+/**
  * The ledger lines a Tesco recording owes — the automatic half of the tracker
  * above. `recorded` is receivedByPayDate's map, `entries` the ledger's own, and
  * `written` this app's record of what it has already written

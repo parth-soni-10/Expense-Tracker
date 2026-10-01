@@ -12,7 +12,7 @@ import { getReminderSettings, patchReminderSettings, startReminderScheduler, onR
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
-import { monthSummary, TESCO_RATE_DEFAULTS, weekStartOf, shiftPay, r2, isoLocal, receivedByPayDate, tescoPayLedgerWrites } from './tesco-pay.js';
+import { monthSummary, TESCO_RATE_DEFAULTS, TESCO_PAY_METHOD, weekStartOf, shiftPay, r2, isoLocal, receivedByPayDate, tescoPayLedgerWrites } from './tesco-pay.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
@@ -3895,8 +3895,12 @@ function upcomingOccurrences(rec, horizonDays = 30) {
 // ---------- Tesco pay helpers ----------
 // The figure the tracker repeated before it could read Tesco Pay: the last Tesco
 // pay entry's amount, used only for a Thursday the tab has no recorded week for.
+// It finds them by their own label, not by method: the method is where the money
+// landed (`TESCO_PAY_METHOD`, the bank), and a ledger that already holds lines
+// written when it was the card must keep counting as the fallback, or the amount
+// would silently drop to zero for everyone who filled a Thursday before the fix.
 function lastTescoPayAmount() {
-  const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.method === 'TG' && !isBalanceAdjustmentEntry(e));
+  const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.details === 'Tesco pay' && !isBalanceAdjustmentEntry(e));
   return lastTesco ? lastTesco.amount : 0;
 }
 
@@ -3930,8 +3934,10 @@ function tescoPayNote(created, updated) {
  *  follow the recorded figure while the line is still the one this app wrote,
  *  and never bring a deleted line back — live in tesco-pay.js's
  *  `tescoPayLedgerWrites` and are pinned in scripts/test-tesco.mjs. What is here
- *  is the write itself: one entry per pay date, `Tesco pay` on method TG and
- *  category misc, exactly the shape Fill has always written, plus the settings
+ *  is the write itself: one entry per pay date, `Tesco pay` on
+ *  `TESCO_PAY_METHOD` (the bank the payslip pays into — see the constant's own
+ *  note in tesco-pay.js for why it is not the Tesco card) and category misc,
+ *  exactly the shape Fill has always written, plus the settings
  *  record of what was written (settings.tescoPayLedger, validated in storage.js
  *  and merged per date in sync-merge.js).
  *
@@ -3953,7 +3959,7 @@ function recordTescoPayToLedger() {
   for (const write of plan.create) {
     const entry = {
       id: uid(), createdAt: nowIso(), date: write.date, type: 'credit',
-      category: 'misc', details: 'Tesco pay', amount: write.amount, method: 'TG', note: '',
+      category: 'misc', details: 'Tesco pay', amount: write.amount, method: TESCO_PAY_METHOD, note: '',
     };
     state.entries.push(entry);
     created.push(entry);
@@ -3995,7 +4001,7 @@ function fillThursday(dateStr) {
   const amt = fromTesco ? fromTesco.amount : lastTescoPayAmount();
   if (amt > 0) {
     const eid = uid();
-    const tescoEntry = { id: eid, createdAt: nowIso(), date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' };
+    const tescoEntry = { id: eid, createdAt: nowIso(), date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: TESCO_PAY_METHOD, note: '' };
     state.entries.push(tescoEntry);
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
@@ -4024,7 +4030,7 @@ function autoFillAll(unpaidThursdays) {
   }
   const created = [];
   const createdEntries = fillable.map(d => {
-    const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amountFor(d), method: 'TG', note: '' };
+    const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amountFor(d), method: TESCO_PAY_METHOD, note: '' };
     created.push(entry.id);
     state.entries.push(entry);
     return entry;
@@ -4069,7 +4075,7 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
       const created = [];
       const createdEntries = [];
       if (data.date) {
-        const entry = { id: uid(), createdAt: nowIso(), date: data.date, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' };
+        const entry = { id: uid(), createdAt: nowIso(), date: data.date, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: TESCO_PAY_METHOD, note: '' };
         created.push(entry.id);
         createdEntries.push(entry);
         state.entries.push(entry);
@@ -4082,7 +4088,7 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
         toast(`Filled Tesco pay for ${friendlyDate(data.date)} - ${fmt(amt)}`);
       } else {
         for (const d of unpaidThursdays) {
-          const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: 'TG', note: '' };
+          const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: TESCO_PAY_METHOD, note: '' };
           created.push(entry.id);
           createdEntries.push(entry);
           state.entries.push(entry);

@@ -22,6 +22,7 @@ import {
   tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf, payslipWeekNumberOf,
   parseShiftText, shiftPreviewLine,
   storedShift, storedPayslip, applyShiftEdit, weekOffShift, weekBankWrite, weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites,
+  TESCO_PAY_METHOD,
   rosterColumnBounds, parseCellTokens,
   sheetRowsToCsv, workbookToCsv,
   pageSkew, dedupeWords, columnAnchors, resolveColumnDates, parseDateToken, columnDatingAgreement,
@@ -1203,7 +1204,7 @@ ok('while a shift-only week the ledger is not offered is still counted by the mo
 // what keeps a line the user DELETED from being written back on the next
 // recording of that week.
 const twoDates = { '2026-10-01': { amount: 469.78, source: 'bank' }, '2026-10-08': { amount: 450, source: 'recorded' } };
-const payEntry = (id, date, amount) => ({ id, date, type: 'credit', category: 'misc', details: 'Tesco pay', amount, method: 'TG', note: '' });
+const payEntry = (id, date, amount) => ({ id, date, type: 'credit', category: 'misc', details: 'Tesco pay', amount, method: TESCO_PAY_METHOD, note: '' });
 ok('a recorded pay date the ledger is silent on is a line to write, oldest first',
   tescoPayLedgerWrites(twoDates, [], {}).create,
   [{ date: '2026-10-01', amount: 469.78, source: 'bank' }, { date: '2026-10-08', amount: 450, source: 'recorded' }]);
@@ -1277,7 +1278,32 @@ ok('and a line it made is tombstoned, so a merge cannot bring the undone one bac
 // thing whichever way the money got there.
 ok('the entry it writes is the one Fill writes',
   /type: 'credit'/.test(reconSrc) && /category: 'misc'/.test(reconSrc)
-  && /details: 'Tesco pay'/.test(reconSrc) && /method: 'TG'/.test(reconSrc), true);
+  && /details: 'Tesco pay'/.test(reconSrc) && /method: TESCO_PAY_METHOD/.test(reconSrc), true);
+
+// ---------- where a recorded Tesco pay lands ----------
+// The method id is not a label: `balanceDelta` counts a credit on a gift-card
+// method (TG/LG/AG) as a card LOAD, so a week's wages written on TG went onto the
+// Tesco card's balance — and into its "recorded loads" — while the account the
+// payslip pays into stayed short by the whole week. The method is therefore one
+// exported constant in the engine, read by every writer.
+const seedSource = readFileSync(new URL('../seed.js', import.meta.url), 'utf8');
+ok('a recorded Tesco pay lands on a method the app defines',
+  new RegExp(`\\{ id: '${TESCO_PAY_METHOD}'`).test(seedSource), true);
+const giftCardIds = (appSource.match(/const GIFT_CARD_IDS = \[([^\]]+)\]/) || [, ''])[1];
+ok('and it is not a gift-card method, where a credit would read as a card load',
+  giftCardIds.includes(`'${TESCO_PAY_METHOD}'`), false);
+const payWrites = appSource.split('\n').filter(l => l.includes("details: 'Tesco pay'") && l.includes('method:'));
+ok('every writer of a Tesco pay entry names a method', payWrites.length, 5);
+ok('and every one of them names that constant rather than a literal',
+  payWrites.filter(l => !l.includes('method: TESCO_PAY_METHOD')), []);
+// The fallback amount the tracker repeats finds Tesco pay lines by their own
+// label, not by where the money went, so a ledger already holding entries from
+// when it was the card keeps counting them (a method filter would silently
+// drop the fallback to zero for everyone who filled a Thursday before this).
+const lastPaySrc = (appSource.match(/function lastTescoPayAmount\(\)[\s\S]{0,600}?\n\}/) || [''])[0];
+ok('the fallback amount matches on the line’s own label',
+  /e\.details === 'Tesco pay'/.test(lastPaySrc), true);
+ok('and does not filter on the method', /e\.method ===/.test(lastPaySrc), false);
 const tescoSource = readFileSync(new URL('../tesco.js', import.meta.url), 'utf8');
 ok('the screen is handed the reconciler', /recordTescoPayToLedger,\n\s*\}\)\)/.test(appSource)
   || /recordTescoPayToLedger,/.test(appSource.slice(Math.max(0, appSource.indexOf('screenTesco({')), appSource.indexOf('screenTesco({') + 900)), true);

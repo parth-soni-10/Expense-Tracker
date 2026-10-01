@@ -50,14 +50,14 @@ import {
   paidHours, isOvernight, isSunday, statedHours, shiftPay, simulateTax,
   weekStartOf, payDateOf, weekNumberOf, payslipWeekNumberOf, isoWeekNumber,
   nextWeekStart, buildPayWeeks, weekBankWrite, monthSummary, lifetimeTotals, payslipTotal,
-  weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites,
+  weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites, TESCO_PAY_METHOD,
 } from './tesco-pay.js';
 export {
   TESCO_RATE_DEFAULTS, r2, pad2, isoLocal, todayIso, parseHM, fmtHM, isoToUtcMidnight, dateOk,
   paidHours, isOvernight, isSunday, statedHours, shiftPay, simulateTax,
   weekStartOf, payDateOf, weekNumberOf, payslipWeekNumberOf, isoWeekNumber,
   nextWeekStart, buildPayWeeks, weekBankWrite, monthSummary, lifetimeTotals, payslipTotal,
-  weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites,
+  weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites, TESCO_PAY_METHOD,
 };
 
 // The photo is read as a few overlapping horizontal strips rather than one
