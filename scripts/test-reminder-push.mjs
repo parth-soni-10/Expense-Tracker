@@ -18,6 +18,12 @@
  *   13. the key the browser is handed is the key the dispatcher signs with
  *   14. the LOCAL scheduler raises its banner AT ITS HOUR, and never as a
  *         catch-up on the moment the site is opened
+ *   15. closed-app push is gated on the browser's capability, never on the
+ *         device it runs on — a desktop with nothing open at the hour needs
+ *         the same path a phone does
+ *   16. the reminder survives a storage that will not keep it: a refused
+ *         marker write must not become a banner every minute, and a blocked
+ *         read must not become "the reminder is off"
  *
  *   node scripts/test-reminder-push.mjs
  *
@@ -888,6 +894,199 @@ delete process.env.GITHUB_TOKEN;
     else delete globalThis.window;
     if (saved.hadLocalStorage) globalThis.localStorage = saved.localStorage;
     else delete globalThis.localStorage;
+    globalThis.setInterval = saved.setInterval;
+  }
+}
+
+// ---------- 15. closed-app push is gated on capability, never on the device ----------
+// pushSupported() asked whether the user agent looked like a phone for the
+// whole life of the feature, on the reasoning that on desktop the app lives in
+// a tab on a machine that is on and the in-app scheduler is the right surface.
+// Section 14 is why that reasoning fails: at 20:00 the tab is not open, so the
+// only thing that ever fired was the scheduler's start-up catch-up — a
+// reminder seen on open and never at its hour. A browser with nothing running
+// has no local scheduler at all, and Web Push is the only path that reaches
+// it, so this gate is the whole of the difference between a reminder that
+// arrives and one that does not.
+{
+  const saved = {
+    hadWindow: Object.prototype.hasOwnProperty.call(globalThis, 'window'),
+    window: Object.prototype.hasOwnProperty.call(globalThis, 'window') ? globalThis.window : undefined,
+    // `navigator` is a getter-only global in Node, so it has to be redefined
+    // rather than assigned — and restored by its own original descriptor.
+    navDesc: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
+    hadNotification: Object.prototype.hasOwnProperty.call(globalThis, 'Notification'),
+    Notification: Object.prototype.hasOwnProperty.call(globalThis, 'Notification') ? globalThis.Notification : undefined,
+    hadLocalStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage'),
+    localStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage') ? globalThis.localStorage : undefined,
+  };
+  const phoneUA = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
+  const desktopUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+  const emptyStore = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (emptyStore.has(k) ? emptyStore.get(k) : null),
+    setItem: (k, v) => emptyStore.set(k, String(v)),
+    removeItem: (k) => emptyStore.delete(k),
+  };
+  const withBrowser = (ua, { serviceWorker = true, pushManager = true } = {}) => {
+    const nav = { userAgent: ua };
+    if (serviceWorker) nav.serviceWorker = {};
+    Object.defineProperty(globalThis, 'navigator', { value: nav, configurable: true, writable: true, enumerable: true });
+    globalThis.window = globalThis;
+    if (pushManager) globalThis.window.PushManager = class {};
+    else delete globalThis.window.PushManager;
+    globalThis.Notification = class {};
+  };
+  try {
+    const reminders = await import('../reminders.js');
+    withBrowser(desktopUA);
+    const desktop = reminders.pushSupported();
+    withBrowser(phoneUA);
+    const phone = reminders.pushSupported();
+    check('closed-app push is offered on a desktop browser', desktop === true, `desktop=${desktop}`);
+    check('and still on a phone', phone === true, `phone=${phone}`);
+    withBrowser(desktopUA, { serviceWorker: false });
+    check('a browser with no service worker is not a push browser',
+      reminders.pushSupported() === false);
+    withBrowser(desktopUA, { pushManager: false });
+    check('nor one with no PushManager', reminders.pushSupported() === false);
+    // The gate is passed by a desktop browser: what stops it next is sync,
+    // which is a configuration the user has or has not done — never the device.
+    withBrowser(desktopUA);
+    const gated = await reminders.subscribeReminderPush();
+    check('a desktop subscription gets past the gate and stops on sync instead',
+      gated.ok === false && gated.reason === 'no-sync', JSON.stringify(gated));
+    const remindersSource = readFileSync(new URL('../reminders.js', import.meta.url), 'utf8');
+    const supportedSrc = (remindersSource.match(/export function pushSupported\(\)[\s\S]{0,400}?\n\}/) || [''])[0];
+    check('pushSupported asks only about capabilities',
+      /'serviceWorker' in navigator/.test(supportedSrc)
+      && /'PushManager' in window/.test(supportedSrc)
+      && /'Notification' in window/.test(supportedSrc));
+    check('and nothing in the module reads the user agent at all',
+      !/userAgent|mobileWebApp|Android\|iPhone/i.test(remindersSource));
+  } finally {
+    if (saved.hadWindow) globalThis.window = saved.window;
+    else delete globalThis.window;
+    if (saved.navDesc) Object.defineProperty(globalThis, 'navigator', saved.navDesc);
+    else delete globalThis.navigator;
+    if (saved.hadNotification) globalThis.Notification = saved.Notification;
+    else delete globalThis.Notification;
+    if (saved.hadLocalStorage) globalThis.localStorage = saved.localStorage;
+    else delete globalThis.localStorage;
+  }
+}
+
+// ---------- 16. the reminder survives a storage that will not keep it ----------
+// Both failure modes are silent and continuous. `lastFiredDate` is written from
+// inside a try/catch, so a full quota means the next tick reads "not fired yet"
+// and fires again — a system banner plus an in-app toast every 60 seconds for
+// the rest of the day, from a reminder set once. And a blocked or corrupt read
+// answers normalize(null), i.e. `enabled: false`, so the armed reminder simply
+// stops existing for the session. The session copy is the truth; storage is
+// write-through, and the cache is keyed by the profile key so a profile switch
+// still changes whose schedule is running.
+{
+  const reminderStore = new Map();
+  let blockWrites = false;
+  let blockReads = false;
+  const localStore = {
+    getItem(k) { if (blockReads) throw new Error('storage blocked'); return reminderStore.has(k) ? reminderStore.get(k) : null; },
+    setItem(k, v) { if (blockWrites) throw new Error('quota exceeded'); reminderStore.set(k, String(v)); },
+    removeItem(k) { reminderStore.delete(k); },
+  };
+  const saved = {
+    hadLocalStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage'),
+    localStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage') ? globalThis.localStorage : undefined,
+    hadNotification: Object.prototype.hasOwnProperty.call(globalThis, 'Notification'),
+    Notification: Object.prototype.hasOwnProperty.call(globalThis, 'Notification') ? globalThis.Notification : undefined,
+    hadDocument: Object.prototype.hasOwnProperty.call(globalThis, 'document'),
+    document: Object.prototype.hasOwnProperty.call(globalThis, 'document') ? globalThis.document : undefined,
+    hadWindow: Object.prototype.hasOwnProperty.call(globalThis, 'window'),
+    window: Object.prototype.hasOwnProperty.call(globalThis, 'window') ? globalThis.window : undefined,
+    setInterval: globalThis.setInterval,
+  };
+  globalThis.localStorage = localStore;
+  globalThis.window = globalThis;
+  const visListeners = [];
+  globalThis.document = {
+    visibilityState: 'visible',
+    addEventListener: (type, fn) => { if (type === 'visibilitychange') visListeners.push(fn); },
+    dispatchEvent: () => { for (const fn of visListeners) fn(); return true; },
+  };
+  let minuteTick = null;
+  globalThis.setInterval = (fn) => { minuteTick = fn; return {}; };
+  const banners = [];
+  class FakeNotification {
+    constructor(title, opts) { this.title = title; this.opts = opts; banners.push(this); }
+    close() {}
+  }
+  FakeNotification.permission = 'granted';
+  globalThis.Notification = FakeNotification;
+  /** Run one scenario against its own module instance — `startReminderScheduler`
+   *  is a no-op the second time, and each instance needs its own `timer`. */
+  const scenario = async (query, mode) => {
+    reminderStore.clear();
+    blockReads = false;
+    blockWrites = false;
+    const seen = [];
+    const edge = await import(`../reminders.js?${query}`);
+    edge.onReminderFired((p) => seen.push(p));
+    // Armed while storage is still healthy, so what follows is a storage
+    // failure and not a mistyped setting.
+    edge.patchReminderSettings({ enabled: true, time: '00:00', lastFiredDate: null });
+    banners.length = 0;
+    if (mode === 'read') {
+      blockReads = true;
+      check('an unreadable store does not report the armed reminder as off',
+        edge.getReminderSettings().enabled === true && edge.getReminderSettings().time === '00:00',
+        JSON.stringify(edge.getReminderSettings()));
+    } else {
+      blockWrites = true; // the quota is now full
+    }
+    edge.startReminderScheduler(); // the start-up tick: a catch-up
+    const afterStart = seen.length;
+    minuteTick();
+    minuteTick();
+    if (mode === 'write') edge.patchReminderSettings({ lastFiredDate: null }); // re-arm, still blocked
+    if (mode === 'read') minuteTick();
+    return { seen: seen.length, afterStart, banners: banners.length, edge };
+  };
+  try {
+    const readBlocked = await scenario('edge=read', 'read');
+    check('with the store unreadable the reminder still fires once',
+      readBlocked.afterStart === 1 && readBlocked.seen >= 1,
+      `start=${readBlocked.afterStart} total=${readBlocked.seen}`);
+    check('and a blocked read raises no banner of its own on the start-up tick',
+      readBlocked.banners === 0, `banners=${readBlocked.banners}`);
+    const writeBlocked = await scenario('edge=write', 'write');
+    check('with the marker unwritable the start-up tick still nudges once, with no banner',
+      writeBlocked.afterStart === 1 && writeBlocked.banners === 0,
+      `start=${writeBlocked.afterStart} banners=${writeBlocked.banners}`);
+    check('and a refused marker write does NOT become a banner every minute',
+      writeBlocked.seen === 1, `toasts=${writeBlocked.seen}`);
+    const edgeSource = readFileSync(new URL('../reminders.js', import.meta.url), 'utf8');
+    check('the session copy is keyed by the profile key, so a switch re-reads',
+      /if \(cacheKey !== key\)/.test(edgeSource) && /const key = KEY\(\);/.test(edgeSource));
+    check('and a refused write keeps the change in memory rather than dropping it',
+      /function writeSettings\(next\)[\s\S]{0,300}?cached = next;/.test(edgeSource), true);
+    // Both delivery paths are one reminder: the scheduled push and the local
+    // scheduler carry the same tag, so a subscribed device shows one — without
+    // it, a phone with push on gets a second notification from a different
+    // process right after the first.
+    const senderSource = readFileSync(new URL('../netlify/functions/reminders-send.mjs', import.meta.url), 'utf8');
+    const localTag = (edgeSource.match(/tag: '([a-z-]+)'/) || [])[1];
+    const pushTag = (senderSource.match(/tag: '([a-z-]+)'/) || [])[1];
+    check('the local banner and the scheduled push are tagged as one notification',
+      !!localTag && localTag === pushTag, `local=${localTag} push=${pushTag}`);
+  } finally {
+    if (saved.hadLocalStorage) globalThis.localStorage = saved.localStorage;
+    else delete globalThis.localStorage;
+    if (saved.hadNotification) globalThis.Notification = saved.Notification;
+    else delete globalThis.Notification;
+    if (saved.hadDocument) globalThis.document = saved.document;
+    else delete globalThis.document;
+    if (saved.hadWindow) globalThis.window = saved.window;
+    else delete globalThis.window;
     globalThis.setInterval = saved.setInterval;
   }
 }

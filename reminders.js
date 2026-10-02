@@ -14,12 +14,13 @@
         banner there is a notification popping as the site
         loads rather than a reminder at its hour. See
         showReminderNotification.
-     2. On MOBILE web apps (installed PWA, or any phone browser), a
-        Web Push subscription is sent to the server, whose Scheduled
-        Function delivers a real push at the chosen local time even
-        when the app is closed. Desktop is intentionally excluded:
-        there the app lives in a tab and the in-app scheduler above
-        is the right surface. See reminders-push.mjs.
+     2. On ANY browser that can do Web Push — phone or desktop,
+        tab or installed PWA — a subscription is sent to the
+        server, whose Scheduled Function delivers a real push at
+        the chosen local time even when the app is closed. This
+        is the ONLY path that reaches a device with nothing open
+        at the hour: path 1 has no scheduler left to run there.
+        See reminders-push.mjs.
 
    Every key and the fire state ("last fired" date) are namespaced per
    profile, so each user is reminded about their own data.
@@ -29,6 +30,48 @@ import { getSyncSettings } from './settings.js';
 import { nsKey, activeProfile, getActiveProfileId } from './profiles.js';
 
 const KEY = () => nsKey('reminder');
+
+// The settings are re-read on EVERY tick, and localStorage is neither a
+// reliable reader nor a reliable writer — and both failure modes are silent
+// and continuous:
+//   * a full quota makes the `lastFiredDate` write throw (the setter is in a
+//     try/catch), so the next tick reads "not fired yet" and fires again — a
+//     system banner plus an in-app toast every 60 seconds for the rest of the
+//     day, from a reminder the user set once;
+//   * a blocked or corrupt read makes normalize(null) answer `enabled: false`,
+//     so the reminder the user armed stops existing for the whole session and
+//     nothing ever tells them why.
+// So this session's copy is the truth and storage is write-through. `storageOk`
+// drops to false on the first failed read or write, after which memory wins.
+// The cache is keyed by the profile key because that key is what changes when
+// a profile is switched — without it a switch would keep the previous person's
+// schedule running against this person's data.
+let cacheKey = null;
+let cached = null;
+let storageOk = true;
+
+function readSettings() {
+  const key = KEY();
+  if (cacheKey !== key) { cacheKey = key; cached = null; storageOk = true; }
+  if (!storageOk) return cached; // a failed read or write: this session's copy
+  try {
+    const raw = localStorage.getItem(key);
+    cached = normalize(raw ? JSON.parse(raw) : null);
+    return cached;
+  } catch {
+    storageOk = false;
+    if (!cached) cached = normalize(null); // an unreadable store is not "off"
+    return cached;
+  }
+}
+
+/** Write-through: memory first, so a refused write cannot undo the change. */
+function writeSettings(next) {
+  cached = next;
+  try { localStorage.setItem(cacheKey, JSON.stringify(next)); }
+  catch { storageOk = false; } // read-only or full: the session still holds it
+  return next;
+}
 
 function normalize(raw) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
@@ -43,21 +86,15 @@ function normalize(raw) {
 }
 
 export function getReminderSettings() {
-  try {
-    const raw = localStorage.getItem(KEY());
-    return normalize(raw ? JSON.parse(raw) : null);
-  } catch {
-    return normalize(null);
-  }
+  return { ...readSettings() };
 }
 
 export function patchReminderSettings(patch) {
   const source = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
   // Merge onto stored state FIRST, then normalize the merged object so an
   // invalid patch field is dropped without resetting the untouched ones.
-  const clean = normalize({ ...getReminderSettings(), ...source });
-  try { localStorage.setItem(KEY(), JSON.stringify(clean)); } catch { /* read-only storage */ }
-  return clean;
+  const clean = normalize({ ...readSettings(), ...source });
+  return writeSettings(clean);
 }
 
 /** Local YYYY-MM-DD for a Date (defaults to now). */
@@ -225,20 +262,19 @@ async function pushFetch(url, init, timeoutMs = PUSH_TIMEOUT_MS) {
 }
 
 /**
- * Closed-app push is a mobile-web-app feature only: phones (any mobile
- * browser, installed PWA or not). Desktop is intentionally excluded —
- * including desktop-installed PWAs — because there the app lives in a tab
- * on a machine that is on, and the in-app scheduler is the right surface.
- * Matches the UA convention of app.js's isMobileDevice().
+ * Closed-app push: any browser that can actually do Web Push — phone or
+ * desktop, tab or installed PWA. It was phones only for the feature's whole
+ * life, on the reasoning that on desktop the app lives in a tab on a machine
+ * that is on and the in-app scheduler is the right surface. The daily
+ * reminder's own symptom disproved that: at 20:00 the tab is not open, so the
+ * only thing that ever fired was path 1's start-up catch-up. A browser with
+ * nothing running has no local scheduler at all, and this is the one path
+ * that reaches it. The gate is therefore the CAPABILITY and never the user
+ * agent — a phone with no push support fails here too, and a desktop with it
+ * passes. Requires cloud sync, since the app password gates the push store.
  */
-function mobileWebApp() {
-  return typeof window !== 'undefined'
-    && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
-}
-
 export function pushSupported() {
-  return mobileWebApp()
-    && typeof window !== 'undefined'
+  return typeof window !== 'undefined'
     && 'serviceWorker' in navigator
     && 'PushManager' in window
     && 'Notification' in window;
@@ -250,7 +286,7 @@ export function pushSupported() {
  * Returns { ok: true } or { ok: false, reason, message? }.
  */
 export async function subscribeReminderPush() {
-  if (!pushSupported()) return { ok: false, reason: 'unsupported' }; // includes desktop: mobile web apps only
+  if (!pushSupported()) return { ok: false, reason: 'unsupported' }; // a capability this browser lacks, never the device it runs on
   const sync = getSyncSettings();
   if (!sync.enabled || !sync.endpoint || !sync.password) return { ok: false, reason: 'no-sync' };
   const base = pushEndpoint(sync.endpoint);
