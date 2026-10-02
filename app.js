@@ -4006,7 +4006,14 @@ function recordTescoPayToLedger() {
  *  recorder's work, so a line the user filled by hand is never mistaken for one. */
 function appWrittenTescoLines() {
   const marks = state.settings.tescoPayLedger || {};
-  const ids = new Set(Object.values(marks).map(m => (m && m.id) || '').filter(Boolean));
+  // `by: 'fill'` marks are the USER's own lines (withTescoFillMark). This list
+  // is what the repair removes and what the menu row counts, and both promise
+  // "not by you" — so a fill the user made has to stay out of it even though it
+  // is in the very same record.
+  const ids = new Set(Object.values(marks)
+    .filter(m => m && m.by !== 'fill')
+    .map(m => m.id)
+    .filter(Boolean));
   return state.entries.filter(e => ids.has(e.id));
 }
 
@@ -4034,6 +4041,25 @@ function removeAppWrittenTescoLines() {
   toast(`Removed ${removed.length} automatic Tesco pay line${removed.length > 1 ? 's' : ''} - ${fmt(total)}. Your own fills are untouched.`, undo, 'Undo');
 }
 
+/** What a manual Fill leaves in the record of "who wrote this pay date":
+ *  `by: 'fill'`, which tescoPayLedgerWrites reads as *the user's own line* —
+ *  it will neither create over that date nor move the figure typed into it.
+ *
+ *  The mark is what makes deleting one's OWN fill stick. Without it the date
+ *  looks simply unfilled, and inside the write window the next Tesco commit
+ *  would put the money straight back: the recorder could tell "the line I wrote
+ *  was deleted" (its own mark) from "there was never a line" only for its own
+ *  lines, so a fill the user removed in History came back on the next shift
+ *  they added. Only the recorder writes marks, which is why the tag needs to
+ *  exist at all — the repair action counts recorder lines and must never touch
+ *  the user's.
+ *
+ *  Returns a NEW record; `marks` is the baseline to build from, which is
+ *  exactly what the caller's undo puts back. */
+function withTescoFillMark(marks, dateStr, id, amount) {
+  return { ...(marks || {}), [dateStr]: { id, amount, by: 'fill' } };
+}
+
 function fillThursday(dateStr) {
   // Tesco Pay's figure for the week paid on this Thursday beats repeating the
   // last one — that is the whole point of the tracker: the entry records what
@@ -4043,10 +4069,17 @@ function fillThursday(dateStr) {
   if (amt > 0) {
     const eid = uid();
     const tescoEntry = { id: eid, createdAt: nowIso(), date: dateStr, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: TESCO_PAY_METHOD, note: '' };
+    const wasMarks = { ...(state.settings.tescoPayLedger || {}) };
     state.entries.push(tescoEntry);
+    state.settings.tescoPayLedger = withTescoFillMark(wasMarks, dateStr, eid, amt);
     state.entries.sort((a, b) => a.date.localeCompare(b.date));
     persist();
-    trackAction(() => { state.entries = state.entries.filter(e => e.id !== eid); tombstoneIds([eid]); persist(); }, `Tesco ${friendlyDate(dateStr)}`, [tescoEntry]);
+    trackAction(() => {
+      state.entries = state.entries.filter(e => e.id !== eid);
+      tombstoneIds([eid]);
+      state.settings.tescoPayLedger = wasMarks;
+      persist();
+    }, `Tesco ${friendlyDate(dateStr)}`, [tescoEntry]);
     toast(`Filled Tesco pay for ${friendlyDate(dateStr)} - ${fmt(amt)}`);
     render();
   } else {
@@ -4070,17 +4103,22 @@ function autoFillAll(unpaidThursdays) {
     return;
   }
   const created = [];
+  const wasMarks = { ...(state.settings.tescoPayLedger || {}) };
+  let nextMarks = wasMarks;
   const createdEntries = fillable.map(d => {
     const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amountFor(d), method: TESCO_PAY_METHOD, note: '' };
     created.push(entry.id);
+    nextMarks = withTescoFillMark(nextMarks, d, entry.id, entry.amount);
     state.entries.push(entry);
     return entry;
   });
+  state.settings.tescoPayLedger = nextMarks;
   state.entries.sort((a, b) => a.date.localeCompare(b.date));
   persist();
   trackAction(() => {
     state.entries = state.entries.filter(e => !created.includes(e.id));
     tombstoneIds(created);
+    state.settings.tescoPayLedger = wasMarks;
     persist();
   }, `Auto-fill ${fillable.length} Tesco pay Thursdays`, createdEntries);
   const total = fillable.reduce((sum, d) => sum + amountFor(d), 0);
@@ -4115,15 +4153,20 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
       if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); return; }
       const created = [];
       const createdEntries = [];
+      const wasMarks = { ...(state.settings.tescoPayLedger || {}) };
+      let nextMarks = wasMarks;
       if (data.date) {
         const entry = { id: uid(), createdAt: nowIso(), date: data.date, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: TESCO_PAY_METHOD, note: '' };
         created.push(entry.id);
         createdEntries.push(entry);
+        nextMarks = withTescoFillMark(nextMarks, data.date, entry.id, entry.amount);
         state.entries.push(entry);
+        state.settings.tescoPayLedger = nextMarks;
         state.entries.sort((a, b) => a.date.localeCompare(b.date));
         persist();
         trackAction(() => {
           state.entries = state.entries.filter(e => !created.includes(e.id));
+          state.settings.tescoPayLedger = wasMarks;
           persist();
         }, `Filled Tesco pay ${friendlyDate(data.date)}`, createdEntries);
         toast(`Filled Tesco pay for ${friendlyDate(data.date)} - ${fmt(amt)}`);
@@ -4132,12 +4175,15 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
           const entry = { id: uid(), createdAt: nowIso(), date: d, type: 'credit', category: 'misc', details: 'Tesco pay', amount: amt, method: TESCO_PAY_METHOD, note: '' };
           created.push(entry.id);
           createdEntries.push(entry);
+          nextMarks = withTescoFillMark(nextMarks, d, entry.id, entry.amount);
           state.entries.push(entry);
         }
+        state.settings.tescoPayLedger = nextMarks;
         state.entries.sort((a, b) => a.date.localeCompare(b.date));
         persist();
         trackAction(() => {
           state.entries = state.entries.filter(e => !created.includes(e.id));
+          state.settings.tescoPayLedger = wasMarks;
           persist();
         }, `Auto-fill ${unpaidThursdays.length} Tesco pay Thursdays`, createdEntries);
         toast(`Auto-filled ${unpaidThursdays.length} Tesco pay Thursdays - ${fmt(amt)} each`);

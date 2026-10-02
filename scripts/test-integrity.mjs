@@ -629,6 +629,22 @@ const wired = ledgerState({ '2026-10-01': { id: 'w1', amount: 469.78 } });
 check('a written line round-trips with its entry id and amount',
   wired['2026-10-01']?.id === 'w1' && wired['2026-10-01'].amount === 469.78,
   JSON.stringify(wired));
+// `by: 'fill'` is the tag that says a line is the USER's own fill rather than
+// one the recorder wrote: it is what stops a hand-filled Thursday deleted in
+// History from being written back at the next Tesco commit, and what keeps the
+// "Remove automatic Tesco pay lines" repair from counting it. Losing it on a
+// load turns a fill into a recorder line, which is a delete that comes back and
+// a repair that eats the user's own income.
+const fillTagged = ledgerState({ '2026-10-02': { id: 'f1', amount: 450, by: 'fill' } });
+check('a fill mark keeps its tag through a load',
+  fillTagged['2026-10-02']?.by === 'fill' && fillTagged['2026-10-02']?.amount === 450,
+  JSON.stringify(fillTagged));
+const untagged = ledgerState({ '2026-10-03': { id: 'a1', amount: 450 } });
+check('a mark with no tag is still the recorder\'s own',
+  !('by' in (untagged['2026-10-03'] || {})), JSON.stringify(untagged));
+const oddTag = ledgerState({ '2026-10-04': { id: 'b1', amount: 450, by: 'fill me' } });
+check('an unrecognised tag is not read as a fill',
+  !('by' in (oddTag['2026-10-04'] || {})), JSON.stringify(oddTag));
 const junkLedger = ledgerState({
   '2026-10-01': { id: 'w1', amount: 469.78 },
   'not-a-date': { id: 'w2', amount: 10 },
@@ -661,6 +677,20 @@ check('and a date both sides wrote takes the fresher pair as one value',
   JSON.stringify(ledgerMerge({ '2026-10-01': { id: 'a1', amount: 450 } }, { '2026-10-01': { id: 'b1', amount: 469.78 } }, true)['2026-10-01'])
     === JSON.stringify({ id: 'a1', amount: 450 }),
   JSON.stringify(ledgerMerge({ '2026-10-01': { id: 'a1', amount: 450 } }, { '2026-10-01': { id: 'b1', amount: 469.78 } }, false)['2026-10-01']));
+// The tag rides the same whole-value rule: a fill recognised on one device
+// stays a fill after a merge, and a fresher mark from the other device replaces
+// the pair — tag and all — rather than blending the two sides' opinions.
+check('a fill tag travels with the pair it belongs to',
+  ledgerMerge({ '2026-10-05': { id: 'a1', amount: 450, by: 'fill' } },
+    { '2026-10-06': { id: 'b1', amount: 460 } }, true)['2026-10-05']?.by === 'fill',
+  JSON.stringify(ledgerMerge({ '2026-10-05': { id: 'a1', amount: 450, by: 'fill' } },
+    { '2026-10-06': { id: 'b1', amount: 460 } }, true)));
+check('and a fresher recorder mark replaces the whole value, tag included',
+  !('by' in (ledgerMerge({ '2026-10-07': { id: 'a1', amount: 450, by: 'fill' } },
+    { '2026-10-07': { id: 'b1', amount: 469.78 } }, false)['2026-10-07'] || {})),
+  JSON.stringify(ledgerMerge({ '2026-10-07': { id: 'a1', amount: 450, by: 'fill' } },
+    { '2026-10-07': { id: 'b1', amount: 469.78 } }, false)));
+
 // The record is the reason a delete sticks, so it must not be the thing that
 // grows without bound: the pay tables it shadows hold 500 weeks, and anything
 // older than the cap could never be read again anyway.

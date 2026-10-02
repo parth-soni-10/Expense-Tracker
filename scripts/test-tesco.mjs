@@ -1298,15 +1298,62 @@ ok('and a window that will not parse creates nothing either',
 ok('a window whose ends are the wrong way round is not widened into one',
   tescoPayLedgerWrites(twoDates, [], {}, { from: '2026-10-09', to: '2026-10-01' }).create.length, 0);
 
+// app.js's source is read once here, before the first pin that needs it, so a
+// block can assert against it wherever it sits in this file.
+const appSource = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+const reconStart = appSource.indexOf('function recordTescoPayToLedger()');
+const reconNext = appSource.indexOf('\nfunction ', reconStart + 10);
+const reconSrc = reconStart === -1 ? '' : appSource.slice(reconStart, reconNext === -1 ? appSource.length : reconNext);
+
+// ---------- a line the USER filled is theirs, including after they delete it ----------
+// The three rules above only ever saw the recorder's own marks, so a Thursday
+// the user filled by hand and then deleted in History looked simply *unfilled*:
+// inside the write window the next Tesco commit wrote the money straight back.
+// A mark tagged `by: 'fill'` (app.js's withTescoFillMark) closes that, and it
+// has to close BOTH halves — never recreated, and never moved either, because a
+// figure they typed is their reading of what landed rather than this app's.
+const fillMark = { '2026-10-01': { id: 'f1', amount: 500, by: 'fill' } };
+ok('a hand-filled date is never written again after they delete it',
+  tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } }, [], fillMark, lw),
+  { create: [], update: [] });
+ok('and their own figure is not moved when that week\'s recording changes',
+  tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } },
+    [payEntry('f1', '2026-10-01', 500)], fillMark, lw).update,
+  []);
+ok('while a recorder mark on the same date is still followed',
+  tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } },
+    [payEntry('w1', '2026-10-01', 450)], { '2026-10-01': { id: 'w1', amount: 450 } }, lw).update,
+  [{ date: '2026-10-01', id: 'w1', amount: 469.78, source: 'bank' }]);
+// The tag has exactly one writer, and it is not the recorder: four call sites
+// (the per-row Fill, Auto-fill, and the amount modal's two branches) all go
+// through one helper, so the recorder cannot accidentally claim a fill as its
+// own — which is what would let the repair remove it later.
+const fillTagCalls = (appSource.match(/= withTescoFillMark\(/g) || []).length;
+ok('the per-row Fill, Auto-fill and both modal branches all mark the date',
+  fillTagCalls, 4);
+ok('and they all go through the one helper that writes the tag',
+  /function withTescoFillMark\(marks, dateStr, id, amount\)/.test(appSource)
+  && /\[dateStr\]: \{ id, amount, by: 'fill' \}/.test(appSource), true);
+ok('the recorder never writes that tag itself',
+  /nextMarks\[write\.date\] = \{ id: entry\.id, amount: write\.amount \};/.test(reconSrc)
+  && !/by: 'fill'/.test(reconSrc), true);
+// The undo that goes with each fill has to take the record back too, or an
+// undone fill would leave a mark pointing at an entry that no longer exists —
+// which reads as "the user deleted this" and silences the recorder on a date
+// nobody asked it to leave alone.
+ok('every fill\'s undo restores the record with the entries',
+  (appSource.match(/state\.settings\.tescoPayLedger = wasMarks;/g) || []).length,
+  5);
+// And the repair must not count a fill as its own: it is offered as "written by
+// the recorder, not by you" and its toast promises your fills are untouched.
+ok('the repair leaves the user\'s own fills out of what it removes',
+  /Object\.values\(marks\)\s*\.filter\(m => m && m\.by !== 'fill'\)/.test(appSource), true);
+
 // The wiring those rules need to reach a real recording. app.js owns the write
 // (and its undo) because the ledger is the app shell's, not the lazy Tesco
 // module's; the module calls it with the tables just written. Pinned against the
 // source text for the same reason test-motion.mjs pins paintFigure: app.js cannot
 // be imported here, it touches the DOM as it evaluates.
-const appSource = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
-const reconStart = appSource.indexOf('function recordTescoPayToLedger()');
-const reconNext = appSource.indexOf('\nfunction ', reconStart + 10);
-const reconSrc = reconStart === -1 ? '' : appSource.slice(reconStart, reconNext === -1 ? appSource.length : reconNext);
 ok('the reconciler exists in the app shell', reconStart !== -1 && reconSrc.length > 500, true);
 // The caller owns the undo step — a Tesco commit folds this into its own, and a
 // payslip settle takes one of its own — so taking one in here would stack two.

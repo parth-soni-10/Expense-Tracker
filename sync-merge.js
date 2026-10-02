@@ -180,8 +180,9 @@ function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresher) {
     // per pay date — the line this app wrote and the figure it wrote it at.
     // Per-key LWW, like methodHidden, and a date only ONE side has survives the
     // union: that is what keeps a line the other device deleted from being
-    // written back by the merge. The id and the amount travel together as one
-    // value, so neither can be paired with the other side's figure.
+    // written back by the merge. The id, the amount and the `by: 'fill'` tag
+    // travel together as one value, so neither can be paired with the other
+    // side's figure — and a fill recognised on one device stays a fill here.
     tescoPayLedger: { ...(older.tescoPayLedger || {}), ...(newer.tescoPayLedger || {}) },
     // enabledTabs is a POLICY, not a collection: unioning it would let any
     // device that still lists a tab re-grant it after the admin hid it. The

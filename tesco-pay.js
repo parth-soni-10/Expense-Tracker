@@ -422,6 +422,15 @@ export function tescoPayWriteWindow(today) {
  *     keeping, since without it the next recording of that week would undo the
  *     deletion and the money would keep coming back.
  *
+ * A fourth case is the third rule reaching past the recorder's own lines: a
+ * mark tagged `by: 'fill'` is a line the USER filled (app.js's
+ * `withTescoFillMark`), and such a date is theirs end to end — not created over
+ * while their line exists, not created after they delete it, and not moved when
+ * the week's figure changes. Without that tag rule 1 only ever saw the
+ * recorder's marks, so a hand-filled Thursday deleted in History looked simply
+ * unfilled and the next Tesco commit inside the write window wrote the money
+ * straight back.
+ *
  * Nothing here ever removes a ledger entry: the ledger is the user's, and a
  * recording that disappears (a week's payslips deleted, a bank figure cleared)
  * leaves the money it already paid where it is.
@@ -449,6 +458,11 @@ export function tescoPayLedgerWrites(recorded, entries, written, writeWindow) {
     const amount = r2(Number(recorded[date] && recorded[date].amount));
     if (!(amount > 0)) continue;
     const mark = marks[date];
+    // A date the USER filled is theirs end to end: never created over, even
+    // once their line is gone (which is the whole point of the tag), and never
+    // followed when the week's figure moves — a figure they typed is their
+    // reading of what landed, not this app's.
+    if (mark && mark.by === 'fill') continue;
     if (!mark) {
       if (!inWindow(date) || paidDates.has(date)) continue;
       create.push({ date, amount, source: recorded[date].source });

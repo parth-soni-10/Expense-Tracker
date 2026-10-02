@@ -335,6 +335,12 @@ function normalizeMethodHidden(raw, knownIds) {
  *  write the entry back and the money would keep returning. It also carries the
  *  id, so a line the user has since edited by hand is recognisable as theirs.
  *
+ *  `by: 'fill'` is carried through for a line the USER filled rather than one
+ *  the recorder wrote (the three Fill paths in app.js). It is the only value
+ *  that means anything: an absent tag reads as the recorder's own, which is
+ *  what every mark written before the tag existed already is, so a document
+ *  from an older app is not reclassified by the load.
+ *
  *  Anything malformed is dropped rather than repaired. An unreadable record
  *  would let a deleted line come back, and a wrong amount would let the app
  *  follow a figure it never wrote. */
@@ -349,7 +355,7 @@ function normalizeTescoPayLedger(raw) {
     if (!id) continue;
     if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) continue;
     if (Math.round(amount * 100) / 100 !== amount) continue;
-    out[date] = { id, amount };
+    out[date] = value.by === 'fill' ? { id, amount, by: 'fill' } : { id, amount };
   }
   // Bounded like the pay tables it shadows, oldest dates first: a date this old
   // is one Tesco Pay still holds a week for, so the record would never be read.
