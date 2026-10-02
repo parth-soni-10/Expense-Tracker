@@ -331,15 +331,28 @@ function receivedTotal(weeks, rates, today) {
  *
  * A week that brought nothing in is left out too — a zero-amount ledger entry is
  * not a payment.
+ *
+ * And a week whose pay date has not come round is not received either - the rule
+ * receivedTotal has always applied (a week of the current month is paid in the
+ * NEXT one, so its estimate would claim money that has not arrived). Without it
+ * here the ledger wrote a line DATED IN THE FUTURE on any recording made in the
+ * first days of a month. A typed bank figure is kept whatever the date, exactly
+ * as receivedTotal keeps it: the user watched that money land. So `today` is the
+ * claim that time has passed, and a missing or malformed one leaves only bank
+ * figures - which are true whenever they are read - rather than assuming every
+ * week has been paid.
  */
-export function receivedByPayDate(shifts, payslips, rates) {
+export function receivedByPayDate(shifts, payslips, rates, today) {
+  const cutoff = typeof today === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(today) ? today : '';
   const out = {};
   for (const w of buildPayWeeks(shifts, payslips, rates)) {
     const source = w.bankPaid != null ? 'bank' : w.payslips.length ? 'recorded' : null;
     if (!source) continue;
+    const payDate = payDateOf(w.weekStart);
+    if (source !== 'bank' && payDate > cutoff) continue;
     const amount = weekReceived(w, rates);
     if (!(amount > 0)) continue;
-    out[payDateOf(w.weekStart)] = { amount, source };
+    out[payDate] = { amount, source };
   }
   return out;
 }
@@ -363,6 +376,31 @@ export function receivedByPayDate(shifts, payslips, rates) {
  * resolves, and a dropped entry is irreversible — see updateAllowedMethods).
  */
 export const TESCO_PAY_METHOD = 'AIB';
+
+/**
+ * The window in which the automatic recorder may CREATE a line: the current
+ * month, up to and including today.
+ *
+ * The first version of the recorder had no window, so one recording wrote every
+ * pay date the Tesco tables had ever held. Measured on six months of payslips
+ * that is 25 lines and 9,377.75 in a SINGLE run, and it is how a balance the user
+ * had been managing by hand went from 4,000 to 15,000 without anyone asking for
+ * it - the drama was never a wrong sum, it was an unbounded catch-up.
+ *
+ * The window is not an arbitrary slice of history: it is exactly the set of
+ * Thursdays the tracker card offers to fill (`thursdaysInMonth`, filtered to
+ * `d <= today`), so what this writer may create and what the card lists are one
+ * and the same set. A line can never appear for a date the card does not show,
+ * and the card's own Fill covers everything inside the window that Tesco Pay has
+ * a figure for - which is why the two halves can be changed together.
+ *
+ * Null when `today` is not a usable date, and tescoPayLedgerWrites creates
+ * NOTHING without a window: the unbounded case is the one that moves money.
+ */
+export function tescoPayWriteWindow(today) {
+  if (typeof today !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(today)) return null;
+  return { from: `${today.slice(0, 7)}-01`, to: today };
+}
 
 /**
  * The ledger lines a Tesco recording owes — the automatic half of the tracker
@@ -393,10 +431,17 @@ export const TESCO_PAY_METHOD = 'AIB';
  * of the user's own is the only thing it stops a line for, so reading it too
  * widely can only ever hold a line back, never double one up.
  */
-export function tescoPayLedgerWrites(recorded, entries, written) {
+export function tescoPayLedgerWrites(recorded, entries, written, writeWindow) {
   const create = [];
   const update = [];
   const marks = written && typeof written === 'object' && !Array.isArray(written) ? written : {};
+  // A create needs a window and has to fall inside it. Malformed windows are
+  // dropped rather than widened: with no window at all nothing may be created,
+  // because "no bound" is the failure mode that wrote a year of history at once.
+  const win = writeWindow && typeof writeWindow === 'object'
+    && typeof writeWindow.from === 'string' && typeof writeWindow.to === 'string'
+    && writeWindow.from <= writeWindow.to ? writeWindow : null;
+  const inWindow = (date) => !!win && date >= win.from && date <= win.to;
   const rows = Array.isArray(entries) ? entries : [];
   const paidDates = new Set(rows.filter(e => e && e.type === 'credit' && !e.transferId).map(e => e.date));
   const byId = new Map(rows.filter(e => e && typeof e.id === 'string').map(e => [e.id, e]));
@@ -405,7 +450,8 @@ export function tescoPayLedgerWrites(recorded, entries, written) {
     if (!(amount > 0)) continue;
     const mark = marks[date];
     if (!mark) {
-      if (!paidDates.has(date)) create.push({ date, amount, source: recorded[date].source });
+      if (!inWindow(date) || paidDates.has(date)) continue;
+      create.push({ date, amount, source: recorded[date].source });
       continue;
     }
     const line = byId.get(mark.id);

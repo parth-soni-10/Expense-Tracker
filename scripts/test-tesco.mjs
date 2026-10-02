@@ -21,7 +21,7 @@ import {
   TESCO_RATE_DEFAULTS,
   tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf, payslipWeekNumberOf,
   parseShiftText, shiftPreviewLine,
-  storedShift, storedPayslip, applyShiftEdit, weekOffShift, weekBankWrite, weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites,
+  storedShift, storedPayslip, applyShiftEdit, weekOffShift, weekBankWrite, weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites, tescoPayWriteWindow,
   TESCO_PAY_METHOD,
   rosterColumnBounds, parseCellTokens,
   sheetRowsToCsv, workbookToCsv,
@@ -1166,7 +1166,7 @@ ok('a week that recorded nothing has no chip',
 // (gross − the tax its payslips withheld). A week with nothing recorded yet is
 // deliberately absent: its simulated net is an ESTIMATE, and an estimate written
 // into the ledger as income is a wrong figure nobody sees arrive.
-const payMap = receivedByPayDate(chipShifts, chipSlips, null);
+const payMap = receivedByPayDate(chipShifts, chipSlips, null, '2026-10-02');
 ok('the key is the week’s Sunday + 11, and that date is a Thursday',
   [Object.keys(payMap), new Date('2026-10-01T00:00:00Z').getUTCDay()], [['2026-10-01'], 4]);
 ok('a recorded bank figure is what that pay date brought',
@@ -1174,17 +1174,17 @@ ok('a recorded bank figure is what that pay date brought',
 // 539.70 − 69.92 = 469.78: with no bank figure the week’s own arithmetic stands
 // in, and 470.59 (the estimate) is NOT what the ledger would be offered.
 ok('with no bank figure the week’s own arithmetic stands in, and is named as such',
-  receivedByPayDate(chipShifts.map(({ bankPay, ...s }) => s), chipSlips, null)['2026-10-01'],
+  receivedByPayDate(chipShifts.map(({ bankPay, ...s }) => s), chipSlips, null, '2026-10-02')['2026-10-01'],
   { amount: 469.78, source: 'recorded' });
 // The one deliberate divergence from the month card, pinned beside it below.
 ok('a week with shifts only is left out rather than offered an estimate',
-  receivedByPayDate(chipShifts.map(({ bankPay, ...s }) => s), [], null), {});
+  receivedByPayDate(chipShifts.map(({ bankPay, ...s }) => s), [], null, '2026-10-02'), {});
 ok('a week whose records add up to nothing to pay is left out too',
-  receivedByPayDate([], chipSlips, null), {});
+  receivedByPayDate([], chipSlips, null, '2026-10-02'), {});
 // A refund week is money in — the case the engine’s own header names — so it is
 // a figure like any other, at its own pay date.
 ok('a payslip-only refund week is money in, at its pay date',
-  receivedByPayDate([], [{ id: 'r1', weekStart: '2026-09-20', paye: -50, usc: 0, prsi: 0, futureFund: 0 }], null)['2026-10-01'],
+  receivedByPayDate([], [{ id: 'r1', weekStart: '2026-09-20', paye: -50, usc: 0, prsi: 0, futureFund: 0 }], null, '2026-10-02')['2026-10-01'],
   { amount: 50, source: 'recorded' });
 // The ledger fill and the month card read the same week through the same rule:
 // 469.78 is both what the tab says was received and what the tracker fills.
@@ -1192,8 +1192,23 @@ ok('and the month card’s Received for that week is the same figure',
   monthSummary(chipShifts, chipSlips, null, 2026, 9, '2026-10-01').received, 469.78);
 ok('while a shift-only week the ledger is not offered is still counted by the month card',
   [monthSummary([{ id: 'n1', date: '2026-09-20', start: '09:00', end: '17:00', gross: 539.7 }], [], null, 2026, 9, '2026-10-01').received,
-   receivedByPayDate([{ id: 'n1', date: '2026-09-20', start: '09:00', end: '17:00', gross: 539.7 }], [], null)],
+   receivedByPayDate([{ id: 'n1', date: '2026-09-20', start: '09:00', end: '17:00', gross: 539.7 }], [], null, '2026-10-02')],
   [470.59, {}]);
+// A week is only RECEIVED once its pay date has come round - the rule
+// receivedTotal has always applied, and without it here the ledger wrote a line
+// dated in the future on any recording made in the first days of a month.
+const futureShifts = [{ id: 'f1', date: '2026-09-28', start: '09:00', end: '17:00', gross: 539.7 }];
+const futureSlips = [{ id: 'f2', weekStart: '2026-09-28', paye: 69.92, usc: 0, prsi: 0, futureFund: 0 }];
+ok('a week paid on a Thursday that has not come round is not received yet',
+  receivedByPayDate(futureShifts, futureSlips, null, '2026-10-02'), {});
+ok('and it is received once that Thursday arrives',
+  receivedByPayDate(futureShifts, futureSlips, null, '2026-10-09'),
+  { '2026-10-08': { amount: 469.78, source: 'recorded' } });
+ok('but a typed bank figure is money the user watched land, whatever the date',
+  receivedByPayDate([{ ...futureShifts[0], bankPay: 469.78 }], [], null, '2026-10-02'),
+  { '2026-10-08': { amount: 469.78, source: 'bank' } });
+ok('with no date to measure against, only bank figures count as arrived',
+  receivedByPayDate(futureShifts, futureSlips, null), {});
 
 // ---------- the ledger lines a recording owes ----------
 // The automatic half of the tracker above: a pay date with a recorded figure and
@@ -1205,56 +1220,83 @@ ok('while a shift-only week the ledger is not offered is still counted by the mo
 // recording of that week.
 const twoDates = { '2026-10-01': { amount: 469.78, source: 'bank' }, '2026-10-08': { amount: 450, source: 'recorded' } };
 const payEntry = (id, date, amount) => ({ id, date, type: 'credit', category: 'misc', details: 'Tesco pay', amount, method: TESCO_PAY_METHOD, note: '' });
+// The window these rules are read in: October, up to the 9th, so both pay dates
+// below (the 1st and the 8th) have come round and each rule can be read on its
+// own terms. The window's own edges are tested after them.
+const lw = tescoPayWriteWindow('2026-10-09');
 ok('a recorded pay date the ledger is silent on is a line to write, oldest first',
-  tescoPayLedgerWrites(twoDates, [], {}).create,
+  tescoPayLedgerWrites(twoDates, [], {}, lw).create,
   [{ date: '2026-10-01', amount: 469.78, source: 'bank' }, { date: '2026-10-08', amount: 450, source: 'recorded' }]);
 ok('a date the user already has income on is theirs, and nothing is written over it',
-  tescoPayLedgerWrites(twoDates, [payEntry('e1', '2026-10-01', 500)], {}).create,
+  tescoPayLedgerWrites(twoDates, [payEntry('e1', '2026-10-01', 500)], {}, lw).create,
   [{ date: '2026-10-08', amount: 450, source: 'recorded' }]);
 // A transfer's credit leg is not income — app.js's isIncomeEntry says so, and the
 // Balances tracker counts a date paid by the same rule — so it cannot stand in
 // for the pay and must not stop the line.
 ok('a transfer leg on the date does not count as the date being paid',
   tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } },
-    [{ ...payEntry('e1', '2026-10-01', 469.78), transferId: 't1' }], {}).create,
+    [{ ...payEntry('e1', '2026-10-01', 469.78), transferId: 't1' }], {}, lw).create,
   [{ date: '2026-10-01', amount: 469.78, source: 'bank' }]);
 // Deleting the line has to stick. Without the record this is simply an unpaid
 // date, and the next recording of that week would put back what the user removed.
 ok('a line this app wrote whose entry is gone is never written again',
   tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } }, [],
-    { '2026-10-01': { id: 'w1', amount: 469.78 } }),
+    { '2026-10-01': { id: 'w1', amount: 469.78 } }, lw),
   { create: [], update: [] });
 // The recording HAS moved here (450 → 469.78), which is the case that would
 // overwrite the user's figure if the line were followed by id alone.
 ok('and neither is one the user has given their own figure',
   tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } },
-    [payEntry('w1', '2026-10-01', 400)], { '2026-10-01': { id: 'w1', amount: 450 } }),
+    [payEntry('w1', '2026-10-01', 400)], { '2026-10-01': { id: 'w1', amount: 450 } }, lw),
   { create: [], update: [] });
 ok('a corrected recording follows the line this app wrote',
   tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } },
-    [payEntry('w1', '2026-10-01', 450)], { '2026-10-01': { id: 'w1', amount: 450 } }).update,
+    [payEntry('w1', '2026-10-01', 450)], { '2026-10-01': { id: 'w1', amount: 450 } }, lw).update,
   [{ date: '2026-10-01', id: 'w1', amount: 469.78, source: 'bank' }]);
 ok('while a recording that has not moved leaves the line exactly as it is',
   tescoPayLedgerWrites({ '2026-10-01': { amount: 469.78, source: 'bank' } },
-    [payEntry('w1', '2026-10-01', 469.78)], { '2026-10-01': { id: 'w1', amount: 469.78 } }),
+    [payEntry('w1', '2026-10-01', 469.78)], { '2026-10-01': { id: 'w1', amount: 469.78 } }, lw),
   { create: [], update: [] });
 // A week with nothing recorded is absent from receivedByPayDate, so the week
 // card's estimate can never reach the ledger through this path either.
 ok('an unrecorded week is never written', tescoPayLedgerWrites({}, [], {}), { create: [], update: [] });
 let ledgerJunk = null;
-try { ledgerJunk = tescoPayLedgerWrites(twoDates, 'nope', 42).create.length; } catch { ledgerJunk = 'threw'; }
+try { ledgerJunk = tescoPayLedgerWrites(twoDates, 'nope', 42, lw).create.length; } catch { ledgerJunk = 'threw'; }
 ok('junk in the ledger or the record cannot throw the rule', ledgerJunk, 2);
 // Applying the plan is what the next pass reads — the entry it made and the mark
 // it left — so running it twice must write once. This is the property the whole
 // feature rests on: a recording that fires again (a settle after another
 // keystroke, a commit after a shift edit) must not add a second line.
 const secondPass = (() => {
-  const plan = tescoPayLedgerWrites(twoDates, [], {});
+  const plan = tescoPayLedgerWrites(twoDates, [], {}, lw);
   const entries = plan.create.map((w, i) => payEntry(`n${i}`, w.date, w.amount));
   const marks = Object.fromEntries(plan.create.map((w, i) => [w.date, { id: `n${i}`, amount: w.amount }]));
-  return tescoPayLedgerWrites(twoDates, entries, marks);
+  return tescoPayLedgerWrites(twoDates, entries, marks, lw);
 })();
 ok('and the plan is idempotent: applied, the next pass writes nothing', secondPass, { create: [], update: [] });
+// The window, which is the whole of the fix for the balance that went 4,000 →
+// 15,000: one recording used to write every pay date the tables had ever held
+// (25 lines / 9,377.75 in a single run). A create may only land on the current
+// month's own days, up to today — the set the tracker card lists.
+ok('the write window is this month, up to today', tescoPayWriteWindow('2026-10-09'),
+  { from: '2026-10-01', to: '2026-10-09' });
+ok('a pay date from an earlier month is history, and is not created',
+  tescoPayLedgerWrites({ '2026-09-24': { amount: 469.78, source: 'recorded' } }, [], {}, lw),
+  { create: [], update: [] });
+ok('nor is one the month has not reached yet',
+  tescoPayLedgerWrites({ '2026-10-15': { amount: 469.78, source: 'recorded' } }, [], {}, lw),
+  { create: [], update: [] });
+// No window, or one that will not parse: nothing may be created. This is the
+// guard against the unbounded case returning — an absent bound must read as
+// "create nothing", never as "create everything".
+ok('without a window nothing is ever created',
+  tescoPayLedgerWrites(twoDates, [], {}), { create: [], update: [] });
+ok('and a window that will not parse creates nothing either',
+  [tescoPayWriteWindow('October'), tescoPayWriteWindow(undefined), tescoPayWriteWindow(20261009),
+   tescoPayLedgerWrites(twoDates, [], {}, tescoPayWriteWindow('October')).create.length],
+  [null, null, null, 0]);
+ok('a window whose ends are the wrong way round is not widened into one',
+  tescoPayLedgerWrites(twoDates, [], {}, { from: '2026-10-09', to: '2026-10-01' }).create.length, 0);
 
 // The wiring those rules need to reach a real recording. app.js owns the write
 // (and its undo) because the ledger is the app shell's, not the lazy Tesco
@@ -1279,6 +1321,31 @@ ok('and a line it made is tombstoned, so a merge cannot bring the undone one bac
 ok('the entry it writes is the one Fill writes',
   /type: 'credit'/.test(reconSrc) && /category: 'misc'/.test(reconSrc)
   && /details: 'Tesco pay'/.test(reconSrc) && /method: TESCO_PAY_METHOD/.test(reconSrc), true);
+// The window is a rule IN THE ENGINE, but it only holds if the shell hands one
+// in: a call that drops the fourth argument creates nothing (the safe side), and
+// a call that passed a wider bound would be the 4,000 → 15,000 run all over
+// again. Both halves are pinned here — the window is built from today, and the
+// same date gates receivedByPayDate so no line can be written ahead of the money.
+ok('the shell hands the recorder a window built from today',
+  /tescoPayLedgerWrites\(recorded, state\.entries, marks, tescoPayWriteWindow\(today\(\)\)\)/.test(reconSrc), true);
+ok('and it reads the week table against that same today',
+  /receivedByPayDate\(t\.shifts \|\| \[\], t\.payslips \|\| \[\], rates, today\(\)\)/.test(reconSrc), true);
+// The window must be the set the tracker card offers, or a line could appear for
+// a Thursday the card does not show and the two halves of the feature would
+// disagree about which pay dates exist.
+const cardSrc = appSource.slice(appSource.indexOf('const thursdays = thursdaysInMonth('), appSource.indexOf('const thursdays = thursdaysInMonth(') + 900);
+ok('the tracker card lists this month’s Thursdays up to today',
+  /thursdaysInMonth\(now\.getFullYear\(\), now\.getMonth\(\)\)/.test(cardSrc)
+  && /d <= todayStr/.test(cardSrc), true);
+// The repair is what lets a user who already took the catch-up put it back —
+// and it must never touch a line they filled themselves, or "your own fills are
+// untouched" would be a lie and the ledger would go negative for no reason.
+ok('the repair is reachable from the Data menu only while such lines exist',
+  /appWrittenTescoLines\(\);[\s\S]{0,400}?Remove automatic Tesco pay lines/.test(appSource), true);
+ok('and it leaves the record alone — clearing it would hand the catch-up back',
+  /function removeAppWrittenTescoLines\(\)[\s\S]{0,700}?settings\.tescoPayLedger\s*=/.test(appSource), false);
+ok('and it takes the undo step of its own, since nothing called it has one',
+  /function removeAppWrittenTescoLines\(\)[\s\S]{0,700}?trackAction\(/.test(appSource), true);
 
 // ---------- where a recorded Tesco pay lands ----------
 // The method id is not a label: `balanceDelta` counts a credit on a gift-card

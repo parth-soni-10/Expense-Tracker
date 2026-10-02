@@ -12,7 +12,7 @@ import { getReminderSettings, patchReminderSettings, startReminderScheduler, onR
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
-import { monthSummary, TESCO_RATE_DEFAULTS, TESCO_PAY_METHOD, weekStartOf, shiftPay, r2, isoLocal, receivedByPayDate, tescoPayLedgerWrites } from './tesco-pay.js';
+import { monthSummary, TESCO_RATE_DEFAULTS, TESCO_PAY_METHOD, weekStartOf, shiftPay, r2, isoLocal, receivedByPayDate, tescoPayLedgerWrites, tescoPayWriteWindow } from './tesco-pay.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
@@ -3913,7 +3913,7 @@ function lastTescoPayAmount() {
 function tescoReceivedByDate() {
   const t = state.tesco || {};
   const rates = { ...TESCO_RATE_DEFAULTS, ...(state.settings.tescoRates || {}) };
-  return receivedByPayDate(t.shifts || [], t.payslips || [], rates);
+  return receivedByPayDate(t.shifts || [], t.payslips || [], rates, today());
 }
 
 /** What a ledger reconciliation did, in words, for the toast that announces it.
@@ -3948,9 +3948,13 @@ function tescoPayNote(created, updated) {
 function recordTescoPayToLedger() {
   const t = state.tesco || {};
   const rates = { ...TESCO_RATE_DEFAULTS, ...(state.settings.tescoRates || {}) };
-  const recorded = receivedByPayDate(t.shifts || [], t.payslips || [], rates);
+  const recorded = receivedByPayDate(t.shifts || [], t.payslips || [], rates, today());
   const marks = state.settings.tescoPayLedger || {};
-  const plan = tescoPayLedgerWrites(recorded, state.entries, marks);
+  // The window a CREATE may fall in - this month, up to today - which is the set
+  // of Thursdays the tracker card below lists and offers to fill. Older pay dates
+  // are history the user manages with Fill, and an unbounded catch-up here is
+  // what turned a hand-managed balance into a year of back pay in one recording.
+  const plan = tescoPayLedgerWrites(recorded, state.entries, marks, tescoPayWriteWindow(today()));
   if (!plan.create.length && !plan.update.length) return null;
   const wasMarks = { ...marks };
   const wasAmounts = [];
@@ -3991,6 +3995,40 @@ function recordTescoPayToLedger() {
     persist();
   };
   return { undo, note: tescoPayNote(created, updated) };
+}
+
+/** The lines THIS app wrote that are still in the ledger: the ids its own record
+ *  (settings.tescoPayLedger) holds. The record is what makes the repair exact -
+ *  it names the lines rather than hunting for entries that look like the
+ *  recorder's work, so a line the user filled by hand is never mistaken for one. */
+function appWrittenTescoLines() {
+  const marks = state.settings.tescoPayLedger || {};
+  const ids = new Set(Object.values(marks).map(m => (m && m.id) || '').filter(Boolean));
+  return state.entries.filter(e => ids.has(e.id));
+}
+
+/** Take back every line the automatic recorder wrote, in one undoable step.
+ *  The marks are KEPT and only the entries go, which is the whole of the
+ *  repair: a mark whose line is missing reads as "the user deleted this", so not
+ *  one of them can be written again at the next recording. Deleting the marks as
+ *  well would hand the whole catch-up straight back. */
+function removeAppWrittenTescoLines() {
+  const removed = appWrittenTescoLines();
+  if (!removed.length) { toast('No Tesco pay lines written by this app are left.'); return; }
+  const ids = new Set(removed.map(e => e.id));
+  state.entries = state.entries.filter(e => !ids.has(e.id));
+  tombstoneIds([...ids]);
+  persist();
+  const undo = () => {
+    state.entries.push(...removed);
+    state.entries.sort((a, b) => a.date.localeCompare(b.date));
+    untombstoneIds(removed.map(e => e.id));
+    persist();
+  };
+  trackAction(undo, `Remove ${removed.length} automatic Tesco pay line${removed.length > 1 ? 's' : ''}`, removed);
+  render();
+  const total = r2(removed.reduce((sum, e) => sum + e.amount, 0));
+  toast(`Removed ${removed.length} automatic Tesco pay line${removed.length > 1 ? 's' : ''} - ${fmt(total)}. Your own fills are untouched.`, undo, 'Undo');
 }
 
 function fillThursday(dateStr) {
@@ -5301,6 +5339,13 @@ function buildMenuLevel(id) {
     // parked under a quarantine key, and until now nothing could reach it.
     if (unreadableBackup()) {
       list.append(menuRowEl({ icon: 'alert', label: 'Recover unreadable copy', note: 'Kept from a document that would not open', onClick: () => { closeAppMenu(); void recoverQuarantine(); } }));
+    }
+    // Offered only while such lines exist: the recorder's first run could catch
+    // up every recorded pay date at once, and the balance a user had been
+    // keeping by hand should be theirs to take back in one step.
+    const writtenByApp = appWrittenTescoLines();
+    if (writtenByApp.length) {
+      list.append(menuRowEl({ icon: 'alert', label: 'Remove automatic Tesco pay lines', note: `${writtenByApp.length} written by the recorder, not by you`, onClick: () => { closeAppMenu(); removeAppWrittenTescoLines(); } }));
     }
     list.append(menuRowEl({ icon: 'data', label: 'Reset all data', danger: true, onClick: async () => {
       closeAppMenu();
