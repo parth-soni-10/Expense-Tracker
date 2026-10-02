@@ -1428,6 +1428,9 @@ function openReminderSettings() {
       $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' },
         $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => {
           patchReminderSettings({ lastFiredDate: null });
+          // No catch-up flag: the scheduler's start-up tick is the one moment
+          // a banner is suppressed, and this is an explicit press of the
+          // button that exists to prove the banner works.
           const payload = showReminderNotification(activeProfile().name);
           toast(`Test reminder: ${payload.body}`);
         } }, 'Test now')),

@@ -4,9 +4,16 @@
    Stored per device (default 20:00 local time). Two delivery
    paths, because a web app can be closed at any moment:
      1. While the app is OPEN (any tab, locked or not): a
-        setTimeout loop checks each minute whether the day's
-        reminder time has passed and not yet fired, then shows an
-        in-app toast + a system Notification (if permitted).
+        timer checks each minute whether the day's
+        reminder time has passed and not yet fired, then
+        shows an in-app toast + a system Notification at
+        that hour. The ONE tick that does not raise a
+        banner is the scheduler's own start-up tick: there
+        the time has passed by an unknown margin and the
+        user is the one who just opened the app, so a
+        banner there is a notification popping as the site
+        loads rather than a reminder at its hour. See
+        showReminderNotification.
      2. On MOBILE web apps (installed PWA, or any phone browser), a
         Web Push subscription is sent to the server, whose Scheduled
         Function delivers a real push at the chosen local time even
@@ -73,14 +80,35 @@ export async function requestNotificationPermission() {
   try { return await Notification.requestPermission(); } catch { return 'denied'; }
 }
 
-/** Show the reminder now: system notification (if allowed) + a callback the
- *  app uses for its in-app toast. Safe to call while locked. */
-export function showReminderNotification(profileName = null) {
-  const title = 'cents. — time to upload your transactions';
-  const body = profileName
-    ? `Quick tally for ${profileName} — it takes a minute.`
-    : 'Log today\'s spending while it\'s fresh.';
-  if (notificationPermission() === 'granted') {
+/** The reminder's words, independent of how it is delivered: the system banner
+ *  and the in-app toast say the same thing, and only one of them is ever the
+ *  right one. */
+function reminderCopy(profileName) {
+  return {
+    title: 'cents. — time to upload your transactions',
+    body: profileName
+      ? `Quick tally for ${profileName} — it takes a minute.`
+      : 'Log today\'s spending while it\'s fresh.',
+  };
+}
+
+/** Show the reminder now: a system notification (if permitted) plus the payload
+ *  the app turns into its in-app toast. Safe to call while locked.
+ *
+ *  `catchUp` is the whole of the rule, and it is about WHEN rather than what is
+ *  on screen. The scheduler runs `tick()` the moment the app starts, so a day
+ *  whose reminder time had already passed used to raise a SYSTEM banner the
+ *  instant the site was opened — the user experienced a "daily reminder" that
+ *  only ever appeared on open, never at its hour, and suppressing the banner
+ *  whenever the page was in front was the wrong fix: it silenced the one case
+ *  where a reminder is actually due, with the app open and waiting at 20:00.
+ *  So the banner is raised for every tick EXCEPT the start-up one: at the hour
+ *  it fires whether or not the page is in front (that is the reminder working),
+ *  and on open the day is marked off with the toast alone (that is a catch-up
+ *  on a moment already gone, not a reminder). */
+export function showReminderNotification(profileName = null, { catchUp = false } = {}) {
+  const { title, body } = reminderCopy(profileName);
+  if (notificationPermission() === 'granted' && !catchUp) {
     try {
       const n = new Notification(title, { body, tag: 'cents-daily-reminder', renotify: true });
       n.onclick = () => { try { window.focus(); } catch { /* window gone */ } n.close(); };
@@ -99,14 +127,14 @@ export function onReminderFired(fn) {
   return () => listeners.delete(fn);
 }
 
-function fire() {
+function fire(catchUp = false) {
   let profileName = null;
   try { profileName = activeProfile().name; } catch { /* registry unavailable */ }
-  const payload = showReminderNotification(profileName);
+  const payload = showReminderNotification(profileName, { catchUp });
   for (const fn of listeners) { try { fn(payload); } catch { /* listener error never breaks the loop */ } }
 }
 
-function tick() {
+function tick(catchUp = false) {
   const s = getReminderSettings();
   const todayKey = localDateKey();
   if (!s.enabled || s.lastFiredDate === todayKey) return;
@@ -115,18 +143,24 @@ function tick() {
   const due = now.getHours() > h || (now.getHours() === h && now.getMinutes() >= m);
   if (due) {
     patchReminderSettings({ lastFiredDate: todayKey });
-    fire();
+    fire(catchUp);
   }
 }
 
-/** Start the minute-check loop. Idempotent; runs regardless of lock state. */
+/** Start the minute-check loop. Idempotent; runs regardless of lock state.
+ *
+ *  The start-up tick is the ONLY catch-up: it exists so a day whose hour passed
+ *  while the app was shut still counts as done (and still nudges in-app), but
+ *  it must not raise a banner, because it runs on every open of the site. Every
+ *  later tick — the minute loop, the return to a backgrounded tab — is a moment
+ *  the app has been alive across, and those raise the reminder. */
 export function startReminderScheduler() {
   if (timer) return;
-  tick();
-  timer = setInterval(tick, 60 * 1000);
+  tick(true);
+  timer = setInterval(() => tick(false), 60 * 1000);
   // Catch devices that sleep through the interval boundary.
   if (typeof document !== 'undefined') {
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') tick(); });
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') tick(false); });
   }
 }
 

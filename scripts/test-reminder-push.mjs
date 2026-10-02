@@ -16,6 +16,8 @@
  *         is not a death verdict (a measurement of real FCM is in the section)
  *   12. the dispatcher reads the record's own clock, not UTC's
  *   13. the key the browser is handed is the key the dispatcher signs with
+ *   14. the LOCAL scheduler raises its banner AT ITS HOUR, and never as a
+ *         catch-up on the moment the site is opened
  *
  *   node scripts/test-reminder-push.mjs
  *
@@ -795,6 +797,100 @@ check('and the dispatcher signs with exactly that key',
   `${received.length} delivered; header ${String(lastAuth).slice(0, 60)}`);
 [process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY] = swapBack;
 delete process.env.GITHUB_TOKEN;
+
+// ---------- 14. the local scheduler fires at its hour, not on open ----------
+// The scheduler runs tick() the moment the app starts, so a day whose reminder
+// time had already passed raised a SYSTEM banner the instant the site was
+// opened. That is how a "daily reminder" ends up only ever being seen on open
+// and never at 20:00 — and the first fix for it (suppress the banner whenever
+// the page was in front) was on the wrong axis: it silenced the ONE case where
+// a reminder is actually due, with the app open and waiting at the hour. The
+// axis is time. Every tick the app has been alive across raises the banner
+// whether or not you are looking at it; the start-up tick is a catch-up on a
+// moment already gone, and it marks the day off with the in-app toast alone.
+{
+  const made = [];
+  class FakeNotification {
+    constructor(title, opts) { this.title = title; this.opts = opts; made.push(this); }
+    close() {}
+  }
+  FakeNotification.permission = 'granted';
+  const saved = {
+    setInterval: globalThis.setInterval,
+    hadNotification: Object.prototype.hasOwnProperty.call(globalThis, 'Notification'),
+    Notification: Object.prototype.hasOwnProperty.call(globalThis, 'Notification') ? globalThis.Notification : undefined,
+    hadDocument: Object.prototype.hasOwnProperty.call(globalThis, 'document'),
+    document: Object.prototype.hasOwnProperty.call(globalThis, 'document') ? globalThis.document : undefined,
+    hadWindow: Object.prototype.hasOwnProperty.call(globalThis, 'window'),
+    window: Object.prototype.hasOwnProperty.call(globalThis, 'window') ? globalThis.window : undefined,
+    hadLocalStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage'),
+    localStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage') ? globalThis.localStorage : undefined,
+  };
+  const reminderStore = new Map();
+  const localStore = {
+    getItem: (k) => (reminderStore.has(k) ? reminderStore.get(k) : null),
+    setItem: (k, v) => reminderStore.set(k, String(v)),
+    removeItem: (k) => reminderStore.delete(k),
+  };
+  // No real timer: the scheduler's minute loop would otherwise hold the process
+  // open, and the tick it takes at start is synchronous either way.
+  globalThis.setInterval = () => ({});
+  globalThis.localStorage = localStore;
+  globalThis.Notification = FakeNotification;
+  // `'Notification' in window` is what notificationsSupported() reads.
+  globalThis.window = globalThis;
+  const visListeners = [];
+  globalThis.document = {
+    visibilityState: 'visible', // the state the site is in when it is OPENED
+    addEventListener: (type, fn) => { if (type === 'visibilitychange') visListeners.push(fn); },
+    dispatchEvent: () => { for (const fn of visListeners) fn(); return true; },
+  };
+  try {
+    const local = await import('../reminders.js');
+    const d = new Date();
+    const todayKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    local.patchReminderSettings({ enabled: true, time: '00:00', lastFiredDate: null });
+    const seen = [];
+    local.onReminderFired((payload) => seen.push(payload));
+    local.startReminderScheduler();
+    check('the start-up tick raises NO banner — that is the moment the site was opened',
+      made.length === 0, `banners=${made.length}`);
+    check('but it still marks the day done and nudges in-app',
+      local.getReminderSettings().lastFiredDate === todayKey && seen.length === 1,
+      `marker=${local.getReminderSettings().lastFiredDate} toasts=${seen.length}`);
+    // A tick the app has been alive across: the return to a backgrounded tab,
+    // which is the same path the minute loop takes (both pass catchUp=false).
+    local.patchReminderSettings({ lastFiredDate: null });
+    globalThis.document.dispatchEvent();
+    check('a reminder at its hour raises the system banner EVEN with the page in front',
+      made.length === 1, `banners=${made.length}`);
+    check('and still reaches the in-app toast', seen.length === 2, `toasts=${seen.length}`);
+    local.showReminderNotification('Parth');
+    check('Test now — a plain call — raises the banner',
+      made.length === 2 && made[1].opts.body.includes('Parth'), `banners=${made.length}`);
+    FakeNotification.permission = 'default';
+    local.showReminderNotification(null);
+    check('without permission nothing shows', made.length === 2, `banners=${made.length}`);
+    const remindersSource = readFileSync(new URL('../reminders.js', import.meta.url), 'utf8');
+    check('there is exactly one place a banner is constructed',
+      (remindersSource.match(/new Notification\(/g) || []).length === 1);
+    check('and the scheduler reaches it only through that one function',
+      /function fire\([\s\S]{0,400}?showReminderNotification\(/.test(remindersSource)
+      && !/function fire\([\s\S]{0,400}?new Notification\(/.test(remindersSource));
+    check('the start-up tick is the catch-up and the minute loop is not',
+      /tick\(true\);\s*\n\s*timer = setInterval\(\(\) => tick\(false\)/.test(remindersSource));
+  } finally {
+    if (saved.hadNotification) globalThis.Notification = saved.Notification;
+    else delete globalThis.Notification;
+    if (saved.hadDocument) globalThis.document = saved.document;
+    else delete globalThis.document;
+    if (saved.hadWindow) globalThis.window = saved.window;
+    else delete globalThis.window;
+    if (saved.hadLocalStorage) globalThis.localStorage = saved.localStorage;
+    else delete globalThis.localStorage;
+    globalThis.setInterval = saved.setInterval;
+  }
+}
 
 fakePushServer.close();
 await new Promise(r => setTimeout(r, 50)); // let in-flight sockets drain
