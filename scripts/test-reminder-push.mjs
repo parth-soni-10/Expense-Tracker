@@ -24,6 +24,9 @@
  *   16. the reminder survives a storage that will not keep it: a refused
  *         marker write must not become a banner every minute, and a blocked
  *         read must not become "the reminder is off"
+ *   17. the zone a travelling device announces to the sender: re-told on
+ *         start only when subscribed, mismatched and permitted — and a
+ *         refused announce leaves the old record so the NEXT start retries
  *
  *   node scripts/test-reminder-push.mjs
  *
@@ -1088,6 +1091,246 @@ delete process.env.GITHUB_TOKEN;
     if (saved.hadWindow) globalThis.window = saved.window;
     else delete globalThis.window;
     globalThis.setInterval = saved.setInterval;
+  }
+}
+
+// ---------- 17. the zone a travelling device announces ----------
+// The scheduled sender aims at the zone it was TOLD, and it is only told on
+// subscribe or on a time change — so a phone that crossed a border kept
+// pushing at the old zone's hour while the local scheduler above used the new
+// one: two halves of one reminder, hours apart, with nothing on screen saying
+// which was right. The fix re-announces on start when the recorded zone
+// disagrees with this device's own, and every gate around it exists to stop
+// the fix being worse than the bug: never without granted permission
+// (starting the app must never be what asks for the prompt — not even a key
+// fetch), never for a device that is not subscribed, never when the zones
+// already agree (that is EVERY ordinary boot, and it must not POST), and
+// never as a swallowed verdict — a refused announce must leave the old
+// record in place so the next start sees the same disagreement and retries.
+// Each scenario gets a fresh module instance: `timer` and the session cache
+// are module state, so a second start on one instance is a no-op.
+{
+  const reminderStore = new Map();
+  const localStore = {
+    getItem: (k) => (reminderStore.has(k) ? reminderStore.get(k) : null),
+    setItem: (k, v) => reminderStore.set(k, String(v)),
+    removeItem: (k) => reminderStore.delete(k),
+  };
+  const saved = {
+    hadLocalStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage'),
+    localStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage') ? globalThis.localStorage : undefined,
+    hadWindow: Object.prototype.hasOwnProperty.call(globalThis, 'window'),
+    window: Object.prototype.hasOwnProperty.call(globalThis, 'window') ? globalThis.window : undefined,
+    navDesc: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
+    hadNotification: Object.prototype.hasOwnProperty.call(globalThis, 'Notification'),
+    Notification: Object.prototype.hasOwnProperty.call(globalThis, 'Notification') ? globalThis.Notification : undefined,
+    hadPushManager: Object.prototype.hasOwnProperty.call(globalThis, 'PushManager'),
+    PushManager: Object.prototype.hasOwnProperty.call(globalThis, 'PushManager') ? globalThis.PushManager : undefined,
+    hadFetch: Object.prototype.hasOwnProperty.call(globalThis, 'fetch'),
+    fetch: Object.prototype.hasOwnProperty.call(globalThis, 'fetch') ? globalThis.fetch : undefined,
+    setInterval: globalThis.setInterval,
+    setTimeout: globalThis.setTimeout,
+  };
+  // pushFetch races every request against a 12s timer it never clears, and
+  // this section makes several — twelve ref'd seconds at exit is suite
+  // slowness nobody can attribute. Unref only: the race is untouched, and the
+  // flushes below use the ORIGINAL timer so they always fire.
+  const realSetTimeout = saved.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...a) => {
+    const t = realSetTimeout(fn, ms, ...a);
+    if (t && typeof t.unref === 'function') t.unref();
+    return t;
+  };
+  globalThis.localStorage = localStore;
+  globalThis.window = globalThis;
+  class FakeNotification {
+    constructor(title, opts) { this.title = title; this.opts = opts; }
+    close() {}
+  }
+  FakeNotification.permission = 'granted';
+  FakeNotification.requestPermission = async () => FakeNotification.permission;
+  globalThis.Notification = FakeNotification;
+  globalThis.PushManager = class {};
+  const fakeReg = {
+    pushManager: {
+      getSubscription: async () => null,
+      subscribe: async () => ({
+        endpoint: 'http://push-ep/local',
+        toJSON: () => ({ endpoint: 'http://push-ep/local', keys: { p256dh: 'x', auth: 'y' } }),
+      }),
+    },
+  };
+  // `navigator` is a getter-only global in Node, so it is redefined rather
+  // than assigned — and restored by its own original descriptor.
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { serviceWorker: { ready: Promise.resolve(fakeReg), getRegistration: async () => null } },
+    configurable: true, writable: true, enumerable: true,
+  });
+  let fetchLog = []; // { method, url, body } per call, in order
+  let postOk = true;
+  globalThis.fetch = async (url, init = {}) => {
+    const method = (init && init.method) || 'GET';
+    if (method === 'GET') {
+      fetchLog.push({ method, url: String(url) });
+      return { ok: true, status: 200, json: async () => ({ publicKey: keys.publicKey }) };
+    }
+    let body = null;
+    try { body = JSON.parse(init.body || 'null'); } catch { body = null; }
+    fetchLog.push({ method, url: String(url), body });
+    return { ok: postOk, status: postOk ? 200 : 500, json: async () => ({}) };
+  };
+  globalThis.setInterval = () => ({}); // the minute loop must not hold the process open
+
+  const { nsKey } = await import('../profiles.js');
+  const REMINDER_KEY = nsKey('reminder');
+  const SYNC_KEY = nsKey('sync');
+  // The zone THIS machine is in, computed the way the module computes it and
+  // asserted against the module's answer — never hardcoded: the suite runs in
+  // whatever zone its machine happens to be in.
+  const expectedZone = (() => {
+    try {
+      return (typeof Intl !== 'undefined' && Intl.DateTimeFormat
+        && Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC';
+    } catch { return 'UTC'; }
+  })();
+  const seedStore = (reminder = {}) => {
+    reminderStore.clear();
+    reminderStore.set(REMINDER_KEY, JSON.stringify({ enabled: false, ...reminder }));
+    reminderStore.set(SYNC_KEY, JSON.stringify({
+      enabled: true, endpoint: 'http://localhost:8161/api/sync', password: 'pw-for-zone-tests',
+    }));
+    fetchLog = [];
+    postOk = true;
+    FakeNotification.permission = 'granted';
+  };
+  const storedZone = () => {
+    try {
+      const raw = reminderStore.get(REMINDER_KEY);
+      const zone = (raw ? JSON.parse(raw) : {}).pushZone;
+      return zone === undefined ? null : zone;
+    } catch { return '<unreadable>'; }
+  };
+  const logOf = (m) => fetchLog.filter((f) => f.method === m).length;
+  const seq = () => fetchLog.map((f) => f.method).join(',');
+  let tzN = 0;
+  const freshInstance = async () => { tzN += 1; return import(`../reminders.js?edge=tz${tzN}`); };
+  const flush = () => new Promise((r) => realSetTimeout(r, 25));
+  try {
+    // (a) The subscribe is where the zone is first told to the sender — and
+    // where it is remembered, which is what every later start compares to.
+    seedStore();
+    const first = await freshInstance();
+    const sub = await first.subscribeReminderPush();
+    check('a subscribe remembers the zone it announced',
+      sub.ok === true && storedZone() === expectedZone,
+      `ok=${sub.ok} stored=${storedZone()} expected=${expectedZone}`);
+    const firstPost = fetchLog.find((f) => f.method === 'POST');
+    check('and the zone travels in the announce body, to the push endpoint',
+      !!firstPost && firstPost.body?.zone === expectedZone
+        && /reminders-push$/.test(firstPost.url),
+      JSON.stringify({ zone: firstPost && firstPost.body && firstPost.body.zone, url: firstPost && firstPost.url }));
+
+    // (b) A device that travelled: the record says one zone, this device is in
+    // another — the start-up re-announce is the whole fix.
+    seedStore({ pushSubscribed: true, pushEndpoint: 'http://push-ep/local', pushZone: 'Old/Zone' });
+    const travelled = await freshInstance();
+    travelled.startReminderScheduler();
+    await flush();
+    check('a start after travelling re-announces the new zone',
+      storedZone() === expectedZone && logOf('POST') === 1,
+      `stored=${storedZone()} log=${seq()}`);
+    check('in the order the sender needs: key first, then the record',
+      seq() === 'GET,POST', seq());
+
+    // (c) The gates. Permission first: starting the app must never be what
+    // asks for the prompt, so a non-granted start does not even fetch the key.
+    seedStore({ pushSubscribed: true, pushEndpoint: 'http://push-ep/local', pushZone: 'Old/Zone' });
+    FakeNotification.permission = 'default';
+    const unprompted = await freshInstance();
+    unprompted.startReminderScheduler();
+    await flush();
+    check('without granted permission the start announces nothing at all',
+      fetchLog.length === 0 && storedZone() === 'Old/Zone',
+      `log=${seq()} stored=${storedZone()}`);
+
+    // A device that never subscribed has nothing to re-tell either.
+    seedStore({ pushSubscribed: false, pushZone: null });
+    const bare = await freshInstance();
+    bare.startReminderScheduler();
+    await flush();
+    check('and a device that never subscribed announces nothing',
+      fetchLog.length === 0, seq());
+
+    // (d) Idempotence: a boot whose recorded zone already agrees must be
+    // silent — this is every ordinary start of the app, and it must not POST.
+    seedStore({ pushSubscribed: true, pushEndpoint: 'http://push-ep/local', pushZone: expectedZone });
+    const settled = await freshInstance();
+    settled.startReminderScheduler();
+    await flush();
+    check('a start whose zone already agrees does not announce again',
+      fetchLog.length === 0 && storedZone() === expectedZone,
+      `log=${seq()} stored=${storedZone()}`);
+
+    // (e) Backfill: subscriptions made before zones were recorded have none —
+    // null !== zone, so the same start re-tells the sender.
+    seedStore({ pushSubscribed: true, pushEndpoint: 'http://push-ep/local' });
+    const legacy = await freshInstance();
+    legacy.startReminderScheduler();
+    await flush();
+    check('an old subscription with no recorded zone is backfilled on start',
+      storedZone() === expectedZone && logOf('POST') === 1,
+      `stored=${storedZone()} log=${seq()}`);
+
+    // (f) Failure is not a verdict: a refused announce leaves the OLD record
+    // in place, so the next open of the app sees the same disagreement and
+    // tries again — two POSTs across two starts, one landing.
+    seedStore({ pushSubscribed: true, pushEndpoint: 'http://push-ep/local', pushZone: 'Old/Zone' });
+    postOk = false;
+    const refused = await freshInstance();
+    refused.startReminderScheduler();
+    await flush();
+    const zoneAfterRefusal = storedZone();
+    postOk = true;
+    const retry = await freshInstance();
+    retry.startReminderScheduler();
+    await flush();
+    check('a refused announce leaves the record for the next start to retry',
+      zoneAfterRefusal === 'Old/Zone' && storedZone() === expectedZone && logOf('POST') === 2,
+      `after=${zoneAfterRefusal} now=${storedZone()} posts=${logOf('POST')}`);
+
+    // The source pins: the gates and the single zone-read are the half no
+    // behavioral run can see — a second Intl read still answers correctly on
+    // THIS machine, and dropping the subscription gate still skips for an
+    // unsubscribed device (updateReminderPushTime has one of its own).
+    const tzSource = readFileSync(new URL('../reminders.js', import.meta.url), 'utf8');
+    check('the device zone is read in exactly one place in the module',
+      (tzSource.match(/resolvedOptions\(\)/g) || []).length === 1,
+      String((tzSource.match(/resolvedOptions\(\)/g) || []).length));
+    check('the announce body carries that one read',
+      /zone:\s*currentZone\(\)/.test(tzSource));
+    check('the start gate is subscription AND disagreement AND permission',
+      /s\.pushSubscribed && s\.pushZone !== currentZone\(\)/.test(tzSource)
+        && /notificationPermission\(\) === 'granted'/.test(tzSource));
+    check('and the announce is best effort: a failure can never break the start',
+      /updateReminderPushTime\(\)\.catch\(\(\) => \{\}\)/.test(tzSource));
+    check('an unreadable zone falls back to UTC rather than to nothing',
+      /function currentZone\(\)[\s\S]{0,240}?\|\| 'UTC'/.test(tzSource)
+        && /catch \{ return 'UTC'; \}/.test(tzSource));
+  } finally {
+    if (saved.hadLocalStorage) globalThis.localStorage = saved.localStorage;
+    else delete globalThis.localStorage;
+    if (saved.hadWindow) globalThis.window = saved.window;
+    else delete globalThis.window;
+    if (saved.navDesc) Object.defineProperty(globalThis, 'navigator', saved.navDesc);
+    else delete globalThis.navigator;
+    if (saved.hadNotification) globalThis.Notification = saved.Notification;
+    else delete globalThis.Notification;
+    if (saved.hadPushManager) globalThis.PushManager = saved.PushManager;
+    else delete globalThis.PushManager;
+    if (saved.hadFetch) globalThis.fetch = saved.fetch;
+    else delete globalThis.fetch;
+    globalThis.setInterval = saved.setInterval;
+    globalThis.setTimeout = saved.setTimeout;
   }
 }
 

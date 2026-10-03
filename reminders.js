@@ -73,16 +73,30 @@ function writeSettings(next) {
   return next;
 }
 
+/** The zone the device is in right now — the one the scheduled sender should
+ *  be aiming at. Never assumed: an unset or unreadable value is UTC, because a
+ *  wrong zone is a reminder at the wrong hour and UTC is at least one a user
+ *  can reason about. */
+function currentZone() {
+  try {
+    return (typeof Intl !== 'undefined' && Intl.DateTimeFormat
+      && Intl.DateTimeFormat().resolvedOptions().timeZone) || 'UTC';
+  } catch { return 'UTC'; }
+}
+
 function normalize(raw) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
   const time = typeof source.time === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(source.time)
     ? source.time : '20:00';
+  // The zone the last subscription announced. Only meaningful for a device that
+  // is subscribed — see the re-announce on start.
+  const pushZone = typeof source.pushZone === 'string' && source.pushZone ? source.pushZone : null;
   const enabled = source.enabled === true;
   const lastFiredDate = typeof source.lastFiredDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(source.lastFiredDate)
     ? source.lastFiredDate : null;
   const pushSubscribed = source.pushSubscribed === true;
   const pushEndpoint = typeof source.pushEndpoint === 'string' && source.pushEndpoint ? source.pushEndpoint : null;
-  return { enabled, time, lastFiredDate, pushSubscribed, pushEndpoint };
+  return { enabled, time, lastFiredDate, pushSubscribed, pushEndpoint, pushZone };
 }
 
 export function getReminderSettings() {
@@ -193,6 +207,21 @@ function tick(catchUp = false) {
  *  the app has been alive across, and those raise the reminder. */
 export function startReminderScheduler() {
   if (timer) return;
+  // The scheduled sender aims at the zone it was TOLD, which is only ever
+  // sent on subscribe or on a time change — so a device that travels keeps its
+  // push on the old zone's hour while the local scheduler above uses the new
+  // one, and the two halves of the same reminder drift apart. Re-announce on
+  // start when they disagree. Guarded on granted permission so starting the app
+  // can never surface a permission prompt the user did not ask for; a failed
+  // announce is retried on the next start, and an old subscription without a
+  // recorded zone is backfilled the same way.
+  {
+    const s = getReminderSettings();
+    if (s.pushSubscribed && s.pushZone !== currentZone()
+        && notificationPermission() === 'granted') {
+      updateReminderPushTime().catch(() => {}); // best effort; the app is up either way
+    }
+  }
   tick(true);
   timer = setInterval(() => tick(false), 60 * 1000);
   // Catch devices that sleep through the interval boundary.
@@ -352,12 +381,12 @@ export async function subscribeReminderPush() {
         subscription: subJson,
         profileName,
         time: getReminderSettings().time,
-        zone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+        zone: currentZone(),
       }),
     });
     if (resp.status === 401) return { ok: false, reason: 'auth' };
     if (!resp.ok) return { ok: false, reason: 'http', message: `HTTP ${resp.status}` };
-    patchReminderSettings({ pushSubscribed: true, pushEndpoint: sub.endpoint });
+    patchReminderSettings({ pushSubscribed: true, pushEndpoint: sub.endpoint, pushZone: currentZone() });
     return { ok: true };
   } catch (e) {
     return { ok: false, reason: 'network', message: e?.message || 'subscribe failed' };
