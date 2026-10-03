@@ -21,6 +21,25 @@ const CACHE = 'cents-v24';
 // it is in Cache Storage rather than a variable.
 const BUILD_CACHE = 'cents-build';
 const BUILD_KEY = '/__cents-build';
+// The daily reminder's schedule and its "already fired today" record, mirrored
+// here by the page (a service worker cannot read the page's localStorage — a
+// different storage area entirely). Its OWN cache, and `activate` deliberately
+// does not sweep it for the same reason as the baseline above: the record is
+// what stops a second banner for a day that already had one, and a deploy that
+// cleared it would re-arm an afternoon the push or a wake already covered.
+// See the background wake at the foot of this file.
+const REMINDER_CACHE = 'cents-reminder';
+const REMINDER_KEY = '/__cents-reminder';
+// One tag from register to banner: the local scheduler, the scheduled push and
+// this worker's own wake all announce the same reminder under it, so whichever
+// path reaches the device first defines the notification the others replace.
+const REMINDER_TAG = 'cents-daily-reminder';
+// The reminder's words — byte-for-byte the generic (no profile name) copy the
+// scheduled sender ships. A wake has no payload and cannot know whose profile
+// is active, so it says what the server would say without a name; both halves
+// are pinned against each other in scripts/test-reminder-push.mjs.
+const REMINDER_TITLE = 'cents. — time to upload your transactions';
+const REMINDER_BODY = 'Log today\'s spending while it\'s fresh.';
 // The Tesco Pay ENGINE is on the boot path (it feeds the dashboard figures); the
 // screen beside it is fetched on the first visit to the tab, so it has to be
 // warm for that visit to work offline.
@@ -69,7 +88,7 @@ self.addEventListener('install', () => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== BUILD_CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== BUILD_CACHE && k !== REMINDER_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -214,6 +233,65 @@ self.addEventListener('message', (event) => {
     .catch(() => {});
 });
 
+// ── One reminder a day, from whichever path gets there first ─────
+// Three paths can raise today's reminder: the page's scheduler (app open), the
+// scheduled push below (server, needs cloud sync) and the background wake at
+// the foot of this file (no server at all). They cannot see each other's state
+// — the page's own marker lives in localStorage, which this worker cannot read
+// — so they agree through THIS record instead: every path writes the day here
+// when it shows a banner, and every path reads it before showing one. Cache
+// Storage is the only place all three meet, and `activate` keeps it (above) for
+// the same reason it keeps the build baseline: a deploy must not re-arm the day.
+
+/** The record as it stands, or null when the page has never mirrored one. */
+async function reminderRecord() {
+  try {
+    const hit = await (await caches.open(REMINDER_CACHE)).match(REMINDER_KEY);
+    const data = hit ? await hit.json() : null;
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+  } catch {
+    return null; // an unreadable record reads as "nothing known", never as "already fired"
+  }
+}
+
+/** Today's date in the device's own zone — the same key the page marks. */
+function reminderDay(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** Today already had its reminder — from the page scheduler or a wake. */
+async function reminderFiredToday() {
+  const record = await reminderRecord();
+  return !!record && record.fired === reminderDay();
+}
+
+/** Record today as shown, keeping the schedule fields the page mirrored. */
+async function markReminderFired(day = reminderDay()) {
+  try {
+    const record = await reminderRecord();
+    await (await caches.open(REMINDER_CACHE)).put(
+      REMINDER_KEY,
+      new Response(JSON.stringify({ ...(record || {}), fired: day }))
+    );
+  } catch {
+    // A record that cannot be written costs a possible repeat (the shared tag
+    // replaces it), never the banner itself.
+  }
+}
+
+/** The one notification shape every path shows — tag/icon/deep-link cannot drift. */
+function reminderNotification(body, tag) {
+  return {
+    body,
+    tag,
+    renotify: true,
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    // Deep-link straight into the app; the lock screen does its job first.
+    data: { url: '/index.html#add' },
+  };
+}
+
 // ── Daily reminder Web Push (closed-app delivery) ────────────────
 // The scheduled function (reminders-send.mjs) pushes an encrypted payload
 // { title, body, tag }; the browser decrypts it and hands it here. Payloads
@@ -227,17 +305,67 @@ self.addEventListener('push', (event) => {
     payload = { title: 'cents.', body: event.data ? event.data.text() : 'Daily reminder.' };
   }
   const title = typeof payload.title === 'string' && payload.title ? payload.title : 'cents.';
-  const options = {
-    body: typeof payload.body === 'string' ? payload.body : 'Time to upload your transactions.',
-    tag: typeof payload.tag === 'string' && payload.tag ? payload.tag : 'cents-daily-reminder',
-    renotify: true,
-    icon: '/icons/icon-192.png',
-    badge: '/icons/icon-192.png',
-    // Deep-link straight into the app; the lock screen does its job first.
-    data: { url: '/index.html#add' },
-  };
-  event.waitUntil(self.registration.showNotification(title, options));
+  const options = reminderNotification(
+    typeof payload.body === 'string' ? payload.body : REMINDER_BODY,
+    typeof payload.tag === 'string' && payload.tag ? payload.tag : REMINDER_TAG
+  );
+  event.waitUntil((async () => {
+    // A day that already had its reminder (the page was open at the hour, or a
+    // wake got there first) must not get a second banner: the shared tag would
+    // only REPLACE the first — renotify re-alerts — rather than deduplicate it.
+    if (await reminderFiredToday()) return;
+    await self.registration.showNotification(title, options);
+    await markReminderFired();
+  })());
 });
+
+// ── The background wake (Periodic Background Sync) ───────────────
+// The third path, and the one for a phone with no cloud sync: the browser
+// wakes an INSTALLED app's worker in the background on its own schedule (the
+// page's register tag and minInterval are a FLOOR, not a schedule — the
+// browser picks the moment), and the wake decides from the record above
+// whether this day still needs its reminder. Best-effort by nature: it can
+// never be the on-time path, only the safety net under the other two.
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag !== REMINDER_TAG) return;
+  event.waitUntil(dailyReminderWake());
+});
+
+/**
+ * One wake, three gates — each one a way a background wake could misfire:
+ *   * the record must say the reminder is ON. The wake is the browser's
+ *     decision, not the user's; the page's own schedule is what says this
+ *     user wants a banner (and an unregister after the toggle can still race
+ *     one last event);
+ *   * the hour must have passed. The browser wakes when IT likes — firing on
+ *     any wake would put the reminder at whatever moment the phone felt like;
+ *   * today must not already have it. The page scheduler and the push write
+ *     the day here; the shared tag hides a second banner (it replaces it) but
+ *     the replacement still re-alerts.
+ * Plus the record older than YESTERDAY rule: if every wake so far has landed
+ * BEFORE the hour — the browser's choice of moment, not ours — the due-time
+ * gate alone would never fire at all, and a whole day would pass with no
+ * closed-app reminder from any path. A late reminder beats a skipped one; a
+ * record from yesterday means today is simply waiting its turn.
+ */
+async function dailyReminderWake() {
+  try {
+    const record = await reminderRecord();
+    if (!record || record.enabled !== true) return;
+    const day = reminderDay();
+    if (record.fired === day) return;
+    const now = new Date();
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(record.time));
+    const dueAt = match ? Number(match[1]) * 60 + Number(match[2]) : 20 * 60; // normalize()'s own default
+    const due = now.getHours() * 60 + now.getMinutes() >= dueAt;
+    const yesterday = reminderDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+    if (!due && record.fired === yesterday) return;
+    await self.registration.showNotification(REMINDER_TITLE, reminderNotification(REMINDER_BODY, REMINDER_TAG));
+    await markReminderFired(day);
+  } catch {
+    // A failed wake costs at most one reminder; it must never take the worker down.
+  }
+}
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();

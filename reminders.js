@@ -1,7 +1,7 @@
 /* ============================================================
    reminders.js — daily "upload your transactions" reminder.
 
-   Stored per device (default 20:00 local time). Two delivery
+   Stored per device (default 20:00 local time). Three delivery
    paths, because a web app can be closed at any moment:
      1. While the app is OPEN (any tab, locked or not): a
         timer checks each minute whether the day's
@@ -18,9 +18,22 @@
         tab or installed PWA — a subscription is sent to the
         server, whose Scheduled Function delivers a real push at
         the chosen local time even when the app is closed. This
-        is the ONLY path that reaches a device with nothing open
-        at the hour: path 1 has no scheduler left to run there.
-        See reminders-push.mjs.
+        reaches a device with nothing open at the hour, but it
+        needs the app password (cloud sync) to subscribe. See
+        reminders-push.mjs.
+     3. The background wake (Periodic Background Sync): the
+        browser runs the service worker's `periodicsync` event
+        in the background for an INSTALLED app — no server, no
+        sync, no password. It is the closed-app path for a
+        phone that never sets up sync, and it is best-effort:
+        the browser picks the moment, so path 2 stays the
+        on-time one and this is the safety net under both.
+        See syncPeriodicReminder / sw.js's dailyReminderWake.
+
+   All three dedupe through one record in Cache Storage (the
+   worker cannot read localStorage): every path writes "today"
+   there when it shows a banner and reads it before showing
+   one — see markWakeFired.
 
    Every key and the fire state ("last fired" date) are namespaced per
    profile, so each user is reminded about their own data.
@@ -30,6 +43,72 @@ import { getSyncSettings } from './settings.js';
 import { nsKey, activeProfile, getActiveProfileId } from './profiles.js';
 
 const KEY = () => nsKey('reminder');
+
+// ---------- the background wake's record (shared with sw.js) ----------
+// The worker cannot read this page's localStorage — a different storage area
+// entirely — so a background wake would know nothing: not whether the reminder
+// is on, not what hour it is at, not whether today already happened. The
+// schedule is mirrored into Cache Storage for it, and the day every path
+// delivers is written back through the same record — the one place the page,
+// the scheduled push and the wake can all meet. Same cache and key as sw.js;
+// the two are pinned against each other in scripts/test-reminder-push.mjs, and
+// `activate` keeps this cache for the same reason it keeps the build baseline:
+// a deploy must not re-arm a day that already had its reminder.
+const WAKE_CACHE = 'cents-reminder';
+const WAKE_KEY = '/__cents-reminder';
+// The sync tag IS the notification tag: one string from register to banner,
+// so the three paths announce one notification rather than three.
+const WAKE_TAG = 'cents-daily-reminder';
+// A FLOOR on how often the browser may wake the worker, not a schedule — the
+// browser picks the moment (that is what makes this path best-effort). 12h
+// lets it land once a day while leaving room for a day whose only wake came
+// before the reminder hour.
+const WAKE_MIN_INTERVAL_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Merge `patch` into the worker's record, keeping every field not named.
+ * The read-modify-write IS the point: a plain write of just this page's
+ * fields would erase the `fired` day a wake or the push recorded and hand
+ * the user a second banner for it. Never throws — best effort at every call.
+ */
+async function patchWakeRecord(patch) {
+  if (typeof caches === 'undefined') return; // not a browser (the Node guards)
+  try {
+    const cache = await caches.open(WAKE_CACHE);
+    const hit = await cache.match(WAKE_KEY);
+    const prev = hit ? await hit.json() : null;
+    const base = prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {};
+    await cache.put(WAKE_KEY, new Response(JSON.stringify({ ...base, ...patch })));
+  } catch {
+    // A record that cannot be written costs at most a missed/extra banner;
+    // the page's own reminder runs either way.
+  }
+}
+
+// Every record write goes through ONE chain. tick() writes the schedule and
+// the day back to back (patchReminderSettings, then markWakeFired), and two
+// patches in flight together would each read the OLD record — the slower put
+// would win with a stale base, and a `fired` written from before the mirror's
+// `enabled: true` is exactly how a wake stops firing while everything on
+// screen looks right. The chain keeps each read-modify-write atomic in this
+// process; the worker's own concurrent write is cross-process and self-heals
+// at the next start, when syncPeriodicReminder re-mirrors the schedule.
+let wakeWriteChain = Promise.resolve();
+function queueWakePatch(patch) {
+  wakeWriteChain = wakeWriteChain.then(() => patchWakeRecord(patch));
+  return wakeWriteChain; // patchWakeRecord never rejects, so the chain never breaks
+}
+
+/** Mirror this profile's schedule for the wake to read. */
+function mirrorWakeRecord() {
+  const s = readSettings();
+  return queueWakePatch({ enabled: s.enabled, time: s.time });
+}
+
+/** Write today's date into the record: this path showed the reminder. */
+function markWakeFired(day) {
+  return queueWakePatch({ fired: day });
+}
 
 // The settings are re-read on EVERY tick, and localStorage is neither a
 // reliable reader nor a reliable writer — and both failure modes are silent
@@ -70,6 +149,10 @@ function writeSettings(next) {
   cached = next;
   try { localStorage.setItem(cacheKey, JSON.stringify(next)); }
   catch { storageOk = false; } // read-only or full: the session still holds it
+  // Mirror every change to the worker's record — the schedule a background
+  // wake reads must not wait for the next boot (and the toggle off must
+  // withdraw it now, not later). Best effort; the page never waits on it.
+  mirrorWakeRecord();
   return next;
 }
 
@@ -194,6 +277,13 @@ function tick(catchUp = false) {
   const due = now.getHours() > h || (now.getHours() === h && now.getMinutes() >= m);
   if (due) {
     patchReminderSettings({ lastFiredDate: todayKey });
+    // The same day, in the storage the worker can see. Both markers exist for
+    // the same reason — "today is done" — and the catch-up (start-up) tick
+    // writes it too: a user who opened the app after the hour got the in-app
+    // nudge, and a banner arriving later would be a second nudge for a day
+    // that already had one. Unpatched by "Test now", which re-arms the day on
+    // purpose (it resets lastFiredDate but has no business touching the wake).
+    markWakeFired(todayKey);
     fire(catchUp);
   }
 }
@@ -227,6 +317,88 @@ export function startReminderScheduler() {
   // Catch devices that sleep through the interval boundary.
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') tick(false); });
+  }
+  // Arm the background wake beside the loop above — always last and always
+  // best effort: it is the closed-app half for a device with no cloud sync,
+  // and a browser that cannot do it only leaves the status the modal reads.
+  syncPeriodicReminder().catch(() => {});
+}
+
+// ---------- background wake (Periodic Background Sync) ----------
+// The third path from the header: no server, no sync, no page open. The
+// browser runs the worker's `periodicsync` event in the background for an
+// INSTALLED app, and the wake reads the mirrored schedule above to decide
+// whether to notify. Capability gates only — never the sync password: the
+// phone this exists for has neither, which is the whole point of the path.
+
+// The modal's one honest answer about the wake: 'on' only after a register the
+// browser actually ACCEPTED — never "probably", because the row it drives
+// promises a notification the user would otherwise only notice the absence of.
+let wakeState = { state: 'unknown' }; // 'on' | 'off' | 'unsupported' | 'unavailable' | 'unknown'
+
+export function periodicReminderStatus() {
+  return { ...wakeState };
+}
+
+/**
+ * Arm (or withdraw) the background wake for the current schedule. Called on
+ * every start and whenever the reminder toggle or the notification permission
+ * changes; resolves to the status for the modal. Two verdicts deserve their
+ * wording: 'unsupported' is a browser without the API at all, while
+ * 'unavailable' with reason 'not-installed' is Chrome on a phone that has only
+ * VISITED the site — the browser runs these wakes only for installed apps, so
+ * a tab must not be told otherwise; for a tab, cloud sync (or the app being
+ * open) is the honest answer the modal already gives.
+ */
+export async function syncPeriodicReminder() {
+  const settle = (state, reason = null) => { wakeState = { state, reason }; return { ...wakeState }; };
+  try {
+    if (typeof navigator === 'undefined' || !navigator.serviceWorker) return settle('unsupported');
+    // `ready` never settles when no worker is registered at all — and this is
+    // awaited by the modal before its redraw — so it races a bounded, unref'd
+    // wait. Losing the race reports 'unknown', never a verdict.
+    const reg = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((resolve) => {
+        const t = setTimeout(() => resolve(null), 5000);
+        if (t && typeof t.unref === 'function') t.unref();
+      }),
+    ]);
+    if (!reg) return settle('unknown');
+    if (!('periodicSync' in reg) || typeof reg.periodicSync.register !== 'function') return settle('unsupported');
+    // Install state is the gate, not capability alone — see the docblock: the
+    // browser only RUNS these wakes for an installed app, so success here is
+    // what the modal's promise rests on.
+    if (typeof matchMedia !== 'function' || !matchMedia('(display-mode: standalone)').matches) {
+      return settle('unavailable', 'not-installed');
+    }
+    // Mirror before registering: the first wake must find the schedule (an
+    // event can arrive before the next settings write runs), and the register
+    // below is what makes that wake possible in the first place.
+    await mirrorWakeRecord();
+    const s = getReminderSettings();
+    if (!s.enabled) {
+      // Toggled off: withdraw the wake now rather than at the next boot, so
+      // tonight cannot fire from a schedule the user just closed.
+      try { await reg.periodicSync.unregister(WAKE_TAG); } catch { /* never registered */ }
+      return settle('off');
+    }
+    // No banner without permission — registering would only schedule wakes
+    // whose showNotification is guaranteed to throw. The modal's Allow row is
+    // how this gets granted; this function is never what asks for it.
+    if (notificationPermission() !== 'granted') return settle('unavailable', 'permission');
+    try {
+      const queried = await navigator.permissions?.query?.({ name: 'periodic-background-sync' });
+      if (queried && queried.state === 'denied') return settle('unavailable', 'denied');
+    } catch { /* a browser that will not answer is one register() can judge */ }
+    await reg.periodicSync.register(WAKE_TAG, { minInterval: WAKE_MIN_INTERVAL_MS });
+    return settle('on');
+  } catch (e) {
+    // The browser's own refusal — most often a site that is not installed, or
+    // a device whose engagement with it is still too low to earn wakes.
+    // Reported, never swallowed: the modal must not promise a closed-app
+    // reminder this phone will not deliver.
+    return settle('unavailable', (e && e.name) || 'error');
   }
 }
 

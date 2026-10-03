@@ -8,7 +8,7 @@ import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, s
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfile, setActiveProfileId, getActiveProfileId, hasSessionChoice, nsKey, profileEnvName, isAdminProfile, setProfileIcon } from './profiles.js';
-import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime } from './reminders.js';
+import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, periodicReminderStatus, syncPeriodicReminder } from './reminders.js';
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
@@ -1340,18 +1340,38 @@ function openReminderSettings() {
   document.addEventListener('keydown', onKey, true);
   bg.appendChild(modal); document.body.appendChild(bg);
 
+  // The wake's verdict is async (registration + permission state), so the row
+  // may draw before it lands. Probe exactly once per open — once, because a
+  // browser that answers 'unknown' would otherwise redraw forever.
+  let wakeProbed = false;
   const draw = () => {
     const s = getReminderSettings();
     const enabledRow = $('label', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin:18px 0;cursor:pointer;' },
       $('span', { style: 'font-size:14px;font-weight:600;' }, 'Daily reminder'),
       $('input', { type: 'checkbox', checked: s.enabled, 'aria-label': 'Daily reminder on', onChange: ev => {
-        patchReminderSettings({ enabled: ev.target.checked });
-        if (ev.target.checked) {
-          requestNotificationPermission().then(perm => {
-            if (perm !== 'granted') toast('System notifications stay off - the in-app reminder still works while the app is open.');
+        const enabled = ev.target.checked;
+        patchReminderSettings({ enabled });
+        // The background wake follows this switch the same way the minute loop
+        // does: armed on the way on, withdrawn on the way off — so tonight
+        // cannot fire from a schedule the user just closed. It is never what
+        // asks for permission; the prompt below is.
+        const afterPerm = enabled
+          ? requestNotificationPermission().then(perm => {
+              if (perm !== 'granted') toast('System notifications stay off - the in-app reminder still works while the app is open.');
+            })
+          : Promise.resolve();
+        afterPerm
+          .then(() => syncPeriodicReminder())
+          .catch(() => {})
+          .then(() => {
+            // This toast is for the device the wake exists for: a phone with
+            // NO sync being told, once, that closed-app delivery is handled.
+            // Push users already hear that sentence from Enable push.
+            if (enabled && periodicReminderStatus().state === 'on' && !s.pushSubscribed) {
+              toast('Background reminder armed - it reaches you even when cents. is closed.');
+            }
             draw();
           });
-        } else draw();
       } }),
     );
     const timeInput = $('input', { type: 'time', value: s.time, 'aria-label': 'Reminder time', style: 'padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font:inherit;font-size:15px;' });
@@ -1370,17 +1390,27 @@ function openReminderSettings() {
         : 'Allow system notifications so the reminder reaches you even when the app is in the background.'),
       perm === 'granted' || perm === 'denied' || perm === 'unsupported' ? null
         : $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: async () => {
-            await requestNotificationPermission(); draw();
+            await requestNotificationPermission();
+            // Permission was the wake's blocker — arm it now that this click
+            // may have granted it, before the redraw reads the status.
+            await syncPeriodicReminder(); draw();
           } }, 'Allow'),
     );
-    // Closed-app push: the browser delivers the reminder even when cents. is
-    // not open. Requires cloud sync (the app password gates the push store).
+    // Closed-app delivery, in two layers: the background wake (installed app,
+    // no sync needed — the phone this row exists for) and server push (on-time,
+    // but gated on the sync password). The row names whichever half applies,
+    // and never claims the wake before its register actually succeeded.
     const sync = getSyncSettings();
     const pushUsable = pushSupported() && sync.enabled && !!sync.endpoint && !!sync.password;
+    const wakeOn = s.enabled && periodicReminderStatus().state === 'on';
     const pushRow = $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:14px;border-top:1px solid var(--line);margin-bottom:14px;' },
       $('span', { class: 'muted', style: 'font-size:12px;line-height:1.5;' },
-        !pushSupported() ? 'This browser cannot receive push notifications.'
-        : !pushUsable ? 'Turn on Cloud sync to also get the reminder when the app is closed.'
+        !pushSupported()
+          ? (wakeOn ? 'Background reminder is on - it reaches you even when cents. is closed.'
+                    : 'This browser cannot receive push notifications.')
+        : !pushUsable
+          ? (wakeOn ? 'Background reminder is on - it reaches you even when cents. is closed, with no cloud sync. Cloud sync adds a push at your exact time.'
+                    : 'Turn on Cloud sync to also get the reminder when the app is closed.')
         : s.pushSubscribed ? 'Push is on — the reminder reaches you even when cents. is closed.'
         : 'Also get the reminder when the app is closed (uses this browser\'s push channel).'),
       pushUsable ? $('button', { type: 'button', class: s.pushSubscribed ? 'btn btn-danger' : 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: async (ev) => {
@@ -1410,9 +1440,10 @@ function openReminderSettings() {
         toast(messages[r.reason] || ('Test push failed: ' + (r.message || r.reason || 'error') + '.'));
         draw();
       } }, 'Send test push')) : null;
-    // Show whenever the browser can do push at all, so the "turn on Cloud
-    // sync to also get closed-app reminders" guidance is visible.
-    const pushSection = pushSupported() ? $('div', null, pushRow, testPushRow) : null;
+    // Shown for push capability OR an armed wake: a browser without PushManager
+    // can still deliver through the wake, and hiding the row would hide the one
+    // sentence telling the user so.
+    const pushSection = pushSupported() || wakeOn ? $('div', null, pushRow, testPushRow) : null;
 
     modal.replaceChildren(
       $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' },
@@ -1435,6 +1466,10 @@ function openReminderSettings() {
           toast(`Test reminder: ${payload.body}`);
         } }, 'Test now')),
     );
+    if (!wakeProbed && s.enabled && periodicReminderStatus().state === 'unknown') {
+      wakeProbed = true;
+      syncPeriodicReminder().catch(() => {}).then(draw);
+    }
   };
   draw();
 }

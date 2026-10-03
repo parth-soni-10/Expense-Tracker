@@ -1334,6 +1334,447 @@ delete process.env.GITHUB_TOKEN;
   }
 }
 
+// ---------- 18. the background wake: closed-app delivery without sync ----------
+// Three paths raise the daily reminder — the page's scheduler (app open), the
+// scheduled push (server, needs the sync password) and this wake — and the
+// phone this section is about has set up NEITHER: no sync, no password, app
+// closed. The wake is the browser running the worker's `periodicsync` event in
+// the background for an INSTALLED app, so everything that can go wrong with it
+// is checked here against the REAL worker: it must honour the schedule (a wake
+// is not a reminder — the browser picks the moment, so firing on any wake
+// would put the nudge at whatever hour the phone felt like), it must know when
+// today already happened (the paths cannot see each other's localStorage, so
+// they meet in one Cache Storage record), and the page must never claim
+// delivery the register did not actually accept — the modal's row promises a
+// notification on the strength of that verdict alone.
+{
+  // ---- the real worker, run against fakes ----
+  // sw.js cannot be imported (a classic worker script has top-level `self` and
+  // no exports), so its source is evaluated once per scenario in a function
+  // scope with `self`, `caches` and `Date` injected: handlers land in a map,
+  // the record in a Map of Maps, and the clock is a fixed local Saturday
+  // 2026-10-03 20:30 — deterministic in every timezone the suite runs in,
+  // because every date the worker computes is built from THOSE local parts.
+  const fixedNow = new Date(2026, 9, 3, 20, 30, 0, 0);
+  const TODAY = '2026-10-03';
+  const YESTERDAY = '2026-10-02';
+
+  const bootWorker = () => {
+    const events = {};
+    const shown = [];
+    const records = new Map();
+    const deleted = [];
+    const fakeSelf = {
+      addEventListener: (type, fn) => { events[type] = fn; },
+      location: { origin: 'https://cents-app.netlify.app' },
+      skipWaiting: () => {},
+      registration: { showNotification: async (title, opts) => { shown.push({ title, opts }); } },
+      clients: { claim: async () => {}, matchAll: async () => [], openWindow: async () => null },
+    };
+    const fakeCaches = {
+      open: async (name) => ({
+        match: async (key) => {
+          const bucket = records.get(name);
+          const text = bucket ? bucket.get(key) : undefined;
+          return text === undefined ? undefined : new Response(text);
+        },
+        put: async (key, value) => {
+          if (!records.has(name)) records.set(name, new Map());
+          records.get(name).set(key, await value.text());
+        },
+        add: async () => {},
+      }),
+      keys: async () => [...records.keys()],
+      delete: async (name) => { deleted.push(name); return records.delete(name); },
+      match: async () => undefined,
+    };
+    class FakeDate extends Date {
+      constructor(...args) {
+        if (args.length === 0) super(fixedNow.getTime());
+        else super(...args);
+      }
+      static now() { return fixedNow.getTime(); }
+    }
+    // `Date` shadows the global inside the worker's scope; everything else the
+    // script touches (Response, Request, URL, JSON) is the real one.
+    new Function('self', 'caches', 'Date', swSource)(fakeSelf, fakeCaches, FakeDate);
+    return { events, shown, records, deleted };
+  };
+  const seedRecord = (env, record) => {
+    if (record !== undefined) env.records.set('cents-reminder', new Map([['/__cents-reminder', JSON.stringify(record)]]));
+  };
+  const readRecord = (env) => {
+    const bucket = env.records.get('cents-reminder');
+    const text = bucket ? bucket.get('/__cents-reminder') : undefined;
+    return text === undefined ? null : JSON.parse(text);
+  };
+  const dispatchWake = (env, tag = 'cents-daily-reminder') => {
+    let waited = null;
+    env.events.periodicsync({ tag, waitUntil: (p) => { waited = p; } });
+    return waited; // null for a tag the handler declines — awaiting it is a no-op
+  };
+  const dispatchPush = (env, payload) => {
+    let waited = null;
+    env.events.push({ data: { json: () => payload }, waitUntil: (p) => { waited = p; } });
+    return waited;
+  };
+
+  // A1: due + enabled + not yet fired → the banner, in the words every other
+  // path uses, with the shared tag and the day recorded behind it.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '20:00' });
+    await dispatchWake(env);
+    check('a due wake raises the reminder in the sender\'s own words',
+      env.shown.length === 1
+        && env.shown[0].title === 'cents. — time to upload your transactions'
+        && env.shown[0].opts.body === "Log today's spending while it's fresh.",
+      JSON.stringify(env.shown[0] || null));
+    check('and it is one notification with the rest: shared tag, renotify, deep link',
+      env.shown[0].opts.tag === 'cents-daily-reminder'
+        && env.shown[0].opts.renotify === true
+        && env.shown[0].opts.data && env.shown[0].opts.data.url === '/index.html#add',
+      env.shown[0] && env.shown[0].opts.tag);
+    check('and the day is recorded so the other paths stay quiet',
+      readRecord(env) && readRecord(env).fired === TODAY && readRecord(env).enabled === true,
+      JSON.stringify(readRecord(env)));
+  }
+  // A2: the wake must not repeat its own day.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '20:00', fired: TODAY });
+    await dispatchWake(env);
+    check('a second wake the same day is silent', env.shown.length === 0, String(env.shown.length));
+  }
+  // A3: before the hour (clock 20:30, schedule 21:00) with yesterday done →
+  // wait: the browser's moment is not the reminder's hour.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '21:00', fired: YESTERDAY });
+    await dispatchWake(env);
+    check('a wake before the hour waits for the hour rather than firing early',
+      env.shown.length === 0, String(env.shown.length));
+  }
+  // A4: a record older than yesterday means a whole day slipped past every
+  // wake (phase-locked before the hour) — a late reminder beats a skipped one.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '21:00', fired: '2026-10-01' });
+    await dispatchWake(env);
+    check('a record older than yesterday means a day slipped — it catches up instead of never firing',
+      env.shown.length === 1 && readRecord(env).fired === TODAY,
+      `shown=${env.shown.length} fired=${readRecord(env) && readRecord(env).fired}`);
+  }
+  // A5: the first wake ever, still before the hour — the browser may not
+  // repeat one before midnight, so the day gets its reminder rather than a wait.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '21:00' });
+    await dispatchWake(env);
+    check('a first wake with no day recorded announces rather than waiting for a wake that may not come',
+      env.shown.length === 1, String(env.shown.length));
+  }
+  // A6: the schedule is off — a wake is the browser's decision, not permission.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: false, time: '20:00' });
+    await dispatchWake(env);
+    check('a wake with the reminder switched off stays silent', env.shown.length === 0, String(env.shown.length));
+  }
+  // A7: the page never mirrored a schedule → nothing to remind about.
+  {
+    const env = bootWorker();
+    await dispatchWake(env);
+    check('a schedule the page never mirrored is silent rather than assumed',
+      env.shown.length === 0, String(env.shown.length));
+  }
+  // A8: another periodic tag is not this reminder's business.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '20:00' });
+    await dispatchWake(env, 'some-other-periodic-sync');
+    check("only the reminder's own sync tag reaches the reminder",
+      env.shown.length === 0, String(env.shown.length));
+  }
+  // A9/A10: the dedupe runs BOTH directions across the two closed-app paths —
+  // the shared tag only replaces a visible notification (renotify re-alerts);
+  // the record is what makes the second path silent.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '20:00' });
+    await dispatchPush(env, { title: 'cents. — time to upload your transactions', body: "Quick tally for Parth — it takes a minute.", tag: 'cents-daily-reminder' });
+    check('the scheduled push records the day it delivered',
+      env.shown.length === 1 && readRecord(env).fired === TODAY,
+      `shown=${env.shown.length} ${JSON.stringify(readRecord(env))}`);
+    await dispatchWake(env);
+    check('then the wake is quiet — one reminder a day across both closed-app paths',
+      env.shown.length === 1, String(env.shown.length));
+  }
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '20:00' });
+    await dispatchWake(env);
+    await dispatchPush(env, { title: 'x', body: 'y', tag: 'cents-daily-reminder' });
+    check('and a push arriving after the wake is quiet too — the record deduplicates, the tag would only re-alert',
+      env.shown.length === 1, String(env.shown.length));
+  }
+  // A11: a deploy must not re-arm the day — activate keeps the record's cache
+  // exactly as it keeps the build baseline, and sweeps only the stale shell.
+  {
+    const env = bootWorker();
+    env.records.set('cents-v23-old', new Map());
+    env.records.set('cents-build', new Map([['/__cents-build', 'baseline']]));
+    seedRecord(env, { enabled: true, fired: TODAY });
+    let waited = null;
+    env.events.activate({ waitUntil: (p) => { waited = p; } });
+    await waited;
+    check('activate sweeps the old shell but keeps the build baseline and the reminder record',
+      env.deleted.length === 1 && env.deleted[0] === 'cents-v23-old'
+        && env.records.has('cents-build') && env.records.has('cents-reminder'),
+      JSON.stringify(env.deleted));
+  }
+
+  // ---- the page half: arming, withdrawing, and the two markers ----
+  const savedWake = {
+    hadLocalStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage'),
+    localStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage') ? globalThis.localStorage : undefined,
+    hadWindow: Object.prototype.hasOwnProperty.call(globalThis, 'window'),
+    window: Object.prototype.hasOwnProperty.call(globalThis, 'window') ? globalThis.window : undefined,
+    navDesc: Object.getOwnPropertyDescriptor(globalThis, 'navigator'),
+    hadNotification: Object.prototype.hasOwnProperty.call(globalThis, 'Notification'),
+    Notification: Object.prototype.hasOwnProperty.call(globalThis, 'Notification') ? globalThis.Notification : undefined,
+    hadMatchMedia: Object.prototype.hasOwnProperty.call(globalThis, 'matchMedia'),
+    matchMedia: Object.prototype.hasOwnProperty.call(globalThis, 'matchMedia') ? globalThis.matchMedia : undefined,
+    hadCaches: Object.prototype.hasOwnProperty.call(globalThis, 'caches'),
+    caches: Object.prototype.hasOwnProperty.call(globalThis, 'caches') ? globalThis.caches : undefined,
+    setInterval: globalThis.setInterval,
+  };
+  try {
+    const pageStore = new Map();
+    globalThis.localStorage = {
+      getItem: (k) => (pageStore.has(k) ? pageStore.get(k) : null),
+      setItem: (k, v) => pageStore.set(k, String(v)),
+      removeItem: (k) => pageStore.delete(k),
+    };
+    globalThis.window = globalThis;
+    class FakeNotification {
+      constructor(title, opts) { this.title = title; this.opts = opts; }
+      close() {}
+    }
+    FakeNotification.permission = 'granted';
+    FakeNotification.requestPermission = async () => FakeNotification.permission;
+    globalThis.Notification = FakeNotification;
+    const registerCalls = [];
+    const unregisterCalls = [];
+    let registerError = null;
+    const workingReg = {
+      periodicSync: {
+        register: async (tag, opts) => {
+          if (registerError) throw registerError; // the browser's own refusal
+          registerCalls.push({ tag, opts });
+        },
+        unregister: async (tag) => { unregisterCalls.push(tag); },
+      },
+    };
+    const plainReg = {}; // a worker without the Periodic Background Sync API
+    const nav = {
+      serviceWorker: { ready: Promise.resolve(workingReg), getRegistration: async () => workingReg },
+      permissions: { query: async () => ({ state: 'granted' }) },
+    };
+    // `navigator` is a getter-only global in Node, so it is redefined rather
+    // than assigned — and restored by its own original descriptor.
+    Object.defineProperty(globalThis, 'navigator', {
+      value: nav, configurable: true, writable: true, enumerable: true,
+    });
+    let installed = true;
+    globalThis.matchMedia = (query) => ({ matches: installed && /display-mode/.test(String(query)) });
+    const wakeRecords = new Map();
+    globalThis.caches = {
+      open: async (name) => ({
+        match: async (key) => {
+          const bucket = wakeRecords.get(name);
+          const text = bucket ? bucket.get(key) : undefined;
+          return text === undefined ? undefined : new Response(text);
+        },
+        put: async (key, value) => {
+          if (!wakeRecords.has(name)) wakeRecords.set(name, new Map());
+          wakeRecords.get(name).set(key, await value.text());
+        },
+      }),
+      keys: async () => [...wakeRecords.keys()],
+      delete: async (name) => wakeRecords.delete(name),
+      match: async () => undefined,
+    };
+    globalThis.setInterval = () => ({}); // the minute loop must not hold the process open
+    const flush = () => new Promise((r) => setTimeout(r, 0)); // drains the write chain (all microtasks)
+    const mirrored = () => {
+      const bucket = wakeRecords.get('cents-reminder');
+      const text = bucket ? bucket.get('/__cents-reminder') : undefined;
+      return text === undefined ? null : JSON.parse(text);
+    };
+    const realToday = (() => {
+      const d = new Date();
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    })();
+
+    const wmod = await import('../reminders.js?wake=18');
+
+    // B1: an installed app with permission arms the wake, and mirrors the
+    // schedule where the worker can read it.
+    wmod.patchReminderSettings({ enabled: true, time: '20:00', lastFiredDate: null });
+    let status = await wmod.syncPeriodicReminder();
+    check('an installed app with permission arms the background wake',
+      status.state === 'on' && registerCalls.length === 1, JSON.stringify(status));
+    check("the sync tag is the notification tag — one string from register to banner",
+      registerCalls[0] && registerCalls[0].tag === 'cents-daily-reminder',
+      registerCalls[0] && registerCalls[0].tag);
+    check('and the interval is a floor measured in hours — a floor, never a claim to a schedule',
+      registerCalls[0] && registerCalls[0].opts && registerCalls[0].opts.minInterval >= 60 * 60 * 1000,
+      String(registerCalls[0] && registerCalls[0].opts && registerCalls[0].opts.minInterval));
+    check('the schedule is mirrored where the worker can read it',
+      mirrored() && mirrored().enabled === true && mirrored().time === '20:00',
+      JSON.stringify(mirrored()));
+
+    // B2: the page's words are the worker's words (and the server's — pinned
+    // by "payload-has-generic-body" above), so no path can sound different.
+    const copy = wmod.showReminderNotification(null);
+    check('the page, the worker and the server speak with one voice',
+      copy.title === 'cents. — time to upload your transactions'
+        && copy.body === "Log today's spending while it's fresh.", JSON.stringify(copy));
+
+    // B3: off withdraws the wake itself, not just the page's loop — tonight
+    // must not fire from a schedule the user just closed.
+    wmod.patchReminderSettings({ enabled: false });
+    status = await wmod.syncPeriodicReminder();
+    check('switching the reminder off withdraws the wake, not just the page timer',
+      status.state === 'off' && unregisterCalls.length === 1 && registerCalls.length === 1,
+      JSON.stringify({ status, unregisterCalls, registered: registerCalls.length }));
+
+    // B4: no permission → no register. A wake whose showNotification would
+    // throw is not delivery, and arming must never be what asks for the prompt.
+    FakeNotification.permission = 'default';
+    wmod.patchReminderSettings({ enabled: true });
+    status = await wmod.syncPeriodicReminder();
+    check('without notification permission the wake is not armed, and the status says permission',
+      status.state === 'unavailable' && status.reason === 'permission' && registerCalls.length === 1,
+      JSON.stringify(status));
+    FakeNotification.permission = 'granted';
+
+    // B5: a browser with a worker but no periodicSync → unsupported, no throw.
+    nav.serviceWorker = { ready: Promise.resolve(plainReg), getRegistration: async () => plainReg };
+    status = await wmod.syncPeriodicReminder();
+    check('a browser without the API reports unsupported rather than pretending',
+      status.state === 'unsupported', JSON.stringify(status));
+    nav.serviceWorker = { ready: Promise.resolve(workingReg), getRegistration: async () => workingReg };
+
+    // B6: the browser's own refusal lands in the status — the modal AWAITS
+    // this before redrawing, so a rejection would hang the toggle.
+    registerError = Object.assign(new Error('nope'), { name: 'SecurityError' });
+    status = await wmod.syncPeriodicReminder();
+    check('a refused register is a verdict the modal can show, never a rejection it hangs on',
+      status.state === 'unavailable' && status.reason === 'SecurityError' && registerCalls.length === 1,
+      JSON.stringify(status));
+    registerError = null;
+
+    // B7: a phone that has only VISITED the site — the browser runs these
+    // wakes only for installed apps, so a tab must not be told otherwise.
+    installed = false;
+    registerCalls.length = 0;
+    status = await wmod.syncPeriodicReminder();
+    check('an uninstalled tab is told the truth — not armed, reason not-installed',
+      status.state === 'unavailable' && status.reason === 'not-installed' && registerCalls.length === 0,
+      JSON.stringify(status));
+    installed = true;
+
+    // B8: re-mirroring the schedule keeps the day the worker wrote. A plain
+    // overwrite would erase it and re-arm an afternoon already delivered.
+    wakeRecords.set('cents-reminder', new Map([['/__cents-reminder', JSON.stringify({ enabled: true, time: '20:00', fired: realToday })]]));
+    wmod.patchReminderSettings({ time: '21:00' });
+    await flush();
+    check('re-arming the time keeps the day the worker recorded',
+      mirrored() && mirrored().fired === realToday && mirrored().time === '21:00',
+      JSON.stringify(mirrored()));
+
+    // B9: the scheduler's own tick writes its half. The start-up tick is the
+    // catch-up (banner suppressed, day marked in-app) — and the day is marked
+    // for the WORKER too, or a wake arriving later that night would raise a
+    // second banner for a day the user already nudged by opening the app.
+    // The record is reset first so the assertion sees the tick's own write.
+    wmod.patchReminderSettings({ enabled: true, time: '00:00', lastFiredDate: null });
+    await flush();
+    wakeRecords.set('cents-reminder', new Map([['/__cents-reminder', JSON.stringify({ enabled: true, time: '00:00' })]]));
+    wmod.startReminderScheduler();
+    await flush();
+    check("the scheduler's start-up tick marks the day for the worker as well as the page",
+      wmod.getReminderSettings().lastFiredDate === realToday
+        && mirrored() && mirrored().fired === realToday && mirrored().enabled === true,
+      JSON.stringify({ page: wmod.getReminderSettings().lastFiredDate, wake: mirrored() }));
+    check('and a start arms the wake beside the loop — no sync, no password, no prompt',
+      registerCalls.length === 1 && registerCalls[0].tag === 'cents-daily-reminder',
+      JSON.stringify(registerCalls));
+  } finally {
+    if (savedWake.hadLocalStorage) globalThis.localStorage = savedWake.localStorage;
+    else delete globalThis.localStorage;
+    if (savedWake.hadWindow) globalThis.window = savedWake.window;
+    else delete globalThis.window;
+    if (savedWake.navDesc) Object.defineProperty(globalThis, 'navigator', savedWake.navDesc);
+    else delete globalThis.navigator;
+    if (savedWake.hadNotification) globalThis.Notification = savedWake.Notification;
+    else delete globalThis.Notification;
+    if (savedWake.hadMatchMedia) globalThis.matchMedia = savedWake.matchMedia;
+    else delete globalThis.matchMedia;
+    if (savedWake.hadCaches) globalThis.caches = savedWake.caches;
+    else delete globalThis.caches;
+    globalThis.setInterval = savedWake.setInterval;
+  }
+
+  // ---- the halves no behavioral run can reach ----
+  const appSource = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  const modalAt = appSource.indexOf('function openReminderSettings');
+  const modalBody = appSource.slice(modalAt, appSource.indexOf('\nfunction isTopModal', modalAt));
+  const modalWakes = (modalBody.match(/syncPeriodicReminder\(\)/g) || []).length;
+  // Each call site by its OWN shape — a count would pass with any one of the
+  // three gone, and each is a different promise: the toggle withdraws tonight,
+  // the Allow click re-arms right after the prompt, the open probe corrects a
+  // row drawn before the verdict landed.
+  check('the modal re-arms the wake from the toggle, the Allow click and open',
+    modalAt > -1
+      && /then\(\(\) => syncPeriodicReminder\(\)\)/.test(modalBody)
+      && /await syncPeriodicReminder\(\)/.test(modalBody)
+      && /syncPeriodicReminder\(\)\.catch\(\(\) => \{\}\)\.then\(draw\)/.test(modalBody),
+    String(modalWakes));
+  check('and it imports the status the row is drawn from',
+    /periodicReminderStatus, syncPeriodicReminder \} from '\.\/reminders\.js'/.test(appSource)
+      && /periodicReminderStatus\(\)/.test(modalBody));
+  check('the row claims a background reminder only when the register said on',
+    /Background reminder is on/.test(modalBody)
+      && /periodicReminderStatus\(\)\.state === 'on'/.test(modalBody));
+  const swTag = /const REMINDER_TAG = '([^']+)'/.exec(swSource)?.[1];
+  const pageTag = /const WAKE_TAG = '([^']+)'/.exec(remindersSource)?.[1];
+  check('worker and page declare one tag for the whole chain',
+    !!swTag && swTag === pageTag, `${swTag} / ${pageTag}`);
+  const schedAt = remindersSource.indexOf('export function startReminderScheduler');
+  const schedBody = remindersSource.slice(schedAt, remindersSource.indexOf('// ---------- closed-app push', schedAt));
+  check('a start arms the wake last and best effort, after the loop is running',
+    /syncPeriodicReminder\(\)\.catch\(\(\) => \{\}\)/.test(schedBody)
+      && schedBody.indexOf('visibilitychange') < schedBody.indexOf('syncPeriodicReminder()'));
+  const syncAt = remindersSource.indexOf('export async function syncPeriodicReminder');
+  const syncBody = remindersSource.slice(syncAt, remindersSource.indexOf('// ---------- closed-app push', syncAt));
+  check('arming the wake never asks for permission — starting the app must not prompt',
+    syncAt > -1 && !/requestNotificationPermission/.test(syncBody));
+  check('every settings write mirrors the schedule the wake reads',
+    /function writeSettings\(next\)[\s\S]{0,400}?mirrorWakeRecord\(\);/.test(remindersSource));
+  check("the tick writes the day into the worker's record beside the page's",
+    /patchReminderSettings\(\{ lastFiredDate: todayKey \}\);[\s\S]{0,900}?markWakeFired\(todayKey\);/.test(remindersSource));
+  // Two writes in flight would each read the OLD record and the slower put
+  // would win with a stale base — a `fired` written from before the mirror's
+  // `enabled: true` is how a wake stops firing while everything looks right.
+  check('record writes are chained so a mirror cannot erase the day beside it',
+    /wakeWriteChain = wakeWriteChain\.then\(\(\) => patchWakeRecord\(patch\)\)/.test(remindersSource)
+      && /return queueWakePatch\(\{ enabled: s\.enabled, time: s\.time \}\)/.test(remindersSource)
+      && /return queueWakePatch\(\{ fired: day \}\)/.test(remindersSource));
+}
+
 fakePushServer.close();
 await new Promise(r => setTimeout(r, 50)); // let in-flight sockets drain
 const failed = Object.entries(results).filter(([, v]) => !v);

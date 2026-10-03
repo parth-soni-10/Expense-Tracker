@@ -48,15 +48,19 @@ const BOOT_MODULES = [
 const DEFERRED_MODULES = ['/tesco.js', '/ocr-pixels.js', '/ocr-prep-worker.js'];
 
 // Decoded JS parsed before the first paint, with headroom for growth (~4 %).
-// Measured today: 669 KB — app.js 528 KB (the back-gesture wiring, the
+// Measured today: 700 KB — app.js 534 KB (the back-gesture wiring, the
 // share-target reader and the Tesco pay tracker's pay-date join, all of which
 // must be installed at boot — a sheet can open before any screen is built) +
-// storage/sync/profiles/reminders and the small ones + tesco-pay.js 25 KB +
-// csv.js 3 KB. The number to watch is not the ceiling, it
-// is the shape: this should stay "the shell and arithmetic", with every screen
-// and every library behind import() — and ~4 % is the whole of the allowance, so
-// a new eager import (240 KB for tesco.js) still fails loudly.
-const BOOT_JS_BUDGET = 690 * 1024;
+// reminders.js 31 KB (three delivery paths now: the minute loop, the push
+// subscribe, and the background wake's schedule mirror — a worker cannot read
+// the page's localStorage, so every settings write carries the schedule into
+// Cache Storage and every start arms the wake) + storage/sync/profiles and the
+// small ones + tesco-pay.js 33 KB + csv.js 3 KB. The number to watch is not
+// the ceiling, it is the shape: this should stay "the shell and arithmetic",
+// with every screen and every library behind import() — and ~4 % is the whole
+// of the allowance, so a new eager import (240 KB for tesco.js) still fails
+// loudly.
+const BOOT_JS_BUDGET = 725 * 1024;
 
 /** Every static dependency of a module's own text: `import … from 'x'`,
  *  `import 'x'` and `export … from 'x'` (a re-export loads the module just as
