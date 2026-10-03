@@ -5951,9 +5951,22 @@ function screenDashboard() {
 
   const screen = $('section', { class: 'page-section dashboard-section', 'aria-label': 'Dashboard' });
 
-  // Net worth sparkline card (if enough data) - points already computed above
+  // Net worth sparkline card (if enough data) - points already computed above.
+  // A point is the balance at an ENTRY's date, so the last one equals today's
+  // total only when the last account entry IS today. A reconciliation recorded
+  // after the last entry - the normal reconcile-then-wait window - changes
+  // every balance on screen but not that point, so the card kept showing the
+  // pre-reconcile BOOK value (inflated whenever the actual was lower, which is
+  // the reason one reconciles) while the hero and the Balances screen showed
+  // the truth; it only self-healed on the next transaction. The figure is
+  // today's checkpoint-aware total, and the trend gets a final point at today
+  // so the line lands on the number it labels and the up/down colour judges
+  // the real direction.
   if (points.length >= 2) {
-    const last30 = points.slice(-30);
+    const trend = points.at(-1).date < today()
+      ? [...points, { date: today(), balance: runningBalance }]
+      : points;
+    const last30 = trend.slice(-30);
     const vals = last30.map(p => p.balance);
     const mn = Math.min(...vals), mx = Math.max(...vals);
     const rng = mx - mn || 1;
@@ -5962,7 +5975,7 @@ function screenDashboard() {
     const step = sparkW / (vals.length - 1);
     const pathD = vals.map((v, i) => `${i === 0 ? 'M' : 'L'} ${i * step} ${sparkH - ((v - mn) / rng) * (sparkH - 4) - 2}`).join(' ');
     const areaD = pathD + ` L ${(vals.length - 1) * step} ${sparkH} L 0 ${sparkH} Z`;
-    const lastVal = vals[vals.length - 1];
+    const lastVal = runningBalance;
     const netWorthEl = $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` });
     paintFigure(netWorthEl, 'dashboard-net-worth', lastVal);
     screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '14px 16px' : '18px 16px'};margin-bottom:24px;display:flex;align-items:center;gap:16px;` },

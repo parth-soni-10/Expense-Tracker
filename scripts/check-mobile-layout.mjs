@@ -258,7 +258,31 @@ ok('the meta line declares its own type',
 ok('and can wrap on a phone, where the row is stacked and has no room',
   /\.balance-row-meta\s*\{\s*white-space\s*:\s*normal/.test(mediaBody(css, 'max-width: 639px', '.balance-row-meta') ?? ''), true);
 
+// ---- 7. the net worth figure is TODAY's balance, not the last entry's ----
+// The dashboard card painted `vals[vals.length - 1]` — the balance at the most
+// recent ENTRY's date, which equals today's total only when the last account
+// entry IS today. A reconcile recorded after that entry (the normal
+// reconcile-then-wait window) changes every balance on screen but not that
+// point, so the card showed the pre-reconcile BOOK value — inflated whenever
+// actual < book, which is the very reason one reconciles — while the hero and
+// the Balances screen showed the truth, self-healing only on the next
+// transaction. Reproduced at 479.78 vs 50.00 on a seeded ledger. The figure
+// must be `runningBalance` (today's checkpoint-aware total), and the trend
+// must get a final point at today so the line lands on the number it labels.
+const nwPaint = /paintFigure\(netWorthEl, 'dashboard-net-worth', (\w+)\)/.exec(app);
+ok('the net worth card still paints a figure', !!nwPaint, true);
+const nwSrc = nwPaint
+  ? (app.match(new RegExp(`const ${nwPaint[1]} = [^;]+;`)) ?? [])[0]
+  : null;
+ok("and that figure is today's checkpoint-aware total, not a point's balance",
+  !!nwSrc && /runningBalance/.test(nwSrc), true);
+ok('the balance at the last entry date is never handed to it again',
+  /const lastVal = vals\[vals\.length - 1\]/.test(app), false);
+ok('and the sparkline ends at today, where the number reads',
+  /points\.at\(-1\)\.date < today\(\)/.test(app)
+  && /\[\.\.\.points, \{ date: today\(\), balance: runningBalance \}\]/.test(app), true);
+
 console.log(fails.length
   ? `check-mobile-layout: ${fails.length} FAILED\n\n${fails.join('\n')}`
-  : `check-mobile-layout: OK — ${pass} assertions passed (a figure reaches its card formatted, at a size its own length chose; the card and the value can neither push their track wider nor spill; six dock tabs compress instead of hanging off the screen; a history row's action buttons cannot starve the column its labels sit in, and the account meta line wraps where the row stacks)`);
+  : `check-mobile-layout: OK — ${pass} assertions passed (a figure reaches its card formatted, at a size its own length chose; the card and the value can neither push their track wider nor spill; six dock tabs compress instead of hanging off the screen; a history row's action buttons cannot starve the column its labels sit in, and the account meta line wraps where the row stacks; net worth reads today's checkpoint-aware balance, never the last entry's book value)`);
 process.exitCode = fails.length ? 1 : 0;
