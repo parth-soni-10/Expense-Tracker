@@ -209,7 +209,7 @@ process.env.VAPID_PRIVATE_KEY = keys.privateKey;
 const { default: pushHandler } = await import('../netlify/functions/reminders-push.mjs');
 const sendModule = await import('../netlify/functions/reminders-send.mjs');
 const sendHandler = sendModule.default;
-const { getStore } = await import('../netlify/functions/lib/store.mjs');
+const { getStore, openStore } = await import('../netlify/functions/lib/store.mjs');
 
 function call(handler, method, body, extraHeaders = {}) {
   const req = new Request('http://localhost/.netlify/functions/reminders-push', {
@@ -1773,6 +1773,93 @@ delete process.env.GITHUB_TOKEN;
     /wakeWriteChain = wakeWriteChain\.then\(\(\) => patchWakeRecord\(patch\)\)/.test(remindersSource)
       && /return queueWakePatch\(\{ enabled: s\.enabled, time: s\.time \}\)/.test(remindersSource)
       && /return queueWakePatch\(\{ fired: day \}\)/.test(remindersSource));
+}
+
+// ---------- 19. the reminder says what bills are due ----------
+// The sender appends a hint to the body, counted from the profile's OWN
+// synced document. Three things to hold: the read must go through the one
+// store/key sync writes (a second copy of either is an empty store, and an
+// empty store reads exactly like "nothing due"), the count is against the
+// record's own local date (a zone ahead of UTC is already tomorrow — the hint
+// must not announce a bill a day early), and it never throws — a hint is not
+// worth the delivery it rides on.
+{
+  const { billsDueHint } = sendModule;
+  const dayAfter = (ymdStr, days) => new Date(new Date(`${ymdStr}T00:00:00Z`).getTime() + days * 86400000).toISOString().slice(0, 10);
+  const todayStr = ymd('UTC');
+  const tomorrowStr = dayAfter(todayStr, 1);
+  const yesterdayStr = dayAfter(todayStr, -1);
+
+  // ---- the counting rule on its own ----
+  const docWith = (nextDates) => ({ settings: { recurring: nextDates.map(nextDate => ({ nextDate })) } });
+  check('no document says nothing', billsDueHint(null, todayStr) === '');
+  check('no recurring list says nothing', billsDueHint({ settings: {} }, todayStr) === '');
+  check('a bill due today is counted', billsDueHint(docWith([todayStr]), todayStr) === ' 1 bill due.');
+  check('an overdue bill is counted — late needs paying more',
+    billsDueHint(docWith([yesterdayStr]), todayStr) === ' 1 bill due.');
+  check('tomorrow is not due today', billsDueHint(docWith([tomorrowStr]), todayStr) === '');
+  check('due and overdue count, future does not',
+    billsDueHint(docWith([yesterdayStr, todayStr, tomorrowStr]), todayStr) === ' 2 bills due.',
+    JSON.stringify(billsDueHint(docWith([yesterdayStr, todayStr, tomorrowStr]), todayStr)));
+  check('a malformed entry never counts',
+    billsDueHint({ settings: { recurring: [null, 'x', {}, { nextDate: 42 }] } }, todayStr) === '');
+  check('a malformed local date says nothing',
+    billsDueHint(docWith([todayStr]), '') === '' && billsDueHint(docWith([todayStr]), undefined) === '');
+  check('a document that throws is swallowed, not raised', (() => {
+    try { return billsDueHint({ get settings() { throw new Error('boom'); } }, todayStr) === ''; }
+    catch { return false; }
+  })());
+
+  // ---- the read path: one store, one key, the record's own date ----
+  const senderSource = readFileSync(new URL('../netlify/functions/reminders-send.mjs', import.meta.url), 'utf8');
+  check('the sender reads the document through cloud.mjs, not a copy',
+    /import \{ CLOUD_STORE, keyFor \} from '\.\/lib\/cloud\.mjs'/.test(senderSource)
+      && !/openStore\('cents-cloud'\)/.test(senderSource));
+  check('the hint is appended to the body, keyed by profile and date',
+    /\+\s*\(await billsHint\(record\.profileId, localDate\)\)/.test(senderSource));
+
+  // ---- end to end: a profile with bills gets them appended ----
+  const { store: cloud } = await openStore('cents-cloud');
+  await cloud.setJSON('doc/personal.json', {
+    v: 1, version: 1, updatedAt: Date.now(),
+    content: { settings: { recurring: [
+      { nextDate: todayStr, details: 'Broadband' },
+      { nextDate: yesterdayStr, details: 'Rent' },
+      { nextDate: tomorrowStr, details: 'Gas' },
+    ] } },
+  });
+  for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k);
+  const hintRecord = (over = {}) => ({
+    time: hhmm('UTC'), zone: 'UTC', lastFiredDate: '1999-01-01',
+    subscription: { endpoint: `http://localhost:${pushPort}/fake-push`, keys: subscription.keys },
+    ...over,
+  });
+  await store.setJSON('push:hint-due', hintRecord({ profileId: 'personal', profileName: 'Sam' }));
+  received.length = 0;
+  await sendHandler(null, {});
+  check('the body carries the bills that are due',
+    received.length === 1 && received[0].body === 'Quick tally for Sam — it takes a minute. 2 bills due.',
+    JSON.stringify(received.map(r => r.body)));
+
+  // A record with no profile has no document to read — guessing one profile's
+  // bills for another device is worse than saying nothing.
+  await store.setJSON('push:hint-noprofile', hintRecord({ profileName: '' }));
+  received.length = 0;
+  await sendHandler(null, {});
+  check('a record with no profile keeps the plain body',
+    received.length === 1 && received[0].body === "Log today's spending while it's fresh.",
+    JSON.stringify(received.map(r => r.body)));
+
+  // No synced document — cloud sync never configured — is the plain line too.
+  await store.setJSON('push:hint-nodoc', hintRecord({ profileId: 'nobody', profileName: 'Kay' }));
+  received.length = 0;
+  await sendHandler(null, {});
+  check('a profile with no synced document keeps the plain body',
+    received.length === 1 && received[0].body === 'Quick tally for Kay — it takes a minute.',
+    JSON.stringify(received.map(r => r.body)));
+
+  await cloud.del('doc/personal.json');
+  for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k);
 }
 
 fakePushServer.close();

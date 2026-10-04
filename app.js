@@ -2,7 +2,7 @@
    Expense Tracker - editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #balances | #insights
    ============================================================ */
-import { loadState, saveState, resetToBlank, exportJSON, exportEntriesCsv, validateState, uid, updateAllowedCategories, updateAllowedMethods, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, takeStorageNotice, loadStateFor, patchProfileSettings, parseBackup, foreignWriteNeeded, readStateText, unreadableBackup, MAX_BACKUP_BYTES, downloadText } from './storage.js';
+import { loadState, saveState, resetToBlank, exportJSON, exportEntriesCsv, validateState, uid, updateAllowedCategories, updateAllowedMethods, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, takeStorageNotice, loadStateFor, patchProfileSettings, parseBackup, parseEntriesCsv, CSV_REFUSAL, foreignWriteNeeded, readStateText, unreadableBackup, MAX_BACKUP_BYTES, downloadText } from './storage.js';
 import { CATEGORIES, METHODS, TABS, HIDEABLE_TABS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
@@ -1444,6 +1444,19 @@ function openReminderSettings() {
     // can still deliver through the wake, and hiding the row would hide the one
     // sentence telling the user so.
     const pushSection = pushSupported() || wakeOn ? $('div', null, pushRow, testPushRow) : null;
+    // The install surface, drawn from the app's OWN captured prompt
+    // (canInstallApp / promptInstall, which the ☰ menu's Install row shares):
+    // present exactly when the browser says this device can install. It closes
+    // the gap between the background wake existing and it being reachable — an
+    // uninstalled tab can never run a periodicsync — and it appears beside the
+    // sentence that explains why, rather than three menu levels away.
+    const installRow = canInstallApp() ? $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:14px;border-top:1px solid var(--line);margin-bottom:14px;' },
+      $('span', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, 'Install cents. on this device to get reminders even when the app is closed.'),
+      $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: async (ev) => {
+        ev.currentTarget.disabled = true;
+        await promptInstall(); // consumes the captured prompt; the browser may still decline
+        draw();
+      } }, 'Install app')) : null;
 
     modal.replaceChildren(
       $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;' },
@@ -1456,6 +1469,7 @@ function openReminderSettings() {
         $('span', { class: 'muted', style: 'font-size:12px;' }, 'Time'), timeInput),
       permRow,
       ...(pushSection ? [pushSection] : []),
+      ...(installRow ? [installRow] : []),
       $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' },
         $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => {
           patchReminderSettings({ lastFiredDate: null });
@@ -1783,6 +1797,8 @@ function openPinSettings() {
   });
 }
 
+let persistFlushQueued = false;
+let persistDirtyAgain = false;
 function persist() {
   // Track the last local edit before writing so conflict detection survives reloads.
   state.lastLocalChangeAt = new Date().toISOString();
@@ -1792,12 +1808,31 @@ function persist() {
   ensureCashCoins();
   clearBalanceCaches();
   syncRevision++;
-  // A rejected write (storage full, or blocked entirely) means the change the
-  // user just made is not on disk. Say so once, rather than letting a reload
-  // silently reveal that it never saved.
-  if (saveState(state) === false && !saveFailureNotified) {
-    saveFailureNotified = true;
-    raiseNotice('Could not save to this device - storage may be full. Export a backup from the menu under Data.');
+  const writeNow = () => {
+    // A rejected write (storage full, or blocked entirely) means the change the
+    // user just made is not on disk. Say so once, rather than letting a reload
+    // silently reveal that it never saved.
+    if (saveState(state) === false && !saveFailureNotified) {
+      saveFailureNotified = true;
+      raiseNotice('Could not save to this device - storage may be full. Export a backup from the menu under Data.');
+    }
+  };
+  // The first write of a tick lands synchronously — anything reading storage
+  // right after persist() still sees this change (the contract saveState makes
+  // and test-integrity pins). Further persist()s in the SAME tick — a save that
+  // writes entries and settings as two steps — coalesce into one trailing write
+  // of the final document, instead of re-stringifying the whole thing per step.
+  // The microtask runs before any event, navigation or paint, so no reload can
+  // interleave the window, and a crash can lose at most an already-redundant
+  // intermediate write.
+  writeNow();
+  if (persistFlushQueued) { persistDirtyAgain = true; }
+  else {
+    persistFlushQueued = true;
+    queueMicrotask(() => {
+      persistFlushQueued = false;
+      if (persistDirtyAgain) { persistDirtyAgain = false; writeNow(); }
+    });
   }
   scheduleSyncPush();
 }
@@ -1958,6 +1993,85 @@ async function restoreFromText(text, source) {
   }
   if (!ok) return;
   await applyRestore(verdict.state, source);
+}
+
+// ---------- the spreadsheet, read back ----------
+// The counterpart to Export CSV. Same shape as the restore path on purpose:
+// one file picker, a parse that never throws and explains itself, one confirm,
+// and then applyRestore()'s whole-document undo — a CSV merge is the same
+// "merge and let Undo take it back" promise a .json restore makes.
+let csvInput = null;
+let csvConfirmOpen = false;
+
+function openCsvPicker() {
+  if (!csvInput) {
+    csvInput = $('input', { type: 'file', accept: '.csv,text/csv,text/plain', class: 'restore-file', 'aria-label': 'Choose a CSV file', style: 'display:none;' });
+    csvInput.addEventListener('change', () => {
+      const file = csvInput.files && csvInput.files[0];
+      // Clear the value so picking the same file twice in a row fires again.
+      csvInput.value = '';
+      if (file) void importCsvFromFile(file);
+    });
+    document.body.appendChild(csvInput);
+  }
+  csvInput.click();
+}
+
+/** The label → id mirrors of categoryLabel/methodLabel. entriesCsv() is handed
+ *  the forward pair at export time; these are the same rules asked the other
+ *  way, against the SAME tables (allCategories()/everyMethod()), so a custom
+ *  category named "Groceries" on this device resolves to the id it was
+ *  exported from and a label that matches nothing is left for validateEntry
+ *  to judge (it passes the raw cell through as an id — a hand-edited file that
+ *  already carries ids round trips too). */
+function csvCategoryId(label) {
+  const want = String(label).trim().toLowerCase();
+  return allCategories().find(category => String(category.label).trim().toLowerCase() === want)?.id || null;
+}
+function csvMethodId(label) {
+  const want = String(label).trim().toLowerCase();
+  return everyMethod().find(method => String(method.label).trim().toLowerCase() === want)?.id || null;
+}
+
+async function importCsvFromFile(file) {
+  if (file.size > MAX_BACKUP_BYTES) { toast(CSV_REFUSAL['too-large']); return; }
+  let text;
+  try {
+    text = await file.text();
+  } catch {
+    toast('That file could not be read.');
+    return;
+  }
+  await importCsvFromText(text, file.name || 'that file');
+}
+
+async function importCsvFromText(text, source) {
+  const verdict = parseEntriesCsv(text, { category: csvCategoryId, method: csvMethodId }, state.entries);
+  if (!verdict.ok) { toast(CSV_REFUSAL[verdict.reason] || 'That file could not be read as a CSV.'); return; }
+  if (!verdict.kept) {
+    toast(verdict.duplicates && !verdict.dropped
+      ? `${verdict.duplicates === 1 ? 'That row is' : `Those ${verdict.duplicates} rows are`} already in your ledger.`
+      : verdict.dropped
+        ? `That CSV has ${verdict.dropped} ${verdict.dropped === 1 ? 'row' : 'rows'} and none of them could be read.`
+        : 'That CSV has no rows under its header.');
+    return;
+  }
+  if (csvConfirmOpen) return;   // a second pick while the dialog is up
+  csvConfirmOpen = true;
+  let ok = false;
+  try {
+    ok = await swalConfirm({
+      title: 'Import this CSV?',
+      text: `Merge ${verdict.kept} ${verdict.kept === 1 ? 'entry' : 'entries'} from ${source}? Nothing on this device is deleted - imported rows are added to what is already here.`
+        + (verdict.dropped ? ` (${verdict.dropped} unreadable ${verdict.dropped === 1 ? 'row was' : 'rows were'} skipped.)` : '')
+        + (verdict.duplicates ? ` (${verdict.duplicates} ${verdict.duplicates === 1 ? 'row' : 'rows'} already in your ledger.)` : ''),
+      confirmButtonText: 'Import',
+    });
+  } finally {
+    csvConfirmOpen = false;
+  }
+  if (!ok) return;
+  await applyRestore({ entries: verdict.entries }, source);
 }
 
 // A document that could not be parsed is parked under a quarantine key by
@@ -2885,6 +2999,8 @@ function clearBalanceCaches() {
   runningBalanceMap = null;
   cpRunCacheState = null;
   cpRunCache.clear();
+  // The search index is keyed to the same "the data changed" tick as these.
+  bumpSearchIndex();
 }
 
 /** The reconciliation checkpoints, normalized to one array per balance method.
@@ -3382,6 +3498,9 @@ function daysUntil(iso) {
 const monthKey = (date) => date.slice(0, 7);
 const MONTH_FORMATTER = new Intl.DateTimeFormat('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 const FRIENDLY_DATE_FORMATTER = new Intl.DateTimeFormat('en-GB', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+// Built once: constructing a DateTimeFormat costs more than using one, and the
+// Thursday rows below format one per row per render.
+const WEEKDAY_FORMATTER = new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: 'UTC' });
 const monthLabel = (key) => {
   const [y, m] = key.split('-').map(Number);
   return MONTH_FORMATTER.format(new Date(Date.UTC(y, m - 1, 1)));
@@ -4351,38 +4470,52 @@ function localSearch(entries, query) {
   return entries.filter(e => fuzzyMatch(
     [e.details, e.note, categoryLabel(e.category), methodShort(e.method), fmt(e.amount)].join(' '), query));
 }
+// The index is built once per DATA VERSION, not once per keystroke: every
+// mutation clears the balance caches, which bumps this counter — so the index
+// can never answer for changed entries, while typing (which changes no data)
+// reuses the index it already has. `bumpSearchIndex` is called from
+// clearBalanceCaches; the pair lives here because the ranker and its cache are
+// one unit (scripts/test-ui-libs.mjs lifts this slice whole).
+let fuseVersion = 0;
+let fuseCache = { version: -1, fuse: null };
+function bumpSearchIndex() { fuseVersion += 1; fuseCache = { version: -1, fuse: null }; }
 function rankEntries(entries, query) {
   if (typeof Fuse !== 'undefined') {
     try {
-      const docs = entries.map(e => ({
-        entry: e,
-        details: e.details || '',
-        note: e.note || '',
-        categoryLabel: categoryLabel(e.category),
-        methodLabel: methodShort(e.method),
-        amountText: fmt(e.amount),
-      }));
-      const fuse = new Fuse(docs, {
-        keys: [
-          { name: 'details', weight: 0.5 },
-          { name: 'note', weight: 0.25 },
-          { name: 'categoryLabel', weight: 0.12 },
-          { name: 'methodLabel', weight: 0.08 },
-          { name: 'amountText', weight: 0.05 },
-        ],
-        // 0.3, measured rather than guessed (scripts/test-ui-libs.mjs runs these
-        // against the vendored build): it is the loosest setting at which an amount
-        // typed in full ("12.40") returns that row and not also €61.50, while "cofee",
-        // "electricty", a category, an account and a note all still match. At 0.4 the
-        // amount query picks up strangers — the price of a ranking that forgives too
-        // much. A transposed word ("trian") is not promised either way; no threshold
-        // here matches it.
-        threshold: 0.3,
-        ignoreLocation: true,    // the match is not expected near the start
-        minMatchCharLength: 2,
-        includeScore: true,
-      });
-      return fuse.search(query).map(r => r.item.entry);
+      if (!fuseCache.fuse || fuseCache.version !== fuseVersion) {
+        const docs = entries.map(e => ({
+          entry: e,
+          details: e.details || '',
+          note: e.note || '',
+          categoryLabel: categoryLabel(e.category),
+          methodLabel: methodShort(e.method),
+          amountText: fmt(e.amount),
+        }));
+        fuseCache = {
+          version: fuseVersion,
+          fuse: new Fuse(docs, {
+            keys: [
+              { name: 'details', weight: 0.5 },
+              { name: 'note', weight: 0.25 },
+              { name: 'categoryLabel', weight: 0.12 },
+              { name: 'methodLabel', weight: 0.08 },
+              { name: 'amountText', weight: 0.05 },
+            ],
+            // 0.3, measured rather than guessed (scripts/test-ui-libs.mjs runs these
+            // against the vendored build): it is the loosest setting at which an amount
+            // typed in full ("12.40") returns that row and not also €61.50, while "cofee",
+            // "electricty", a category, an account and a note all still match. At 0.4 the
+            // amount query picks up strangers — the price of a ranking that forgives too
+            // much. A transposed word ("trian") is not promised either way; no threshold
+            // here matches it.
+            threshold: 0.3,
+            ignoreLocation: true,    // the match is not expected near the start
+            minMatchCharLength: 2,
+            includeScore: true,
+          }),
+        };
+      }
+      return fuseCache.fuse.search(query).map(r => r.item.entry);
     } catch { /* fall through to the local matcher */ }
   }
   return localSearch(entries, query);
@@ -5418,6 +5551,11 @@ function buildMenuLevel(id) {
       exportEntriesCsv(state, { category: categoryLabel, method: methodLabel });
       toast('Exported CSV.');
     } }));
+    // The export's counterpart. Same merge-and-Undo promise as Restore from
+    // backup: parseEntriesCsv() reads the file back (labels resolved to ids by
+    // csvCategoryId/csvMethodId, rows already in the ledger skipped) and
+    // applyRestore() does the merge as one undoable step.
+    list.append(menuRowEl({ icon: 'download', label: 'Import CSV', note: 'Merges a .csv export back in', onClick: () => { closeAppMenu(); openCsvPicker(); } }));
     list.append(menuRowEl({ icon: 'download', label: 'Restore from backup', note: 'Merges a .json export back in', onClick: () => { closeAppMenu(); openRestorePicker(); } }));
     // Only offered when there IS one: a document loadState could not parse is
     // parked under a quarantine key, and until now nothing could reach it.
@@ -5875,13 +6013,11 @@ function formView({ initial = null, onSubmit, onCancel }) {
       method: data.method,
       note: data.note?.trim() || '',
     };
-    if (!isEdit && data.type !== 'note') {
-      const dup = findPotentialDuplicate(entry);
-      if (dup) {
-        openDuplicateConfirm(entry, dup, () => onSubmit([entry]));
-        return;
-      }
-    }
+    // No duplicate gate here: commitAdded() is the ONE check on this screen,
+    // and a second one below the first would ask the same question twice —
+    // confirm once at submit and the committed path confirms again for the
+    // same row. The edit sheet never reaches commitAdded as an addition, so
+    // its "already have this" check stays where it is (in commitAdded).
     onSubmit([entry]);
   };
 
@@ -6474,7 +6610,7 @@ function screenDashboard() {
             const isFuture = d > todayStr;
             const [dy, dm, dd] = d.split('-').map(Number);
             const dt = new Date(Date.UTC(dy, dm - 1, dd));
-            const dayName = new Intl.DateTimeFormat('en-GB', { weekday: 'short', timeZone: 'UTC' }).format(dt);
+            const dayName = WEEKDAY_FORMATTER.format(dt);
             const dayNum = dt.getDate();
             const statusColor = paid ? 'var(--positive)' : isFuture ? 'var(--muted)' : 'var(--negative)';
             const canFill = !paid && (isPast || isToday);
@@ -7236,21 +7372,32 @@ function screenAdd() {
   // them. cashAutoFollow may re-anchor the cash base while adding, so its
   // previous values ride along. No journal: undoing an addition is a
   // live-session action, and a reload already has the entries.
-  const commitAdded = (entries, label) => {
-    const prevCashBase = state.settings.cashBase;
-    const prevCoinsManual = state.settings.coinsManual;
-    state.entries.push(...entries);
-    state.entries.sort((a, b) => a.date.localeCompare(b.date));
-    if (entries.some(e => e.method === 'Cash')) cashAutoFollow(entries.reduce((sum, e) => sum + cashDeltaOf(e), 0));
-    const ids = entries.map(e => e.id);
-    trackAction(() => {
-      state.entries = state.entries.filter(e => !ids.includes(e.id));
-      tombstoneIds(ids);
-      state.settings.cashBase = prevCashBase;
-      state.settings.coinsManual = prevCoinsManual;
+  const commitAdded = (entries, label, onDone) => {
+    const commit = () => {
+      const prevCashBase = state.settings.cashBase;
+      const prevCoinsManual = state.settings.coinsManual;
+      state.entries.push(...entries);
+      state.entries.sort((a, b) => a.date.localeCompare(b.date));
+      if (entries.some(e => e.method === 'Cash')) cashAutoFollow(entries.reduce((sum, e) => sum + cashDeltaOf(e), 0));
+      const ids = entries.map(e => e.id);
+      trackAction(() => {
+        state.entries = state.entries.filter(e => !ids.includes(e.id));
+        tombstoneIds(ids);
+        state.settings.cashBase = prevCashBase;
+        state.settings.coinsManual = prevCoinsManual;
+        persist();
+      }, label);
       persist();
-    }, label);
-    persist();
+      if (onDone) onDone();
+    };
+    // ONE check for every way onto the ledger from this screen — quick entry,
+    // split legs, transfers, the structured form — so a duplicate cannot slip
+    // in simply because a different button created it. Cancel leaves nothing
+    // written (the commit has not started), and the confirm runs before the
+    // caller's toast/navigation through onDone.
+    const hit = entries.map(e => [e, findPotentialDuplicate(e)]).find(([, dup]) => dup);
+    if (hit) openDuplicateConfirm(hit[0], hit[1], commit);
+    else commit();
   };
 
   const addQuick = () => {
@@ -7262,8 +7409,9 @@ function screenAdd() {
       const pairId = uid();
       const fromEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'expense', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.from, note: 'Created with natural-language input', transferId: pairId };
       const toEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'credit', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.to, note: 'Created with natural-language input', transferId: pairId };
-      commitAdded([fromEntry, toEntry], `${parsed.details} transfer`);
-      toast('Gift card loaded - transfer created from your description.'); location.hash = '#dashboard';
+      commitAdded([fromEntry, toEntry], `${parsed.details} transfer`, () => {
+        toast('Gift card loaded - transfer created from your description.'); location.hash = '#dashboard';
+      });
       return;
     }
     if (parsed.split && parsed.split.length >= 2) {
@@ -7276,22 +7424,16 @@ function screenAdd() {
         category: parsed.category, details: parsed.details, amount: s.amount,
         method: s.method, note: 'Created with natural-language input', splitId,
       }));
-      commitAdded(legs, `${parsed.details} split payment`);
-      toast('Split payment created from your description.'); location.hash = '#dashboard';
+      commitAdded(legs, `${parsed.details} split payment`, () => {
+        toast('Split payment created from your description.'); location.hash = '#dashboard';
+      });
       return;
     }
     const entry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: parsed.type, category: parsed.category, details: parsed.details, amount: parsed.amount, method: parsed.method, note: 'Created with natural-language input' };
     if (parsed.method === 'Cash') cashAutoFollow();
-    const dup = findPotentialDuplicate(entry);
-    if (dup) {
-      openDuplicateConfirm(entry, dup, () => {
-        commitAdded([entry], entry.details || 'entry');
-        toast('Entry created from your description.'); location.hash = '#dashboard';
-      });
-      return;
-    }
-    commitAdded([entry], entry.details || 'entry');
-    toast('Entry created from your description.'); location.hash = '#dashboard';
+    commitAdded([entry], entry.details || 'entry', () => {
+      toast('Entry created from your description.'); location.hash = '#dashboard';
+    });
   };
   const restoreVoiceLabel = () => { voiceInputBtn.textContent = ''; voiceInputBtn.append(iconSpan('mic', 'sm'), ' Voice'); };
   const voiceInputBtn = $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => {
@@ -7319,9 +7461,10 @@ function screenAdd() {
     onSubmit: (entryOrEntries) => {
       const entries = Array.isArray(entryOrEntries) ? entryOrEntries : [entryOrEntries];
       const label = entries.length > 1 ? `${entries.length} entries` : (entries[0].details || 'entry');
-      commitAdded(entries, label);
-      toast(entries.length > 1 ? `Saved ${entries.length} entries.` : 'Saved.');
-      location.hash = '#dashboard';
+      commitAdded(entries, label, () => {
+        toast(entries.length > 1 ? `Saved ${entries.length} entries.` : 'Saved.');
+        location.hash = '#dashboard';
+      });
     },
   });
   c.appendChild(form);
@@ -7356,7 +7499,11 @@ function screenHistory() {
 
   const monthEntries = entriesForMonth(activeMonth);
   const activeMethodGroup = accountGroupForKey(activeMethod);
-  const filtered = searchEntries(monthEntries, searchQuery, { type: 'all', category: activeCat, method: activeMethodGroup ? 'all' : activeMethod })
+  // With a query the search reads ALL entries, not just the visible month: a
+  // query while sitting on the wrong month used to find nothing. The month
+  // stays the frame (title, calendar, expense sum); only the results widen.
+  const searchScope = searchQuery ? state.entries : monthEntries;
+  const filtered = searchEntries(searchScope, searchQuery, { type: 'all', category: activeCat, method: activeMethodGroup ? 'all' : activeMethod })
     .filter(e => !activeMethodGroup || activeMethodGroup.members.includes(e.method));
   // Sort a copy so filtering/history presentation never mutates persisted order.
   // A query is read as a ranking and keeps the ranker's order (closest match first,

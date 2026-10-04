@@ -39,7 +39,7 @@ globalThis.sessionStorage = new MemoryStorage();
 // (profiles.js), which resolves to "personal" on a device with no registry.
 const LIVE_KEY = 'cents:p/personal/state';
 
-const { validateState, loadState, saveState, parseBackup, foreignWriteNeeded, readStateText, unreadableBackup, entriesCsv, ENTRIES_CSV_HEADER, MAX_BACKUP_BYTES, MAX_BACKUP_ENTRIES } = await import('../storage.js');
+const { validateState, loadState, saveState, parseBackup, parseEntriesCsv, CSV_REFUSAL, foreignWriteNeeded, readStateText, unreadableBackup, entriesCsv, ENTRIES_CSV_HEADER, MAX_BACKUP_BYTES, MAX_BACKUP_ENTRIES } = await import('../storage.js');
 const { csvCell, csvUnquote, csvDocument, CSV_BOM } = await import('../csv.js');
 const { getPrivacyPin } = await import('../settings.js');
 const { mergeStates } = await import('../sync-merge.js');
@@ -436,11 +436,11 @@ check('a copy that still parses is offered as a merge', salvage.ok === true && s
   JSON.stringify({ ok: salvage.ok, kept: salvage.kept }));
 
 // ------------------------------------------- 11. the ledger as a spreadsheet
-// "Export CSV" writes every entry as one row a spreadsheet can read. Nothing
-// reads the file back, so what has to hold is narrower than the JSON round trip
-// and just as sharp: the columns are the ones the reader expects, a label is
-// worded the way the screen words it, a number stays a number, and a field that
-// would be read as a formula is defused rather than executed on open.
+// "Export CSV" writes every entry as one row a spreadsheet can read, and — as of
+// the importer — section 14 reads that file back. What has to hold on the way
+// out: the columns are the ones the reader expects, a label is worded the way
+// the screen words it, a number stays a number, and a field that would be read
+// as a formula is defused rather than executed on open.
 const csvLabels = { category: (id) => ({ gro: 'Groceries', misc: 'Misc' }[id] || id), method: (id) => ({ AIB: 'AIB bank', RS: 'Revolut Savings' }[id] || id) };
 const csvRow = (id, extra = {}) => ({
   id, date: '2026-09-20', type: 'expense', method: 'AIB', category: 'gro',
@@ -703,6 +703,195 @@ for (let i = 0; i < 530; i++) {
 check('the record is bounded, keeping the newest pay dates',
   (() => { const kept = ledgerState(manyDates); const dates = Object.keys(kept).sort(); return [dates.length, dates.includes('2020-01-02'), dates.includes(dates[dates.length - 1])]; })(),
   [520, false, true]);
+
+// ------------------------- 14. the spreadsheet, read back
+// The export's counterpart, and the same promise section 8 makes for JSON:
+// parseEntriesCsv() never throws, refuses with a reason the UI can word, and
+// reports how much survived — plus one promise the CSV uniquely needs, because
+// the file carries NO IDS: importing the same export twice must not double the
+// ledger, so a row identical to one already here is counted and skipped rather
+// than added again (multiset, so two identical coffees import both when neither
+// is here and neither twice when both are).
+// check() takes a CONDITION (a bare got/want pair would be truthy and never
+// fail), so the comparisons below go through `same`.
+const same = (got, want) => JSON.stringify(got) === JSON.stringify(want);
+const csvImportLabels = {
+  category: label => ({ Groceries: 'gro', Misc: 'misc' }[label] || null),
+  method: label => ({ 'AIB bank': 'AIB', 'Revolut Savings': 'RS' }[label] || null),
+};
+const csvExportFile = entriesCsv(stateOf([
+  csvRow('a', { note: 'bread, milk' }),
+  csvRow('b', { type: 'credit', category: 'misc', method: 'RS', amount: 50, note: '=cmd|calc' }),
+]), csvLabels);
+const csvLedger = stateOf([
+  csvRow('a', { note: 'bread, milk' }),
+  csvRow('b', { type: 'credit', category: 'misc', method: 'RS', amount: 50, note: '=cmd|calc' }),
+]).entries;
+const imported = noThrow('parseEntriesCsv(a real export)', () => parseEntriesCsv(csvExportFile, csvImportLabels, []));
+check('a real export reads back whole',
+  imported?.ok === true && imported.kept === 2 && imported.dropped === 0 && imported.duplicates === 0,
+  JSON.stringify(imported && { kept: imported.kept, dropped: imported.dropped, duplicates: imported.duplicates }));
+const byDetails = Object.fromEntries((imported?.entries || []).map(e => [e.details, e]));
+check('the label a screen showed comes back as the id it was exported from',
+  same([byDetails.a?.category, byDetails.a?.method, byDetails.b?.category, byDetails.b?.method],
+    ['gro', 'AIB', 'misc', 'RS']));
+check('a note with a comma and a note that reads as a formula come back verbatim',
+  same([byDetails.a?.note, byDetails.b?.note], ['bread, milk', '=cmd|calc']));
+check('and so do the date, the type and the amount at its own precision',
+  same([byDetails.a?.date, byDetails.a?.type, byDetails.a?.amount, byDetails.b?.amount],
+    ['2026-09-20', 'expense', 12.4, 50]));
+// The double-import footgun: export writes no ids, so identity can only be by
+// content — and without this the second import of one file would be a second
+// copy of the whole ledger.
+const secondImport = parseEntriesCsv(csvExportFile, csvImportLabels, csvLedger);
+check('importing the same file against the same ledger adds nothing',
+  same([secondImport.kept, secondImport.dropped, secondImport.duplicates], [0, 0, 2]));
+const twinsFile = entriesCsv(stateOf([
+  csvRow('t1', { details: 'same coffee' }),
+  csvRow('t2', { details: 'same coffee' }),
+]), csvLabels);
+const oneHere = stateOf([csvRow('t0', { details: 'same coffee' })]).entries;
+const twinsVsOne = parseEntriesCsv(twinsFile, csvImportLabels, oneHere);
+check('with one copy of an identical row here, the other copy still imports',
+  same([twinsVsOne.kept, twinsVsOne.duplicates], [1, 1]));
+check('with neither here, both copies import', parseEntriesCsv(twinsFile, csvImportLabels, []).kept === 2);
+const twinsVsBoth = parseEntriesCsv(twinsFile, csvImportLabels, oneHere.concat(oneHere));
+check('with both here, neither imports again',
+  same([twinsVsBoth.kept, twinsVsBoth.duplicates], [0, 2]));
+// Every refusal pinned by its REASON — the caller words each one for the user,
+// and a file refused as "no header" when it was really too big sends them
+// looking for the wrong problem.
+const csvRefused = [
+  ['empty', '', 'empty'],
+  ['blank', ' \n \t', 'empty'],
+  ['no header', 'foo,bar\r\n1,2\r\n', 'no-header'],
+  ["someone else's csv", 'name,email\r\nSam,sam@x\r\n', 'no-header'],
+  ['oversized', 'x'.repeat(MAX_BACKUP_BYTES + 1), 'too-large'],
+];
+for (const [label, text, reason] of csvRefused) {
+  const verdict = noThrow(`parseEntriesCsv(${label})`, () => parseEntriesCsv(text, csvImportLabels, []));
+  check(`parseEntriesCsv refuses ${label}`, verdict?.ok === false, JSON.stringify(verdict).slice(0, 80));
+  check(`  and says why (${label})`, verdict?.reason === reason, String(verdict?.reason));
+}
+check('every refusal reason is one the UI can word',
+  csvRefused.every(([, , reason]) => reason in CSV_REFUSAL), JSON.stringify(Object.keys(CSV_REFUSAL)));
+check('the row cap is refused for its size, not its content',
+  parseEntriesCsv(`${ENTRIES_CSV_HEADER.join(',')}\r\n${'2026-09-05,expense,gro,x,12.40,AIB,\r\n'.repeat(MAX_BACKUP_ENTRIES + 1)}`, csvImportLabels, []).reason === 'too-large');
+// The header is matched BY NAME: the file goes out through a spreadsheet, and a
+// spreadsheet reorders, renames and re-saves columns without asking.
+const reorderedFile = [
+  [' Note', ' Amount ', 'DATE', 'method', 'Category', 'type', 'Details'].join(','),
+  ['hi', '33.00', '2026-09-05', 'AIB bank', 'Groceries', 'expense', 'lunch'].join(','),
+].join('\r\n');
+check('the header is matched by name, so a spreadsheet may reorder columns',
+  parseEntriesCsv(reorderedFile, csvImportLabels, []).kept === 1);
+check('and case and padding around a column name do not matter',
+  (() => {
+    const lines = reorderedFile.split('\r\n');
+    lines[0] = ' note , AMOUNT ,date,METHOD,category,TYPE,Details';
+    return parseEntriesCsv(lines.join('\r\n'), csvImportLabels, []).kept === 1;
+  })());
+check('the byte-order mark Excel writes is stripped before the header is read',
+  // The BOM lands on the FIRST column — Date here, a required one — so this
+  // only passes while the header cells are trimmed.
+  parseEntriesCsv(CSV_BOM + csvExportFile, csvImportLabels, []).kept === 2);
+check('a file missing a column the ledger needs is refused, not guessed at',
+  parseEntriesCsv('Date,Type,Details,Amount\r\n2026-09-05,expense,lunch,12.40\r\n', csvImportLabels, []).reason === 'no-header');
+const shortHeader = parseEntriesCsv('Date,Type,Category,Amount,Method\r\n2026-09-05,expense,Groceries,12.40,AIB bank\r\n', csvImportLabels, []);
+check('Details and Note are optional and default to empty',
+  shortHeader.kept === 1 && shortHeader.entries[0].details === '' && shortHeader.entries[0].note === '',
+  JSON.stringify(shortHeader.entries[0]));
+// Row rules: the same ones validateEntry applies to anything entering the
+// ledger, so a row that would be a bad ENTRY is dropped rather than repaired.
+const rulesFile = [
+  ENTRIES_CSV_HEADER.join(','),
+  'not-a-date,expense,gro,bad date,12.40,AIB,',              // no date at all
+  '46270,expense,gro,serial date,12.40,AIB,',                // Excel serial
+  '05/09/2026,expense,gro,day first,12.40,AIB,',             // a sheet's locale
+  '2026-09-06,expense,gro,too precise,12.405,AIB,',          // never silently round
+  '2026-09-07,expense,gro,no amount,,AIB,',                  // '' must not become 0
+  '2026-09-08,expense,gro,with a symbol,€12.40,AIB,',        // no silent stripping
+  '2026-09-09,refund,gro,unknown type,12.40,AIB,',           // not a type
+  '2026-09-10,expense,not-a-category,x,12.40,AIB,',          // no such label or id
+  '2026-09-11,expense,gro,x,12.40,not-a-method,',            // no such label or id
+].join('\r\n');
+const rulesVerdict = noThrow('parseEntriesCsv(row rules)', () => parseEntriesCsv(rulesFile, csvImportLabels, []));
+check('the two rows that satisfy every rule are read, the rest are dropped',
+  same([rulesVerdict?.kept, rulesVerdict?.dropped], [2, 7]),
+  JSON.stringify({ kept: rulesVerdict?.kept, dropped: rulesVerdict?.dropped }));
+check('an Excel serial and a day-first date both come back as the day they are',
+  same((rulesVerdict?.entries || []).map(e => `${e.details}:${e.date}`).sort(),
+    ['day first:2026-09-05', 'serial date:2026-09-05']));
+// A transfer exports as a row with no pairing column. It must come back as
+// VISIBLE money rather than a phantom pair: the leg parses as itself, and
+// validateState (which every merged document passes through) turns an unpaired
+// transfer into an ordinary expense — never a credit that inflates income.
+const transferFile = `${ENTRIES_CSV_HEADER.join(',')}\r\n2026-09-12,transfer,gro,moved,10.00,AIB,\r\n`;
+const transferRow = parseEntriesCsv(transferFile, csvImportLabels, []);
+check('a transfer row reads back as the transfer it was',
+  transferRow.kept === 1 && transferRow.entries[0].type === 'transfer');
+check('and an unpaired leg validates as visible spending, not a phantom pair',
+  validateState({ entries: transferRow.entries }).entries[0]?.type === 'expense');
+check('a hostile file cannot throw the import',
+  noThrow('parseEntriesCsv(junk)', () => parseEntriesCsv('"unclosed\r\n\u0000\u0001,\uFEFF,,,\"', csvImportLabels, [null, 42, 'x'])) !== undefined);
+
+// The wiring in app.js: a Node guard cannot open a picker or a dialog, so the
+// import path is pinned as source text — the way section 12 pins the method
+// rules — and the CSV half of the screening fixes rides along here too.
+check('the menu offers the export an importer',
+  /label: 'Import CSV'[^}]*openCsvPicker\(\)/.test(appSource));
+check('the picker is a file input whose value is cleared, so the same file may be picked twice',
+  /accept: '\.csv,text\/csv,text\/plain'/.test(appSource) && /csvInput\.value = ''/.test(appSource));
+check('the file is size-capped before it is read',
+  /function importCsvFromFile[\s\S]{0,200}file\.size > MAX_BACKUP_BYTES/.test(appSource));
+check('rows are deduped against THIS device\u2019s ledger',
+  /parseEntriesCsv\(text, \{ category: csvCategoryId, method: csvMethodId \}, state\.entries\)/.test(appSource));
+check('labels resolve through the document\u2019s own tables, not a seed copy',
+  /function csvCategoryId\(label\)[\s\S]{0,300}allCategories\(\)/.test(appSource)
+  && /function csvMethodId\(label\)[\s\S]{0,300}everyMethod\(\)/.test(appSource));
+check('the merge goes through the same whole-document undo a restore uses',
+  /await applyRestore\(\{ entries: verdict\.entries \}, source\)/.test(appSource));
+check('the confirm asks before anything is written',
+  /swalConfirm\(\{\s*title: 'Import this CSV\?'/.test(appSource) && /if \(!ok\) return;\s*await applyRestore/.test(appSource));
+
+// ---- the screening's other app.js fixes, pinned where they live
+const fnBody = (marker, span = 2000) => {
+  const at = appSource.indexOf(marker);
+  return at < 0 ? '' : appSource.slice(at, at + span);
+};
+// persist(): the first write of a tick is synchronous (the contract saveState
+// makes and section 4 pins), and same-tick repeats coalesce into ONE trailing
+// microtask write of the final document instead of re-stringifying per step.
+check('the first write of a tick lands synchronously and later ones coalesce',
+  /writeNow\(\);\s*if \(persistFlushQueued\) \{ persistDirtyAgain = true; \}\s*else \{\s*persistFlushQueued = true;\s*queueMicrotask\(/.test(appSource));
+check('the coalesced write flushes in the same tick, before any event or paint',
+  /queueMicrotask\(\(\) => \{\s*persistFlushQueued = false;\s*if \(persistDirtyAgain\) \{ persistDirtyAgain = false; writeNow\(\); \}/.test(appSource));
+check('and a persist still schedules the cloud push', /scheduleSyncPush\(\)/.test(fnBody('function persist()')));
+// The search reads the WHOLE ledger when a query is typed (a month-scoped
+// index could not find last month's entry), while browsing keeps the month.
+check('a search query reads the whole ledger, not just the visible month',
+  /const searchScope = searchQuery \? state\.entries : monthEntries;/.test(appSource));
+// The index is keyed to "the data changed": every mutation clears the balance
+// caches, which is what bumps the search index beside them.
+check('a data change invalidates the search index',
+  /bumpSearchIndex\(\)/.test(fnBody('function clearBalanceCaches(', 400)));
+// One duplicate question, asked once, no matter which button added the row:
+// exactly two mentions of the checker (its definition and commitAdded's gate),
+// and the confirm runs BEFORE the caller's toast and navigation (onDone), so a
+// cancelled duplicate writes nothing and navigates nowhere.
+check('one duplicate check, in commitAdded — the form does not ask a second time',
+  (appSource.match(/findPotentialDuplicate\(/g) || []).length === 2,
+  String((appSource.match(/findPotentialDuplicate\(/g) || []).length));
+check('the gate sends the whole batch through one confirm',
+  /const hit = entries\.map\(e => \[e, findPotentialDuplicate\(e\)\]\)\.find\(\(\[, dup\]\) => dup\);\s*if \(hit\) openDuplicateConfirm\(hit\[0\], hit\[1\], commit\);\s*else commit\(\);/.test(appSource));
+check('and the caller\u2019s toast and navigation wait for the commit',
+  /if \(onDone\) onDone\(\);/.test(fnBody('const commitAdded = (entries, label, onDone)', 3000)));
+// The reminder modal offers the install the background wake needs — an
+// uninstalled tab can never run a periodic sync, so the row sits beside the
+// sentence that explains why rather than three menu levels away.
+check('the reminder modal offers the install the wake needs',
+  /const installRow = canInstallApp\(\) \?/.test(appSource)
+  && /await promptInstall\(\)/.test(fnBody('const installRow = canInstallApp()', 900)));
 
 // ---------------------------------------------------------------- report
 if (failures.length) {

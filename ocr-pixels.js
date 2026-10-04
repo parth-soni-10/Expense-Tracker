@@ -3,21 +3,25 @@
  *
  * These are the transforms that turn a photo into what the engine is handed: the
  * global contrast stretch, the local Sauvola threshold, the box walk underneath it
- * and the two entry points that run them — over an ImageData, and over a 2D
- * context. They know nothing about rosters — no columns, no dates, no cells — and
- * they touch no DOM at module scope, which is what lets the consumers be so
- * different:
+ * and the entry point that runs them over an ImageData. They know nothing about
+ * rosters — no columns, no dates, no cells — and they touch no DOM at module
+ * scope, which is what lets the consumers be so different:
  *
  *   tesco.js            the reader: ocrLocalMarks and ocrIllumination use the box
- *                       walk, its cell pass thresholds a context through
- *                       ocrStretchCanvas, and the guards in scripts/test-tesco.mjs
+ *                       walk, its cell pass paints its own per-mode views on a
+ *                       context, and the guards in scripts/test-tesco.mjs
  *                       pin ocrAutoContrast and ocrSauvola against buffers.
  *   ocr-prep-worker.js  a worker of its own, which thresholds and encodes one
  *                       read's pixels (the bytes the reader read back from the
  *                       canvas it drew) so that neither happens on the app's
- *                       thread. It needs ocrStretchData — an ImageData — which is
- *                       why the context-shaped entry point is a wrapper around
- *                       that and not the other way round.
+ *                       thread. It needs ocrStretchData — an ImageData, the one
+ *                       shape a worker can be handed without a canvas.
+ *
+ * (There used to be a second, context-shaped entry point here — ocrStretchCanvas,
+ * getImageData/putImageData wrapped around ocrStretchData. Nothing calls it any
+ * more: the cell pass grew its own per-mode views and the strip/page reads go
+ * through the prep worker's ImageData, so it was removed rather than kept as an
+ * export only a doc comment could justify.)
  *
  * Split out of tesco.js when the prep moved off the main thread: the alternative
  * was a second copy of the threshold in the worker, and a threshold with two
@@ -194,26 +198,4 @@ export function ocrStretchData(img, view = 'stretch', radius = 0) {
     d[i * 4 + 3] = 255;
   }
   return 'ink';
-}
-
-/**
- * The same thing for a caller holding a context.
- *
- * `c` is the 2D CONTEXT, not the canvas it came from: getImageData and
- * putImageData are methods of the context, and a canvas in this argument is not
- * something the `catch` here can report — it swallows the TypeError and returns
- * 'stretch', so the image reaches the engine exactly as drawn: legible enough on
- * a good photo that nothing looks wrong, and noise on the sheet lit from one side
- * that the local threshold exists for. (The prep worker handed it a canvas once.
- * The harness's `uneven-lamp` and `tilted-7deg-lamp` scenarios are what caught
- * it; every other scenario passed with the threshold never running.)
- */
-export function ocrStretchCanvas(c, w, h, view = 'stretch', radius = 0) {
-  try {
-    const img = c.getImageData(0, 0, w, h);
-    const used = ocrStretchData(img, view, radius);
-    c.putImageData(img, 0, 0);
-    return used;
-  } catch { /* a canvas that cannot be read is read as it was drawn */ }
-  return 'stretch';
 }

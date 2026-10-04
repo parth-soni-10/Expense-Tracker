@@ -28,7 +28,7 @@ import { getActiveProfileId } from './profiles.js';
 // reads it back, and storage.js writes the entries export with the same rule —
 // so it lives in csv.js rather than in two places free to disagree. The
 // apostrophe guard in it is what stops a note being read as a formula.
-import { csvCell, csvUnquote, csvDocument } from './csv.js';
+import { csvCell, csvUnquote, csvDocument, csvRows, csvDate } from './csv.js';
 // The pixel transforms the reader shares with the worker that prepares each
 // image for the engine (ocr-prep-worker.js). The box walk is the reader's own
 // (the rule scan); the two thresholds are pinned by scripts/test-tesco.mjs, so
@@ -168,41 +168,9 @@ export function tescoCsv(shifts, payslips, rates, weekNos) {
   return csvDocument(rows);
 }
 
-// A real CSV splitter: quoted fields may hold commas, doubled quotes and
-// newlines, Excel writes CRLF, and its export of the sheet opens with an empty
-// column A — all of which a split(',') would mangle.
-function csvRows(text) {
-  const rows = [];
-  let row = [], field = '', quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (quoted) {
-      if (c !== '"') field += c;
-      else if (text[i + 1] === '"') { field += '"'; i++; }
-      else quoted = false;
-    } else if (c === '"') quoted = true;
-    else if (c === ',') { row.push(field); field = ''; }
-    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
-    else if (c !== '\r') field += c;
-  }
-  if (field || row.length) { row.push(field); rows.push(row); }
-  return rows.filter(r => r.some(v => String(v).trim() !== ''));
-}
-
-// Dates arrive as ISO, as an Excel serial, or in the sheet's own day-first
-// locale format; times as HH:MM(:SS) or as the bare day fraction Excel stores.
-function csvDate(raw) {
-  const s = String(raw == null ? '' : raw).trim();
-  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})/.exec(s);
-  if (m) return `${m[1]}-${pad2(+m[2])}-${pad2(+m[3])}`;
-  if (/^\d+(\.\d+)?$/.test(s)) {
-    const n = Math.floor(Number(s));
-    return n > 20000 && n < 80000 ? new Date(Date.UTC(1899, 11, 30) + n * 86400000).toISOString().slice(0, 10) : null;
-  }
-  m = /^(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})/.exec(s);   // day-first, the sheet's locale
-  if (!m) return null;
-  return `${m[3].length === 2 ? 2000 + +m[3] : +m[3]}-${pad2(+m[2])}-${pad2(+m[1])}`;
-}
+// The row splitter and the date reader live in csv.js — the read side of the
+// one field rule, shared with storage.js's entries import. Times still arrive
+// as HH:MM(:SS) or as the bare day fraction Excel stores.
 /** A numeric cell, or null when it holds no number at all (0 stays 0). */
 function csvNumber(raw) {
   const s = String(raw == null ? '' : raw).replace(/[^\d.-]/g, '');
@@ -965,7 +933,7 @@ function inferDate(day, mon, today) {
  * looking for. Erring the other way costs nothing: a name that drifts right lands
  * in the first day column, where it is not a time range and so is no cell at all.
  */
-export function rosterNameColumnRight(bounds) {
+function rosterNameColumnRight(bounds) {
   return bounds && bounds.length ? bounds[0][0] : Infinity;
 }
 
@@ -1162,10 +1130,10 @@ export function pageSkew(words, medianH) {
  * "(unnamed row)" holding the rest — and the days the cell pass never saw went
  * missing from the week entirely.
  *
- * Pure and exported, because this decision is the whole difference between a read
+ * Pure, because this decision is the whole difference between a read
  * and a mess, and a photo is not needed to test it.
  */
-export function groupWordsIntoRows(words, medianH, skew = null) {
+function groupWordsIntoRows(words, medianH, skew = null) {
   const tol = Math.max(medianH * 0.9, 14);
   const slope = skew == null ? pageSkew(words, medianH) : skew;
   const flat = (words || [])
@@ -1961,7 +1929,7 @@ async function ensureOcrPool() {
 
 // Draw the photo onto the display canvas (fit to `maxW`), releasing the decoded
 // bitmap immediately. Used for the on-screen preview.
-export async function drawPhotoPreview(file, canvas, maxW = 720) {
+async function drawPhotoPreview(file, canvas, maxW = 720) {
   const buf = await file.arrayBuffer();
   const bitmap = await createImageBitmap(new Blob([buf], { type: file.type || 'image/jpeg' }), { imageOrientation: 'from-image' });
   const scale = Math.min(1, maxW / bitmap.width);

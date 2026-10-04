@@ -31,13 +31,37 @@
    and carry its schedule.
    ============================================================ */
 
-import { getStore } from './lib/store.mjs';
+import { getStore, openStore } from './lib/store.mjs';
 import { pushSendWarming, vapidConfig } from './lib/webpush.mjs';
+import { CLOUD_STORE, keyFor } from './lib/cloud.mjs';
 
 const PUSH_PREFIX = 'push:';
 // The cron fires every 15 minutes; a record matches when its HH:MM falls
 // within the current slot (e.g. 20:07 fires on the 20:00 run).
 const SLOT_MINUTES = 15;
+
+/**
+ * "2 bills due" — appended to the reminder for a profile whose synced
+ * document has recurring items whose next date has arrived (or passed) as of
+ * `localDate`, the record's OWN local date: the same clock the due check and
+ * the once-a-day marker use, so a bill never counts as "due" a day early in a
+ * zone ahead of the device. Empty string unless there is something to say —
+ * no document, no recurring list, nothing due — and never throws: a hint must
+ * not cost the delivery it rides on. "Due" deliberately includes overdue
+ * (nextDate <= today): a bill that is late needs paying MORE, not less.
+ */
+export function billsDueHint(doc, localDate) {
+  try {
+    const recurring = doc && doc.settings && Array.isArray(doc.settings.recurring)
+      ? doc.settings.recurring : null;
+    if (!recurring || typeof localDate !== 'string' || !localDate) return '';
+    const due = recurring.filter(r => r && typeof r.nextDate === 'string' && r.nextDate <= localDate);
+    if (due.length === 0) return '';
+    return ` ${due.length} bill${due.length === 1 ? '' : 's'} due.`;
+  } catch {
+    return '';
+  }
+}
 
 /** Local "HH:MM" for a Date in an IANA zone, via Intl (no deps). */
 function localTimeInZone(date, zone) {
@@ -105,6 +129,25 @@ export default async (_request, _context) => {
   }
 
   let sent = 0, pruned = 0, warming = 0, considered = 0, rejected = 0;
+  // The hint source, read lazily and per profile: the profile's synced
+  // document in the cloud store (the same one sync writes), cached per run so
+  // two devices of one profile read it once. A profile with no synced
+  // document — no cloud sync configured — simply gets the plain reminder.
+  const hintCache = new Map();
+  const billsHint = async (profileId, localDate) => {
+    if (!profileId) return '';
+    const cacheKey = `${profileId}|${localDate}`;
+    if (!hintCache.has(cacheKey)) {
+      let hint = '';
+      try {
+        const { store: cloud } = await openStore(CLOUD_STORE);
+        const rec = await cloud.getJSON(keyFor(profileId));
+        hint = billsDueHint(rec && typeof rec.content === 'object' ? rec.content : null, localDate);
+      } catch { hint = ''; }
+      hintCache.set(cacheKey, hint);
+    }
+    return hintCache.get(cacheKey);
+  };
   for (const key of keys) {
     const record = await store.getJSON(key).catch(() => null);
     if (!record || !record.subscription) continue;
@@ -114,9 +157,10 @@ export default async (_request, _context) => {
     const localDate = localDateInZone(now, zone);
     if (record.lastFiredDate && record.lastFiredDate === localDate) continue;
 
-    const body = record.profileName
+    const body = (record.profileName
       ? `Quick tally for ${record.profileName} — it takes a minute.`
-      : 'Log today\'s spending while it\'s fresh.';
+      : 'Log today\'s spending while it\'s fresh.')
+      + (await billsHint(record.profileId, localDate));
     const result = await pushSendWarming(record.subscription, {
       title: 'cents. — time to upload your transactions',
       body,

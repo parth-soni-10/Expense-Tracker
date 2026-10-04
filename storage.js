@@ -11,7 +11,7 @@ import { getPrivacyPin, setPrivacyPin } from './settings.js';
 import { nsKey } from './profiles.js';
 // The one CSV field rule in the app. tesco.js writes and reads the workbook
 // with the same one, so a note that is guarded here is guarded there too.
-import { csvDocument, CSV_BOM } from './csv.js';
+import { csvDocument, csvRows, csvDate, csvUnquote, CSV_BOM } from './csv.js';
 
 const KEY = () => nsKey('state');
 // Where an UNREADABLE stored document is parked instead of being lost. Kept
@@ -975,8 +975,9 @@ export function exportJSON(state) {
 // ---------- the ledger as a table ----------
 // The JSON export is the document itself — it is what Restore from backup reads
 // back. This is the same ledger for a person: one row per entry, the readable
-// label instead of the stored id, in a file any spreadsheet opens. There is no
-// importer for it, so a column may be added without breaking a round trip.
+// label instead of the stored id, in a file any spreadsheet opens — and read
+// back by parseEntriesCsv() below, which matches columns BY NAME, so a column
+// may be added (or reordered in a spreadsheet) without breaking a round trip.
 //
 // The label resolvers are handed in rather than looked up here: app.js owns
 // categoryLabel/methodLabel and the custom-category table behind them, and a
@@ -1023,6 +1024,119 @@ export function entriesCsv(state, labels = {}) {
  *  app reads the file back, so the byte costs no round trip. */
 export function exportEntriesCsv(state, labels = {}) {
   downloadText(`expenses-${exportStamp()}.csv`, CSV_BOM + entriesCsv(state, labels), 'text/csv;charset=utf-8');
+}
+
+/** Why a CSV was refused, in the words a user can act on (the app prints the
+ *  one matching this reason, the way BACKUP_REFUSAL words parseBackup). */
+export const CSV_REFUSAL = {
+  empty: 'That file is empty.',
+  'too-large': 'That file is far too large to be a CSV export.',
+  'no-header': 'That file has no header row this app wrote - it does not look like a cents. CSV export.',
+};
+
+/** The other direction of entriesCsv(): read a CSV this app exported back into
+ *  entries. Never throws, and answers with parseBackup's shape —
+ *  { ok: false, reason } or { ok: true, entries, kept, dropped, duplicates } —
+ *  because it is the same promise: a file the user picked must either merge or
+ *  explain itself, never half-apply or throw at them.
+ *
+ *  The header is matched BY NAME (case- and whitespace-insensitive) rather than
+ *  by position: the file goes out through a spreadsheet, and a spreadsheet
+ *  reorders, renames and re-saves columns without asking. Date, Type, Category,
+ *  Amount and Method are required — they are what validateEntry needs to accept
+ *  a row; Details and Note are optional and default to empty.
+ *
+ *  `resolve` maps a LABEL back to the stored id — the mirror of the label
+ *  resolvers entriesCsv() is handed (app.js owns categoryLabel/methodLabel and
+ *  the custom tables behind them, so the rules live there, once). A cell that
+ *  matches no label is kept as written, so a hand-edited file that already
+ *  carries ids round trips too.
+ *
+ *  `existing` is this device's entries: a row identical to one already in the
+ *  ledger is counted as a duplicate and NOT re-added, so importing the same
+ *  file twice does not double the ledger (export writes no ids, so identity
+ *  can only be by content — and the match is multiset, so a day with two
+ *  identical coffees imports both when neither is here and neither twice when
+ *  both are).
+ *
+ *  What the CSV does not carry — ids, the transfer/split pairing and the
+ *  budget-excluded flag — comes back without them: legs import as independent
+ *  rows (and validateState's normalizeTransferGroups turns a lone transfer row
+ *  into an ordinary expense, which is what an unpaired leg has to be). */
+export function parseEntriesCsv(text, resolve = {}, existing = []) {
+  if (typeof text !== 'string' || !text.trim()) return { ok: false, reason: 'empty' };
+  if (text.length > MAX_BACKUP_BYTES) return { ok: false, reason: 'too-large' };
+  // The export puts a BOM in front of the file for Excel's benefit. It never
+  // reaches a comparison: csvRows keeps it as an ordinary character, and `norm`
+  // below TRIMS every header cell — U+FEFF is whitespace to String.trim — so
+  // the first header reads as "date" rather than "\uFEFFDate" (an explicit
+  // replace would be the same rule written twice).
+  const rows = csvRows(text);
+  const norm = value => String(value == null ? '' : value).trim().toLowerCase();
+  const REQUIRED = ['date', 'type', 'category', 'amount', 'method'];
+  let cols = null;
+  let body = [];
+  for (let i = 0; i < rows.length; i++) {
+    const map = {};
+    rows[i].forEach((cell, idx) => {
+      const name = norm(cell);
+      if (name && map[name] === undefined) map[name] = idx;
+    });
+    if (REQUIRED.every(name => map[name] !== undefined)) { cols = map; body = rows.slice(i + 1); break; }
+  }
+  // No recognisable header anywhere in the file: this is not our export (and a
+  // positional guess at an arbitrary CSV is how an import silently mis-files
+  // every column of somebody else's data).
+  if (!cols) return { ok: false, reason: 'no-header' };
+  if (body.length > MAX_BACKUP_ENTRIES) return { ok: false, reason: 'too-large' };
+  const categoryId = typeof resolve.category === 'function' ? resolve.category : null;
+  const methodId = typeof resolve.method === 'function' ? resolve.method : null;
+  const cell = (row, name) => (cols[name] === undefined ? '' : String(row[cols[name]] == null ? '' : row[cols[name]]));
+  const asId = (raw, lookup) => {
+    const value = csvUnquote(String(raw).trim());
+    const found = lookup ? lookup(value) : null;
+    return found || value;
+  };
+  const raw = [];
+  for (const row of body) {
+    // csvDate answers ISO or null — a cell that holds no date at all (or a
+    // serial outside Excel's epoch) fails validateEntry below and is counted
+    // as dropped rather than guessed at.
+    const amountCell = csvUnquote(cell(row, 'amount').trim());
+    raw.push({
+      id: uid(),
+      date: csvDate(cell(row, 'date')),
+      type: csvUnquote(cell(row, 'type').trim()),
+      category: asId(cell(row, 'category'), categoryId),
+      details: csvUnquote(cell(row, 'details')),
+      // '' must become NaN, not 0: Number('') is 0, and an empty amount cell
+      // would otherwise import as a real zero-value entry.
+      amount: amountCell === '' ? NaN : Number(amountCell),
+      method: asId(cell(row, 'method'), methodId),
+      note: csvUnquote(cell(row, 'note')),
+    });
+  }
+  const tuple = e => [e.date, e.type, e.category, e.details,
+    Number.isFinite(Number(e.amount)) ? Number(e.amount).toFixed(2) : '',
+    e.method, e.note].join('\u0001');
+  const have = new Map();
+  for (const entry of Array.isArray(existing) ? existing : []) {
+    if (!entry || typeof entry !== 'object') continue;
+    const key = tuple(entry);
+    have.set(key, (have.get(key) || 0) + 1);
+  }
+  const kept = [];
+  let dropped = 0;
+  let duplicates = 0;
+  for (const row of raw) {
+    const clean = validateEntry(row);
+    if (!clean) { dropped += 1; continue; }
+    const key = tuple(clean);
+    const already = have.get(key) || 0;
+    if (already > 0) { have.set(key, already - 1); duplicates += 1; continue; }
+    kept.push(clean);
+  }
+  return { ok: true, entries: kept, kept: kept.length, dropped, duplicates };
 }
 
 // ---------- persistent undo journal ----------

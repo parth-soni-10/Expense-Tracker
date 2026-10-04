@@ -62,7 +62,7 @@ const CATEGORY_LABELS = { food: 'Groceries', travel: 'Travel', bills: 'Bills' };
 const METHOD_LABELS = { card: 'Card', cash: 'Cash', revolut: 'Revolut' };
 const buildSearch = (Fuse) => new Function(
   'Fuse', 'loadVendor', 'categoryLabel', 'methodShort', 'fmt',
-  searchCode + '\nreturn { searchEntries, rankEntries, localSearch, fuzzyMatch, ensureSearchLib };'
+  searchCode + '\nreturn { searchEntries, rankEntries, localSearch, fuzzyMatch, ensureSearchLib, bumpSearchIndex, peekSearchIndex: () => ({ version: fuseVersion, cache: fuseCache }) };'
 )(
   Fuse,
   (name, assets) => { buildSearch.loaded.push([name, assets]); return Promise.resolve(); },
@@ -141,6 +141,30 @@ ok('a search with the library in place fetches nothing', buildSearch.loaded.leng
 none.searchEntries(entries, 'coffee', {});
 ok('without it, a query fetches the ranker', buildSearch.loaded, [['fuse', { js: 'vendor/fuse.min.js' }]]);
 ok('and an empty field never does', (() => { buildSearch.loaded.length = 0; none.searchEntries(entries, '', {}); return buildSearch.loaded.length; })(), 0);
+
+// The index is built once per DATA VERSION, not once per keystroke: every
+// mutation clears the balance caches (which bumps the version here), while
+// typing changes no data and reuses the index it already has. Two failure modes
+// this pins — rebuilding the whole index per keystroke (the felt lag), and
+// NEVER rebuilding (a new entry that no query can find because the version guard
+// never fires).
+const idx = withFuse.peekSearchIndex;
+const firstFuse = idx().cache.fuse;
+ok('the first ranked query builds one index', !!firstFuse && idx().cache.version === idx().version, true);
+withFuse.searchEntries(entries, 'coffee', {});
+withFuse.searchEntries(entries, 'train', {});
+ok('and the next queries reuse it rather than rebuild it',
+  withFuse.peekSearchIndex().cache.fuse === firstFuse, true);
+ok('before a bump the index still answers for the entries as they were',
+  ids(withFuse.searchEntries(entries, 'bakery', {})), []);
+const beforeBump = idx().version;
+withFuse.bumpSearchIndex();
+const dropped = withFuse.peekSearchIndex();
+ok('a data change bumps the version and drops the cached index',
+  [dropped.cache.fuse === null, dropped.version === beforeBump + 1], [true, true]);
+entries.push({ id: 'e', date: '2026-09-25', amount: 3.5, type: 'expense', details: 'Bakery', note: '', category: 'food', method: 'cash' });
+ok('and the next query rebuilds against the entries as they are now',
+  ids(withFuse.searchEntries(entries, 'bakery', {})), ['e']);
 
 // ============================================================
 // 2. The wiring: paths, order and the focus trap
