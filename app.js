@@ -6658,6 +6658,111 @@ function tescoThursdayIncome(thursdays, payDateAmounts) {
   return { shown, byDate };
 }
 
+/* ── Month in numbers ──
+   The four figures this screen has nowhere else to put. The pulse reads the
+   MONTH — average, projection, burn — so a heavy week is invisible inside it,
+   and the three questions a home screen actually gets asked (biggest buy, what
+   did I keep, did I spend nothing today) were answered nowhere at all.
+   Every value arrives already formatted: a raw float at 22px is how a figure
+   outgrows its own cell. */
+function monthNumbersCard(key, now) {
+  const monthRows = entriesForMonth(key);
+  const spends = monthRows.filter(isSpendingEntry);
+  const income = monthRows.filter(isIncomeEntry).reduce((sum, e) => sum + e.amount, 0);
+  const spent = spends.reduce((sum, e) => sum + e.amount, 0);
+
+  // The last seven days against the seven before them — a month's average
+  // cannot show this, and it is the pace the budget bar is really reacting to.
+  const day = today();
+  const sumBetween = (from, to) => state.entries
+    .filter(e => isSpendingEntry(e) && e.date >= from && e.date <= to)
+    .reduce((sum, e) => sum + e.amount, 0);
+  const weekNow = sumBetween(offsetDateKey(day, -6), day);
+  const weekBefore = sumBetween(offsetDateKey(day, -13), offsetDateKey(day, -7));
+  const delta = weekBefore > 0 ? Math.round(((weekNow - weekBefore) / weekBefore) * 100) : null;
+  // Spending up is the bad direction, so it takes the bad colour — the same
+  // rule the pulse uses for its own figures.
+  const paceColor = delta === null || delta === 0 ? ''
+    : delta > 0 ? 'var(--negative)' : 'var(--positive)';
+  const paceText = weekNow === 0 && weekBefore === 0 ? 'nothing spent in either week'
+    : weekBefore === 0 ? 'nothing in the seven days before'
+    : delta === 0 ? 'level with the week before'
+    : `${delta > 0 ? '▲' : '▼'} ${Math.abs(delta)}% vs the week before`;
+
+  const biggest = spends.length
+    ? spends.reduce((a, b) => (b.amount > a.amount ? b : a))
+    : null;
+
+  const rate = income > 0 ? Math.round(((income - spent) / income) * 100) : null;
+  const elapsed = Math.max(1, now.getDate());
+  const daysSpent = new Set(spends.filter(e => e.date <= day).map(e => e.date)).size;
+  const noSpendDays = Math.max(0, elapsed - daysSpent);
+
+  const cell = (label, value, sub, color, hint) => $('div', { style: 'min-width:0;' },
+    stat(label, value, color, hint),
+    sub ? $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;line-height:1.35;overflow-wrap:anywhere;' }, sub) : null,
+  );
+
+  return $('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
+    $('div', { class: 'row between', style: 'margin-bottom:16px;' },
+      $('span', { class: 'eyebrow' }, 'Month in numbers'),
+      // The one link this card carries goes where the rest of the numbers live,
+      // and stays out of the way on a profile whose admin hid the Insights tab.
+      tabVisible('insights')
+        ? $('a', { href: '#insights', class: 'muted', style: 'font-size:11px;text-decoration:none;' }, 'Full picture in Insights →')
+        : null,
+    ),
+    // auto-fit, not a fixed count: the card is a half-width column when the row
+    // it lands in has a partner and a full-width strip when it closes one, and
+    // the cells have to fill whichever it is (132px is the narrowest track a
+    // phone's 2-up still fits inside).
+    $('div', { style: 'display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:16px 18px;' },
+      cell('This week', fmt(weekNow), paceText, paceColor || null,
+        'Everything spent in the last seven days, today included.'),
+      cell('Biggest buy', biggest ? fmt(biggest.amount) : '\u00b7',
+        biggest ? `${biggest.details || categoryLabel(biggest.category)} · ${friendlyDate(biggest.date)}`
+          : spends.length ? '' : 'nothing spent yet',
+        biggest ? 'var(--negative)' : null,
+        'The largest single expense this month.'),
+      cell('Savings rate', rate === null ? '\u00b7' : `${rate}%`,
+        income > 0 ? `${fmt(spent)} of ${fmt(income)} in` : 'no income recorded this month',
+        rate === null ? null : rate >= 0 ? 'var(--positive)' : 'var(--negative)',
+        'Share of this month\u2019s income that was not spent.'),
+      cell('No-spend days', monthRows.length ? `${noSpendDays} of ${elapsed}` : '\u00b7',
+        monthRows.length ? 'days this month with nothing spent' : 'nothing logged yet',
+        null,
+        'Days this month on which nothing at all was spent.'),
+    ),
+  );
+}
+
+/**
+ * Above 1080px the dashboard is a two-column grid and DOM order IS reading
+ * order, so a run of column cards with an ODD count ends with one card alone
+ * and a whole column beside it — measured at 1440px, 462px of empty page next
+ * to the Upcoming card, and again beside Bank account balances on a fresh
+ * ledger. A card that spans both columns ends a run (the hero, the pulse, any
+ * alert, the category/recent grid); every run left odd hands its LAST card the
+ * full row, which is what the layout already does with a lone hero. Class-only,
+ * so it is a no-op below 1080px where there is one column to fill.
+ */
+function closeOddDashboardRows(screen) {
+  const spans = el => el.classList.contains('dashboard-hero')
+    || el.classList.contains('financial-pulse')
+    || el.classList.contains('dashboard-full')
+    || el.classList.contains('dashboard-grid')
+    || el.getAttribute('role') === 'alert';
+  let run = [];
+  const flush = () => {
+    if (run.length % 2 === 1) run[run.length - 1].classList.add('dashboard-full');
+    run = [];
+  };
+  for (const child of Array.from(screen.children)) {
+    if (spans(child)) flush(); else run.push(child);
+  }
+  flush();
+}
+
 function screenDashboard() {
   const now = new Date();
   const key = monthKey(localDateKey(now));
@@ -7244,6 +7349,13 @@ function screenDashboard() {
         ),
   );
   if (payTracker.shown && tabVisible('tesco')) screen.appendChild(payCard);
+
+  // The four numbers, LAST on purpose: they are the card that closes the final
+  // row, so the pairings above resolve first and this one fills what is left —
+  // with a partner on a full ledger, full width when it would otherwise sit
+  // alone. closeOddDashboardRows is the backstop for every other run.
+  screen.appendChild(monthNumbersCard(key, now));
+  closeOddDashboardRows(screen);
 
   return screen;
 }

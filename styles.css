@@ -511,10 +511,15 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
     padding-right: max(40px, calc((100% - var(--shell-max, 980px)) / 2 + 40px));
   }
 }
-@media (min-width: 1024px) {
-  .app-header { position: relative; }
-  .nav { position: absolute; left: 50%; transform: translateX(-50%); flex: none; }
-}
+/* The nav used to be absolutely centred on the header here (left: 50%,
+   translateX(-50%)) so it would centre on the page rather than on its share
+   of the row. But an absolutely positioned element is OUT of flex flow, so
+   the wrap below could not move it to its own line: between 1024px and the
+   ~1250px the links actually need, it painted straight over the wordmark
+   ("ce…" behind the Dashboard pill) and the action cluster. The header's
+   content box is capped at --shell-max, so ONE line never fits — the nav
+   takes its own centred line at every desktop width instead, and the column
+   being centred is what keeps that line centred on the page. */
 
 .summary-row {
   display: flex; justify-content: space-between; align-items: baseline;
@@ -567,7 +572,13 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     column-gap: var(--page-gap);
-    align-items: start;
+    row-gap: var(--page-gap);
+    /* Stretch, not start: the shorter card in a row has to REACH the row's
+       bottom, or the white gap under it (measured at 51px beside the budget
+       card, 62px beside balances) reads as a hole in the grid rather than as a
+       card that simply had less to say. The taller card still sizes the row, so
+       the page gets no longer — only the ragged edge goes. */
+    align-items: stretch;
   }
   .dashboard-section > .dashboard-hero,
   .dashboard-section > .financial-pulse,
@@ -578,11 +589,23 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
      are sized by their tallest cell, and a 0-height row would collapse the
      rhythm the single-column layout had. */
   .dashboard-section > * { min-width: 0; }
+  /* Grid items do not collapse margins, and this screen carries BOTH
+     conventions: cards that declare margin-bottom (budget, recurring,
+     upcoming) and cards that declare margin-top (balances, gift cards). A row
+     that mixed them put its two cards 24px out of alignment — measured on the
+     balances/month-numbers pair: one top at 1212, the other at 1188 — and
+     stacked the two margins into a 48px gap where the single-column layout
+     below 1080px collapses them to 24px. So the row's rhythm is row-gap and
+     nothing else: every child's vertical margin off (an author !important also
+     beats an inline style), which makes a row exactly as tall as its tallest
+     card and lets stretch land both cards on the same top and the same bottom. */
+  .dashboard-section > .card,
+  .dashboard-section > * { margin-top: 0 !important; margin-bottom: 0 !important; }
 }
 /* The two-card row (category share + recent) keeps its own rule: its columns
    were an inline style, which is the one thing a media query cannot override
    — the phone rule below this would have been dead text. */
-.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: start; }
+.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: stretch; }
 @media (min-width: 640px) {
   .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -1103,17 +1126,20 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
   }
 }
 
-@media (min-width: 1000px) and (max-width: 1249px) {
-  /* The one-line header needs ~1238px: brand, six nav links and the action
-     cluster (which is `flex-shrink: 0`). The nav is `flex: 1`, and a flex
-     item's default `min-width: auto` refuses to compress past its own content,
-     so between the desktop layout starting at 1000px and the width the links
-     actually need, nothing could give and the whole page scrolled sideways.
-     Below it the nav takes its own scrollable line, the same shape the phone
-     layout already uses. */
-  .app-header { flex-wrap: wrap; }
+@media (min-width: 1000px) {
+  /* The one-line header needs ~1238px for the brand, six nav links and the
+     action cluster (which is `flex-shrink: 0`) — and the header's content box
+     is the shell column, capped at --shell-max (980px), so at no width does
+     one line have the room. The nav is `flex: 1`, and a flex item's default
+     `min-width: auto` refuses to compress past its own content, so without a
+     wrap nothing could give and the page scrolled sideways (1000–1249px) or
+     the absolutely-positioned nav overlapped its neighbours (≥1024px). The
+     nav therefore takes its own centred line at every desktop width — the
+     same shape the phone layout already uses, and centred in the column is
+     centred on the page because the column is centred. */
+  .app-header { flex-wrap: wrap; gap: 16px 32px; }
   .app-header .nav {
-    order: 3; flex-basis: 100%; justify-content: flex-start;
+    order: 3; flex-basis: 100%; justify-content: center;
     overflow-x: auto; scrollbar-width: none;
   }
   .app-header .nav::-webkit-scrollbar { display: none; }
