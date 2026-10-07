@@ -156,6 +156,27 @@ for (const k of scheduled) {
   }
 }
 
+// The daily reminder's on-time promise is a PAIR spread across two files: the
+// cron must tick every minute (a coarser tick delivers the reminder up to a
+// period late — the 15-minute tick was a reminder up to a quarter-hour after
+// the hour the user chose), and the sender's look-back window must be WIDER
+// than that tick (a window equal to the period is the old 15/15 pairing, in
+// which ONE run landing late fell outside every window and skipped the day's
+// reminder entirely). Neither file can see the other, which is what this pins.
+const reminderSchedule = get('functions.reminders-send', 'schedule');
+if (reminderSchedule) {
+  const cron = unquote(reminderSchedule.value);
+  const first = /^(\S+)/.exec(cron)?.[1];
+  const period = first === '*' ? 1 : /^\*\/\d+$/.test(first || '') ? Number(first.slice(2)) : /^\d+$/.test(first || '') ? 60 : null;
+  const senderSrc = readFileSync(new URL('netlify/functions/reminders-send.mjs', root), 'utf8');
+  const windowMinutes = Number(/const WINDOW_MINUTES = (\d+)/.exec(senderSrc)?.[1]);
+  if (period !== 1) {
+    add(reminderSchedule.line, `the daily-reminder cron is "${cron}" — it must tick every minute ("* * * * *"), or a reminder arrives up to a period late at the hour the user chose.`);
+  } else if (!Number.isFinite(windowMinutes) || windowMinutes <= period) {
+    add(reminderSchedule.line, `reminders-send.mjs's WINDOW_MINUTES reads ${windowMinutes} — with a one-minute cron the look-back window must be wider than the tick, or one late run skips the day's reminder.`);
+  }
+}
+
 const guardFiles = readdirSync(scriptsDir).filter(f => /^(check|test)-[\w.-]+\.mjs$/.test(f));
 if (command) {
   const cmd = unquote(command.value);

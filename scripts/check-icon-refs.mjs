@@ -25,6 +25,13 @@ import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const app = readFileSync(join(root, 'app.js'), 'utf8');
+// Where the icon CALLS live. The maps (and emptySVG) are still read out of
+// app.js above; the Insights screen moved into its own module in the boot
+// split, and an icon name used only there would otherwise go unchecked.
+const callers = [
+  ['app.js', app],
+  ['insights.js', readFileSync(join(root, 'insights.js'), 'utf8')],
+];
 
 /** Key names of an object literal declared as `const <name> = { … };`. */
 function keysOf(name) {
@@ -52,20 +59,20 @@ const emptyIcons = new Set([...emptyBody.matchAll(/^\s{4}([a-zA-Z][\w]*):/gm)].m
 const problems = [];
 
 // 1. member accesses — a miss here renders an element with nothing in it.
-for (const [, map, key, offset] of app.matchAll(/(MENU_ICONS|ICONS)\.([a-zA-Z][\w]*)/g)) {
+for (const [file, text] of callers) for (const [, map, key, offset] of text.matchAll(/(MENU_ICONS|ICONS)\.([a-zA-Z][\w]*)/g)) {
   const known = map === 'MENU_ICONS' ? menuIcons : iconsRuntime;
   const where = map === 'MENU_ICONS' ? 'MENU_ICONS' : iconsSpreadsMenu ? 'ICONS (which spreads MENU_ICONS)' : 'ICONS';
   if (!known.has(key)) {
-    const line = app.slice(0, offset).split('\n').length;
-    problems.push(`app.js:${line} reads ${map}.${key}, but ${where} has no "${key}" — it renders empty, with no error.`);
+    const line = text.slice(0, offset).split('\n').length;
+    problems.push(`${file}:${line} reads ${map}.${key}, but ${where} has no "${key}" — it renders empty, with no error.`);
   }
 }
 
 // 2. names handed to the icon helpers.
-for (const [full, name, offset] of app.matchAll(/icon: '([a-zA-Z][\w]*)'/g)) {
+for (const [file, text] of callers) for (const [full, name, offset] of text.matchAll(/icon: '([a-zA-Z][\w]*)'/g)) {
   if (!iconsRuntime.has(name) && !emptyIcons.has(name)) {
-    const line = app.slice(0, offset).split('\n').length;
-    problems.push(`app.js:${line} passes icon: '${name}', which appears in no icon map (${full.trim()}).`);
+    const line = text.slice(0, offset).split('\n').length;
+    problems.push(`${file}:${line} passes icon: '${name}', which appears in no icon map (${full.trim()}).`);
   }
 }
 
@@ -75,7 +82,7 @@ if (problems.length) {
   process.exit(1);
 }
 
-const accesses = [...app.matchAll(/(MENU_ICONS|ICONS)\.[a-zA-Z][\w]*/g)].length;
-const names = new Set([...app.matchAll(/icon: '([a-zA-Z][\w]*)'/g)].map((m) => m[1]));
+const accesses = callers.reduce((n, [, text]) => n + [...text.matchAll(/(MENU_ICONS|ICONS)\.[a-zA-Z][\w]*/g)].length, 0);
+const names = new Set(callers.flatMap(([, text]) => [...text.matchAll(/icon: '([a-zA-Z][\w]*)'/g)].map((m) => m[1])));
 console.log(`check-icon-refs: OK — ${accesses} direct lookup(s) and ${names.size} named icon(s) all resolve` +
   (iconsSpreadsMenu ? '' : ' (ICONS no longer spreads MENU_ICONS: only its own keys are accepted)') + '.');

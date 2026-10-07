@@ -30,11 +30,11 @@
 // arrive in a synced cloud copy, so the file is not a safe container for one.
 // csvUnquote() strips the apostrophe back off on import, so the round trip
 // through this app is lossless.
-export const CSV_FORMULA_PREFIX = /^\s*[+\-=@]/;
+const CSV_FORMULA_PREFIX = /^\s*[+\-=@]/;
 // A plain number, negative included. Guarded separately from formula text: the
 // apostrophe that defuses "=SUM(A1)" would turn a -56.08 tax refund into text,
 // which Excel and any database load then read as a string instead of a value.
-export const CSV_PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
+const CSV_PLAIN_NUMBER = /^-?\d+(\.\d+)?$/;
 
 // Written in front of a file meant for a person, never of the text in between:
 // Excel on Windows reads a BOM-less UTF-8 file in the machine's own ANSI code

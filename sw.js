@@ -61,11 +61,22 @@ const SHELL = [
   '/reminders.js',
   '/tesco-pay.js',
   '/tesco.js',
+  // The Insights screen and its Year in review modal — the same shape as the
+  // Tesco screen: fetched on the first visit to #insights, so a cold offline
+  // open of that tab needs it warm.
+  '/insights.js',
   // tesco.js imports this the moment it loads, so the first offline visit to
   // #tesco needs it warm for the same reason. The OCR engine it feeds is NOT
   // here: 6 MB of wasm + traineddata, fetched on the first scan — a cold offline
   // scan cannot work regardless, so precaching it would cost every user.
   '/ocr-pixels.js',
+  // Pulled in at boot (and from the Data menu) for the Lidl receipt pull —
+  // small, and a cold offline open must not lose a module the app loads.
+  '/lidl.js',
+  // The bank statement mapper, reached only from the Data menu — deferred for
+  // the same reason every screen is, and warm so an offline import still works.
+  '/bank-import.js',
+  // The Tesco gift-card balance check, wired the same way (boot + Data row).
   '/manifest.json',
   '/icons/icon-192.png',
   '/icons/icon-512.png',

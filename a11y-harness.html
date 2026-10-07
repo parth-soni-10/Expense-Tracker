@@ -206,7 +206,12 @@ let unlockNote = 'not unlocked yet';
 let onboardingNote = 'no setup overlay';
 async function resetFrame() {
   frame.src = `/?v=a11y-${++reloads}`;
-  await wait(250);
+  // Wait for the navigation to COMMIT before trusting anything in the frame:
+  // the outgoing document keeps `__centsBooted` until it is replaced, so a slow
+  // commit lets the boot wait below pass against the document being torn down —
+  // and the unlock would then run against the wrong document.
+  const token = `?v=a11y-${reloads}`;
+  if (!await until(() => { try { return win().location.search === token; } catch { return false; } }, { timeout: 8000 })) return false;
   if (!await until(() => win().__centsBooted, { timeout: 15000 })) return false;
   unlockNote = await unlock();
   noteOnboarding(await dismissOnboarding());
@@ -283,14 +288,20 @@ async function go(route) {
        mean "this device could not reach it", not "this device never has it". */
 const MODAL_OPENERS = [
   'openAdminPanel', 'openRecurringManager', 'openMethodManager', 'openAvatarPicker',
-  'openReminderSettings', 'openPinSettings', 'openSyncSettings',
+  'openReminderSettings', 'openPinSettings', 'openSyncSettings', 'openBankImport',
 ];
 
 /* The surfaces: every route, then every place a screen opens something. */
 const STEPS = [
   { name: '#dashboard', open: () => go('dashboard') },
   { name: '#add', open: () => go('add') },
-  { name: '#add · split across methods', open: async () => (await go('add')) && openByText('Split across methods', 'button, a, .btn-link') },
+  { name: '#add · split across methods', open: async () => {
+      await go('add');
+      // The structured form is folded behind "More options" now; reveal it
+      // first, then open the split control the audit is here for.
+      const revealed = await openByText('More options', 'button, a, .btn-link');
+      return revealed && openByText('Split across methods', 'button, a, .btn-link');
+    } },
   { name: '#history', open: () => go('history') },
   { name: '#history · bulk bar (selection on)', needs: 'an entry in the ledger to select', open: async () => {
       await go('history');
@@ -328,11 +339,30 @@ const STEPS = [
       return openByText('Sync settings', '.menu-row');
     } },
   { name: 'menu · data', open: async () => { await openByText('', '.menu-trigger'); return openByText('Data', '.menu-row'); } },
+  { name: 'modal · bank statement import', open: async () => {
+      await openByText('', '.menu-trigger');
+      await openByText('Data', '.menu-row');
+      // The modal opens before it asks for a file, so a run never has to drive
+      // the OS picker to audit the mapper's own screen. It arrives through an
+      // import(), so wait for it rather than auditing the page behind it.
+      const clicked = await openByText('Import bank statement', '.menu-row');
+      if (!clicked) return false;
+      await until(() => doc().querySelector('.modal[aria-label="Import bank statement"]'), { timeout: 4000 });
+      return true;
+    } },
   { name: 'modal · recurring & bills', open: async () => { await openByText('', '.menu-trigger'); return openByText('Recurring', '.menu-row'); } },
   { name: 'modal · payment methods', open: async () => { await openByText('', '.menu-trigger'); return openByText('Payment methods', '.menu-row'); } },
   { name: 'modal · daily reminder', open: async () => { await openByText('', '.menu-trigger'); return openByText('Daily reminder', '.menu-row'); } },
   { name: 'modal · profile picture', open: async () => { await openByText('', '.menu-trigger'); return openByText('Profile picture', '.menu-row'); } },
-  { name: 'modal · admin panel', open: () => openByText('', '.admin-trigger') },
+  { name: 'modal · admin panel', needs: 'the admin profile active on this device', open: async () => {
+      // The header chip (.admin-trigger) only renders with more than one profile
+      // on the device; the menu row (.admin-row) is the owner's way in and is
+      // there on a single-profile device too, so reach the panel the way every
+      // device that has an owner can — a step aimed at the chip alone never
+      // opened here and read as an unexplained skip.
+      await openByText('', '.menu-trigger');
+      return openByText('Admin', '.menu-row');
+    } },
 ];
 
 // Every surface gets a freshly loaded app. It is slower than closing whatever the
@@ -377,13 +407,23 @@ function escapeHtml(text) {
 }
 
 async function unlock() {
-  const lock = doc().querySelector('.pin-lock-bg input[aria-label="PIN"]');
-  if (!lock) return 'no lock screen';
-  lock.value = '100901';
-  const InputEvent = win().Event;
-  lock.dispatchEvent(new InputEvent('input', { bubbles: true }));
-  const gone = await until(() => !doc().querySelector('.pin-lock-bg'), { timeout: 4000 });
-  return gone ? 'unlocked with the default PIN' : 'COULD NOT UNLOCK (a custom PIN is set on this device)';
+  const type = () => {
+    const lock = doc().querySelector('.pin-lock-bg input[aria-label="PIN"]');
+    if (!lock) return false;
+    lock.value = '100901';
+    const InputEvent = win().Event;
+    lock.dispatchEvent(new InputEvent('input', { bubbles: true }));
+    return true;
+  };
+  if (!type()) return 'no lock screen';
+  const first = await until(() => !doc().querySelector('.pin-lock-bg'), { timeout: 4000 });
+  if (first) return 'unlocked with the default PIN';
+  // One retry before the note blames the device: a dispatch can race a
+  // just-committed document (or a slow verify can outlast the wait above), and
+  // a lost race must not report "a custom PIN is set" — the next reset would
+  // overwrite the note anyway, but the run's final line is the one people read.
+  if (type()) await until(() => !doc().querySelector('.pin-lock-bg'), { timeout: 6000 });
+  return doc().querySelector('.pin-lock-bg') ? 'COULD NOT UNLOCK (a custom PIN is set on this device)' : 'unlocked with the default PIN';
 }
 
 (async function run() {

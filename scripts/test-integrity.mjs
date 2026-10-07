@@ -465,6 +465,23 @@ check('an amount is two decimals and never quoted',
 // The apostrophe guard must not reach a number: it would turn a tax refund into
 // text that no spreadsheet and no database load would read as a value.
 check('a negative amount stays a number', csvCell(-56.08) === '-56.08', csvCell(-56.08));
+// The view export hands entriesCsv an ALREADY-ORDERED list — the History
+// screen's own order, which is oldest-first when the toggle is flipped and a
+// ranking when a query is typed — and that order must survive. The file's
+// newest-first sort is the FULL export's contract, not a law imposed on a
+// caller's view.
+{
+  const older = csvRow('older', { date: '2026-09-01' });
+  const newer = csvRow('newer', { date: '2026-09-30' });
+  const viewLines = entriesCsv(stateOf([newer, older]), csvLabels, [older, newer])
+    .replace(/\r\n$/, '').split('\r\n');
+  check('a caller-supplied order is taken as given',
+    viewLines[1].startsWith('2026-09-01,') && viewLines[2].startsWith('2026-09-30,'),
+    JSON.stringify(viewLines.slice(1)));
+  const fullLines = csvLines([newer, older]);
+  check('the full export keeps its newest-first contract',
+    fullLines[1].startsWith('2026-09-30,'), JSON.stringify(fullLines.slice(1)));
+}
 check('a comma in a note is quoted, not split into two columns',
   csvCell('bread, milk and eggs') === '"bread, milk and eggs"', csvCell('bread, milk and eggs'));
 check('a newline in a note stays inside one field',
@@ -590,6 +607,11 @@ check('and a removal simply overrides it the other way',
 
 // The wiring in app.js that keeps the rules above true in the UI.
 const appSource = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+// The Insights screen split into its own deferred module in the boot split (~39
+// KB of chart drawing, parsed when the tab is first opened), so the pins about
+// THAT screen read its text instead: left on app.js they would pass against
+// code they no longer describe.
+const insightsSource = readFileSync(new URL('../insights.js', import.meta.url), 'utf8');
 check('no picker is built from the seed list (the user\u2019s own methods would vanish)',
   !/\bMETHODS\.map\s*\(/.test(appSource),
   (appSource.match(/\bMETHODS\.map\s*\(/g) || []).join(', '));
@@ -868,9 +890,10 @@ check('the coalesced write flushes in the same tick, before any event or paint',
   /queueMicrotask\(\(\) => \{\s*persistFlushQueued = false;\s*if \(persistDirtyAgain\) \{ persistDirtyAgain = false; writeNow\(\); \}/.test(appSource));
 check('and a persist still schedules the cloud push', /scheduleSyncPush\(\)/.test(fnBody('function persist()')));
 // The search reads the WHOLE ledger when a query is typed (a month-scoped
-// index could not find last month's entry), while browsing keeps the month.
-check('a search query reads the whole ledger, not just the visible month',
-  /const searchScope = searchQuery \? state\.entries : monthEntries;/.test(appSource));
+// index could not find last month's entry), while browsing keeps the frame —
+// the month, or a custom range once both ends are set (frameEntries).
+check('a search query reads the whole ledger, not just the visible frame',
+  /const searchScope = searchQuery \? state\.entries : frameEntries;/.test(appSource));
 // The index is keyed to "the data changed": every mutation clears the balance
 // caches, which is what bumps the search index beside them.
 check('a data change invalidates the search index',
@@ -892,6 +915,497 @@ check('and the caller\u2019s toast and navigation wait for the commit',
 check('the reminder modal offers the install the wake needs',
   /const installRow = canInstallApp\(\) \?/.test(appSource)
   && /await promptInstall\(\)/.test(fnBody('const installRow = canInstallApp()', 900)));
+
+// ------------------------------ 15. the Lidl pull: an automatic ledger writer
+// lidl.js imports clean in Node (its top level is pure for exactly this), so
+// these are behavioural rather than source-text; app.js's wiring half is
+// pinned as source at the end, the way section 14 pins its own. Every rule
+// here is a way an AUTOMATIC writer could corrupt the ledger or the gift card.
+const { receiptToEntry, ticketsToEntries, windowStart, amountOk, LIDL_METHOD, LIDL_CATEGORY, LIDL_WINDOW_DAYS } = await import('../lidl.js');
+const { METHODS } = await import('../seed.js');
+
+check('the pull writes to the gift card the balance math treats as a card',
+  LIDL_METHOD === 'LG' && METHODS.some(m => m.id === LIDL_METHOD));
+check('an expense on that card leaves the card (the figure the pull moves)',
+  /if \(GIFT_CARD_IDS\.includes\(methodId\)\)/.test(fnBody('function balanceDelta(', 300))
+  && /return -entry\.amount;/.test(fnBody('function balanceDelta(', 300)));
+check('the catch-up window is bounded and stated',
+  Number.isFinite(LIDL_WINDOW_DAYS) && LIDL_WINDOW_DAYS > 0 && LIDL_WINDOW_DAYS <= 90);
+
+const TODAY = '2026-10-04';
+check('the window reaches exactly N days back', windowStart(TODAY) === '2026-08-30', windowStart(TODAY));
+const mkReceipt = (over = {}) => ({ id: 't1', date: '2026-10-02', total: 42.17, store: 'Dun Laoghaire', parsed: true, ...over });
+const shaped = receiptToEntry(mkReceipt(), TODAY);
+check('a receipt becomes one gift-card grocery expense',
+  shaped && shaped.type === 'expense' && shaped.method === LIDL_METHOD
+  && shaped.category === LIDL_CATEGORY && shaped.amount === 42.17
+  && shaped.details.includes('Lidl') && shaped.details.includes('Dun Laoghaire'));
+check('amounts must already be exact to 2dp — never rounded',
+  amountOk(12.4) && !amountOk(12.405) && receiptToEntry(mkReceipt({ total: 12.405 }), TODAY) === null);
+check('a receipt outside the window is never created',
+  receiptToEntry(mkReceipt({ date: '2026-08-29' }), TODAY) === null
+  && receiptToEntry(mkReceipt({ date: '2026-10-05' }), TODAY) === null);
+
+const run = (tickets, existing = [], imported = {}) =>
+  ticketsToEntries(tickets, { today: TODAY, existing, imported });
+const pulled = run([mkReceipt()]);
+check('a new receipt is committed with a stable id and survives the next load',
+  pulled.entries.length === 1 && pulled.entries[0].id === 'lidl-t1'
+  && validEntry(pulled.entries[0])
+  && (() => { const v = validateState({ entries: pulled.entries, settings: {} });
+    return looksLikeState(v) && v.entries.length === 1; })());
+check('rule 1: an old receipt stays out — bounded catch-up, never all history',
+  run([mkReceipt({ id: 'old', date: '2026-08-15' })]).entries.length === 0);
+check('rule 2a: an imported ticket whose entry is present is skipped', (() => {
+  const o = run([mkReceipt()], [{ id: 'lidl-t1' }], { t1: { entryId: 'lidl-t1' } });
+  return o.entries.length === 0 && o.skipped.imported === 1;
+})());
+check('rule 2b: a line the user deleted is never rewritten', (() => {
+  const o = run([mkReceipt()], [], { t1: { entryId: 'lidl-t1' } });
+  return o.entries.length === 0 && o.skipped.deleted === 1;
+})());
+check('rule 2c: the user\u2019s own identical line wins, one ticket per line', (() => {
+  const mine = [{ id: 'mine', date: '2026-10-02', type: 'expense', amount: 42.17, method: 'LG', category: 'gro', details: 'Lidl', note: '' }];
+  const o = run([mkReceipt(), mkReceipt({ id: 't2' })], mine, {});
+  return o.entries.length === 1 && o.skipped.blocked === 1;
+})());
+check('rule 3: a bad amount is dropped, not rounded', (() => {
+  const o = run([mkReceipt({ total: 12.405 })]);
+  return o.entries.length === 0 && o.skipped.amount === 1;
+})());
+check('an unparsed receipt is skipped, not guessed at',
+  run([mkReceipt({ parsed: false })]).skipped.shape === 1);
+
+// app.js's half — the wiring, pinned as source because app.js touches the DOM
+// on evaluation. (The gate itself is pinned in the screening block above.)
+check('commitAdded lives at module scope, so the boot pull can reach it',
+  (appSource.match(/const commitAdded = \(entries, label, onDone\)/g) || []).length === 1
+  && /^const commitAdded = \(entries, label, onDone\)/m.test(appSource));
+check('the pull reaches the ONE duplicate gate, not a second one',
+  /label: 'Pull Lidl receipts'[\s\S]{0,400}commit: commitAdded/.test(appSource));
+check('the pull fires once per open, only once the app is accessible',
+  /autoPullLidl\(\{ state, commit: commitAdded, notify: toast \}\)/.test(appSource)
+  && /if \(hasPinLock\(\) && !pinUnlocked\) \{ setTimeout\(pullOnOpen, 500\); return; \}/.test(appSource));
+check('lidl.js is reached only through import() — the boot payload does not grow',
+  !/from '\.\/lidl\.js'/.test(appSource)
+  && (appSource.match(/import\('\.\/lidl\.js'\)/g) || []).length >= 2);
+
+// ----------------- 16. balance checkpoints: the Reconcile editor's rules
+// The Tesco gift-card balance feature was REMOVED outright. It went through
+// three shapes - an on-open fetch, then tescogiftcard.py's relay, then a row
+// that opened Tesco's page - and all three were wrong: the card ledger is
+// Blackhawk Network's stored-value platform, an iframe on ANOTHER origin
+// behind a reCAPTCHA, while tescogiftcards.com/api/v1 is the SHOP rather than
+// the ledger (its checkout endpoint answered "not found" for a real card,
+// and /api/v1/balance returned 400 "Invalid Captcha response" before reading
+// it). So the absence is the pin that matters: nothing may check a balance
+// automatically. What is left is the editor a human records a figure in.
+check('no automated gift-card balance check survives anywhere in app.js',
+  !/giftcard\.js|tesco-giftcard|autoCheckGiftCard|checkGiftCard|applyTescoFigure|BALANCE_PAGE|openBalancePage/.test(appSource));
+check('the removed module is no longer imported or listed as a shell asset',
+  !/import\('\.\/giftcard\.js'\)/.test(appSource)
+  && !/\/giftcard\.js/.test(readFileSync(new URL('../sw.js', import.meta.url), 'utf8')));
+check('the checkpoint keeps the Reconcile buttons\u2019 own rules',
+  /function saveBalanceCheckpoint[\s\S]{0,300}!BALANCE_METHOD_IDS\.includes\(methodId\) \|\| !isValidCheckpointDate\(date\) \|\| date > today\(\)/.test(appSource));
+check('the Reconcile editor snapshots BEFORE writing, so Undo restores all',
+  /const prevPoints = \(getBalanceCheckpoints\(\)\[methodId\] \|\| \[\]\)\.map\(p => \(\{ \.\.\.p \}\)\);\s*if \(!saveBalanceCheckpoint\(methodId, date\.value, next\)\)/.test(appSource));
+check('that write is one undoable step for its own method',
+  /trackAction\(\(\) => \{\s*state\.settings\.balanceCheckpoints\[methodId\] = prevPoints;[\s\S]{0,220}`\$\{label\} reconciliation`\);/.test(appSource));
+
+// ------------------------------ 17. the bank statement import (a second writer)
+// bank-import.js imports clean in Node — its top level is pure for exactly
+// this — so the rules below are behavioural rather than source-text, with the
+// wiring half pinned as source at the end like section 15's. It is the second
+// thing in the app that writes entries it did not choose itself (after the
+// Lidl pull), and it has no ids of its own: everything it can get wrong is
+// about money, dates, or writing the same file twice.
+const { parseBankCsv, suggestBankMapping, buildBankEntries, bankAmount, bankDate, BANK_REFUSAL, bankImportSummary } = await import('../bank-import.js');
+const bankAppSource = appSource;
+
+check('every refusal is a sentence a user can act on, not a code',
+  Object.values(BANK_REFUSAL).every(v => typeof v === 'string' && /[a-z]/.test(v))
+  && Object.keys(BANK_REFUSAL).includes('no-date'));
+check('an empty file is refused, never parsed into an empty import',
+  parseBankCsv('').reason === 'empty' && parseBankCsv('   \n').reason === 'empty');
+check('a header-only file has no rows under it', parseBankCsv('Date,Description,Amount').reason === 'no-rows');
+check('a headered file keeps its column names', (() => {
+  const v = parseBankCsv('Date, Description, Amount (eur)\n02/10/2026,"Tesco, Dun Drury",-12.40\n');
+  return v.ok && v.columns.length === 3 && v.columns[1] === 'Description' && v.rows.length === 1
+    && v.rows[0][1] === 'Tesco, Dun Drury';   // a comma inside quotes is not a delimiter
+})());
+check('a file with no header at all is data, not a lost first row', (() => {
+  const v = parseBankCsv('02/10/2026,Coffee,-3.20\n03/10/2026,Bus,-1.70\n');
+  return v.ok && v.rows.length === 2 && v.columns[0] === 'Column 1';
+})());
+check('semicolon- and tab-separated exports are read too',
+  parseBankCsv('Date;Description;Amount\n02/10/2026;Coffee;-3.20').rows.length === 1
+  && parseBankCsv('Date\tDescription\tAmount\n02/10/2026\tCoffee\t-3.20').rows.length === 1);
+
+check('an amount reads its sign from wherever the bank put it',
+  bankAmount('-12.40') === -12.4 && bankAmount('12.40') === 12.4
+  && bankAmount('€1,234.56') === 1234.56 && bankAmount('(12.40)') === -12.4
+  && bankAmount('12.40 DR') === -12.4 && bankAmount('1 234,56') === 1234.56
+  && bankAmount('closing balance') === null && bankAmount('') === null);
+check('a date is day-first for an Irish bank, and never guessed',
+  bankDate('02/10/2026') === '2026-10-02' && bankDate('2 Oct 2026') === '2026-10-02'
+  && bankDate('Oct 2, 2026') === '2026-10-02' && bankDate('2026-10-02') === '2026-10-02'
+  && bankDate('not a date') === null);
+
+const bankCols = ['Date', 'Description', 'Amount (eur)'];
+const bankRows = [
+  ['02/10/2026', 'Tesco', '-12.40'],
+  ['03/10/2026', 'Salary', '2400.00'],
+];
+const guessed = suggestBankMapping(bankCols, bankRows);
+check('the mapper guesses by header word', guessed.date === 0 && guessed.description === 1 && guessed.amount === 2);
+check('a running balance is never guessed to be the amount',
+  suggestBankMapping(['Date', 'Description', 'Balance'], bankRows).amount === -1);
+check('with no header at all the mapper falls back to the cells', (() => {
+  const m = suggestBankMapping(['Column 1', 'Column 2', 'Column 3'], bankRows);
+  return m.date === 0 && m.description === 1 && m.amount === 2;
+})());
+
+const bankBuild = (rows, over = {}) => buildBankEntries({
+  rows,
+  mapping: over.mapping || guessed,
+  method: over.method || 'AIB',
+  guessCategory: over.guessCategory || (() => 'misc'),
+  existing: over.existing || [],
+});
+const built = bankBuild(bankRows);
+check('a signed column becomes one expense and one income', (() => {
+  const [expense, credit] = built.entries;
+  return built.entries.length === 2 && expense.type === 'expense' && expense.amount === 12.4
+    && credit.type === 'credit' && credit.amount === 2400
+    && expense.method === 'AIB' && expense.category === 'misc';
+})());
+check('rows are written oldest first, so a rerun reads the same',
+  built.entries[0].date < built.entries[1].date);
+check('rule: an amount that is not exact money is dropped, never rounded', (() => {
+  const o = bankBuild([['02/10/2026', 'Odd', '12.405']]);
+  return o.entries.length === 0 && o.badAmount === 1;
+})());
+check('rule: zero is not a transaction, and a row with no date is not either', (() => {
+  const o = bankBuild([['02/10/2026', 'Nothing', '0.00'], ['', 'No date', '-5.00']]);
+  return o.entries.length === 0 && o.empty === 1 && o.noDate === 1;
+})());
+check('rule: importing the same statement twice adds nothing', (() => {
+  const first = bankBuild(bankRows);
+  const second = bankBuild(bankRows, { existing: first.entries });
+  return first.entries.length === 2 && second.entries.length === 0 && second.duplicates === 2;
+})());
+check('rule: two genuinely identical rows in ONE file both land', (() => {
+  const o = bankBuild([['02/10/2026', 'Coffee', '-3.20'], ['02/10/2026', 'Coffee', '-3.20']]);
+  return o.entries.length === 2 && o.duplicates === 0;
+})());
+check('the same row on a different account is not a duplicate', (() => {
+  const first = bankBuild(bankRows);
+  const second = bankBuild(bankRows, { method: 'Revolut', existing: first.entries });
+  return second.entries.length === 2;
+})());
+check('a debit/credit pair reads the same money the same way', (() => {
+  const o = buildBankEntries({
+    rows: [['02/10/2026', 'Rent', '1200.00', ''], ['03/10/2026', 'Refund', '', '45.00']],
+    mapping: { date: 0, description: 1, amount: -1, debit: 2, credit: 3 },
+    method: 'AIB',
+  });
+  return o.entries.length === 2 && o.entries[0].type === 'expense' && o.entries[0].amount === 1200
+    && o.entries[1].type === 'credit' && o.entries[1].amount === 45;
+})());
+check('the category is handed in — a second keyword table would be free to drift',
+  bankBuild([['02/10/2026', 'Tesco shop', '-12.40']], { guessCategory: () => 'gro' }).entries[0].category === 'gro'
+  && !/grocer|supermarket|petrol|landlord/i.test(readFileSync(new URL('../bank-import.js', import.meta.url), 'utf8')));
+check('the skip reasons add up to a sentence',
+  bankImportSummary(bankBuild([['02/10/2026', 'Coffee', '-3.20']])) === ''
+  && /2 rows skipped/.test(bankImportSummary(bankBuild([['', 'x', '-3.20'], ['02/10/2026', 'Zero', '0.00']]))));
+
+// app.js's half — pinned as source, because app.js touches the DOM on evaluation.
+check('the menu reaches the mapper by name, so the harness can audit it',
+  /label: 'Import bank statement'[\s\S]{0,240}openBankImport\(\)/.test(appSource));
+check('the mapper is deferred — the boot path never parses a screen',
+  !/from '\.\/bank-import\.js'/.test(appSource)
+  && (appSource.match(/import\('\.\/bank-import\.js'\)/g) || []).length === 1);
+check('it writes through the ONE duplicate gate, with the ledger\u2019s own hand on the id',
+  /guessCategory: categoryFromDescription,/.test(appSource)
+  && /uid, nowIso, commitAdded, render,/.test(appSource)
+  && /existingEntries: \(\) => state\.entries/.test(appSource));
+check('it is warm offline and on the shell list',
+  /\/bank-import\.js/.test(readFileSync(new URL('../sw.js', import.meta.url), 'utf8')));
+check('the category table exists exactly once, in app.js',
+  (appSource.match(/function categoryFromDescription\(/g) || []).length === 1
+  && /function parseReceiptLine\([\s\S]{0,600}categoryFromDescription\(desc\)/.test(appSource));
+
+// ------------------- 18. what a fresh install is told (the end-user pass)
+// Every rule here is about the FIRST screen a new user meets, and about a
+// destructive or confusing thing the old UI did that is now gone. They are
+// source pins because app.js cannot be imported in Node; the ones with a
+// number behind them say which number.
+check('a fresh ledger gets a way in, never an alarm',
+  /if \(!state\.entries\.length\) return getStartedCard\(\);/.test(appSource)
+  && /'Getting started'/.test(appSource) && /'Add your first entry'/.test(appSource));
+check('the empty-state steps are the three that start the app',
+  /'Set your main balance'/.test(appSource) && /'Add a recurring bill'/.test(appSource));
+check('an untouched account says what to do, not that it is unreconciled',
+  /state\.entries\.length \? 'Not reconciled' : 'Set a balance'/.test(appSource));
+check('the footer no longer destroys the ledger in two taps',
+  !/footer-action danger/.test(appSource) && !/Confirm reset/.test(appSource)
+  && /class: 'footer-action', onClick: \(\) => \{\s*const startY/.test(appSource));
+check('the menu reset still confirms, and now leaves an undo behind it',
+  /label: 'Reset all data'[\s\S]{0,1200}swalConfirm\(/.test(appSource)
+  && /label: 'Reset all data'[\s\S]{0,1600}journalEntries/.test(appSource)
+  && /label: 'Reset all data'[\s\S]{0,2000}trackAction\(/.test(appSource));
+check('the default PIN is told to the person who kept it',
+  /skipEl\.textContent = `Keep the default PIN \(\$\{DEFAULT_PIN_PLAIN\}\)`/.test(appSource)
+  && /Still the default PIN: \$\{DEFAULT_PIN_PLAIN\}/.test(appSource)
+  && /getPinCredential\(\)\.isDefault/.test(appSource));
+check('a restored backup brings its cash figure with it',
+  /adoptBackupCash\(backupState\)/.test(appSource)
+  && /function adoptBackupCash\(/.test(appSource)
+  && /if \(cashBalance\(\) !== 0\) return false;/.test(appSource));
+check('month-to-date is compared with the same days of the month before it',
+  /proratedPrevious/.test(appSource)
+  && /previous \* \(elapsed \/ daysInMonth\(previousKey\)\)/.test(appSource)
+  && /last month to date/.test(appSource));
+check('a projection needs a week of entries and leaves fixed bills out of its run-rate',
+  /const PROJECTION_MIN_DAYS = 7;/.test(appSource)
+  && /const PROJECTION_MIN_ENTRIES = 3;/.test(appSource)
+  && /isFixedCostEntry\(e, keys\)/.test(appSource)
+  && /forecast\.projected === null/.test(appSource));
+check('a recurring entry carries the schedule\u2019s own tuple, which is what marks it',
+  /function recurringEntryKey\(x\)/.test(appSource) && /function isFixedCostEntry\(/.test(appSource));
+check('a payday is not an anomaly',
+  /outlierPool = financialEntries\.filter\(e => isSpendingEntry\(e\) && !isFixedCostEntry\(e, recKeys\)\)/.test(appSource));
+check('the Tesco card only counts Tesco pay, and shows nothing when there is none',
+  /function tescoThursdayIncome\(/.test(appSource)
+  && /payTracker\.shown && tabVisible\('tesco'\)/.test(appSource)
+  && /recordedIds\.has\(e\.id\) \|\| namesTesco\(e\)/.test(appSource));
+check('the Insights default range and its own preset are one range',
+  /const defaultFrom = offsetDateKey\(today\(\), -89\);/.test(insightsSource)
+  && /\{ label: 'Last 90 days', from: offsetDateKey\(today\(\), -89\)/.test(insightsSource));
+check('the entry count says what it counts',
+  /statCard\('Spending entries'/.test(insightsSource));
+check('All time is a range you can pick', /\{ label: 'All time'/.test(insightsSource));
+check('an untouched voucher tally is not a headline figure',
+  /if \(amount <= 0\) return null;/.test(appSource));
+check('the budget toggle moved off the row and into the edit sheet',
+  !/Exclude budget'/.test(appSource)
+  && /Exclude from budget calculations'/.test(appSource)
+  && /Exclude this payment from budget calculations'/.test(appSource)
+  && /\.\.\.\(data\.budgetExcluded \? \{ budgetExcluded: true \} : \{\}\)/.test(appSource));
+check('the row\u2019s one action is named for what it does',
+  /'aria-label': \(isGroup \? `Edit or delete split \$\{rowLabel\}` : `Edit or delete \$\{rowLabel\}`\)[\s\S]{0,80}'Edit'/.test(appSource));
+check('the reminder says what is due, on the local path too',
+  /setDueBillsProvider\(\(\) => billsDueHintFor\(state\.settings\.recurring, today\(\)\)\)/.test(appSource)
+  && /export function setDueBillsProvider/.test(readFileSync(new URL('../reminders.js', import.meta.url), 'utf8')));
+check('a pattern in the ledger is offered once, and can be refused',
+  /function recurringSuggestion\(\)/.test(appSource)
+  && /setAlertDismissed\(dismissedKey, true\)/.test(appSource)
+  && /'Add to recurring'/.test(appSource));
+check('the #add screen folds the structured form instead of stacking it',
+  /'More options'/.test(appSource)
+  && /aria-controls': 'add-structured'/.test(appSource)
+  && /quickCard\.dataset\.routeInitialFocus = 'true'/.test(appSource));
+// History is a frame you can pick — the type row (the filter searchEntries
+// always had and the screen never asked for), an arbitrary date range, and an
+// order toggle — each living in the hash so a link carries it and the back
+// gesture undoes it, plus the view's own Export and Print.
+check('History filters by type, counted against the visible frame',
+  /TYPE_PILLS = \[\['all', 'All'\]/.test(appSource)
+  && /type: activeType/.test(appSource)
+  && /params\.get\('type'\)/.test(appSource)
+  && /for \(const e of frameEntries\) if \(typeCounts\[e\.type\]/.test(appSource));
+check('a date range needs both ends, ordered on read AND write',
+  /!dateKeyOk\(rangeFrom\) \|\| !dateKeyOk\(rangeTo\)/.test(appSource)
+  && /const lo = from <= to \? from : to;/.test(appSource)
+  && /params\.delete\('from'\)/.test(appSource)
+  && /if \(activeDay && !inRange\)/.test(appSource));
+check('the order toggle sorts the frame and stands aside for a ranking',
+  /const oldestFirst = \(a, b\)/.test(appSource)
+  && /searchQuery \? \[\.\.\.filtered\] : \[\.\.\.filtered\]\.sort\(orderAsc \? oldestFirst : newestFirst\)/.test(appSource)
+  && /if \(!searchQuery\) navRight\.appendChild\(monthNav\(orderAsc/.test(appSource));
+check('Export view writes the visible rows, named as a view rather than the ledger',
+  /\{ entries: visible \}/.test(appSource)
+  && /const name = entries \? `history-/.test(readFileSync(new URL('../storage.js', import.meta.url), 'utf8')));
+check('printing History hides the chrome and lifts content-visibility',
+  /document\.body\.classList\.add\('printing-history'\)/.test(appSource)
+  && /body\.printing-history \.app-header/.test(readFileSync(new URL('../styles.css', import.meta.url), 'utf8'))
+  && /body\.printing-history \.history-row\s*\{[^}]*content-visibility:\s*visible/s
+    .test(readFileSync(new URL('../styles.css', import.meta.url), 'utf8')));
+// Every chart figure is also a way into the ledger behind it — the heat map
+// was the only one that drilled — and a mark that navigates has to carry the
+// three things this app requires of an interactive shape: a role, a keyboard
+// path, and a name (a shape has no text to fall back on). The month chart's
+// svg must NOT declare itself role="img": that makes every child
+// presentational to a screen reader, which would hide exactly these targets.
+check('the donut and its bars drill into the range they are drawn over',
+  /donutChart\(catRows, drillCategory\)/.test(insightsSource)
+  && /barWithSpark\(cat, val, maxCat, val === maxCat, drillCategory\)/.test(insightsSource)
+  && /const drillCategory = \(cat\) => \{ location\.hash = `history\?from=\$\{fromDate\}&to=\$\{toDate\}&cat=\$\{cat\}`; \}/.test(insightsSource));
+check('a drillable mark carries role, keyboard and a name',
+  /role: 'button', tabindex: '0', 'aria-label': `View \$\{categoryLabel\(cat\)\} in history`/.test(insightsSource)
+  && /role: 'button', tabindex: '0', 'aria-label': `View \$\{monthLabel\(m\.key\)\} in history`/.test(insightsSource)
+  && /onKeydown: \(ev\) => \{ if \(ev\.key === 'Enter' \|\| ev\.key === ' '\)/.test(insightsSource));
+check('the month chart does not declare its children presentational',
+  !/role: 'img', 'aria-label': 'Monthly spending vs income/.test(appSource + insightsSource));
+check('the savings rate is budget-aware income over the range, and never a fake 0%',
+  /statCard\('Savings rate', savingsRate === null \? '-' :/.test(insightsSource)
+  && /recent\.filter\(isBudgetIncomeEntry\)\.reduce/.test(insightsSource)
+  && /rangeIncome > 0 \? Math\.round/.test(insightsSource));
+check('Export stats writes the range through csvDocument, under its own name',
+  /function exportInsightStats\(\)/.test(insightsSource)
+  && /CSV_BOM \+ csvDocument\(rows\)/.test(insightsSource)
+  && /`insights-\$\{fromDate\}_\$\{toDate\}\.csv`/.test(insightsSource));
+// The boot split itself: the screen is reached only through import(), the route
+// draws a placeholder until it lands (a screen that never loads is a tab that
+// never opens), and the module reaches back for the shell through exports
+// rather than a second copy of the label rules.
+check('the Insights screen is fetched, never parsed at boot',
+  /import\('\.\/insights\.js'\)/.test(appSource)
+  && /export function screenInsights\(\)/.test(insightsSource)
+  && /insights \? insights\.screenInsights\(\) : insightsLoadingCard\(\)/.test(appSource));
+check('the module borrows the shell\u2019s names instead of re-deriving them',
+  /import\s*\{[^}]*categoryLabel[^}]*\}\s*from\s*'\.\/app\.js';/.test(insightsSource)
+  && /import\s*\{[^}]*wireFlatpickr[^}]*\}\s*from\s*'\.\/app\.js';/.test(insightsSource)
+  && /^export \{\n  \$, state, /m.test(appSource)
+  && /export \{[^}]*isSpendingEntry[^}]*isBudgetIncomeEntry[^}]*\}/m.test(appSource));
+
+// ---- the recurrence engine, run rather than described ---------------------
+// advanceRecurringDate/computeInitialNextDate are lifted straight out of
+// app.js's text (app.js cannot be imported — it touches the DOM on evaluation)
+// and run against real dates, because "the schedule advanced" is arithmetic,
+// not wiring: a regex over this code would pass for a leap year it got wrong.
+const engineAt = appSource.indexOf('function utcDateKey');
+const engineEnd = appSource.indexOf('\n}\n', appSource.indexOf('function computeInitialNextDate'));
+const engineCode = appSource.slice(engineAt, engineEnd + 2);
+if (engineAt < 0 || engineEnd < 0 || !/function computeInitialNextDate/.test(engineCode) || engineCode.length > 5000) {
+  console.error(`test-integrity: could not lift the recurrence engine (${engineCode.length} chars) — check the markers in app.js.`);
+  process.exit(1);
+}
+// localDateKey lives far above the slice, so it is handed in.
+const engine = new Function('localDateKey', `${engineCode}\nreturn { advanceRecurringDate, computeInitialNextDate };`)(
+  (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+);
+check('every cadence steps its own distance, from last date to next',
+  engine.advanceRecurringDate('2026-10-01', 'daily', 1) === '2026-10-02'
+  && engine.advanceRecurringDate('2026-10-01', 'weekly', 1) === '2026-10-08'
+  && engine.advanceRecurringDate('2026-10-01', 'fortnightly', 1) === '2026-10-15'
+  && engine.advanceRecurringDate('2026-10-01', 'monthly', 1) === '2026-11-01'
+  && engine.advanceRecurringDate('2026-10-01', 'yearly', 1) === '2027-10-01');
+check('a month-anchored schedule clamps to the month it lands in',
+  engine.advanceRecurringDate('2026-01-31', 'monthly', 31) === '2026-02-28'
+  && engine.advanceRecurringDate('2026-02-28', 'monthly', 31) === '2026-03-31'
+  && engine.advanceRecurringDate('2028-02-29', 'yearly', 29) === '2029-02-28');
+check('the first occurrence is never in the past, for any cadence',
+  ['daily', 'weekly', 'fortnightly', 'monthly', 'yearly'].every((f) => {
+    const k = engine.computeInitialNextDate(f, 1);
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const yearOut = new Date(Date.now() + 366 * 86400000).toISOString().slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(k) && k >= yesterday && k <= yearOut;
+  }));
+
+// The editor, the device validator and the cloud validator are three places a
+// cadence has to agree with the engine above.
+check('the schedule editor offers every cadence the engine advances',
+  (() => {
+    const at = appSource.indexOf("freqSel = $('select'");
+    const block = at < 0 ? '' : appSource.slice(at, appSource.indexOf('const dayLabel', at));
+    return block.length > 0 && block.length < 2000
+      && ['daily', 'weekly', 'fortnightly', 'monthly', 'yearly'].every(f => block.includes(`{ value: '${f}'`))
+      && /const FREQUENCY_STEPS = \{ daily: 1, weekly: 7, fortnightly: 14 \}/.test(appSource);
+  })());
+check('the device and the cloud read the cadence list from seed.js, once',
+  /export const RECURRING_FREQUENCIES = \['daily', 'weekly', 'fortnightly', 'monthly', 'yearly'\]/
+    .test(readFileSync(new URL('../seed.js', import.meta.url), 'utf8'))
+  && /RECURRING_FREQUENCIES\.includes\(item\.frequency\)/
+    .test(readFileSync(new URL('../storage.js', import.meta.url), 'utf8'))
+  && /RECURRING_FREQUENCIES\.includes\(recurring\.frequency\)/
+    .test(readFileSync(new URL('../netlify/functions/sync.mjs', import.meta.url), 'utf8'))
+  && /import \{ RECURRING_FREQUENCIES \} from '\.\.\/\.\.\/seed\.js';/
+    .test(readFileSync(new URL('../netlify/functions/sync.mjs', import.meta.url), 'utf8')));
+check('a stalled schedule cannot spin the tab',
+  /advanceBudget\(rec\.frequency\)/.test(appSource)
+  && /guard\+\+ < advanceBudget/.test(appSource)
+  && /const advanceBudget = \(freq\) => \(freq === 'daily' \? 400 : 48\)/.test(appSource));
+
+// Per-account projection: the schedule carries the method it lands on, so each
+// balance row can say where the account ends up. The horizon walk must count
+// every occurrence (the upcoming strip only wants six), and an account with
+// nothing scheduled says nothing rather than €0.00.
+check('a projection counts every occurrence in the horizon, not the strip\u2019s six',
+  /function accountProjection\(methodId, horizonDays = 30\)/.test(appSource)
+  && /upcomingOccurrences\(r, horizonDays, Infinity\)/.test(appSource)
+  && /if \(!list\.length\) return null;/.test(appSource)
+  && /if \(!count\) return null;/.test(appSource));
+check('the Balances rows carry the projection and a title that explains it',
+  /secondaryFor: \(id\) => accountProjectionText\(id\)/.test(appSource)
+  && /secondaryHintFor: \(\) => 'Where this account lands in 30 days/.test(appSource)
+  && /secondaryHint: hintFor\(id\)/.test(appSource)
+  // The base is the balance AT THE HORIZON: an entry already recorded for a
+  // future day is a fact about that date, and today's balance cannot see it.
+  && /balanceAt\(methodId, offsetDateKey\(today\(\), horizonDays\)\)/.test(appSource));
+
+// ---- the lock taking itself back -------------------------------------------
+// Idle, background and the app switcher are one door with three ways to close
+// it, and all three live in app.js's text (a Node guard cannot idle for five
+// minutes), so they are pinned as source — including the two details that make
+// them true rather than decorative: the background check is made ON RETURN
+// (a hidden tab's timers are throttled, so an in-place timer is the one that
+// would not fire), and the cover is opaque (nothing may re-sample the page).
+check('the lock re-takes itself when the app is left alone',
+  /const IDLE_LOCK_MS = 5 \* 60 \* 1000;/.test(appSource)
+  && /idleTimer = setTimeout\(\(\) => \{[\s\S]{0,80}lockApp\(\);/.test(appSource)
+  && /if \(!pinUnlocked\) return;\s*\n\s*idleTimer = setTimeout/.test(appSource));
+check('the lock re-takes itself after the app leaves the screen',
+  /const HIDDEN_LOCK_MS = 30 \* 1000;/.test(appSource)
+  && /document\.addEventListener\('visibilitychange', \(\) => \{\s*\n\s*if \(document\.hidden\) \{[\s\S]{0,200}showPrivacyCover\(\);/.test(appSource)
+  // measured on the way BACK, not by a timer while hidden
+  && /const hiddenFor = Date\.now\(\) - hiddenAt;[\s\S]{0,120}hiddenFor >= HIDDEN_LOCK_MS\) lockApp\(\)/.test(appSource));
+check('the app-switcher cover paints rather than samples what is behind it',
+  /id: 'privacy-cover'/.test(appSource)
+  && /background:var\(--bg, #101210\)[^']*pointer-events:none;'/
+    .test(appSource)
+  && /\$\('span', \{ style: 'font-family:"Space Grotesk",sans-serif;font-size:20px;/.test(appSource));
+check('every unlock arms the idle clock — it cannot stay open by silence',
+  (appSource.match(/resetIdleLock\(\);/g) || []).length >= 4
+  && /function completeUnlock\(\) \{[\s\S]{0,200}resetIdleLock\(\);/.test(appSource));
+
+// ---- the device PIN throttle ----------------------------------------------
+// Sliding window, same shape as the server's; the check runs BEFORE the hash
+// (answering is what a throttle withholds) and a correct PIN ends the run.
+check('a guessing run on the device PIN runs into a sliding window',
+  /const PIN_THROTTLE_WINDOW_MS = 5 \* 60 \* 1000;/.test(appSource)
+  && /const PIN_THROTTLE_MAX = 15;/.test(appSource)
+  && /while \(pinFailures\.length && pinFailures\[0\] < cutoff\) pinFailures\.shift\(\);/.test(appSource)
+  && /return Math\.max\(1, Math\.ceil\(\(pinFailures\[0\] \+ PIN_THROTTLE_WINDOW_MS - now\) \/ 1000\)\);/.test(appSource));
+check('the PIN gate asks the window before it hashes, and counts every miss',
+  /const wait = pinThrottleRemaining\(\);[\s\S]{0,120}Too many attempts[\s\S]{0,200}if \(!\(await verifyPin\(value\)\)\) \{[\s\S]{0,40}pinFailure\(\);/.test(appSource)
+  && /pinFailures\.length = 0;\s*\/\/ a correct PIN is the end of a guessing run/.test(appSource));
+
+// ---- the undo stack --------------------------------------------------------
+// One slot used to mean the FAB only ever offered the newest action and every
+// new record overwrote the one before it. Both halves are pinned: the CAP (five
+// in memory, five in storage, same order), and the retirement rule that makes
+// popping safe — a toast's Undo can outlive the action it captured, and
+// spending the journal's front then would retire a NEWER action's record.
+const undoStorage = readFileSync(new URL('../storage.js', import.meta.url), 'utf8');
+check('the undo journal is a stack of five, newest first, in both halves',
+  /export const UNDO_STACK_MAX = 5;/.test(undoStorage)
+  && /stack\.unshift\(journal\);[\s\S]{0,120}UNDO_STACK_MAX/.test(undoStorage)
+  && /if \(_undoStack\.length > UNDO_STACK_MAX\) _undoStack\.length = UNDO_STACK_MAX;/.test(appSource)
+  && /_undoStack\.unshift\(\{ undo: undoFn, label, serialisable \}\)/.test(appSource));
+check('undoing retires one slot and only its own journal record',
+  /function undoAction\(action\)/.test(appSource)
+  && /const wasHead = _undoStack\[0\] === action;/.test(appSource)
+  && /if \(action\.fromJournal\) dropUndoJournal\(action\.journal\);/.test(appSource)
+  && /else if \(wasHead && action\.serialisable\) popUndoJournal\(\);/.test(appSource)
+  && /export function dropUndoJournal\(record\)/.test(undoStorage));
+check('a spent record is dropped rather than hiding the ones behind it',
+  /if \(!missing\.entries\.length && !missing\.checkpoints\.length\) \{ popUndoJournal\(\); continue; \}/.test(appSource)
+  && /while \(journal && \(journal\.entries\?\.length \|\| journal\.checkpoints\?\.length\)\)/.test(appSource));
+check('the journal written before the stack still reads',
+  /Array\.isArray\(parsed\) \? parsed\s*:\s*\(parsed && \(Array\.isArray\(parsed\.entries\)/.test(undoStorage));
+check('a restore empties the journal of the document it replaced',
+  /clearUndoJournal\(\);\s*\n\s*trackAction\(\(\) => \{ state = validateState\(before\)/.test(appSource));
 
 // ---------------------------------------------------------------- report
 if (failures.length) {

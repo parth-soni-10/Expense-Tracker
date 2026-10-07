@@ -55,7 +55,13 @@
  */
 import { readFileSync } from 'node:fs';
 
-const src = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+const src = readFileSync(new URL('../app.js', import.meta.url), 'utf8')
+  // The Insights screen and its chart cluster moved into their own deferred
+  // module in the boot split. Appended after app.js so the slices below (which
+  // search from the front) still lift app.js's own text, while every absence
+  // and coverage check reads BOTH files — a removed flourish or an unwired tip
+  // attribute must not become legal by changing module.
+  + '\n' + readFileSync(new URL('../insights.js', import.meta.url), 'utf8');
 const start = src.indexOf('const _figureValues = new Map();');
 const fnStart = src.indexOf('function paintFigure');
 const end = src.indexOf('\n}\n', fnStart);

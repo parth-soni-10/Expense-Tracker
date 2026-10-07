@@ -103,9 +103,11 @@
   [build.environment]
     NODE_VERSION = "22"
 
-# Scheduled function: the daily-reminder push dispatcher. Runs every 15
-# minutes in UTC; each subscription carries its own IANA zone + HH:MM, and
-# the sender fires when a record's local time falls inside the current slot
+# Scheduled function: the daily-reminder push dispatcher. Runs every MINUTE
+# in UTC (one-minute cron is supported on every Netlify plan); each
+# subscription carries its own IANA zone + HH:MM, and the sender fires when a
+# record's local time falls inside its look-back window — a reminder arrives
+# at its hour instead of up to a quarter-hour late on the next 15-minute tick
 # (see netlify/functions/reminders-send.mjs).
 #
 # SHAPE MATTERS: `[functions."<name>"]` is a TABLE. The array form
@@ -116,7 +118,7 @@
 # this exact mistake, and every other shape here that Netlify would take
 # silently.
 [functions."reminders-send"]
-  schedule = "*/15 * * * *"
+  schedule = "* * * * *"
 
 # `publish = "."` is what keeps this a zero-build site — and it also means the
 # deploy serves everything in the repo. The repository is private; the site is
@@ -181,9 +183,9 @@
   status = 404
   force = true
 
-# The local dev server script, the workbook → import CSVs converter beside it,
-# and the roster OCR harness: all three are run on a laptop and have no business
-# being downloadable.
+# The local dev server script, the Lidl receipt spike, the Tesco gift-card
+# spike, and the roster OCR harness: all four are run on a laptop and have no
+# business being downloadable.
 [[redirects]]
   from = "/serve.sh"
   to = "/404.html"
@@ -191,7 +193,7 @@
   force = true
 
 [[redirects]]
-  from = "/convert-tesco-csv.py"
+  from = "/lidl-spike.py"
   to = "/404.html"
   status = 404
   force = true
@@ -341,6 +343,13 @@
 #     tesseract.js core ships WebAssembly, and Chrome refuses to instantiate
 #     it without this. It permits WASM compilation only — still no string-eval
 #     — and every byte it loads comes from /vendor/tesseract on this origin.
+#   * Cross-Origin-Opener-Policy + Cross-Origin-Resource-Policy — this origin
+#     opens nothing and shares nothing.
+#   * Permissions-Policy — every powerful feature the app never uses is denied
+#     outright (no microphone, geolocation, payments, sensors, USB/serial/HID,
+#     screen capture, ad-tech topics/attribution). camera stays (self) because
+#     the Tesco roster reader offers a live capture path; clipboard stays at
+#     its default because the Data menu copies export links.
 [[headers]]
   for = "/*"
   [headers.values]
@@ -349,4 +358,5 @@
     X-Frame-Options = "DENY"
     Cross-Origin-Opener-Policy = "same-origin"
     Cross-Origin-Resource-Policy = "same-origin"
+    Permissions-Policy = "camera=(self), geolocation=(), microphone=(), payment=(), usb=(), serial=(), hid=(), bluetooth=(), midi=(), accelerometer=(), gyroscope=(), magnetometer=(), display-capture=(), screen-wake-lock=(), browsing-topics=(), attribution-reporting=()"
     Content-Security-Policy = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-rQpWdpfO3jew1iL5zZ98vGEJgNo+qkd+3CxRBjXKHX0=' 'sha256-D2LzLLViPue4ETfCdLrasOjw6uXTHzgIw0+qHJWBrQY=' 'sha256-dtIg9U8JSsmLRDU6OgsK4CDDi2w92H8NwG52SeuprU0=' 'sha256-ZL/v8fWbS7Fj5A65sCiiFXqwLIgSYaIPlzRmrBe3qYc=' 'sha256-Tcie8lUtWw9EUeiQ+I8ykdJCQwFFJC8hxZPGmniSwLA='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' data:; font-src 'self'; connect-src 'self' https: http://localhost:*; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"

@@ -23,6 +23,12 @@ export const METHODS = [
 
 /* The app's tabs, in canonical order. One source of truth: app.js routes the
    screen with it and storage.js validates settings.enabledTabs against it. */
+// The cadences a recurring schedule may declare. One list for the device's
+// validator (storage.js) and for the cloud's (netlify/functions/sync.mjs): a
+// schedule the app offers to create must never be one the server refuses on
+// the way back down, and a list that exists twice is a list that drifts.
+export const RECURRING_FREQUENCIES = ['daily', 'weekly', 'fortnightly', 'monthly', 'yearly'];
+
 export const TABS = ['dashboard', 'add', 'history', 'balances', 'tesco', 'insights'];
 
 // Which tabs an admin can hide from a user. The dashboard is deliberately not

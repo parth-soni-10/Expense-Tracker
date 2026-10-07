@@ -491,7 +491,30 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
 .dark-toggle .icon-sun svg { stroke: currentColor; }
 
 .nav { display: flex; align-items: center; gap: 6px; flex: 1; justify-content: center; }
-.header-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.header-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-left: auto; }
+/* The header row is the SAME box the content sits in. It used to run the full
+   viewport while `.shell` capped itself at --shell-max, so on a wide screen the
+   logo sat at x=0 and the reading column started 250px in — and the nav, which
+   centres itself in the space between the logo and the actions, landed 28px
+   left of the column it belongs to (the actions are wider than the logo).
+   Both are fixed here: the padding mirrors .shell's own math, and above 1024px
+   the nav centres on the page itself rather than on its share of the row. */
+.app-header {
+  padding-left: max(28px, calc((100% - var(--shell-max, 980px)) / 2 + 28px));
+  padding-right: max(28px, calc((100% - var(--shell-max, 980px)) / 2 + 28px));
+}
+/* .shell widens its own side padding at 760px; the header follows it so the
+   logo keeps sitting exactly where the content does at every width. */
+@media (min-width: 760px) {
+  .app-header {
+    padding-left: max(40px, calc((100% - var(--shell-max, 980px)) / 2 + 40px));
+    padding-right: max(40px, calc((100% - var(--shell-max, 980px)) / 2 + 40px));
+  }
+}
+@media (min-width: 1024px) {
+  .app-header { position: relative; }
+  .nav { position: absolute; left: 50%; transform: translateX(-50%); flex: none; }
+}
 
 .summary-row {
   display: flex; justify-content: space-between; align-items: baseline;
@@ -527,6 +550,42 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
 .page-lede { color: var(--muted); font-size: 14px; }
 .page-section > .card, .dashboard-section > .card { margin-bottom: var(--page-gap) !important; }
 .page-section > .card:last-child, .dashboard-section > .card:last-child { margin-bottom: 0 !important; }
+
+/* ============================================================
+   Dashboard — two columns once there is room for them
+   ============================================================
+   The dashboard was one 980px column of thirteen cards: measured at 3072px
+   tall on a 900px viewport, which is three and a half screens of scrolling for
+   a glance. Above 1080px it becomes two columns; the cards that ARE the top of
+   the page (the hero, the pulse, and any alert) and the ones whose contents
+   are a grid of their own span both, and the rest pair up. Reading order is
+   row-major — DOM order and the order the eye follows stay the same.
+   The column gap is the page gap, and each card keeps its own bottom margin,
+   so the vertical rhythm is identical to the single-column layout. */
+@media (min-width: 1080px) {
+  .dashboard-section {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--page-gap);
+    align-items: start;
+  }
+  .dashboard-section > .dashboard-hero,
+  .dashboard-section > .financial-pulse,
+  .dashboard-section > .card[role='alert'],
+  .dashboard-section > .dashboard-full,
+  .dashboard-section > .dashboard-grid { grid-column: 1 / -1; }
+  /* An item whose own margins are inline still has to hold a row; the rows
+     are sized by their tallest cell, and a 0-height row would collapse the
+     rhythm the single-column layout had. */
+  .dashboard-section > * { min-width: 0; }
+}
+/* The two-card row (category share + recent) keeps its own rule: its columns
+   were an inline style, which is the one thing a media query cannot override
+   — the phone rule below this would have been dead text. */
+.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; align-items: start; }
+@media (min-width: 640px) {
+  .dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 /* ── Screen swap ──
    A route change draws the next screen and stops there: no entrance animation on
@@ -803,7 +862,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
 .split-leg:hover { border-color: currentColor; color: var(--accent); }
 .split-leg:active { transform: translateY(0.5px); }
 .history-actions { display: flex; justify-content: flex-end; align-items: center; gap: 5px; min-width: 0; }
-.budget-toggle-btn { display: inline-flex; white-space: nowrap; }
 
 /* ── Desktop-wide history table ─────────────────────────────
    On the History route (>=1024px viewports) the shell, footer, and table
@@ -1312,6 +1370,62 @@ input[type='checkbox'] { accent-color: var(--accent); width: 15px; height: 15px;
   body { background: white; color: black; background-image: none; }
   body::before, body::after { display: none; }
   .card { border: 1px solid #ddd; box-shadow: none; }
+  /* The year-in-review sheet is the only thing this app prints. The class is
+     set for the duration of window.print() (and cleared on afterprint), so a
+     print from anywhere else still prints the page as it always did. */
+  body.printing-review #app,
+  body.printing-review .toast-host,
+  body.printing-review .skip-link,
+  body.printing-review #splash { display: none !important; }
+  body.printing-review .modal-bg {
+    position: static; inset: auto; display: block;
+    background: none !important; padding: 0;
+  }
+  body.printing-review .modal {
+    max-width: none; padding: 0; border: 0; box-shadow: none;
+    background: none; max-height: none; overflow: visible;
+  }
+  /* Every control on the sheet is a control the reader has already used. */
+  body.printing-review .modal button { display: none !important; }
+
+  /* The History screen prints too, keyed on its own class for the same reason
+     and with the same contract (set around window.print(), cleared on
+     afterprint). Two things it needs that the review sheet does not:
+       * paper is ~816px and the desktop table's min-width is 1258px, so rows
+         go block — date, description, amount, balance, method read as one
+         wrapped line instead of being clipped mid-column;
+       * rows carry content-visibility: auto, and a below-the-fold row that
+         was never laid out prints BLANK — the whole point of the sheet — so
+         visibility is lifted for the print. */
+  body.printing-history .app-header,
+  body.printing-history .bottom-tab-bar,
+  body.printing-history .skip-link,
+  body.printing-history .toast-host,
+  body.printing-history #splash,
+  body.printing-history .menu-backdrop,
+  body.printing-history .no-print { display: none !important; }
+  body.printing-history button,
+  body.printing-history input { display: none !important; }
+  body.printing-history .history-head-row,
+  body.printing-history .history-cell-check { display: none !important; }
+  body.printing-history .history-row {
+    display: block;
+    min-width: 0;
+    padding: 8px 2px;
+    border-bottom: 1px solid #ddd;
+    content-visibility: visible;
+    contain-intrinsic-size: auto;
+  }
+  body.printing-history .history-row > * {
+    display: inline-block;
+    vertical-align: top;
+    margin-right: 10px;
+  }
+  body.printing-history .history-amount,
+  body.printing-history .history-balance,
+  body.printing-history .display-num { font-size: 13px !important; }
+  body.printing-history .history-balance { color: #333 !important; }
+  body.printing-history .card { overflow: visible !important; }
 }
 
 /* ============================================================
@@ -1822,6 +1936,23 @@ p, li, .muted { text-wrap: pretty; }
   display: flex; align-items: center; gap: 8px;
   font-size: 13px; font-weight: 600; margin-bottom: 12px;
 }
+/* The title IS the control for a folded card: the whole heading is one button,
+   so the accessible name comes from the visible text and there is no second
+   hit target to aim at. The chevron sits at the far end of the row and is the
+   only thing that moves — 0.16s, the same budget the menu's close uses. */
+.tesco-fold-btn {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; margin: 0; padding: 0; border: 0;
+  background: none; color: inherit; font: inherit; letter-spacing: inherit;
+  text-align: left; cursor: pointer;
+}
+.tesco-fold-btn::after {
+  content: '▾'; margin-left: auto;
+  font-size: 11px; line-height: 1; color: var(--muted);
+  transition: transform .16s ease;
+}
+.tesco-fold-btn[aria-expanded='false']::after { transform: rotate(-90deg); }
+.tesco-fold-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .tesco-stats-grid {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;
 }

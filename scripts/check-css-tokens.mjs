@@ -45,7 +45,7 @@ const fails = [];
 
 /** Every module that can carry an inline style or a class-list lookup. */
 const SOURCES = [
-  'styles.css', 'index.html', 'app.js', 'tesco.js', 'tesco-pay.js', 'ocr-pixels.js',
+  'styles.css', 'index.html', 'app.js', 'insights.js', 'tesco.js', 'tesco-pay.js', 'ocr-pixels.js',
   'storage.js', 'settings.js', 'profiles.js', 'reminders.js', 'sync.js', 'sync-merge.js',
 ].filter(existsSync);
 

@@ -326,12 +326,23 @@ export async function pushSend(subscription, payloadObject, vapid) {
     return { ok: false, gone: true }; // malformed keys — prune
   }
   const headers = {
-    // TTL 4 hours: if the device is unreachable that long, the message
-    // expires instead of surprising the user much later.
-    TTL: '14400',
+    // A reminder is only useful NEAR its hour, and these two headers are what
+    // decide when a phone that was idle at that hour finally shows it:
+    //   * Urgency 'high' — with the old 'normal', Android's doze/battery
+    //     saver deferred the message to the next maintenance window: measured
+    //     as a daily reminder arriving HOURS after the time it was set to,
+    //     at whatever moment the phone next woke. High urgency is delivered
+    //     promptly through doze; one notification a day is exactly what high
+    //     priority is not an abuse of.
+    //   * TTL 1 hour (was 4) — the bound on lateness for a device that is
+    //     genuinely unreachable. A "time to upload your transactions" four
+    //     hours late is a surprise, not a reminder; past an hour the day's
+    //     nudge has nothing left to say. The wake path still covers a day
+    //     whose push expired.
+    TTL: '3600',
     'Content-Encoding': 'aes128gcm',
     'Content-Type': 'application/octet-stream',
-    Urgency: 'normal',
+    Urgency: 'high',
     Authorization: vapidAuthorization({ audience, ...vapid }),
   };
   try {

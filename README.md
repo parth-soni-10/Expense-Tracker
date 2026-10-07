@@ -105,13 +105,7 @@ or any simple static server, e.g. `python -m http.server 8080` — then open the
 
 ### Getting your Tesco Pay data in
 
-If you keep your shifts and payslips in the workbook, `convert-tesco-csv.py` turns it (or a CSV of it) into a file **Tesco Pay → Import CSV** reads directly. It needs nothing installed — Python's standard library is enough — and it reads the **Data** sheet and the **Summary** sheet together, which a single-sheet "Save as CSV" cannot:
-
-```
-python convert-tesco-csv.py "Tesco Pay.xlsx"
-```
-
-Run it with no arguments and it looks for `Tesco Pay*` beside the app or on the Desktop. Dates come across as ISO whatever the file held (Excel serials, `13/09/2026`, `09/13/2026`, `13 Sep 2026`); add `--month-first` if an ambiguous date was read the wrong way round. `--self-test` checks the script itself, and it refuses to overwrite an existing file unless you pass `--force`.
+**Tesco Pay → Import** reads the workbook itself: drop `Tesco Pay.xlsx` (or `.xlsm`) straight in and the app reads the **Data** and **Summary** sheets together — no export step, no converter, nothing installed. A CSV of the workbook works too. Dates are normalised whatever the file held (Excel serials, `13/09/2026`, `09/13/2026`, `13 Sep 2026`); an ambiguous one can be fixed on the mapping screen before anything is written.
 
 ## Look and feel
 

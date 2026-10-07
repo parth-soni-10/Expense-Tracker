@@ -4,20 +4,21 @@
    "upload your transactions" Web Push to every subscribed device
    at its profile's chosen local time.
 
-   Runs every 15 minutes. For each stored push subscription:
+   Runs every minute. For each stored push subscription:
      - compute the subscription's current local HH:MM from the
        stored IANA zone (fallback: UTC),
-     - if that matches the record's time (within this run's slot)
-       and it has not fired today already, push the reminder,
+     - if that falls inside the look-back window below and it
+       has not fired today already, push the reminder,
      - prune dead subscriptions (push service 404/410) — but only
        once the record is past pushSendWarming's warm-up, because a
        registration seconds old is not registered YET, not dead.
 
    "Not fired today" is tracked per subscription with the last
    fired LOCAL date; the scheduled run straddling midnight of the
-   record's own zone cannot double-send. A missed slot (no run
-   within the scheduled minute, e.g. platform hiccup) is simply
-   skipped — the reminder never fires hours late.
+   record's own zone cannot double-send. A run later than
+   WINDOW_MINUTES past the target (a platform outage across every
+   minute of that window) skips the day — the reminder never
+   fires hours late.
 
    Env: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT (optional).
    The pair comes from vapidConfig() in lib/webpush.mjs — the same
@@ -36,9 +37,17 @@ import { pushSendWarming, vapidConfig } from './lib/webpush.mjs';
 import { CLOUD_STORE, keyFor } from './lib/cloud.mjs';
 
 const PUSH_PREFIX = 'push:';
-// The cron fires every 15 minutes; a record matches when its HH:MM falls
-// within the current slot (e.g. 20:07 fires on the 20:00 run).
-const SLOT_MINUTES = 15;
+// The cron fires every MINUTE (one-minute cron is supported on every Netlify
+// plan), but the window a run looks back over is deliberately WIDER than the
+// schedule: a target fires on the first run at or after its HH:MM — so a
+// reminder lands at its hour, not up to a quarter-hour late on the next
+// 15-minute tick — while a run the platform delivers late (or skips) still
+// catches a target up to WINDOW_MINUTES old instead of losing the whole day.
+// With the old window equal to the old 15-minute schedule, a single run 16
+// minutes late fell outside every window and the day's reminder was never
+// sent. Overlap between consecutive windows is absorbed by lastFiredDate,
+// and nothing here can ever fire more than WINDOW_MINUTES after its hour.
+const WINDOW_MINUTES = 10;
 
 /**
  * "2 bills due" — appended to the reminder for a profile whose synced
@@ -90,12 +99,13 @@ function localDateInZone(date, zone) {
   }
 }
 
-// True when the record's local HH:MM arrived since the previous run, i.e.
-// it falls in the local-time window [prev run, now]. Comparing local wall
+// True when the record's local HH:MM arrived within the look-back window,
+// i.e. it falls in the local-time window [now - WINDOW_MINUTES, now].
+// Comparing local wall
 // times to local wall times avoids the UTC-slot mismatch for zones whose
 // offset is not a whole number of hours. The midnight case (prev 23:50,
 // now 00:05) is a wrap: due when target >= prev OR target <= now. The
-// inclusive upper bound makes consecutive runs overlap by one minute;
+// inclusive upper bound makes consecutive windows overlap by one minute;
 // the per-record lastFiredDate marker absorbs that overlap.
 function isDue(recordTime, now, zone) {
   const t = String(recordTime || '').split(':');
@@ -103,7 +113,7 @@ function isDue(recordTime, now, zone) {
   const target = Number(t[0]) * 60 + Number(t[1]);
   if (!Number.isInteger(target) || target < 0 || target > 24 * 60 - 1) return false;
   const nowLocal = localTimeInZone(now, zone);
-  const prevLocal = localTimeInZone(new Date(now.getTime() - SLOT_MINUTES * 60 * 1000), zone);
+  const prevLocal = localTimeInZone(new Date(now.getTime() - WINDOW_MINUTES * 60 * 1000), zone);
   if (!nowLocal || !prevLocal) return false;
   const nowM = nowLocal.h * 60 + nowLocal.m;
   const prevM = prevLocal.h * 60 + prevLocal.m;
@@ -193,7 +203,7 @@ export default async (_request, _context) => {
   // One-line run summary in Netlify's function logs (useful when debugging
   // "why didn't my phone get the reminder"). `rejected` is counted separately
   // because a push service refusing every message — a VAPID key that no longer
-  // matches the subscription, most often — is not something the next 15-minute
+  // matches the subscription, most often — is not something any later run fixes
   // run fixes, and it used to be invisible here: the summary said sent=0 and
   // nothing else. `warming` is the transient version of the same question — a
   // device whose registration the push service did not know yet, which the

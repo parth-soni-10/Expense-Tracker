@@ -120,11 +120,18 @@ let refuseWith = null;
 // was handed and the key the dispatcher signs with must be the same one, or
 // every push is accepted by the service and dropped by the browser in silence.
 let lastAuth = null;
+// Every header of the most recent push request. The delivery-timing contract
+// rides here: a real push service acts on Urgency (Android defers a
+// normal-urgency message in doze until the phone next wakes — how a 20:00
+// reminder arrived hours late) and on TTL (the bound on lateness for a device
+// that is unreachable), so neither can drift without a test saying so.
+let lastHeaders = null;
 const fakePushServer = http.createServer((req, res) => {
   const chunks = [];
   req.on('data', c => chunks.push(c));
   req.on('end', () => {
     lastAuth = req.headers.authorization || null;
+    lastHeaders = req.headers;
     // Authentication comes first, as it does on a real service: a request whose
     // VAPID JWT does not hold up never reaches the endpoint's own state, so a
     // broken signature shows up as a 401 and a delivery the suite does not see.
@@ -481,6 +488,10 @@ received.length = 0;
 await sendHandler(null, {});
 check('scheduled-delivery', received.length === 1 && received[0].title === 'cents. — time to upload your transactions');
 check('payload-has-generic-body', received.length === 1 && received[0].body === "Log today's spending while it's fresh.");
+check('push-is-high-urgency', !!lastHeaders && lastHeaders.urgency === 'high',
+  `urgency=${lastHeaders && lastHeaders.urgency}`);
+check('push-ttl-bounds-lateness-at-an-hour', !!lastHeaders && Number(lastHeaders.ttl) <= 3600,
+  `ttl=${lastHeaders && lastHeaders.ttl}`);
 
 // ---------- 6. no double-send within the same day ----------
 received.length = 0;
@@ -502,7 +513,7 @@ check('dead-subscription-pruned', !pruneKeys.includes('push:prune-test') && send
 // Two ways a delivery ends that are NOT "the subscription is dead": the service
 // answered and refused (a status — a subscription bound to a key the sender no
 // longer signs with, most often, which no later run will heal) and the service
-// could not be reached (no status — transient, and the next slot may deliver it).
+// could not be reached (no status — transient, and the next run may deliver it).
 // The app has to say which, because a phone that shows nothing is the symptom of
 // both: the test push names the status, and the scheduled run's one-line summary
 // counts what was refused — `sent=0` on its own was the same line for a push
@@ -528,8 +539,7 @@ const refusedRun = await captureRun();
 check('the scheduled run counts a service that refused',
   /sent=0\b/.test(refusedRun) && /rejected=1\b/.test(refusedRun), refusedRun);
 // An endpoint with nothing behind it is the other state — the connection is
-// refused, so there is no status and nothing to count as refused; the record
-// stays due precisely so the next slot can try again. A port that was just
+// refused, so there is no status and nothing to count as refused; the record  // stays due precisely so the next run can try again. A port that was just
 // closed is the honest way to reproduce that (destroying the socket on the
 // server side is not: the client's fetch then waits for a response that never
 // comes rather than failing).
@@ -738,7 +748,7 @@ check('and it is not silently served by the default password',
 
 // ---------- 12. the dispatcher reads the record's own clock ----------
 // A record carries an IANA zone + HH:MM and is due when THAT zone's local time
-// falls inside the 15-minute slot. A zone far ahead of UTC is what tells the two
+// falls inside the sender's look-back window. A zone far ahead of UTC is what tells the two
 // apart: a dispatcher comparing UTC wall time fires at the wrong moment, and —
 // because "today" in that zone is already tomorrow — a once-a-day marker kept in
 // UTC would let it fire again around that zone's midnight.

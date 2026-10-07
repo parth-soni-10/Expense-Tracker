@@ -2,13 +2,18 @@
    Expense Tracker - editorial-minimal SPA
    Hash routing: #dashboard (default) | #add | #history | #balances | #insights
    ============================================================ */
-import { loadState, saveState, resetToBlank, exportJSON, exportEntriesCsv, validateState, uid, updateAllowedCategories, updateAllowedMethods, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, takeStorageNotice, loadStateFor, patchProfileSettings, parseBackup, parseEntriesCsv, CSV_REFUSAL, foreignWriteNeeded, readStateText, unreadableBackup, MAX_BACKUP_BYTES, downloadText } from './storage.js';
+import { loadState, saveState, resetToBlank, exportJSON, exportEntriesCsv, validateState, uid, updateAllowedCategories, updateAllowedMethods, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, popUndoJournal, dropUndoJournal, UNDO_STACK_MAX, takeStorageNotice, loadStateFor, patchProfileSettings, parseBackup, parseEntriesCsv, CSV_REFUSAL, foreignWriteNeeded, readStateText, unreadableBackup, MAX_BACKUP_BYTES, downloadText } from './storage.js';
+// csv.js's own rules for the one file the Insights screen writes itself:
+// csvDocument (the row joiner storage uses for the ledger export) and the BOM
+// that puts a euro sign right in Excel on Windows. csv.js is already in the
+// boot closure — storage.js imports it — so this costs no payload.
+import { csvDocument, CSV_BOM } from './csv.js';
 import { CATEGORIES, METHODS, TABS, HIDEABLE_TABS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfile, setActiveProfileId, getActiveProfileId, hasSessionChoice, nsKey, profileEnvName, isAdminProfile, setProfileIcon } from './profiles.js';
-import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, periodicReminderStatus, syncPeriodicReminder } from './reminders.js';
+import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, setDueBillsProvider, periodicReminderStatus, syncPeriodicReminder } from './reminders.js';
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
@@ -491,17 +496,42 @@ function closePinOverlay() {
 // sync boot and the persisted-undo offer both wait until the lock is open.
 function completeUnlock() {
   pinUnlocked = true;
+  pinFailures.length = 0;   // a correct PIN is the end of a guessing run
   closePinOverlay();
   render();
   startInitSync();
   offerPersistedUndo();
   flushNotices();
+  resetIdleLock();
   if (pendingSetupLinkToast) {
     toast(pendingSetupLinkToast);
     pendingSetupLinkToast = null;
   }
   if (pendingSetupLink) queueMicrotask(confirmPendingSetupLink);
 }
+
+// ---------- device PIN throttle ----------
+// The lock is casual-access protection — the default PIN ships in the source —
+// but "casual" is not "none": an unlocked phone handed to someone else is a
+// guessing machine without this. Same shape as the server's failureThrottle
+// (netlify/functions/lib/auth.mjs): a SLIDING window of failures, after which
+// the door stops answering until the oldest one ages out. In-memory on
+// purpose — a counter in localStorage is a counter the guesser can delete, and
+// a reload is the obvious workaround either way.
+const PIN_THROTTLE_WINDOW_MS = 5 * 60 * 1000;
+const PIN_THROTTLE_MAX = 15;
+const pinFailures = [];   // timestamps, oldest first
+
+/** Seconds until the door answers again, 0 while it still does. The window
+ *  slides: the lock lifts when the OLDEST failure in it ages out. */
+function pinThrottleRemaining(now = Date.now()) {
+  const cutoff = now - PIN_THROTTLE_WINDOW_MS;
+  while (pinFailures.length && pinFailures[0] < cutoff) pinFailures.shift();
+  if (pinFailures.length < PIN_THROTTLE_MAX) return 0;
+  return Math.max(1, Math.ceil((pinFailures[0] + PIN_THROTTLE_WINDOW_MS - now) / 1000));
+}
+
+function pinFailure() { pinFailures.push(Date.now()); }
 
 function showPinLock() {
   if (pinUnlocked || pinOverlay) return;
@@ -512,6 +542,14 @@ function showPinLock() {
   // PIN-only, biometrics stay mobile.
   const input = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'PIN', 'aria-label': 'PIN', style: 'width:100%;text-align:center;letter-spacing:.35em;font-size:24px;' });
   const message = $('p', { class: 'muted', style: 'font-size:13px;text-align:center;min-height:20px;margin:12px 0;' }, 'Enter your PIN.');
+  // The default PIN is a device-wide secret nobody is told: setup offers
+  // "Keep the default PIN" without ever printing it, and the only page that
+  // named it was Privacy settings — which needs the PIN to reach. So while the
+  // stored credential IS the default, the lock screen says what it is.
+  const defaultPinHint = getPinCredential().isDefault
+    ? $('p', { class: 'muted', style: 'font-size:12px;text-align:center;margin:0 0 4px;line-height:1.5;' },
+        `Still the default PIN: ${DEFAULT_PIN_PLAIN}. Set your own in \u2630 \u2192 Privacy lock.`)
+    : null;
   // Verify a candidate PIN against the stored credential. Returns true on match.
   const verifyPin = async (value) => {
     const saved = getPinCredential();
@@ -546,7 +584,23 @@ function showPinLock() {
   const submit = async () => {
     const value = String(input.value || '').trim();
     if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { message.textContent = 'Use 4-20 letters or numbers.'; input.focus(); return; }
+    // Checked BEFORE hashing: while the door is shut, answering is the point.
+    // PBKDF2 already costs ~a third of a second an attempt, which is a throttle
+    // of its own — this one is what stays after a reload, and what says why.
+    const wait = pinThrottleRemaining();
+    if (wait > 0) {
+      message.textContent = `Too many attempts. Try again in ${Math.floor(wait / 60)}:${String(wait % 60).padStart(2, '0')}.`;
+      input.value = '';
+      return;
+    }
     if (!(await verifyPin(value))) {
+      pinFailure();
+      const left = pinThrottleRemaining();
+      if (left > 0) {
+        message.textContent = `Too many attempts. Try again in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}.`;
+        input.value = '';
+        return;
+      }
       message.textContent = globalThis.crypto?.subtle
         ? 'That PIN is not correct.'
         : 'PIN verification needs a secure (HTTPS) connection on this device.';
@@ -605,6 +659,7 @@ function showPinLock() {
       $('p', { class: 'eyebrow', style: 'margin:0;' }, 'Privacy lock'),
       $('p', { class: 'serif', style: 'font-size:18px;margin:20px 0 4px;' }, 'Welcome back.'),
       message,
+      defaultPinHint,
       bioArea,
       pinArea,
     ),
@@ -685,6 +740,7 @@ function needsOnboarding() {
 function showOnboarding() {
   if (pinUnlocked || pinOverlay) return;
   pinUnlocked = true; // the dashboard renders behind the overlay; no lock screen on first boot
+  resetIdleLock();
 
   // No inline outline:none — the stylesheet's :focus-visible ring is the focus
   // indicator, and an inline reset would outrank it (it is still the border
@@ -730,7 +786,11 @@ function showOnboarding() {
     pinOverlay = null;
     render();
     startInitSync();
-    toast('cents. is ready. Add an expense any time.');
+    // Skipped the PIN step? The toast is the moment the overlay is gone and a
+    // message can actually be seen, so this is where the default is stated.
+    toast(hasCustomPin()
+      ? 'cents. is ready. Add an expense any time.'
+      : `cents. is ready. Your PIN is ${DEFAULT_PIN_PLAIN} \u2014 change it in \u2630 \u2192 Privacy lock.`);
     flushNotices();
     if (pendingSetupLinkToast) { toast(pendingSetupLinkToast); pendingSetupLinkToast = null; }
     if (pendingSetupLink) queueMicrotask(confirmPendingSetupLink);
@@ -744,7 +804,10 @@ function showOnboarding() {
       const confirm = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'Repeat PIN', 'aria-label': 'Repeat PIN', style: inputStyle, onFocus: focusRing });
       bodyEl.replaceChildren(field('New PIN', pin), field('Repeat PIN', confirm));
       primaryEl.textContent = 'Continue';
-      skipEl.textContent = 'Keep the default PIN';
+      // The button names the PIN it keeps. Before this, the one place the
+      // default was written down was Privacy settings — behind the lock it
+      // guards — so a user who skipped this step had no way to learn it.
+      skipEl.textContent = `Keep the default PIN (${DEFAULT_PIN_PLAIN})`;
       primaryEl.onclick = async () => {
         const value = pin.value.trim();
         if (!value) { subEl.textContent = 'Choose a PIN, or tap "Keep the default PIN".'; pin.focus(); return; }
@@ -815,6 +878,75 @@ function lockApp() {
   render();
   showPinLock();
 }
+
+// ---------- re-locking: idle, background, and the app switcher ----------
+// The lock is the whole of this app's access control — localStorage has no
+// session and no server to challenge a request — so "unlocked" has to be a
+// state the app can take back by itself: a phone set down mid-screen, a tab
+// switched away from, an app-switcher swipe. Three rules, in one place because
+// they share one door:
+//
+//  1. Untouched for IDLE_LOCK_MS → locked again.
+//  2. The moment the document hides, an opaque cover goes over it. The
+//     app-switcher snapshot is taken WHILE hidden, so a cover that waited for
+//     the return would be one screenshot too late; it also cannot be a blur
+//     (nothing here may re-sample the page behind it, see styles.css), so it
+//     paints the app's own surface instead.
+//  3. Hidden for HIDDEN_LOCK_MS → locked on the way back. Measured on RETURN
+//     rather than by a timer while hidden: a background tab's timers are
+//     throttled to a minute or worse, so an in-place timer is exactly the one
+//     that would not fire.
+const IDLE_LOCK_MS = 5 * 60 * 1000;
+const HIDDEN_LOCK_MS = 30 * 1000;
+let idleTimer = null;
+let hiddenAt = 0;
+
+/** Restart the idle clock. Called on every interaction while unlocked; a call
+ *  while locked arms nothing, so the lock screen cannot keep itself awake. */
+function resetIdleLock() {
+  if (idleTimer !== null) clearTimeout(idleTimer);
+  idleTimer = null;
+  if (!pinUnlocked) return;
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (pinUnlocked) lockApp();
+  }, IDLE_LOCK_MS);
+}
+
+let privacyCover = null;
+function showPrivacyCover() {
+  if (privacyCover) return;
+  // Fixed and above everything, opaque, and inert to input: a click that lands
+  // the instant the app returns must reach the app rather than the cover.
+  privacyCover = $('div', {
+    id: 'privacy-cover',
+    'aria-hidden': 'true',
+    style: 'position:fixed;inset:0;z-index:100000;background:var(--bg, #101210);display:flex;align-items:center;justify-content:center;pointer-events:none;',
+  }, $('span', { style: 'font-family:"Space Grotesk",sans-serif;font-size:20px;letter-spacing:-0.02em;color:var(--muted, #8C928A);' }, 'cents.'));
+  document.body.appendChild(privacyCover);
+}
+function hidePrivacyCover() {
+  if (!privacyCover) return;
+  privacyCover.remove();
+  privacyCover = null;
+}
+
+// Interaction only restarts a clock — never unlocks, never touches state.
+for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel']) {
+  document.addEventListener(ev, resetIdleLock, { passive: true });
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    hiddenAt = Date.now();
+    if (pinUnlocked) showPrivacyCover();
+    return;
+  }
+  const hiddenFor = Date.now() - hiddenAt;
+  hidePrivacyCover();
+  if (pinUnlocked && hiddenAt && hiddenFor >= HIDDEN_LOCK_MS) lockApp();
+  else resetIdleLock();
+});
 
 // ================= Profiles (Netflix-style) =================
 // Profiles are device-local spaces with separate entries, balances, PINs and
@@ -1113,12 +1245,11 @@ function loadProfileIntoApp() {
   updateAllowedMethods(everyMethod().map(m => m.id));
   clearBalanceCaches();
   pinUnlocked = false;
-  // In-memory state that belongs to the profile we are leaving. `_lastAction`
-  // is the important one: it holds a live undo closure over the previous
-  // profile's entries, and lastUndoDescriptor() prefers it over the journal —
-  // so leaving it set would offer to undo one person's entry inside another's
-  // document.
-  _lastAction = null;
+  // In-memory state that belongs to the profile we are leaving. `_undoStack`
+  // is the important one: it holds live closures over the previous profile's
+  // entries, and lastUndoDescriptor() prefers it over the journal — so leaving
+  // it set would offer to undo one person's entry inside another's document.
+  _undoStack = [];
   lastRenderedRoute = null;
   rejectedRevision = null;
   syncRevision = 0;
@@ -1740,7 +1871,7 @@ function openPinSettings() {
       // Remove any legacy in-state fallback once the device-only credential is
       // definitely stored, so exports/sync cannot retain stale PIN material.
       if (state.settings?.pinHash) delete state.settings.pinHash;
-      persist(); pinUnlocked = true; close(); toast(custom ? 'PIN changed.' : 'Personal PIN set - the default no longer unlocks this device.'); render();
+      persist(); pinUnlocked = true; resetIdleLock(); close(); toast(custom ? 'PIN changed.' : 'Personal PIN set - the default no longer unlocks this device.'); render();
     } catch (err) {
       status.textContent = 'PIN security is unavailable in this browser.';
     }
@@ -1759,6 +1890,7 @@ function openPinSettings() {
         if (state.settings?.pinHash) delete state.settings.pinHash;
         persist();
         pinUnlocked = true;
+        resetIdleLock();
         close();
         toast('Reset to the default PIN (100901).');
         render();
@@ -1958,8 +2090,19 @@ async function applyRestore(backupState, source) {
     return;
   }
   state = merged;
+  // The merge keeps this device's cash settings whenever its own timestamp is
+  // newer than the file's, which is the ordinary case for a restore — and that
+  // is exactly how a restored ledger ends up with entries on Cash and a €0.00
+  // balance. Re-anchor from the file before anything is written.
+  adoptBackupCash(backupState);
   persist();
   render();
+  // Every journal record describes the document this restore has just replaced:
+  // left in place, undoing one later would re-add entries from the OLD ledger
+  // over the restored one. The restore's own undo is session-scoped (a
+  // whole-document snapshot, deliberately not serialisable), so the reload-safe
+  // stack is emptied rather than added to.
+  clearUndoJournal();
   trackAction(() => { state = validateState(before); persist(); render(); }, 'restore from backup');
   const parts = [];
   if (added > 0) parts.push(`${added} ${added === 1 ? 'entry' : 'entries'}`);
@@ -3194,7 +3337,7 @@ function reconcileAll() {
   render();
 }
 
-function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', editable = false, canLoad = false, indent = false, startInLoad = false } = {}) {
+function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secondary = '', secondaryHint = '', editable = false, canLoad = false, indent = false, startInLoad = false } = {}) {
   const row = $('div', { class: 'balance-editor-row', style: `display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 14px;${indent ? `padding-left:${isNarrow() ? '26px' : '32px'};` : ''}border-bottom:1px solid var(--line);font-size:13px;` });
   let editing = false;
   let editMode = 'reconcile'; // 'reconcile' | 'load'
@@ -3370,7 +3513,7 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
       $('div', { style: 'display:flex;align-items:center;gap:10px;min-width:0;flex:1;' },
         $('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${balance >= 0 ? 'var(--positive)' : 'var(--negative)'};flex-shrink:0;` }),
         $('span', { style: 'font-weight:500;white-space:nowrap;' }, label),
-        secondary ? $('span', { class: 'muted balance-row-meta' }, secondary) : null,
+        secondary ? $('span', { class: 'muted balance-row-meta', title: secondaryHint || null }, secondary) : null,
         summary ? $('span', { class: 'muted balance-row-meta' }, `reconciled ${friendlyDate(summary.point.date)}`) : null,
       ),
       $('div', { class: 'balance-editor-controls', style: 'display:flex;align-items:center;gap:8px;flex-shrink:0;min-width:0;' },
@@ -3411,12 +3554,16 @@ function renderBalanceEditorRow(methodId, { label = methodShort(methodId), secon
 
 /** Ordered account rows for the balance UIs: standalone accounts first, then
  *  each group as a total header plus its indented sub-account rows. */
-function renderAccountBalanceRows({ editable = false, secondaryFor = () => '' } = {}) {
+function renderAccountBalanceRows({ editable = false, secondaryFor = () => '', secondaryHintFor = null } = {}) {
   const rows = [];
   const groupedIds = new Set(ACCOUNT_GROUPS.flatMap(group => group.members));
+  // The hint has to explain whatever the meta line SAYS: the dashboard uses it
+  // for reconciliation status, Balances for the forward projection, and a title
+  // that describes the other one is worse than no title at all.
+  const hintFor = (id) => (secondaryHintFor ? secondaryHintFor(id) : accountStatus(id).hint);
   for (const id of ACCOUNT_METHOD_IDS) {
     if (groupedIds.has(id)) continue;
-    rows.push(renderBalanceEditorRow(id, { label: methodShort(id), secondary: secondaryFor(id), editable, canLoad: true }));
+    rows.push(renderBalanceEditorRow(id, { label: methodShort(id), secondary: secondaryFor(id), secondaryHint: hintFor(id), editable, canLoad: true }));
   }
   for (const group of ACCOUNT_GROUPS) {
     const total = group.members.reduce((sum, id) => sum + balanceAt(id), 0);
@@ -3430,7 +3577,7 @@ function renderAccountBalanceRows({ editable = false, secondaryFor = () => '' } 
       ),
     ));
     for (const id of group.members) {
-      rows.push(renderBalanceEditorRow(id, { label: methodShort(id), secondary: secondaryFor(id), editable, canLoad: true, indent: true }));
+      rows.push(renderBalanceEditorRow(id, { label: methodShort(id), secondary: secondaryFor(id), secondaryHint: hintFor(id), editable, canLoad: true, indent: true }));
     }
   }
   return rows;
@@ -3929,6 +4076,58 @@ function cashAutoFollow(appliedDelta = 0) {
   state.settings.coinsManual = false;
 }
 
+/** Cash as an ARBITRARY settings object + entry list reports it — the same two
+ *  rules cashBalance() applies to the live document, read off a document that
+ *  is not the live one (a backup being restored). Pure: no state, no writes. */
+function cashFigureOf(settings, entries) {
+  const s = settings && typeof settings === 'object' ? settings : {};
+  const coins = computeCashTotal({ ...COINS_DEFAULT, ...(s.coins || {}) });
+  if (s.coinsManual !== false) return Math.round(coins * 100) / 100;
+  const base = Number.isFinite(+s.cashBase) ? Number(s.cashBase) : coins;
+  let delta = 0;
+  for (const e of Array.isArray(entries) ? entries : []) delta += cashDeltaOf(e);
+  return Math.round((base + delta) * 100) / 100;
+}
+
+/**
+ * Give a freshly merged document its cash figure back.
+ *
+ * mergeSettings picks scalars by timestamp, so restoring an older export used
+ * to adopt its ENTRIES while keeping THIS device's untouched coin counter —
+ * and the Cash line then read €0.00 underneath a ledger full of cash spending.
+ * Cash follows the file when the file is the side that actually has a number,
+ * shifted by whatever cash entries this device holds that the file does not.
+ * With no figure anywhere, the ledger itself is the anchor: switch to
+ * auto-follow over the merged cash deltas rather than showing an empty counter
+ * above a full history.
+ *
+ * Returns true when it wrote, so a caller (or a test) can see the effect.
+ */
+function adoptBackupCash(backup) {
+  if (cashBalance() !== 0) return false;          // this device already has a figure
+  const bSet = backup && typeof backup === 'object' ? backup.settings : null;
+  const bEntries = backup && Array.isArray(backup.entries) ? backup.entries : [];
+  const fileCash = cashFigureOf(bSet, bEntries);
+  const fileDelta = bEntries.reduce((sum, e) => sum + cashDeltaOf(e), 0);
+  const hasFileFigure = !!bSet && (fileCash !== 0 || bSet.coinsManual === false || Object.keys(bSet.coins || {}).length > 0);
+  if (hasFileFigure) {
+    const target = Math.round((fileCash + (sumCashDeltas() - fileDelta)) * 100) / 100;
+    if (bSet.coinsManual === false) {
+      state.settings.cashBase = Math.round((target - sumCashDeltas()) * 100) / 100;
+      state.settings.coinsManual = false;
+    } else {
+      state.settings.coinsManual = true;
+      state.settings.coins = coinsForAmount(target);
+    }
+    return true;
+  }
+  if (state.entries.some(e => e.method === 'Cash')) {
+    cashAutoFollow(sumCashDeltas());
+    return true;
+  }
+  return false;
+}
+
 // ---------- Tesco paper vouchers ----------
 // The euro amount of Tesco paper vouchers on hand. Deliberately kept out of
 // every balance — it is a reminder of value held as paper, not money.
@@ -3945,11 +4144,23 @@ function utcDateKey(year, monthIndex, day) {
 function daysInMonthParts(year, monthIndex) {
   return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
 }
+/** Days a day-anchored cadence steps. Anything not in here is month-anchored
+ *  (monthly/yearly) and lands on a day of a month instead. */
+const FREQUENCY_STEPS = { daily: 1, weekly: 7, fortnightly: 14 };
+
 function advanceRecurringDate(current, freq, dayOfMonth) {
   const [year, month, day] = current.split('-').map(Number);
-  if (freq === 'weekly') {
-    const d = new Date(Date.UTC(year, month - 1, day + 7));
+  const step = FREQUENCY_STEPS[freq];
+  if (step) {
+    const d = new Date(Date.UTC(year, month - 1, day + step));
     return utcDateKey(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  }
+  if (freq === 'yearly') {
+    // The same date a year on, clamped to the month it lands in: a 29 February
+    // schedule has to reach 28 February rather than skip a year.
+    const targetYear = year + 1;
+    const monthIndex = month - 1;
+    return utcDateKey(targetYear, monthIndex, Math.min(Number(dayOfMonth) || day, daysInMonthParts(targetYear, monthIndex)));
   }
   if (freq === 'monthly') {
     // `month` from the ISO split is 1-based (8 = August). Advance by one
@@ -3965,24 +4176,168 @@ function advanceRecurringDate(current, freq, dayOfMonth) {
   return current;
 }
 
+/** Human form of a schedule: the day-anchored cadences are just the cadence,
+ *  the month-anchored ones carry the day they land on ("Monthly · 1st"). */
+function frequencyLabel(freq, dayOfMonth) {
+  if (freq === 'monthly' || freq === 'yearly') {
+    const day = Number(dayOfMonth) || 1;
+    return `${freq === 'monthly' ? 'Monthly' : 'Yearly'} · ${day}${ordinal(day)}`;
+  }
+  return { daily: 'Daily', weekly: 'Weekly', fortnightly: 'Fortnightly' }[freq] || 'Weekly';
+}
+
+/** How far a `while (nextDate <= …)` walk may go before it gives up. A daily
+ *  schedule paid six months late needs ~180 steps; a monthly one needs one. An
+ *  unbounded guard is how a stalled schedule turns into a hung tab. */
+const advanceBudget = (freq) => (freq === 'daily' ? 400 : 48);
+
 function computeInitialNextDate(freq, dayOfMonth) {
   const now = new Date();
   const requestedDay = Math.min(31, Math.max(1, Number(dayOfMonth) || 1));
-  if (freq === 'monthly') {
-    let year = now.getFullYear(), month = now.getMonth();
-    let day = Math.min(requestedDay, daysInMonthParts(year, month));
-    if (new Date(year, month, day) <= now) {
-      month += 1;
-      year += Math.floor(month / 12);
-      month %= 12;
-      day = Math.min(requestedDay, daysInMonthParts(year, month));
-    }
-    return utcDateKey(year, month, day);
+  const step = FREQUENCY_STEPS[freq];
+  if (step) {
+    // Day-anchored: walk the cadence forward from this month's requested day
+    // until it stands in the future.
+    let candidate = new Date(now.getFullYear(), now.getMonth(), Math.min(requestedDay, daysInMonthParts(now.getFullYear(), now.getMonth())));
+    candidate.setHours(0, 0, 0, 0);
+    while (candidate <= now) candidate.setDate(candidate.getDate() + step);
+    return localDateKey(candidate);
   }
-  let candidate = new Date(now.getFullYear(), now.getMonth(), Math.min(requestedDay, daysInMonthParts(now.getFullYear(), now.getMonth())));
-  candidate.setHours(0, 0, 0, 0);
-  while (candidate <= now) candidate.setDate(candidate.getDate() + 7);
-  return localDateKey(candidate);
+  // Month-anchored: this month's day (monthly), or the same date next year
+  // (yearly) — either way the next one on or after now.
+  const spanMonths = freq === 'yearly' ? 12 : 1;
+  let year = now.getFullYear(), month = now.getMonth();
+  let day = Math.min(requestedDay, daysInMonthParts(year, month));
+  if (new Date(year, month, day) <= now) {
+    month += spanMonths;
+    year += Math.floor(month / 12);
+    month %= 12;
+    day = Math.min(requestedDay, daysInMonthParts(year, month));
+  }
+  return utcDateKey(year, month, day);
+}
+
+/**
+ * " 2 bills due." — the same count the push sender makes, read from THIS
+ * device's document instead of the profile's synced one (the local reminder
+ * has no round trip to make). Due means nextDate <= today: a bill that is late
+ * needs saying MORE, not less. Empty string when there is nothing to say, and
+ * never throws — a hint must not cost the reminder it rides on.
+ */
+function billsDueHintFor(list, todayKey) {
+  try {
+    if (!Array.isArray(list) || typeof todayKey !== 'string' || !todayKey) return '';
+    const due = list.filter(r => r && typeof r.nextDate === 'string' && r.nextDate <= todayKey);
+    if (due.length === 0) return '';
+    return ` ${due.length} bill${due.length === 1 ? '' : 's'} due.`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * A charge worth putting on the schedule, found in the ledger itself.
+ *
+ * Three occurrences of the same description at the same amount, spread at
+ * least five days apart and regular enough to read as a cadence rather than a
+ * coincidence — two gaps have to agree within a few days of each other, or
+ * "rent + a one-off + rent" would look monthly. A rule that already covers the
+ * description and amount silences it (whatever account it was written for),
+ * and so does the reader's own "Not now".
+ *
+ * Returns `{ key, entry, count, frequency, dayOfMonth }` — the entry is the
+ * most recent one, which is what carries the description, amount, account and
+ * category the new rule copies.
+ */
+function recurringSuggestion() {
+  const pair = (details, amount) => `${String(details || '').trim().toLowerCase()}|${Math.round((Number(amount) || 0) * 100)}`;
+  const rules = Array.isArray(state.settings.recurring) ? state.settings.recurring : [];
+  const taken = new Set(rules.map(r => pair(r.details, r.amount)));
+  const groups = new Map();
+  for (const e of state.entries) {
+    if (!e || (e.type !== 'expense' && e.type !== 'credit')) continue;
+    const key = pair(e.details, e.amount);
+    if (key === '|' || taken.has(key)) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(e);
+  }
+  const candidates = [];
+  for (const [key, list] of groups) {
+    if (list.length < 3) continue;
+    const dates = list.map(e => e.date).sort();
+    const gaps = [];
+    for (let i = 1; i < dates.length; i++) {
+      gaps.push(Math.round((Date.parse(`${dates[i]}T00:00:00Z`) - Date.parse(`${dates[i - 1]}T00:00:00Z`)) / 86400000));
+    }
+    if (gaps.some(g => g < 5)) continue;              // a habit, not a bill
+    const sorted = [...gaps].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    if (Math.max(...gaps) - Math.min(...gaps) > Math.max(3, Math.round(median * 0.5))) continue;
+    // Which cadence the gaps describe. Anything that is neither a supported
+    // cadence nor within a month of one is left alone rather than filed under
+    // the nearest fit: a quarterly bill suggested as yearly would be wrong by
+    // nine months, and wrong schedules are worse than no suggestion.
+    let frequency;
+    if (median <= 45) frequency = median <= 10 ? 'weekly' : median <= 20 ? 'fortnightly' : 'monthly';
+    else if (median >= 330 && median <= 400) frequency = 'yearly';
+    else continue;
+    const last = list.reduce((a, b) => (a.date > b.date ? a : b));
+    candidates.push({ key, entry: last, count: list.length, frequency, median, dayOfMonth: Number(last.date.slice(8, 10)) });
+  }
+  if (!candidates.length) return null;
+  candidates.sort((a, b) => b.count - a.count || (b.entry.date > a.entry.date ? 1 : -1));
+  return candidates[0];
+}
+
+/** The suggestion as a card, or null: silent when there is no pattern, when
+ *  one is already scheduled, and once the reader has said "Not now". */
+function recurringSuggestionCard() {
+  const s = recurringSuggestion();
+  if (!s) return null;
+  const dismissedKey = `rec-suggest:${s.key}`;
+  if (alertDismissed(dismissedKey)) return null;
+  const cadence = {
+    daily: 'every day',
+    weekly: 'every week',
+    fortnightly: 'every two weeks',
+    monthly: `every month on the ${ordinal(s.dayOfMonth)}`,
+    yearly: 'every year',
+  }[s.frequency] || `every month on the ${ordinal(s.dayOfMonth)}`;
+  const add = () => {
+    const rec = {
+      id: 'rec_' + uid(),
+      type: s.entry.type,
+      details: s.entry.details,
+      amount: s.entry.amount,
+      method: s.entry.method,
+      category: s.entry.category,
+      frequency: s.frequency,
+      dayOfMonth: s.dayOfMonth,
+      nextDate: computeInitialNextDate(s.frequency, s.dayOfMonth),
+      note: '',
+    };
+    if (!state.settings.recurring) state.settings.recurring = [];
+    state.settings.recurring.push(rec);
+    trackAction(() => {
+      state.settings.recurring = state.settings.recurring.filter(r => r.id !== rec.id);
+      persist();
+    }, `Added recurring \u201c${rec.details}\u201d`);
+    persist();
+    setAlertDismissed(dismissedKey, true);
+    toast(`Recurring \u201c${rec.details}\u201d added \u2014 next: ${friendlyDate(rec.nextDate)}.`);
+    render();
+  };
+  return $('div', { class: 'card', style: `padding:${isNarrow() ? '16px' : '20px'};margin-bottom:24px;` },
+    $('div', { class: 'eyebrow', style: 'margin-bottom:6px;' }, 'Looks like a pattern'),
+    $('div', { style: 'font-size:13px;line-height:1.5;' },
+      $('span', { style: 'font-weight:600;' }, s.entry.details || 'That charge'),
+      ` \u00b7 ${fmt(s.entry.amount)} \u00b7 ${methodShort(s.entry.method)} \u2014 ${s.count} entries, about ${cadence}.`,
+    ),
+    $('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap;' },
+      $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => { setAlertDismissed(dismissedKey, true); render(); } }, 'Not now'),
+      $('button', { type: 'button', class: 'btn btn-primary', onClick: add }, 'Add to recurring'),
+    ),
+  );
 }
 
 function paidRecurring(rec) {
@@ -4007,7 +4362,7 @@ function payRecurringOn(rec, dateStr) {
   // never be paid twice - whether this is the pending occurrence or an early
   // pre-pay from the upcoming strip. ISO dates compare correctly as strings.
   let guard = 0;
-  while (rec.nextDate <= dateStr && guard++ < 12) {
+  while (rec.nextDate <= dateStr && guard++ < advanceBudget(rec.frequency)) {
     rec.nextDate = advanceRecurringDate(rec.nextDate, rec.frequency, rec.dayOfMonth);
   }
   if (entry.method === 'Cash') cashAutoFollow(cashDeltaOf(entry));
@@ -4026,7 +4381,7 @@ function payRecurringOn(rec, dateStr) {
 function skipRecurring(rec, dateStr = rec.nextDate) {
   const oldDate = rec.nextDate;
   let guard = 0;
-  while (rec.nextDate <= dateStr && guard++ < 12) {
+  while (rec.nextDate <= dateStr && guard++ < advanceBudget(rec.frequency)) {
     rec.nextDate = advanceRecurringDate(rec.nextDate, rec.frequency, rec.dayOfMonth);
   }
   persist();
@@ -4035,18 +4390,69 @@ function skipRecurring(rec, dateStr = rec.nextDate) {
   render();
 }
 
-/** Next occurrences of a recurring item within a horizon (default 30 days). */
-function upcomingOccurrences(rec, horizonDays = 30) {
+/** Next occurrences of a recurring item within a horizon (default 30 days),
+ *  earliest first. `limit` is how many the CALLER needs: the upcoming strip
+ *  reads six, while a projection over the horizon has to count every one of
+ *  them — a daily bill capped at six would project a fifth of itself. */
+function upcomingOccurrences(rec, horizonDays = 30, limit = 6) {
   const out = [];
   let date = rec.nextDate;
+  // The slowest cadence is daily at a step a day, so horizon + 1 walks always
+  // reach past the horizon; anything beyond that means the schedule cannot
+  // advance (an unknown frequency, a date that does not move) and would spin.
   let guard = 0;
-  while (guard++ < 60) {
+  const budget = horizonDays + 2;
+  while (guard++ <= budget) {
     const d = daysUntil(date);
     if (d > horizonDays) break;
     if (d >= 0) out.push(date);
+    if (out.length >= limit) break;
     date = advanceRecurringDate(date, rec.frequency, rec.dayOfMonth);
   }
-  return out.slice(0, 6);
+  return out.slice(0, limit);
+}
+
+/**
+ * What this account looks like in `horizonDays` if every scheduled item on it
+ * lands — the recurring list is per method, so a forward projection is per
+ * account, and "already committed against this card" is the number that makes
+ * a balance readable. Income counts as well as bills (a payday is a projection
+ * exactly as much as a bill is), ordinary spending does not: a run-rate is
+ * already said elsewhere on screen, and a forward figure that pretended the
+ * shopping stops would be worse than no figure at all.
+ *
+ * Returns null when nothing is scheduled on the account — absence is the
+ * answer, not €0.00.
+ */
+function accountProjection(methodId, horizonDays = 30) {
+  const list = (state.settings.recurring || []).filter(r => r && r.method === methodId);
+  if (!list.length) return null;
+  let net = 0, count = 0;
+  for (const r of list) {
+    const dates = upcomingOccurrences(r, horizonDays, Infinity);
+    if (!dates.length) continue;
+    const each = Number(r.amount) * (r.type === 'credit' ? 1 : -1);
+    net += each * dates.length;
+    count += dates.length;
+  }
+  if (!count) return null;
+  return { amount: Math.round(net * 100) / 100, count, horizonDays };
+}
+
+/** The projection as one line of meta text, or '' when there is none. It
+ *  names where the account ENDS UP rather than only the change: the row
+ *  already prints today's balance to its right, so the pair reads as now →
+ *  then. The base is the balance AT THE HORIZON, not at today — an entry
+ *  already recorded for a future day (a pre-pay, a payday logged early) is a
+ *  fact about that horizon and would otherwise be missing from it — plus every
+ *  scheduled item that has not been paid off the schedule yet. Kept short
+ *  deliberately: the meta line is 10px nowrap on desktop. */
+function accountProjectionText(methodId, horizonDays = 30) {
+  const p = accountProjection(methodId, horizonDays);
+  if (!p) return '';
+  const at = balanceAt(methodId, offsetDateKey(today(), horizonDays));
+  const after = Math.round((at + p.amount) * 100) / 100;
+  return `projected ${fmt(after)} in ${p.horizonDays}d · ${p.count} due`;
 }
 
 // ---------- Tesco pay helpers ----------
@@ -4350,26 +4756,29 @@ function openTescoFillModal(prefillDate, unpaidThursdays) {
 }
 
 // ---------- undo system ----------
-// A single undo slot: `_lastAction` holds the live closure for the most recent
-// action, and the journal is its reload-safe serialisation. The toast captures
-// the slot at creation time so a later action can't re-wire an earlier Undo
-// button; the persistent undo button always reverts the latest action.
-let _lastAction = null;
+// A STACK of undo slots: the live closures for the last UNDO_STACK_MAX
+// actions, newest first, and the journal in storage.js is their reload-safe
+// serialisation — same order, same cap, one record per serialisable action.
+// The toast captures the slot at creation time so a later action can't re-wire
+// an earlier Undo button; the persistent undo button always reverts the latest.
+let _undoStack = [];
 function trackAction(undoFn, label, journalEntries, journalCheckpoints) {
-  _lastAction = { undo: undoFn, label };
   const hasEntries = Array.isArray(journalEntries) && journalEntries.length;
   const hasCheckpoints = Array.isArray(journalCheckpoints) && journalCheckpoints.length;
-  if (hasEntries || hasCheckpoints) {
+  const serialisable = !!(hasEntries || hasCheckpoints);
+  _undoStack.unshift({ undo: undoFn, label, serialisable });
+  if (_undoStack.length > UNDO_STACK_MAX) _undoStack.length = UNDO_STACK_MAX;
+  if (serialisable) {
     saveUndoJournal({
       label,
       at: nowIso(),
       entries: hasEntries ? journalEntries.map(e => ({ ...e })) : [],
       checkpoints: hasCheckpoints ? journalCheckpoints.map(c => ({ methodId: c.methodId, point: { ...c.point } })) : [],
     });
-  } else {
-    // A non-serialisable action supersedes any older reload-safe undo.
-    clearUndoJournal();
   }
+  // An action that cannot be serialised no longer WIPES the reload-safe record
+  // of the action before it: every journal record restores itself, so the
+  // older record is still true after a reload even though this one is not.
 }
 
 // Entries/checkpoints from a journal that are still missing from live state.
@@ -4405,26 +4814,46 @@ function restoreUndoJournal(journal) {
   return !!(missing.entries.length || missing.checkpoints.length);
 }
 
-// The most recent undoable action: the live in-memory slot first, then the
-// reload-safe journal (so undo still works after a reload).
+// The most recent undoable action: the live in-memory stack first, then the
+// reload-safe journal (so undo still works after a reload). A journal record
+// whose data is already back in the document is SPENT — dropped, and the next
+// one offered — rather than ending the search, or one stale record would hide
+// every action behind it.
 function lastUndoDescriptor() {
-  if (_lastAction) return _lastAction;
-  const journal = loadUndoJournal();
-  if (!journal || !(journal.entries?.length || journal.checkpoints?.length)) return null;
-  const missing = missingJournalData(journal);
-  if (!missing.entries.length && !missing.checkpoints.length) { clearUndoJournal(); return null; }
-  return { label: journal.label || 'that change', undo: () => { restoreUndoJournal(journal); } };
+  if (_undoStack.length) return _undoStack[0];
+  for (;;) {
+    const journal = loadUndoJournal();
+    if (!journal || !(journal.entries?.length || journal.checkpoints?.length)) return null;
+    const missing = missingJournalData(journal);
+    if (!missing.entries.length && !missing.checkpoints.length) { popUndoJournal(); continue; }
+    return {
+      label: journal.label || 'that change',
+      serialisable: true,
+      fromJournal: true,
+      journal,
+      undo: () => { restoreUndoJournal(journal); },
+    };
+  }
 }
 
-// Revert the most recent action and clear the single undo slot.
-function performUndo() {
-  const action = lastUndoDescriptor();
+/** Undo one slot and retire it: out of the live stack when it is still the
+ *  head, and its journal record spent with it. The head check matters — a
+ *  toast's Undo can outlive the action it captured, and popping then would
+ *  spend the record of a NEWER action that nothing has undone. */
+function undoAction(action) {
   if (!action) return;
   action.undo();
-  if (_lastAction === action) _lastAction = null;
-  clearUndoJournal();
+  const wasHead = _undoStack[0] === action;
+  if (wasHead) _undoStack.shift();
+  if (action.fromJournal) dropUndoJournal(action.journal);
+  else if (wasHead && action.serialisable) popUndoJournal();
   toast(`Undone: ${action.label}`);
   render();
+}
+
+// Revert the most recent action and retire it from the stack.
+function performUndo() {
+  undoAction(lastUndoDescriptor());
 }
 
 // Persistent undo control, rendered on every screen while an action is
@@ -4572,6 +5001,27 @@ function openDuplicateConfirm(entry, dup, onConfirm) {
 }
 
 // ---------- receipt parser ----------
+/**
+ * A description, to a category id. The keyword table for EVERY path that has
+ * to guess — the receipt parser, the natural-language entry, and the bank
+ * statement importer (which takes it as a dependency rather than keeping a
+ * second copy that could drift from this one).
+ *
+ * "gift.?card|voucher" is checked FIRST so that a "Tesco/Lidl/Aldi gift card"
+ * reads as a gift-card purchase (GC) rather than groceries - the store name
+ * otherwise masks the gift-card keyword. That matters: for a gift-card method,
+ * a GC-category load raises the card's balance, while a plain grocery expense
+ * would be counted as spending.
+ */
+function categoryFromDescription(desc) {
+  const d = String(desc || '').toLowerCase();
+  if (/gift.?card|voucher/i.test(d)) return 'GC';
+  if (/grocer|tesco|lidl|aldi|supervalu|dunnes|spar|centra|m&s|marks|supermarket|shop|market/i.test(d)) return 'gro';
+  if (/bus|train|luas|dart|leap|taxi|uber|petrol|diesel|fuel|parking|toll|flight|ferry/i.test(d)) return 'travel';
+  if (/rent|lease|mortgage|deposit|landlord/i.test(d)) return 'rent';
+  return 'misc';
+}
+
 function parseReceiptLine(line) {
   const s = line.trim();
   if (!s) return null;
@@ -4582,18 +5032,7 @@ function parseReceiptLine(line) {
   if (m1) { amt = parseAmount(m1[1]); desc = m1[2]; }
   else if (m2) { amt = parseAmount(m2[2]); desc = m2[1]; }
   else { desc = s; }
-  // Guess category from keywords. "gift.?card|voucher" is checked FIRST so that
-  // a "Tesco/Lidl/Aldi gift card" reads as a gift-card purchase (GC) rather than
-  // groceries - the store name otherwise masks the gift-card keyword. That
-  // matters: for a gift-card method, a GC-category load raises the card's
-  // balance, while a plain grocery expense would be counted as spending.
-  let cat = 'misc';
-  const d = desc.toLowerCase();
-  if (/gift.?card|voucher/i.test(d)) cat = 'GC';
-  else if (/grocer|tesco|lidl|aldi|supervalu|dunnes|spar|centra|m&s|marks|supermarket|shop|market/i.test(d)) cat = 'gro';
-  else if (/bus|train|luas|dart|leap|taxi|uber|petrol|diesel|fuel|parking|toll|flight|ferry/i.test(d)) cat = 'travel';
-  else if (/rent|lease|mortgage|deposit|landlord/i.test(d)) cat = 'rent';
-  return { details: desc || s, amount: amt || 0, category: cat };
+  return { details: desc || s, amount: amt || 0, category: categoryFromDescription(desc) };
 }
 
 function previousMonthKey(key) {
@@ -5026,6 +5465,38 @@ function accountBalanceHistory() {
   return { methods, points };
 }
 
+/**
+ * The identity of a recurring schedule as a line on the ledger.
+ *
+ * Entries carry no "I came from a schedule" flag, and payRecurringOn writes the
+ * schedule's own type/details/amount/method/category verbatim — so that tuple
+ * IS the flag. Matched case- and space-insensitively on details, the way the
+ * duplicate detector reads them.
+ */
+function recurringEntryKey(x) {
+  return [
+    String(x?.type || ''),
+    String(x?.details || '').trim().toLowerCase(),
+    Math.round((Number(x?.amount) || 0) * 100),
+    String(x?.method || ''),
+    String(x?.category || ''),
+  ].join('|');
+}
+function recurringKeySet() {
+  const list = state.settings.recurring;
+  return Array.isArray(list) && list.length ? new Set(list.map(recurringEntryKey)) : null;
+}
+function isFixedCostEntry(entry, keys) {
+  return !!keys && keys.has(recurringEntryKey(entry));
+}
+
+// A projection needs a month behind it, not a weekend. Before this many days
+// the average is one or two events extrapolated over thirty, and a single
+// fixed charge on the 1st made week one read as "projected €5590, remaining
+// −€4490".
+const PROJECTION_MIN_DAYS = 7;
+const PROJECTION_MIN_ENTRIES = 3;
+
 function spendingForecast(key = monthKey(today())) {
   const now = new Date();
   const current = entriesForMonth(key);
@@ -5033,30 +5504,55 @@ function spendingForecast(key = monthKey(today())) {
   const spent = expenses.reduce((sum, e) => sum + e.amount, 0);
   const elapsed = key === monthKey(today()) ? now.getDate() : daysInMonth(key);
   const totalDays = daysInMonth(key);
-  const dailyAverage = elapsed > 0 ? spent / elapsed : 0;
-  const projected = spent + dailyAverage * Math.max(0, totalDays - elapsed);
+  // The run-rate is VARIABLE spending. A rent a schedule puts on the ledger is
+  // the same euros every month, so dividing it by the days elapsed turns day 6
+  // into "you burn €850 a day" — the fixed charge is spent, never projected.
+  const keys = recurringKeySet();
+  const variable = keys ? expenses.filter(e => !isFixedCostEntry(e, keys)) : expenses;
+  const variableSpent = variable.reduce((sum, e) => sum + e.amount, 0);
+  const dailyAverage = elapsed > 0 ? variableSpent / elapsed : 0;
+  const ready = elapsed >= PROJECTION_MIN_DAYS && variable.length >= PROJECTION_MIN_ENTRIES;
+  const projected = ready ? spent + dailyAverage * Math.max(0, totalDays - elapsed) : null;
   const budget = +state.settings.monthlyBudget || 0;
   const previous = entriesForMonth(previousMonthKey(key)).filter(isBudgetSpendingEntry);
   const previousDaily = previous.length ? previous.reduce((sum, e) => sum + e.amount, 0) / daysInMonth(previousMonthKey(key)) : null;
-  return { spent, projected, budget, remaining: budget - projected, dailyAverage, previousDaily, elapsed, totalDays };
+  return {
+    spent, projected, projectedReady: ready, budget,
+    remaining: projected === null ? null : budget - projected,
+    dailyAverage, previousDaily, elapsed, totalDays,
+  };
 }
 
 function accountStatus(methodId) {
   const checkpoint = userCheckpointFor(methodId, today());
-  if (!checkpoint) return { label: 'Not reconciled' };
+  // On a ledger with nothing in it, "Not reconciled" reads as a fault rather
+  // than as a step not taken yet.
+  if (!checkpoint) return {
+    label: state.entries.length ? 'Not reconciled' : 'Set a balance',
+    hint: 'No end-of-day balance has been saved for this account. Reconcile it once and the app can tell your book balance from the real one.',
+  };
   const ageDays = Math.max(0, Math.round((Date.parse(`${today()}T00:00:00Z`) - Date.parse(`${checkpoint.date}T00:00:00Z`)) / 86400000));
-  if (ageDays === 0) return { label: 'Reconciled today' };
-  if (ageDays <= 7) return { label: `Reconciled ${ageDays}d ago` };
-  return { label: 'Reconcile soon' };
+  const hint = 'Days since this account\u2019s balance was checked against the real one.';
+  if (ageDays === 0) return { label: 'Reconciled today', hint };
+  if (ageDays <= 7) return { label: `Reconciled ${ageDays}d ago`, hint };
+  return { label: 'Reconcile soon', hint };
 }
 
 function monthComparison(key = monthKey(today())) {
   const current = entriesForMonth(key).filter(isBudgetSpendingEntry).reduce((sum, entry) => sum + entry.amount, 0);
   const previousKey = previousMonthKey(key);
   const previous = entriesForMonth(previousKey).filter(isBudgetSpendingEntry).reduce((sum, entry) => sum + entry.amount, 0);
-  const difference = current - previous;
-  const percent = previous > 0 ? Math.round((difference / previous) * 100) : null;
-  return { current, previous, previousKey, difference, percent };
+  // Month-to-date against a COMPLETE previous month is a comparison that can
+  // only flatter: on the 6th, spending as usual read as "down 78%". The
+  // previous month is prorated to the same number of elapsed days, and every
+  // figure below is judged against that fair half.
+  const elapsed = key === monthKey(today()) ? new Date().getDate() : daysInMonth(key);
+  const proratedPrevious = previous > 0
+    ? Math.round(previous * (elapsed / daysInMonth(previousKey)) * 100) / 100
+    : 0;
+  const difference = Math.round((current - proratedPrevious) * 100) / 100;
+  const percent = proratedPrevious > 0 ? Math.round((difference / proratedPrevious) * 100) : null;
+  return { current, previous, proratedPrevious, previousKey, difference, percent };
 }
 
 function computeRunway(balance, key = monthKey(today())) {
@@ -5213,10 +5709,21 @@ function reviewForMonth(key) {
   const changes = Object.keys({ ...currentCats, ...previousCats }).map(id => ({ id, diff: (currentCats[id] || 0) - (previousCats[id] || 0) }))
     .sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
   const largestChange = changes.find(x => Math.abs(x.diff) >= 0.01);
-  const percent = previousTotal ? Math.round(((total - previousTotal) / previousTotal) * 100) : null;
+  // Same fair comparison as monthComparison(): a month that is still running
+  // is measured against the same fraction of the month before it, so week one
+  // stops reporting "you spent 78% less than last month".
+  const elapsed = key === monthKey(today()) ? new Date().getDate() : daysInMonth(key);
+  const partial = key === monthKey(today()) && elapsed < daysInMonth(key);
+  const proratedPrevious = previousTotal > 0
+    ? Math.round(previousTotal * (elapsed / daysInMonth(previousMonthKey(key))) * 100) / 100
+    : 0;
+  const percent = proratedPrevious ? Math.round(((total - proratedPrevious) / proratedPrevious) * 100) : null;
   const lines = [];
   if (top) lines.push(`Your biggest category was ${categoryLabel(top[0])} at ${fmt(top[1])}.`);
-  if (percent !== null) lines.push(percent === 0 ? 'You spent the same as last month.' : `You spent ${Math.abs(percent)}% ${percent < 0 ? 'less' : 'more'} than last month.`);
+  if (percent !== null) {
+    const cmp = partial ? 'last month to date' : 'last month';
+    lines.push(percent === 0 ? `You spent the same as ${cmp}.` : `You spent ${Math.abs(percent)}% ${percent < 0 ? 'less' : 'more'} than ${cmp}.`);
+  }
   if (largestChange && largestChange.id !== top?.[0]) lines.push(`${categoryLabel(largestChange.id)} spending ${largestChange.diff >= 0 ? 'increased' : 'decreased'} by ${fmt(Math.abs(largestChange.diff))}.`);
   if (!lines.length) lines.push('Keep logging transactions and your monthly review will appear here.');
   return { lines, total, previousTotal };
@@ -5231,9 +5738,13 @@ function computeDataHealth(entries) {
   const financialEntries = entries.filter(e => e.type !== 'note');
   const uncategorized = financialEntries.filter(e => isSpendingEntry(e) && e.category === 'misc').length;
   if (uncategorized > financialEntries.length * 0.3) { score -= 15; issues.push(`${uncategorized} entries are "Misc" - try categorising them.`); }
-  // Large amounts
-  const avg = financialEntries.length ? financialEntries.reduce((s,e) => s + e.amount, 0) / financialEntries.length : 0;
-  const outliers = financialEntries.filter(e => e.amount > avg * 5).length;
+  // Large amounts - judged against SPENDING, and never against income or a
+  // scheduled bill: a €2,400 payday is not an anomaly in a ledger of coffees,
+  // and until now every payday scored the account down 10 points.
+  const recKeys = recurringKeySet();
+  const outlierPool = financialEntries.filter(e => isSpendingEntry(e) && !isFixedCostEntry(e, recKeys));
+  const avg = outlierPool.length ? outlierPool.reduce((s, e) => s + e.amount, 0) / outlierPool.length : 0;
+  const outliers = outlierPool.length >= 3 && avg > 0 ? outlierPool.filter(e => e.amount > avg * 5).length : 0;
   if (outliers > 0) { score -= 10; issues.push(`${outliers} entr${outliers===1?'y':'ies'} ${outliers===1?'looks':'look'} unusually large.`); }
   // Duplicates
   const duplicateCount = duplicateGroups(entries).reduce((sum, group) => sum + group.length - 1, 0);
@@ -5343,7 +5854,7 @@ function renderHeader() {
       // The owner's way in to the people they share with. It sits in the header
       // rather than only in the menu, because it is the thing an owner reaches
       // for after signing in — and the menu row below stays for discoverability.
-      isAdminProfile(getActiveProfileId()) ? $('button', {
+      isAdminProfile(getActiveProfileId()) && listProfiles().length > 1 ? $('button', {
         type: 'button', class: 'admin-trigger', title: 'Admin - people and tabs', 'aria-label': 'Admin - people and tabs',
         onClick: () => openAdminPanel(),
       },
@@ -5426,7 +5937,6 @@ const ICONS = {
   'chevron-left': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>',
   'chevron-right': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>',
   'check-circle': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>',
-  circle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><circle cx="12" cy="12" r="10"/></svg>',
   sparkle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3Z"/></svg>',
 };
 
@@ -5556,6 +6066,17 @@ function buildMenuLevel(id) {
     // csvCategoryId/csvMethodId, rows already in the ledger skipped) and
     // applyRestore() does the merge as one undoable step.
     list.append(menuRowEl({ icon: 'download', label: 'Import CSV', note: 'Merges a .csv export back in', onClick: () => { closeAppMenu(); openCsvPicker(); } }));
+    // A bank's own export, which shares nothing with the format above: the
+    // mapper is one screen that makes a file SHAPE readable, and it lives in
+    // its own module so a boot never parses it (the menu is the only door).
+    list.append(menuRowEl({ icon: 'download', label: 'Import bank statement', note: 'Date, description and amount — mapped once', onClick: () => { closeAppMenu(); openBankImport(); } }));
+    // The Lidl Plus pull: one expense entry per receipt, on the Lidl gift card
+    // (LG), so the ledger and the card balance move together. Manual twin of
+    // the pull that runs on every open (see the boot hook in DOMContentLoaded).
+    list.append(menuRowEl({ icon: 'download', label: 'Pull Lidl receipts', note: 'From Lidl Plus onto the ledger', onClick: () => {
+      closeAppMenu();
+      void import('./lidl.js').then(m => m.pullLidl({ state, commit: commitAdded, notify: toast, manual: true })).catch(() => {});
+    } }));
     list.append(menuRowEl({ icon: 'download', label: 'Restore from backup', note: 'Merges a .json export back in', onClick: () => { closeAppMenu(); openRestorePicker(); } }));
     // Only offered when there IS one: a document loadState could not parse is
     // parked under a quarantine key, and until now nothing could reach it.
@@ -5572,12 +6093,25 @@ function buildMenuLevel(id) {
     list.append(menuRowEl({ icon: 'data', label: 'Reset all data', danger: true, onClick: async () => {
       closeAppMenu();
       if (!(await swalConfirm({ title: 'Reset all data?', text: 'This clears every entry, balance checkpoint, and setting on this device. Continue?', confirmButtonText: 'Reset', danger: true }))) return;
+      // One destructive action, one undo step — and the journal carries the
+      // whole ledger, because unlike an entry deletion there is no per-item
+      // shape to serialise. Written BEFORE the reset (the tombstone it writes
+      // is the first thing a crash could land on) and superseded only by the
+      // undo itself.
+      const before = JSON.parse(JSON.stringify(state));
+      const journalEntries = state.entries.map(e => ({ ...e }));
+      const journalCheckpoints = Object.entries(state.settings.balanceCheckpoints || {})
+        .flatMap(([methodId, points]) => (Array.isArray(points) ? points : [])
+          .map(point => ({ methodId, point: { ...point } })));
       syncRevision++;
       state = resetToBlank();
       clearBalanceCaches();
       scheduleSyncPush();
+      trackAction(() => { state = validateState(before); persist(); clearBalanceCaches(); render(); }, 'reset all data', journalEntries, journalCheckpoints);
       render();
-      toast('All data cleared.');
+      toast(journalEntries.length || journalCheckpoints.length
+        ? `All data cleared \u2014 ${journalEntries.length} entr${journalEntries.length === 1 ? 'y' : 'ies'} can be brought back with Undo.`
+        : 'All data cleared.');
     } }));
   }
   level.append(list);
@@ -6012,6 +6546,11 @@ function formView({ initial = null, onSubmit, onCancel }) {
       amount: amt,
       method: data.method,
       note: data.note?.trim() || '',
+      // The flag lives ON the entry, and this object is rebuilt from the
+      // fields rather than spread from `initial` — so before the row's own
+      // toggle moved here, saving an excluded entry silently put it back in
+      // the budget.
+      ...(data.budgetExcluded ? { budgetExcluded: true } : {}),
     };
     // No duplicate gate here: commitAdded() is the ONE check on this screen,
     // and a second one below the first would ask the same question twice —
@@ -6023,6 +6562,16 @@ function formView({ initial = null, onSubmit, onCancel }) {
 
   let detailsLabel;
   let noteFieldSection;
+  // "Exclude from budget" is a property of a stored entry, so it belongs to
+  // the surface that owns that entry: the edit sheet. On the row it was a
+  // second control competing with the row's own labels (106px of button in a
+  // grid whose middle track is the one that gives), and it lived nowhere else.
+  const budgetRow = isEdit && data.type !== 'note'
+    ? $('label', { style: 'display:flex;align-items:center;gap:9px;font-size:13px;margin-bottom:18px;cursor:pointer;color:var(--muted);' },
+        $('input', { type: 'checkbox', checked: !!data.budgetExcluded, onChange: (ev) => { data.budgetExcluded = ev.target.checked; } }),
+        $('span', null, 'Exclude from budget calculations'),
+      )
+    : null;
   const formEl = $('div', { class: 'card', style: `padding:${isNarrow() ? '20px 16px' : '32px 16px'};max-width:540px;margin:0 auto;` },
     tabs,
     amountSection,
@@ -6035,6 +6584,7 @@ function formView({ initial = null, onSubmit, onCancel }) {
     noteFieldSection = $('div', { style: isNote ? 'display:none;' : 'margin-bottom:32px;' },
       $('label', { class: 'eyebrow', for: 'f-note' }, 'Note'), Object.assign(noteInput, { id: 'f-note' }),
     ),
+    budgetRow,
     $('div', { style: 'display:flex;gap:12px;justify-content:flex-end;padding-top:24px;border-top:1px solid var(--line);' },
       $('button', { type: 'button', class: 'btn btn-ghost', onClick: onCancel || (() => location.hash = '#dashboard') }, 'Cancel'),
       $('button', { type: 'button', class: 'btn btn-primary', onClick: (ev) => {
@@ -6077,6 +6627,35 @@ async function doResync() {
   } finally {
     syncExclusive = false;
   }
+}
+
+/**
+ * Which of this month's pay Thursdays the Tesco tracker card may claim, and
+ * what is recorded against each — the gate that keeps a €2,400 salary on the
+ * 1st from being read as "1/5 paid" (and from being copied into the other
+ * Thursdays by Auto-fill). See the card for why each rule exists.
+ *
+ * Returns `{ shown, byDate }`: `shown` is whether the card has anything to
+ * track at all, `byDate` the income it recognises as Tesco pay.
+ */
+function tescoThursdayIncome(thursdays, payDateAmounts) {
+  const recordedIds = new Set(Object.values(payDateAmounts || {}).map(m => m && m.id).filter(Boolean));
+  const hasTescoShifts = !!((state.tesco && state.tesco.shifts) || []).length;
+  const namesTesco = (e) => /tesco/i.test(String(e.details || '')) || /tesco/i.test(String(e.note || ''));
+  const shown = hasTescoShifts || Object.keys(payDateAmounts || {}).length > 0
+    || state.entries.some(e => isIncomeEntry(e) && namesTesco(e));
+  const isTescoPay = (e) => recordedIds.has(e.id) || namesTesco(e)
+    || (hasTescoShifts && thursdays.includes(e.date));
+  const byDate = {};
+  if (shown) {
+    // Look across ALL entries (not just this month) so a Thursday matches
+    // regardless of when it was entered.
+    for (const e of state.entries) {
+      if (!isIncomeEntry(e) || !isTescoPay(e)) continue;
+      byDate[e.date] = (byDate[e.date] || 0) + e.amount;
+    }
+  }
+  return { shown, byDate };
 }
 
 function screenDashboard() {
@@ -6149,7 +6728,7 @@ function screenDashboard() {
     const lastVal = runningBalance;
     const netWorthEl = $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` });
     paintFigure(netWorthEl, 'dashboard-net-worth', lastVal);
-    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '14px 16px' : '18px 16px'};margin-bottom:24px;display:flex;align-items:center;gap:16px;` },
+    screen.appendChild($('div', { class: 'card dashboard-full', style: `padding:${isNarrow() ? '14px 16px' : '18px 16px'};margin-bottom:24px;display:flex;align-items:center;gap:16px;` },
       $('svg', { viewBox: `0 0 ${sparkW} ${sparkH}`, style: 'flex:1;min-width:120px;height:40px;', 'aria-label': 'Net worth trend' },
         $('path', { d: areaD, style: `fill:${isUp ? 'var(--positive)' : 'var(--negative)'};opacity:0.1;` }),
         $('path', { d: pathD, style: `fill:none;stroke:${isUp ? 'var(--positive)' : 'var(--negative)'};stroke-width:1.5;stroke-linecap:round;` }),
@@ -6225,9 +6804,14 @@ function screenDashboard() {
     const giftCard = $('div', { class: 'card', role: 'alert', style: `padding:${isNarrow() ? '14px 16px' : '16px'};margin-bottom:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid color-mix(in srgb, var(--negative) 35%, transparent);background:color-mix(in srgb, var(--negative) 8%, transparent);` },
       iconSpan('alert', 'md'),
       $('div', { style: 'flex:1;min-width:0;' },
-        $('div', { style: 'font-weight:600;font-size:13px;' }, 'Gift card running low'),
+        $('div', { style: 'font-weight:600;font-size:13px;' },
+          lowGiftVisible.some(c => c.balance > 0) || !lowGiftVisible.some(c => c.balance <= 0)
+            ? 'Gift card running low'
+            : 'Gift card over its balance'),
         $('div', { class: 'muted', style: 'font-size:12px;margin-top:2px;' },
-          lowGiftVisible.map(card => `${card.label} has ${fmt(card.balance)} left`).join(' · '),
+          lowGiftVisible.map(card => card.balance > 0
+            ? `${card.label} has ${fmt(card.balance)} left`
+            : `${card.label} is ${fmt(Math.abs(card.balance))} over its balance`).join(' · '),
         ),
       ),
       // One tap per card lands straight in that card's pre-focused load
@@ -6271,11 +6855,17 @@ function screenDashboard() {
   const chips = [];
   if (ms.entryCount > 0) chips.push($('span', { class: 'pill', title: 'Total entries logged' }, iconSpan('book', 'sm'), `${ms.entryCount} entr${ms.entryCount === 1 ? 'y' : 'ies'} logged`));
   if (ms.monthsUnderBudget >= 1) chips.push($('span', { class: 'pill', title: 'Months where spending stayed within budget' }, iconSpan('medal', 'sm'), `${ms.monthsUnderBudget} month${ms.monthsUnderBudget === 1 ? '' : 's'} under budget`));
-  if (chips.length) screen.appendChild($('div', { style: 'display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px;' }, ...chips));
+  if (chips.length) screen.appendChild($('div', { class: 'dashboard-full', style: 'display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px;' }, ...chips));
 
   // Pulse - the single "how am I doing?" glance: headline number, key figures,
   // and a tap-through to Insights for the full picture.
   screen.appendChild(dashboardPulse(key, expenseSum, runningBalance));
+
+  // A pattern the ledger has already proven, offered once. It sits directly
+  // under the pulse because it is the one thing on this screen that changes
+  // the NEXT month rather than describing this one.
+  const patternCard = recurringSuggestionCard();
+  if (patternCard) screen.appendChild(patternCard);
 
   // Budget bar card
   if (budget > 0) {
@@ -6420,7 +7010,7 @@ function screenDashboard() {
   }
 
   // Category breakdown + recent
-  const grid = $('div', { class: 'dashboard-grid', style: 'display:grid;grid-template-columns:1fr;gap:24px;align-items:start;' });
+  const grid = $('div', { class: 'dashboard-grid' });
   // Responsive: 2-col on >=760px (set inline because we want it to ship without extra CSS)
   if (typeof window !== 'undefined' && window.matchMedia('(min-width: 640px)').matches) {
     grid.style.gridTemplateColumns = 'minmax(0, 2fr) minmax(0, 3fr)';
@@ -6552,41 +7142,56 @@ function screenDashboard() {
   );
   screen.appendChild(accountsCard);
 
-  const gcCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
-    $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:16px;' },
-      $('div', null,
-        $('div', { class: 'eyebrow' }, 'Gift card balances'),
-        $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current provider balances without adding a fake transaction. Totals show recorded activity, or post-reconciliation adjustments when a checkpoint exists.'),
+  // Only a gift card with a history or a reconciliation earns a row here: three
+  // untouched €0.00 cards were the first thing a fresh install showed. The
+  // Balances screen keeps every card, editable, so nothing is unreachable.
+  const activeGiftCards = GIFT_CARD_IDS.filter(id => giftCardUsed(id));
+  if (activeGiftCards.length) {
+    const gcCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
+      $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:16px;' },
+        $('div', null,
+          $('div', { class: 'eyebrow' }, 'Gift card balances'),
+          $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Current provider balances without adding a fake transaction. Totals show recorded activity, or post-reconciliation adjustments when a checkpoint exists.'),
+        ),
+        tabVisible('balances') ? $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage ', iconSpan('arrow-right', 'sm')) : null,
       ),
-      tabVisible('balances') ? $('a', { href: '#balances', class: 'btn-link', style: 'font-size:12px;' }, 'Manage ', iconSpan('arrow-right', 'sm')) : null,
-    ),
-    $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },     ...GIFT_CARD_IDS.map(id => {
+      $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },     ...activeGiftCards.map(id => {
          const m = methodById(id);
          const totals = computeGiftCardBalance(state.entries, id);
          return renderBalanceEditorRow(id, {
            label: m?.label?.includes(' · ') ? m.label.split(' · ')[1] : (m?.label || id),            secondary: totals.loaded || totals.spent
               ? `${userCheckpointFor(id, today()) ? 'net adjustments · loads' : 'recorded loads'} ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}`
               : '',
+           secondaryHint: 'Loads are what went ON the card, spending what came off it. After a reconciliation the figure is your adjustments plus those loads.',
            editable: false,
          });
        }),
-    ),
-  );
-  screen.appendChild(gcCard);
+      ),
+    );
+    screen.appendChild(gcCard);
+  }
 
-  // Tesco pay - Thursdays tracker
+  // Tesco pay - Thursdays tracker.
+  //
+  // This card is titled "Tesco pay", so only Tesco pay may fill it. It used to
+  // sum EVERY income entry by date, which made a €2,400 salary on the 1st read
+  // as "1/5 paid" and sent Auto-fill copying it into the remaining Thursdays.
+  // The rules live in tescoThursdayIncome() so the card is one call: a line
+  // this app recorded always counts; other income counts only when the Tesco
+  // tab has shifts (or names Tesco) to explain why it belongs here; with
+  // neither signal there is nothing to track and the card is not shown at all
+  // — which is also what keeps a fresh ledger from greeting a new user with
+  // "0/5 paid" and an Auto-fill button.
   const thursdays = thursdaysInMonth(now.getFullYear(), now.getMonth());
-  // Look across ALL entries (not just this month) so Thursdays match regardless of when entered
-  const incomeByDate = {};
-  for (const e of state.entries.filter(x => isIncomeEntry(x))) { incomeByDate[e.date] = (incomeByDate[e.date] || 0) + e.amount; }
   // Build local today string the same way thursdaysInMonth does (no UTC shift)
   const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  // What Tesco Pay recorded for each pay date: the key IS the date the entry
+  // carries — a week's Sunday + 11, the Thursday it lands.
+  const payDateAmounts = tescoReceivedByDate();
+  const payTracker = tescoThursdayIncome(thursdays, payDateAmounts);
+  const incomeByDate = payTracker.byDate;
   const unpaidThursdays = thursdays.filter(d => !incomeByDate[d] && d <= todayStr);
   const paidTotal = thursdays.reduce((sum, d) => sum + (incomeByDate[d] || 0), 0);
-  // What Tesco Pay has recorded for each pay date, so a Thursday is filled with
-  // the week that was paid on it rather than with the last amount typed. The key
-  // IS the date the entry carries: a week's Sunday + 11, the Thursday it lands.
-  const payDateAmounts = tescoReceivedByDate();
 
   const payCard = $('div', { class: 'card', style: `padding:${isNarrow() ? '18px' : '24px'};margin-top:24px;` },
     $('div', { class: 'row between', style: 'margin-bottom:16px;' },
@@ -6638,7 +7243,7 @@ function screenDashboard() {
           }),
         ),
   );
-  if (tabVisible('tesco')) screen.appendChild(payCard);
+  if (payTracker.shown && tabVisible('tesco')) screen.appendChild(payCard);
 
   return screen;
 }
@@ -6680,9 +7285,14 @@ function emptyStateCard({ icon = 'receipt', title, blurb, actionLabel = null, ac
   );
 }
 
-function stat(label, value, color) {
+function stat(label, value, color, hint) {
   return $('div', null,
-    $('div', { class: 'eyebrow' }, label),
+    $('div', { class: 'eyebrow', title: hint || null, style: hint ? 'cursor:help;' : null },
+      label,
+      // The marker is decorative and the sentence lives in the title, so a
+      // reader hears the term and not "info circle".
+      hint ? $('span', { 'aria-hidden': 'true', style: 'margin-left:4px;opacity:.65;' }, '\u24d8') : null,
+    ),
     $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '18px' : '22px'};margin-top:4px;${color ? `color:${color};` : ''}` }, value),
   );
 }
@@ -6756,6 +7366,10 @@ function cashWidget() {
  *  turns red and a persistent alert card appears on the dashboard. */
 function voucherWidget() {
   const amount = voucherAmount();
+  // Nothing to report and nothing to click on: an untouched tally of €0.00 is
+  // noise in the hero. The editor it used to point at stays reachable from the
+  // Balances screen, so hiding the figure never hides the control.
+  if (amount <= 0) return null;
   const over = amount > VOUCHER_NOTICE_AT;
   const wrapper = $('span', { style: 'position:relative;display:inline-flex;align-items:center;gap:6px;cursor:pointer;', title: 'Tesco paper vouchers - click to edit' },
     $('span', { style: 'font-family:"Space Grotesk",sans-serif;' }, 'Vouchers '),
@@ -6936,7 +7550,7 @@ function openRecurringManager() {
     'No recurring transactions yet. Add rent, subscriptions, or paydays.',
   );
 
-  const freqLabel = (r) => r.frequency === 'weekly' ? 'Weekly' : `Monthly · ${r.dayOfMonth}${ordinal(r.dayOfMonth)}`;
+  const freqLabel = (r) => frequencyLabel(r.frequency, r.dayOfMonth);
   const rowFor = (r) => {
     const d = daysUntil(r.nextDate);
     const overdue = d < 0;
@@ -7048,10 +7662,17 @@ function openNewRecurring(existing = null, onClosed = null) {
     $('label', { class: 'eyebrow', style: 'display:block;margin-bottom:4px;' }, 'Category'),
     catSel,
   );
-  const freqSel = $('select', { 'aria-label': 'Frequency', onChange: (e) => { data.frequency = e.target.value; dayLabel.textContent = e.target.value === 'monthly' ? 'Day of month' : 'Start day'; } },
+  const freqSel = $('select', { 'aria-label': 'Frequency', onChange: (e) => { data.frequency = e.target.value; dayLabel.textContent = freqDayLabel(e.target.value); } },
     $('option', { value: 'monthly', selected: '' }, 'Monthly'),
     $('option', { value: 'weekly' }, 'Weekly'),
+    $('option', { value: 'fortnightly' }, 'Fortnightly'),
+    $('option', { value: 'yearly' }, 'Yearly'),
+    $('option', { value: 'daily' }, 'Daily'),
   );
+  // Month-anchored schedules land ON a day of the month; day-anchored ones
+  // start on a day and then step. The row stays for both — a daily bill still
+  // needs to know which day its run starts from — but it says which it means.
+  const freqDayLabel = (freq) => (freq === 'monthly' || freq === 'yearly') ? 'Day of month' : 'Start day';
   const dayLabel = $('span', null, 'Day of month');
   const daySel = $('select', { 'aria-label': 'Day', onChange: (e) => data.dayOfMonth = +e.target.value },
     ...Array.from({ length: 31 }, (_, i) => $('option', { value: i + 1 }, String(i + 1))),
@@ -7067,7 +7688,7 @@ function openNewRecurring(existing = null, onClosed = null) {
     freqSel.value = data.frequency;
     daySel.value = String(data.dayOfMonth);
     noteInput.value = data.note || '';
-    dayLabel.textContent = data.frequency === 'monthly' ? 'Day of month' : 'Start day';
+    dayLabel.textContent = freqDayLabel(data.frequency);
     catRow.style.display = data.type === 'credit' ? 'none' : '';
   }
 
@@ -7267,6 +7888,63 @@ function openVoucherEditor() {
   queueMicrotask(() => input.focus());
 }
 
+// Every entry that leaves the Add screen goes through here, and so does every
+// receipt the Lidl pull (lidl.js) writes — an automatic writer gets exactly
+// the duplicate gate, undo slot and tombstones a hand entry gets. The slot
+// removes exactly the legs that were created and tombstones them, so a later
+// cloud merge can't restore them. cashAutoFollow may re-anchor the cash base
+// while adding, so its previous values ride along. No journal: undoing an
+// addition is a live-session action, and a reload already has the entries.
+const commitAdded = (entries, label, onDone) => {
+  const commit = () => {
+    const prevCashBase = state.settings.cashBase;
+    const prevCoinsManual = state.settings.coinsManual;
+    state.entries.push(...entries);
+    state.entries.sort((a, b) => a.date.localeCompare(b.date));
+    if (entries.some(e => e.method === 'Cash')) cashAutoFollow(entries.reduce((sum, e) => sum + cashDeltaOf(e), 0));
+    const ids = entries.map(e => e.id);
+    trackAction(() => {
+      state.entries = state.entries.filter(e => !ids.includes(e.id));
+      tombstoneIds(ids);
+      state.settings.cashBase = prevCashBase;
+      state.settings.coinsManual = prevCoinsManual;
+      persist();
+    }, label);
+    persist();
+    if (onDone) onDone();
+  };
+  // ONE check for every way onto the ledger — quick entry, split legs,
+  // transfers, the structured form, and now the Lidl pull — so a duplicate
+  // cannot slip in simply because a different button created it. Cancel leaves
+  // nothing written (the commit has not started), and the confirm runs before
+  // the caller's toast/navigation through onDone.
+  const hit = entries.map(e => [e, findPotentialDuplicate(e)]).find(([, dup]) => dup);
+  if (hit) openDuplicateConfirm(hit[0], hit[1], commit);
+  else commit();
+};
+
+// ---------- the bank's own CSV ----------
+// Deferred like every screen: the mapping rules, the preview and the mapper UI
+// are ~15 KB that a boot which may only show the lock should never parse. The
+// modal opens first and asks for the file from inside it, because a page can
+// neither see nor dismiss the OS file dialog — which is also what makes this
+// surface auditable (it is declared in a11y-harness.html's MODAL_OPENERS).
+async function openBankImport() {
+  try {
+    const mod = await import('./bank-import.js');
+    mod.openBankImport({
+      $, iconSpan, toast, fmt, friendlyDate, swalConfirm, isTopModal,
+      methods: allMethods().map(m => ({ id: m.id, label: m.label })),
+      guessCategory: categoryFromDescription,
+      uid, nowIso, commitAdded, render,
+      existingEntries: () => state.entries,
+    });
+  } catch (err) {
+    console.warn('Bank statement import could not be loaded:', err);
+    toast('The bank statement importer could not be loaded.');
+  }
+}
+
 // ---------- screens: add ----------
 function screenAdd() {
   const c = $('section', { class: 'page-section add-flow', 'aria-label': 'New entry' });
@@ -7337,7 +8015,7 @@ function screenAdd() {
           : `${parsed.type === 'credit' ? 'Income' : 'Expense'} · ${fmt(parsed.amount)} · ${parsed.details} · ${categoryLabel(parsed.category)} · ${methodShort(parsed.method)} · ${friendlyDate(parsed.date)}`))
       : '';
   };
-  const quickInput = $('textarea', { placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => renderQuickPreview(e.target.value) });
+  const quickInput = $('textarea', { id: 'f-quick', placeholder: 'Try: Spent €18.50 at Tesco from Revolut yesterday', 'aria-label': 'Natural-language entry', rows: '2', style: 'width:100%;font-size:13px;margin-bottom:8px;', onInput: (e) => renderQuickPreview(e.target.value) });
   const quickExamples = [
     { label: 'coffee 3.50 cash', hint: 'paid in cash' },
     { label: 'groceries 24: 10 cash, 14 revolut', hint: 'split payment' },
@@ -7366,40 +8044,6 @@ function screenAdd() {
     queueMicrotask(() => { if (quickInput.isConnected) quickInput.focus(); });
     toast('Shared into the quick entry — check the preview, then Add.');
   }
-  // Every entry that leaves this screen goes through here, so adding is
-  // undoable like any other write: the slot removes exactly the legs that were
-  // just created and tombstones them, so a later cloud merge can't restore
-  // them. cashAutoFollow may re-anchor the cash base while adding, so its
-  // previous values ride along. No journal: undoing an addition is a
-  // live-session action, and a reload already has the entries.
-  const commitAdded = (entries, label, onDone) => {
-    const commit = () => {
-      const prevCashBase = state.settings.cashBase;
-      const prevCoinsManual = state.settings.coinsManual;
-      state.entries.push(...entries);
-      state.entries.sort((a, b) => a.date.localeCompare(b.date));
-      if (entries.some(e => e.method === 'Cash')) cashAutoFollow(entries.reduce((sum, e) => sum + cashDeltaOf(e), 0));
-      const ids = entries.map(e => e.id);
-      trackAction(() => {
-        state.entries = state.entries.filter(e => !ids.includes(e.id));
-        tombstoneIds(ids);
-        state.settings.cashBase = prevCashBase;
-        state.settings.coinsManual = prevCoinsManual;
-        persist();
-      }, label);
-      persist();
-      if (onDone) onDone();
-    };
-    // ONE check for every way onto the ledger from this screen — quick entry,
-    // split legs, transfers, the structured form — so a duplicate cannot slip
-    // in simply because a different button created it. Cancel leaves nothing
-    // written (the commit has not started), and the confirm runs before the
-    // caller's toast/navigation through onDone.
-    const hit = entries.map(e => [e, findPotentialDuplicate(e)]).find(([, dup]) => dup);
-    if (hit) openDuplicateConfirm(hit[0], hit[1], commit);
-    else commit();
-  };
-
   const addQuick = () => {
     const parsed = parseNaturalLanguage(quickInput.value);
     if (!parsed || parsed.error) { toast(parsed?.error || 'Describe an entry first.'); quickInput.focus(); return; }
@@ -7447,7 +8091,7 @@ function screenAdd() {
     recognition.onend = () => { restoreVoiceLabel(); voiceInputBtn.disabled = false; };
     recognition.start();
   } }, iconSpan('mic', 'sm'), ' Voice');
-  c.appendChild($('div', { class: 'card', style: `max-width:540px;margin:0 auto 20px;padding:${isNarrow() ? '18px 16px' : '22px 16px'};` },
+  const quickCard = $('div', { class: 'card', style: `max-width:540px;margin:0 auto 20px;padding:${isNarrow() ? '18px 16px' : '22px 16px'};` },
     $('div', { class: 'eyebrow', style: 'margin-bottom:6px;' }, 'Quick entry'),
     $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:10px;' }, 'Describe it naturally, check the preview, then add it.'),
     quickChips,
@@ -7455,7 +8099,11 @@ function screenAdd() {
     detectRow,
     quickPreview,
     $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' }, voiceInputBtn, $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: addQuick }, 'Add entry')),
-  ));
+  );
+  // The screen the route focuses while the structured form is folded away.
+  quickCard.dataset.routeInitialFocus = 'true';
+  quickCard.dataset.firstFocus = 'f-quick';
+  c.appendChild(quickCard);
 
   const form = formView({
     onSubmit: (entryOrEntries) => {
@@ -7467,11 +8115,28 @@ function screenAdd() {
       });
     },
   });
-  c.appendChild(form);
-  // Focus the first field appropriate to the selected entry type. This keeps
-  // note forms usable if the screen is ever opened with a note preselected.
-  // The top-level renderer focuses this after the frame mounts the section.
-  form.dataset.routeInitialFocus = 'true';
+  // Two full forms stacked made #add read as two screens. Quick entry is the
+  // surface; the structured form is the same component, one tap down, folded
+  // out of the tab order and out of the audit until it is asked for. Nothing
+  // is discarded on the way - the fold only hides it.
+  const structured = $('div', { id: 'add-structured', style: 'display:none;' }, form);
+  const moreBtn = $('button', {
+    type: 'button', class: 'btn btn-ghost',
+    style: 'display:block;max-width:540px;width:100%;margin:0 auto 20px;font-size:12px;',
+    'aria-expanded': 'false', 'aria-controls': 'add-structured',
+    onClick: () => {
+      const open = structured.style.display !== 'none';
+      structured.style.display = open ? 'none' : '';
+      moreBtn.setAttribute('aria-expanded', open ? 'false' : 'true');
+      moreBtn.textContent = open ? 'More options' : 'Fewer options';
+      if (!open) {
+        const first = form.querySelector(`#${form.dataset.firstFocus || 'f-amount'}`);
+        if (first) first.focus({ preventScroll: true });
+      }
+    },
+  }, 'More options');
+  c.appendChild(moreBtn);
+  c.appendChild(structured);
   return c;
 }
 
@@ -7490,6 +8155,21 @@ function screenHistory() {
   let activeCat = params.get('cat') || 'all';
   let activeMethod = params.get('method') || 'all';
   let searchQuery = params.get('q') || '';
+  // Type, order and an arbitrary date range live in the hash on the same
+  // terms as month/day/cat: a link carries them and the back gesture undoes
+  // them. The type value is checked against the four types the ledger holds,
+  // and the range is only a range when BOTH ends are real dates — normalised
+  // here (from <= to) rather than in the filter, where a reversed pair would
+  // silently mean "nothing matches".
+  const TYPE_FILTERS = ['all', 'expense', 'credit', 'transfer', 'note'];
+  const activeType = TYPE_FILTERS.includes(params.get('type')) ? params.get('type') : 'all';
+  const orderAsc = params.get('order') === 'asc';
+  const dateKeyOk = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
+  let rangeFrom = params.get('from') || '';
+  let rangeTo = params.get('to') || '';
+  if (!dateKeyOk(rangeFrom) || !dateKeyOk(rangeTo)) { rangeFrom = ''; rangeTo = ''; }
+  else if (rangeFrom > rangeTo) { const swap = rangeFrom; rangeFrom = rangeTo; rangeTo = swap; }
+  const inRange = !!rangeFrom;
 
   const months = Array.from(new Set(state.entries.map(e => monthKey(e.date))))
     .sort((a, b) => b.localeCompare(a));
@@ -7498,21 +8178,32 @@ function screenHistory() {
   if (!months.includes(activeMonth) && months.length && activeMonth !== monthKey(today())) activeMonth = months[0];
 
   const monthEntries = entriesForMonth(activeMonth);
+  // The frame the pills count and the sum reads: the month, or the whole
+  // custom range once both ends are set. A range REPLACES the month — the
+  // calendar and month nav step aside — so the screen never has two frames
+  // at once and every count answers "of what I'm looking at".
+  const rangeEntries = inRange ? state.entries.filter(e => e.date >= rangeFrom && e.date <= rangeTo) : null;
+  const frameEntries = inRange ? rangeEntries : monthEntries;
   const activeMethodGroup = accountGroupForKey(activeMethod);
-  // With a query the search reads ALL entries, not just the visible month: a
-  // query while sitting on the wrong month used to find nothing. The month
+  // With a query the search reads ALL entries, not just the visible frame: a
+  // query while sitting on the wrong month used to find nothing. The frame
   // stays the frame (title, calendar, expense sum); only the results widen.
-  const searchScope = searchQuery ? state.entries : monthEntries;
-  const filtered = searchEntries(searchScope, searchQuery, { type: 'all', category: activeCat, method: activeMethodGroup ? 'all' : activeMethod })
+  const searchScope = searchQuery ? state.entries : frameEntries;
+  const filtered = searchEntries(searchScope, searchQuery, { type: activeType, category: activeCat, method: activeMethodGroup ? 'all' : activeMethod })
     .filter(e => !activeMethodGroup || activeMethodGroup.members.includes(e.method));
   // Sort a copy so filtering/history presentation never mutates persisted order.
   // A query is read as a ranking and keeps the ranker's order (closest match first,
-  // under the field); with the field empty the month reads newest-first as usual.
-  let visible = searchQuery ? [...filtered] : [...filtered].sort((a, b) => b.date.localeCompare(a.date)
+  // under the field); with the field empty the frame reads newest-first as usual
+  // — or oldest-first once the order toggle has been flipped.
+  const newestFirst = (a, b) => b.date.localeCompare(a.date)
     || ((b.createdAt || '')).localeCompare(a.createdAt || '')
-    || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
-  if (activeDay) visible = visible.filter(e => e.date === activeDay);
-  const expenseSum = monthEntries.filter(isSpendingEntry).reduce((s, e) => s + e.amount, 0);
+    || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);
+  const oldestFirst = (a, b) => a.date.localeCompare(b.date)
+    || ((a.createdAt || '')).localeCompare(b.createdAt || '')
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  let visible = searchQuery ? [...filtered] : [...filtered].sort(orderAsc ? oldestFirst : newestFirst);
+  if (activeDay && !inRange) visible = visible.filter(e => e.date === activeDay);
+  const expenseSum = frameEntries.filter(isSpendingEntry).reduce((s, e) => s + e.amount, 0);
   const update = (next = {}) => {
     if (next.month !== undefined) { params.set('month', next.month); params.delete('day'); }
     if (next.day !== undefined) {
@@ -7531,22 +8222,60 @@ function screenHistory() {
       if (next.method === 'all') params.delete('method');
       else params.set('method', next.method);
     }
+    if (next.type !== undefined) {
+      if (next.type === 'all') params.delete('type');
+      else params.set('type', next.type);
+    }
+    if (next.order !== undefined) {
+      if (next.order === 'asc') params.set('order', 'asc');
+      else params.delete('order');
+    }
+    if (next.range !== undefined) {
+      if (!next.range) {
+        params.delete('from');
+        params.delete('to');
+        params.delete('day');
+      } else {
+        // Normalise on write too, so the stored pair is always ordered and a
+        // reversed pick cannot leave a hash the read side keeps fixing up.
+        const { from, to } = next.range;
+        const lo = from <= to ? from : to;
+        const hi = from <= to ? to : from;
+        if (dateKeyOk(lo) && dateKeyOk(hi)) {
+          params.set('from', lo);
+          params.set('to', hi);
+          params.delete('day');
+        }
+      }
+    }
     const qs = params.toString();
     location.hash = qs ? `history?${qs}` : 'history';
   };
 
   const c = $('section', { class: 'page-section', 'aria-label': 'History' });
 
+  const navRight = $('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;justify-content:flex-end;' });
+  if (inRange) {
+    // A range is its own frame: the month's own nav steps aside rather than
+    // silently applying a month on top of a range.
+    navRight.appendChild(monthNav('Month view', () => update({ range: null }), false));
+  } else {
+    navRight.appendChild(monthNav(iconSpan('chevron-left', 'md'), () => { const i = months.indexOf(activeMonth); if (i < months.length - 1) update({ month: months[i + 1] }); }, months.indexOf(activeMonth) >= months.length - 1, 'Previous month'));
+    navRight.appendChild(monthNav(monthKey(today()) === activeMonth ? 'Today' : 'Jump', () => update({ month: monthKey(today()) }), false));
+    navRight.appendChild(monthNav(iconSpan('chevron-right', 'md'), () => { const i = months.indexOf(activeMonth); if (i > 0) update({ month: months[i - 1] }); }, months.indexOf(activeMonth) <= 0, 'Next month'));
+    // "Range" opens the month as a range ending today; the From/To inputs
+    // that appear with it are what make it span months afterwards.
+    navRight.appendChild(monthNav('Range', () => update({ range: { from: `${activeMonth}-01`, to: today() } }), false));
+  }
+  // A query has an order of its own — closest match first — so the toggle
+  // stands aside there rather than pretending to sort the ranking.
+  if (!searchQuery) navRight.appendChild(monthNav(orderAsc ? 'Oldest first' : 'Newest first', () => update({ order: orderAsc ? 'desc' : 'asc' }), false));
   c.appendChild($('div', { class: 'page-title-row' },
-    $('h1', { class: 'page-title' }, monthLabel(activeMonth)),
-    $('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap;justify-content:flex-end;' },
-      monthNav(iconSpan('chevron-left', 'md'), () => { const i = months.indexOf(activeMonth); if (i < months.length - 1) update({ month: months[i + 1] }); }, months.indexOf(activeMonth) >= months.length - 1, 'Previous month'),
-      monthNav(monthKey(today()) === activeMonth ? 'Today' : 'Jump', () => update({ month: monthKey(today()) }), false),
-      monthNav(iconSpan('chevron-right', 'md'), () => { const i = months.indexOf(activeMonth); if (i > 0) update({ month: months[i - 1] }); }, months.indexOf(activeMonth) <= 0, 'Next month'),
-    ),
+    $('h1', { class: 'page-title' }, inRange ? `${friendlyDate(rangeFrom)} – ${friendlyDate(rangeTo)}` : monthLabel(activeMonth)),
+    navRight,
   ));
 
-  c.appendChild(calendarCard(activeMonth, activeDay, (ds) => update({ day: activeDay === ds ? '' : ds })));
+  if (!inRange) c.appendChild(calendarCard(activeMonth, activeDay, (ds) => update({ day: activeDay === ds ? '' : ds })));
 
   // Search bar
   const searchInput = $('input', { type: 'text', value: searchQuery, placeholder: 'Search descriptions, notes…', 'aria-label': 'Search entries', autocomplete: 'off', style: 'width:100%;max-width:320px;', onFocus: () => ensureSearchLib(), onInput: (e) => {
@@ -7554,7 +8283,7 @@ function screenHistory() {
     clearTimeout(searchInput._timer);
     searchInput._timer = setTimeout(() => update({ q: e.target.value }), 250);
   } });
-  c.appendChild($('div', { style: 'margin-bottom:16px;' },
+  c.appendChild($('div', { class: 'no-print', style: 'margin-bottom:16px;' },
     $('div', { style: 'display:flex;gap:8px;align-items:center;' },
       $('span', { style: 'color:var(--muted);', 'aria-hidden': 'true' }, iconSpan('search')),
       searchInput,
@@ -7562,11 +8291,26 @@ function screenHistory() {
     ),
   ));
 
-  const catCounts = {};
-  for (const e of monthEntries) catCounts[e.category] = (catCounts[e.category] || 0) + 1;
-  catCounts.all = monthEntries.length;
+  // The range's own controls. Both inputs are visible (not one hidden behind
+  // the other): a range is two dates, and each edit re-writes the hash, so the
+  // back gesture steps through them like any other filter.
+  if (inRange) {
+    const inputStyle = 'font:inherit;background:transparent;color:inherit;border:1px solid var(--line);border-radius:8px;padding:7px 10px;';
+    c.appendChild($('div', { class: 'no-print', style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px;' },
+      $('span', { class: 'eyebrow' }, 'Range'),
+      $('label', { style: 'font-size:11px;color:var(--muted);display:inline-flex;align-items:center;gap:6px;' }, 'From',
+        $('input', { type: 'date', value: rangeFrom, 'aria-label': 'Range from', style: inputStyle, onChange: (e) => update({ range: { from: e.target.value || rangeFrom, to: rangeTo } }) })),
+      $('label', { style: 'font-size:11px;color:var(--muted);display:inline-flex;align-items:center;gap:6px;' }, 'To',
+        $('input', { type: 'date', value: rangeTo, 'aria-label': 'Range to', style: inputStyle, onChange: (e) => update({ range: { from: rangeFrom, to: e.target.value || rangeTo } }) })),
+      $('button', { type: 'button', class: 'btn-link', style: 'font-size:12px;', onClick: () => update({ range: null }) }, 'Clear'),
+    ));
+  }
 
-  const filterRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 12px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
+  const catCounts = {};
+  for (const e of frameEntries) catCounts[e.category] = (catCounts[e.category] || 0) + 1;
+  catCounts.all = frameEntries.length;
+
+  const filterRow = $('div', { class: 'no-print', style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 12px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
   filterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;' }, 'Category'));
   filterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': 'all', 'data-active': activeCat === 'all' ? 'true' : 'false', 'aria-pressed': activeCat === 'all' ? 'true' : 'false', onClick: () => update({ cat: 'all' }) }, `All · ${catCounts.all || 0}`));
   for (const c2 of allCategories()) {
@@ -7575,10 +8319,10 @@ function screenHistory() {
     filterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': c2.id, 'data-active': activeCat === c2.id ? 'true' : 'false', 'aria-pressed': activeCat === c2.id ? 'true' : 'false', onClick: () => update({ cat: c2.id }) }, `${c2.label} · ${count}`));
   }
   const methodCounts = {};
-  for (const e of monthEntries) methodCounts[e.method] = (methodCounts[e.method] || 0) + 1;
-  const methodFilterRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 16px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
+  for (const e of frameEntries) methodCounts[e.method] = (methodCounts[e.method] || 0) + 1;
+  const methodFilterRow = $('div', { class: 'no-print', style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 16px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
   methodFilterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;font-size:10px;' }, 'Account'));
-  methodFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': 'all', 'data-active': activeMethod === 'all' ? 'true' : 'false', 'aria-pressed': activeMethod === 'all' ? 'true' : 'false', onClick: () => update({ method: 'all' }) }, `All · ${monthEntries.length}`));
+  methodFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': 'all', 'data-active': activeMethod === 'all' ? 'true' : 'false', 'aria-pressed': activeMethod === 'all' ? 'true' : 'false', onClick: () => update({ method: 'all' }) }, `All · ${frameEntries.length}`));
   for (const group of ACCOUNT_GROUPS) {
     const key = `group:${group.id}`;
     const count = group.members.reduce((sum, id) => sum + (methodCounts[id] || 0), 0);
@@ -7593,9 +8337,45 @@ function screenHistory() {
   c.appendChild(filterRow);
   c.appendChild(methodFilterRow);
 
+  // Type: the filter the function always had and the screen never asked for.
+  // Counts read the frame (month or range) like every other pill row, and the
+  // row only offers types that actually occur — a pill with 0 on it reads as
+  // a broken filter rather than an empty one.
+  const typeCounts = { all: frameEntries.length, expense: 0, credit: 0, transfer: 0, note: 0 };
+  for (const e of frameEntries) if (typeCounts[e.type] !== undefined) typeCounts[e.type] += 1;
+  const typeFilterRow = $('div', { class: 'no-print', style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 16px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
+  typeFilterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;font-size:10px;' }, 'Type'));
+  const TYPE_PILLS = [['all', 'All'], ['expense', 'Spending'], ['credit', 'Income'], ['transfer', 'Transfers'], ['note', 'Notes']];
+  for (const [value, label] of TYPE_PILLS) {
+    const count = typeCounts[value] || 0;
+    if (count === 0 && activeType !== value) continue;
+    typeFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': value, 'data-active': activeType === value ? 'true' : 'false', 'aria-pressed': activeType === value ? 'true' : 'false', onClick: () => update({ type: value }) }, `${label} · ${count}`));
+  }
+  c.appendChild(typeFilterRow);
+
+  // The view's own actions. "Export view" writes exactly what is on screen —
+  // in the order it is on screen, ranking included — while the full-ledger
+  // CSV stays in the Data menu; Print is the year-in-review pattern pointed
+  // at this screen (the class is what the @media print block keys on).
+  const toolsRow = $('div', { class: 'no-print', style: 'display:flex;gap:8px;flex-wrap:wrap;padding:0 0 14px;' },
+    $('button', { type: 'button', class: 'btn btn-ghost', style: 'height:28px;padding:0 12px;font-size:12px;', onClick: () => {
+      exportEntriesCsv(state, { category: categoryLabel, method: methodLabel }, { entries: visible });
+    } }, `Export view · ${visible.length}`),
+    $('button', { type: 'button', class: 'btn btn-ghost', style: 'height:28px;padding:0 12px;font-size:12px;', onClick: () => {
+      document.body.classList.add('printing-history');
+      const done = () => { document.body.classList.remove('printing-history'); window.removeEventListener('afterprint', done); };
+      window.addEventListener('afterprint', done);
+      // Some embedded webviews never fire afterprint; the class is harmless
+      // there, but a delayed sweep keeps the page from staying hidden.
+      setTimeout(done, 30000);
+      window.print();
+    } }, 'Print'),
+  );
+  c.appendChild(toolsRow);
+
   // Bulk selection - checkboxes in the header and each row, plus a toolbar.
   const selected = new Set();
-  const bulkBar = $('div', { class: 'bulk-bar', style: 'display:none;margin-bottom:12px;padding:10px 16px;border:1px solid var(--accent);border-radius:var(--radius);background:var(--accent-soft);align-items:center;justify-content:space-between;gap:12px;' },
+  const bulkBar = $('div', { class: 'bulk-bar no-print', style: 'display:none;margin-bottom:12px;padding:10px 16px;border:1px solid var(--accent);border-radius:var(--radius);background:var(--accent-soft);align-items:center;justify-content:space-between;gap:12px;' },
     $('span', { class: 'bulk-count', style: 'font-size:13px;font-weight:500;' }, ''),
     $('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;' },
       $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: () => { selected.clear(); syncBulkBar(); tableWrap.querySelectorAll('input[data-bulk]').forEach(cb => cb.checked = false); } }, 'Clear'),
@@ -7784,7 +8564,6 @@ function screenHistory() {
         } else openEdit(e.id);
       };
       const selectAll = isGroup ? legs.map(l => l.id) : [e.id];
-      const budgetAppliedTo = isGroup ? legs : [e];
       // Every control in this row is addressed by this string, so it has to name
       // the row and not just the entry: a bank-to-bank transfer writes two rows
       // with the same details and the same date, and the static 'Toggle budget
@@ -7808,16 +8587,7 @@ function screenHistory() {
           ? legs.map(l => $('button', { type: 'button', class: 'pill split-leg', title: 'Edit this slice', 'aria-label': `Edit ${fmt(l.amount)} ${methodShort(l.method)} slice`, onClick: ev => { ev.stopPropagation(); openLegEditor(l); } }, `${fmt(l.amount)} ${methodShort(l.method)}`))
           : [$('span', { class: 'pill history-method' }, methodShort(e.method))])),
         $('span', { class: 'history-actions' },
-          !isNote && !isTransfer ? $('button', { type: 'button', class: 'history-action-btn budget-toggle-btn', title: e.budgetExcluded ? 'Include in budget calculations' : 'Exclude from budget calculations', 'aria-label': `Toggle budget inclusion for ${rowLabel}`, onClick: ev => {
-            ev.stopPropagation();
-            const previous = e.budgetExcluded === true;
-            for (const leg of budgetAppliedTo) leg.budgetExcluded = !previous;
-            persist();
-            trackAction(() => { for (const leg of budgetAppliedTo) leg.budgetExcluded = previous; persist(); }, previous ? 'Included entry in budget' : 'Excluded entry from budget');
-            toast(previous ? 'Included in budget calculations.' : 'Excluded from budget calculations.');
-            render();
-          } }, e.budgetExcluded ? 'Include budget' : 'Exclude budget') : null,
-          $('button', { type: 'button', class: 'history-action-btn', title: isGroup ? 'Edit or delete split payment' : 'Edit or delete entry', 'aria-label': (isGroup ? `Edit or delete split ${rowLabel}` : `Edit or delete ${rowLabel}`), onClick: ev => { ev.stopPropagation(); openRow(); } }, 'Manage'),
+          $('button', { type: 'button', class: 'history-action-btn', title: isGroup ? 'Edit or delete split payment' : 'Edit or delete entry', 'aria-label': (isGroup ? `Edit or delete split ${rowLabel}` : `Edit or delete ${rowLabel}`), onClick: ev => { ev.stopPropagation(); openRow(); } }, 'Edit'),
         ),
       );
 
@@ -7828,7 +8598,7 @@ function screenHistory() {
 
   const histSumEl = $('span', { class: 'display-num', style: 'font-size:30px;' }, fmt(expenseSum));
   c.appendChild($('div', { class: 'summary-row' },
-    $('span', { class: 'eyebrow' }, 'Monthly sum · expenses'),
+    $('span', { class: 'eyebrow' }, inRange ? 'Range sum · expenses' : 'Monthly sum · expenses'),
     histSumEl,
   ));
 
@@ -7913,7 +8683,17 @@ function screenBalances() {
       $('span', { class: 'muted', style: 'font-size:11px;' }, 'AIB · Revolut (Main + Savings)'),
     ),
     $('div', { style: 'display:flex;flex-direction:column;gap:2px;' },
-      ...renderAccountBalanceRows({ editable: true }),
+      // Each account's own forward projection: the schedule carries the method
+      // it lands on, so every row can say where this card ends up if the next
+      // 30 days of recurring income and bills all land. Ordinary spending is
+      // deliberately not projected — the run-rate says that elsewhere, and a
+      // forward figure that pretended the shopping stops would be worse than
+      // none. No schedule on an account means no line at all.
+      ...renderAccountBalanceRows({
+        editable: true,
+        secondaryFor: (id) => accountProjectionText(id),
+        secondaryHintFor: () => 'Where this account lands in 30 days: its balance on that date — entries already recorded for a future day included — plus every recurring item scheduled on it in between, if each one lands. Ordinary spending is not projected here.',
+      }),
     ),
   ));
 
@@ -7929,10 +8709,28 @@ function screenBalances() {
           secondary: totals.loaded || totals.spent
             ? `${userCheckpointFor(id, today()) ? 'net adjustments · loads' : 'recorded loads'} ${fmt(totals.loaded)} · spending ${fmt(totals.spent)}`
             : '',
+          secondaryHint: 'Loads are what went ON the card, spending what came off it. After a reconciliation the figure is your adjustments plus those loads.',
           editable: true,
           startInLoad: id === autoLoadId,
         });
       }),
+    ),
+  ));
+
+  // Paper vouchers. The hero figure on the dashboard hides itself at €0.00,
+  // so this is where the tally stays editable whether it reads zero or not —
+  // hiding a figure must never hide the control behind it.
+  const vouchers = voucherAmount();
+  c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
+    $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;' },
+      $('div', { style: 'min-width:0;' },
+        $('div', { class: 'eyebrow' }, 'Paper vouchers'),
+        $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Tesco paper vouchers on hand. Never counted as money in any balance.'),
+      ),
+      $('div', { style: 'display:flex;align-items:center;gap:10px;flex-shrink:0;' },
+        $('span', { class: 'display-num', style: `font-size:16px;color:${vouchers > 0 ? 'var(--accent)' : 'var(--muted)'};` }, fmt(vouchers)),
+        $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;', 'aria-label': 'Edit paper vouchers', onClick: () => openVoucherEditor() }, 'Edit'),
+      ),
     ),
   ));
 
@@ -7972,553 +8770,62 @@ function heatColor(pct) {
   return `rgb(${mix[0]}, ${mix[1]}, ${mix[2]})`;
 }
 
-function screenInsights() {
-  const params = new URLSearchParams((location.hash.split('?')[1]) || '');
-  const fromParam = params.get('from') || '';
-  const toParam = params.get('to') || '';
-  const defaultFrom = (() => { const d = new Date(); d.setDate(d.getDate() - 90); return localDateKey(d); })();
-  let fromDate = isValidCheckpointDate(fromParam) ? fromParam : defaultFrom;
-  let toDate = isValidCheckpointDate(toParam) ? toParam : today();
-  // Keep malformed or reversed URL ranges from producing misleading totals,
-  // and persist the corrected order so the URL and the pickers always agree.
-  if (fromDate > toDate) {
-    [fromDate, toDate] = [toDate, fromDate];
-    params.set('from', fromDate);
-    params.set('to', toDate);
-    history.replaceState(null, '', '#insights?' + params.toString());
+// ---------- Insights (deferred) ----------
+// The Insights screen, its chart cluster and the Year in review modal are
+// ~39 KB of drawing code that a session may never open, so they live in
+// insights.js and are fetched on the first visit to #insights — the same
+// shape as tescoScreen(), including the warm-up, because a screen that takes
+// a frame to arrive should already be there when the tab is clicked. The
+// module reaches back for the shell through the exports at the end of this
+// file rather than through a context object: it is one module graph, and a
+// live binding on `state` is what keeps it reading the current document.
+let _insightsModule = null;
+let _insightsPromise = null;
+function insightsReady() {
+  if (_insightsModule) return Promise.resolve(_insightsModule);
+  if (!_insightsPromise) {
+    _insightsPromise = import('./insights.js')
+      .then(mod => {
+        _insightsModule = mod;
+        render();
+        return mod;
+      })
+      .catch(err => {
+        _insightsPromise = null;
+        console.warn('cents: the Insights screen could not be loaded', err);
+        toast('The Insights screen could not be loaded.');
+        throw err;
+      });
   }
+  return _insightsPromise;
+}
 
-  const rangeEntries = state.entries.filter(e => e.date >= fromDate && e.date <= toDate);
-  const recent = rangeEntries;
+/** The module, or null while it is still coming — the route draws its own
+ *  placeholder in that case (see insightsLoadingCard). */
+function insightsScreen() {
+  if (_insightsModule) return _insightsModule;
+  void insightsReady().catch(() => {});
+  return null;
+}
 
-  const c = $('section', { class: 'page-section insights-section', 'aria-label': 'Insights' });
+// Intent warm-up: pointing at (or tabbing to) an Insights link starts the
+// fetch, so a click on the tab is usually already there. Delegated, because
+// every screen rebuilds its own nav — and it is the same call the route
+// switch makes.
+function warmInsightsScreen(ev) {
+  const el = ev.target && ev.target.closest ? ev.target.closest('a[href="#insights"]') : null;
+  if (el) void insightsReady().catch(() => {});
+}
+document.addEventListener('pointerover', warmInsightsScreen);
+document.addEventListener('focusin', warmInsightsScreen);
 
-  // Date range picker
-  const fromInput = $('input', { type: 'date', value: fromDate, 'aria-label': 'From date', style: 'width:auto;font-size:13px;', onChange: (e) => {
-    params.set('from', e.target.value); location.hash = 'insights?' + params.toString();
-  } });
-  const toInput = $('input', { type: 'date', value: toDate, 'aria-label': 'To date', style: 'width:auto;font-size:13px;', onChange: (e) => {
-    params.set('to', e.target.value); location.hash = 'insights?' + params.toString();
-  } });
-  wireFlatpickr(fromInput, { defaultDate: fromDate });
-  wireFlatpickr(toInput, { defaultDate: toDate });
-
-  c.appendChild($('div', { class: 'page-title-row' },
-    $('h1', { class: 'page-title' }, 'Where it goes.'),
-    $('div', { style: 'display:flex;align-items:center;gap:8px;flex-wrap:wrap;' },
-      fromInput,
-      $('span', { class: 'muted range-sep' }, iconSpan('arrow-right', 'sm')),
-      toInput,
-      (fromParam || toParam) ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:12px;', onClick: () => { location.hash = 'insights'; } }, 'Reset') : null,
-    ),
-  ));
-
-  // Quick range presets so the two date pickers aren't the only way in.
-  const lastMonthStart = new Date(); lastMonthStart.setDate(1); lastMonthStart.setMonth(lastMonthStart.getMonth() - 1);
-  const lastMonthKey = `${lastMonthStart.getFullYear()}-${String(lastMonthStart.getMonth() + 1).padStart(2, '0')}`;
-  const lastMonthDays = new Date(lastMonthStart.getFullYear(), lastMonthStart.getMonth() + 1, 0).getDate();
-  const presetRanges = [
-    { label: 'This month', from: monthKey(today()) + '-01', to: today() },
-    { label: 'Last month', from: lastMonthKey + '-01', to: `${lastMonthKey}-${String(lastMonthDays).padStart(2, '0')}` },
-    { label: 'Last 90 days', from: offsetDateKey(today(), -89), to: today() },
-    { label: 'Year to date', from: `${new Date().getFullYear()}-01-01`, to: today() },
-  ];
-  const presetRow = $('div', { style: 'display:flex;flex-wrap:wrap;gap:6px;margin-bottom:20px;' },
-    $('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;' }, 'Range'),
-    ...presetRanges.map(p => $('button', {
-      type: 'button', class: 'pill pill-cat', 'data-active': fromDate === p.from && toDate === p.to ? 'true' : 'false',
-      'aria-pressed': fromDate === p.from && toDate === p.to ? 'true' : 'false',
-      onClick: () => { params.set('from', p.from); params.set('to', p.to); location.hash = 'insights?' + params.toString(); },
-    }, p.label)),
-  );
-  c.appendChild(presetRow);
-
-  const months = {};
-  for (const e of recent.filter(isSpendingEntry)) {
-    const k = monthKey(e.date);
-    months[k] = (months[k] || 0) + e.amount;
-  }
-  const monthList = Object.entries(months).sort(([a],[b]) => a.localeCompare(b));
-  const avg = monthList.length ? monthList.reduce((s, [,v]) => s+v, 0) / monthList.length : 0;
-
-  const methodTotals = {};
-  for (const e of recent.filter(isSpendingEntry)) methodTotals[e.method] = (methodTotals[e.method] || 0) + e.amount;
-  const topMethodEntry = Object.entries(methodTotals).sort((a,b) => b[1]-a[1])[0];
-  const topCategoryEntry = Object.entries(catTotalsForEntries(recent)).sort((a, b) => b[1] - a[1])[0];
-  const insightTotal = recent.filter(isSpendingEntry).reduce((sum, entry) => sum + entry.amount, 0);
-  const rangeStartTime = Date.parse(`${fromDate}T00:00:00Z`);
-  const rangeEndTime = Date.parse(`${toDate}T00:00:00Z`);
-  const rangeLength = Number.isFinite(rangeStartTime) && Number.isFinite(rangeEndTime) && rangeEndTime >= rangeStartTime
-    ? Math.floor((rangeEndTime - rangeStartTime) / 86400000) + 1
-    : 0;
-  const previousFrom = rangeLength ? offsetDateKey(fromDate, -rangeLength) : '';
-  const previousTo = rangeLength ? offsetDateKey(fromDate, -1) : '';
-  const insightPrevious = rangeLength
-    ? state.entries.filter(entry => entry.date >= previousFrom && entry.date <= previousTo && isSpendingEntry(entry))
-      .reduce((sum, entry) => sum + entry.amount, 0)
-    : 0;
-  const insightDelta = insightTotal - insightPrevious;
-
-  c.appendChild($('div', { class: 'insight-narrative card', style: 'padding:24px 16px;margin-bottom:24px;' },
-    $('div', { class: 'eyebrow' }, 'The short version'),
-    $('p', { class: 'serif insight-narrative-text' }, recent.some(isSpendingEntry)
-      ? `You spent ${fmt(insightTotal)} in this range${topCategoryEntry ? `, led by ${categoryLabel(topCategoryEntry[0])} at ${fmt(topCategoryEntry[1])}` : ''}.`
-      : 'Log a few expenses and your spending story will appear here.'),
-    insightPrevious > 0 ? $('div', { class: 'insight-narrative-note muted' },
-      `${fmt(Math.abs(insightDelta))} ${insightDelta <= 0 ? 'less' : 'more'} than the preceding period.`,
-    ) : null,
-  ));
-
-  if (state.entries.length === 0) {
-    c.appendChild(emptyStateCard({ icon: 'chart', title: 'No data yet', blurb: 'Log a few expenses and your spending story, heatmap and charts will appear here.', actionLabel: 'Add your first entry', actionHref: '#add' }));
-  }
-
-  c.appendChild($('div', { class: 'insight-stats' },
-    statCard('Average / month', fmt(avg)),
-    statCard('Top method', topMethodEntry ? `${(methodShort(topMethodEntry[0]))} · ${fmt(topMethodEntry[1])}` : '-'),
-    statCard('Entries', String(recent.filter(isSpendingEntry).length)),
-    statCard('Categories active', String(new Set(recent.filter(isSpendingEntry).map(e => e.category)).size)),
-  ));
-
-  // Calendar heatmap - follows the selected range's end month, so it never
-  // contradicts the date range the rest of the screen honours.
-  const now = new Date();
-  const heatKey = monthKey(toDate);
-  const heatEntries = entriesForMonth(heatKey).filter(isSpendingEntry);
-  const heatByDay = {};
-  for (const e of heatEntries) heatByDay[e.date] = (heatByDay[e.date] || 0) + e.amount;
-  const maxDay = Math.max(1, ...Object.values(heatByDay));
-  const [hy, hm] = heatKey.split('-').map(Number);
-  const lastDay = new Date(hy, hm, 0).getDate();
-  const firstDow = new Date(hy, hm - 1, 1).getDay(); // 0=Sun
-  // Mon-start: shift Sun→6, Mon→0 … Sat→5
-  const monAdjusted = (firstDow + 6) % 7;
-  
-  const heatCells = [];
-  for (let i = 0; i < monAdjusted; i++) heatCells.push($('div')); // empty leading cells
-  for (let d = 1; d <= lastDay; d++) {
-    const ds = `${hy}-${String(hm).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const val = heatByDay[ds] || 0;
-    const intensity = maxDay > 0 ? val / maxDay : 0;
-    const color = intensity === 0 ? 'var(--line)' : heatColor(
-      intensity < 0.25 ? 0.22 : intensity < 0.5 ? 0.42 : intensity < 0.75 ? 0.65 : 1
-    );
-    const tip = val > 0 ? `${fmt(val)}` : '';
-    const ttip = val > 0 ? `${friendlyDate(ds)} · ${fmt(val)}` : '';
-    heatCells.push($('div', { class: 'heat-cell-wrap', style: 'position:relative;' },
-      tip ? $('div', { class: 'heat-tip' }, tip) : null,
-      $('div', {
-        class: 'heat-cell', 'data-tip': ttip || null, role: 'button', tabindex: '0',
-        'aria-label': `${friendlyDate(ds)}${val ? `, spent ${fmt(val)}` : ''} - view ${val ? 'these entries' : 'this day'} in history`,
-        onClick: () => { location.hash = `history?month=${heatKey}&day=${ds}`; },
-        onKeydown: (ev) => {
-          if (ev.key === 'Enter' || ev.key === ' ') {
-            ev.preventDefault();
-            location.hash = `history?month=${heatKey}&day=${ds}`;
-          }
-        },
-        style: `border-radius:5px;aspect-ratio:1;background:${color};cursor:pointer;font-size:9px;display:flex;align-items:center;justify-content:center;${val === 0 ? 'opacity:0.5;' : ''}${ds === today() ? 'box-shadow:0 0 0 1.5px var(--ink);' : ''}`,
-      },
-        val > 0 ? $('span', { style: `color:${heatDigitInk(intensity)};font-weight:600;font-size:8px;` }, String(d)) : null,
-      ),
-    ));
-  }
-
-  const heatGrid = $('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:4px;' },
-    ...['M','T','W','T','F','S','S'].map(l => $('div', { style: 'text-align:center;font-size:10px;color:var(--muted);padding-bottom:4px;' }, l)),
-    ...heatCells,
-  );
-  wireChartTips(heatGrid, '.heat-cell[data-tip]');
-  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:12px;' }, `Spending heatmap · ${monthLabel(heatKey)}`),
-    heatGrid,
-    $('div', { style: 'margin-top:8px;font-size:10px;color:var(--muted);display:flex;align-items:center;gap:4px;' },
-      $('span', null, 'Less'),
-      ...[0, 0.25, 0.5, 0.75, 1].map(i => $('span', { style: `display:inline-block;width:12px;height:12px;border-radius:3px;background:${i===0?'var(--line)':heatColor(i)};` })),
-      $('span', null, 'More'),
-    ),
-  ));
-
-  const catTotals = catTotalsForEntries(recent);
-  const catRows = Object.entries(catTotals).sort((a,b)=>b[1]-a[1]);
-  const maxCat = catRows[0]?.[1] || 1;
-
-  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'By category'),
-    catRows.length === 0
-      ? $('div', { class: 'empty' }, emptyIcon('coin'), ' No expenses in this range.')
-      : $('div', { style: 'display:flex;flex-direction:column;gap:22px;' },
-          donutChart(catRows),
-          $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
-            ...catRows.map(([cat, val]) => barWithSpark(cat, val, maxCat, val === maxCat)),
-          ),
-        ),
-  ));
-
-  // Month-by-month grouped bars: spending vs income over the last 12 months
-  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Month by month'),
-    monthOverMonthChart(),
-  ));
-
-  // Category mix over time - stacked areas, so the shape of spending is readable
-  // month to month without losing the category breakdown.
-  const stacked = stackedAreaChart();
-  if (stacked) {
-    c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
-      $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Category mix over time'),
-      stacked,
-    ));
-  }
-
-  const methodRows = Object.entries(methodTotals).sort((a,b)=>b[1]-a[1]);
-  const maxMethod = methodRows[0]?.[1] || 1;    c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;' },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Payment mix'),
-    methodRows.length === 0
-      ? $('div', { class: 'empty' }, emptyIcon('coin'), ' No expenses in this range.')
-      : $('div', { style: 'display:flex;flex-direction:column;gap:18px;' },
-          ...methodRows.map(([m, val]) => bar(methodLabel(m), val, maxMethod, val === maxMethod)),
-        ),
-  ));
-
-  // Account balance history
-  const balanceHistory = accountBalanceHistory();
-  if (balanceHistory.points.length > 0) {
-    const chartW = 640, chartH = 170, padX = 42, padY = 18;
-    const values = balanceHistory.points.flatMap(p => balanceHistory.methods.map(m => p.balances[m.id]));
-    const minValue = Math.min(0, ...values), maxValue = Math.max(1, ...values), range = maxValue - minValue || 1;
-    const xAt = i => padX + (balanceHistory.points.length === 1 ? 0 : i * ((chartW - padX * 1.5) / (balanceHistory.points.length - 1)));
-    const yAt = value => chartH - padY - ((value - minValue) / range) * (chartH - padY * 2);
-    const palette = ['var(--chart-line)', 'var(--muted)', 'var(--ink)'];
-    const lines = balanceHistory.methods.map((method, index) => {
-      const d = balanceHistory.points.map((point, i) => `${i ? 'L' : 'M'} ${xAt(i)} ${yAt(point.balances[method.id])}`).join(' ');
-      return $('path', { d, style: `fill:none;stroke:${palette[index]};stroke-width:2;stroke-linecap:round;stroke-linejoin:round;` });
-    });
-    c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;overflow:hidden;' },
-      $('div', { style: 'display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:14px;' },
-        $('div', null,        $('div', { class: 'eyebrow' }, 'Account balance history'), $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Month-end balances anchored to dated reconciliation checkpoints.')),
-        $('div', { style: 'display:flex;gap:10px;flex-wrap:wrap;' }, ...balanceHistory.methods.map((m, i) => $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: `width:7px;height:7px;border-radius:50%;background:${palette[i]};` }), methodShort(m.id)))),
-      ),
-      $('svg', { viewBox: `0 0 ${chartW} ${chartH}`, role: 'img', 'aria-label': 'Account balance history chart', style: 'width:100%;height:auto;min-height:150px;overflow:visible;' },
-        $('line', { x1: padX, y1: yAt(0), x2: chartW - padX / 2, y2: yAt(0), style: 'stroke:var(--line);stroke-width:1;' }),
-        ...lines,
-        ...balanceHistory.points.map((point, i) => $('text', { x: xAt(i), y: chartH - 2, 'text-anchor': i === 0 ? 'start' : i === balanceHistory.points.length - 1 ? 'end' : 'middle', style: 'fill:var(--muted);font-size:9px;' }, monthLabel(point.key).split(' ')[0].slice(0, 3))),
-      ),
-    ));
-  }
-
-  // Monthly review assistant
-  const reviewKey = monthKey(today());
-  const review = reviewForMonth(reviewKey);
-  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
-    $('div', { class: 'eyebrow', style: 'margin-bottom:12px;' }, `Monthly review · ${monthLabel(reviewKey)} · month to date`),
-    $('div', { style: 'display:flex;flex-direction:column;gap:8px;' }, ...review.lines.map(line => $('div', { class: 'serif', style: 'font-size:16px;' }, line))),
-  ));
-
-  // Duplicate cleanup
-  const duplicateSets = duplicateGroups();
-  if (duplicateSets.length) {
-    c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
-      $('div', { class: 'row between', style: 'margin-bottom:12px;' }, $('div', { class: 'eyebrow' }, `Possible duplicates · ${duplicateSets.reduce((sum, group) => sum + group.length - 1, 0)}`), $('span', { class: 'muted', style: 'font-size:11px;' }, 'Keep the first, remove extras')),
-      $('div', { style: 'display:flex;flex-direction:column;gap:10px;' }, ...duplicateSets.flatMap(group => group.slice(1).map(entry => $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line);font-size:13px;' },
-        $('div', { style: 'min-width:0;' }, $('div', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, entry.details), $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, `${friendlyDate(entry.date)} · ${methodShort(entry.method)} · ${fmt(entry.amount)}`)),
-        $('button', { type: 'button', class: 'btn btn-danger', style: 'padding:5px 10px;font-size:11px;flex-shrink:0;', onClick: () => removeDuplicateEntry(entry.id) }, 'Delete duplicate'),
-      )))),
-    ));
-  }
-
-  // Data health card
-  const health = computeDataHealth(state.entries);
-  const healthColor = health.score >= 80 ? 'var(--positive)' : health.score >= 50 ? 'var(--accent)' : 'var(--negative)';
-  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
-    $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;' },
-      $('div', { class: 'eyebrow' }, 'Data health'),
-      $('span', { class: 'display-num', style: `font-size:22px;color:${healthColor};` }, `${health.score}%`),
-    ),
-    health.issues.length === 0
-      ? $('div', { class: 'empty', style: 'padding:8px 0;display:inline-flex;align-items:center;gap:6px;' }, 'Your data looks clean!', iconSpan('sparkle', 'sm'))
-      : $('div', { style: 'display:flex;flex-direction:column;gap:6px;' },
-          ...health.issues.map(issue => $('div', { style: 'font-size:13px;padding:6px 0;border-bottom:1px solid var(--line);' }, '· ', issue)),
-        ),
-  ));
-
-  // Year-in-review button
-  c.appendChild($('div', { style: 'text-align:center;padding:16px 0;' },
-    $('button', { type: 'button', class: 'btn btn-ghost', onClick: openYearInReview }, iconSpan('chart', 'md'), 'Year in review'),
-  ));
-
+/** Drawn between asking for the module and having it. */
+function insightsLoadingCard() {
+  const c = $('section', { class: 'page-section', 'aria-label': 'Insights' });
+  c.appendChild($('div', { class: 'page-title-row' }, $('h1', { class: 'page-title' }, 'Insights')));
+  c.appendChild($('div', { class: 'card', style: 'padding:22px;' },
+    $('p', { style: 'margin:0;color:var(--muted);font-size:13px;' }, 'Opening Insights\u2026')));
   return c;
-}
-// A stat card's value is one headline, and not every headline is a total: the
-// top method reads "AIB bank · €2475.99". Set at a total's 30px that wrapped
-// onto a second line, overran its card and dominated the row, so the size
-// follows the value's own length. What it must NOT do is decide the value: a
-// figure arrives here already formatted (fmt(avg), never the raw float, which
-// printed 5924.6900000000005) and the third tier is there so that a longer
-// value than the row expected still fits the narrowest card the grid makes.
-function statValueSize(value) {
-  const n = String(value ?? '').length;
-  if (n <= 10) return 30;
-  if (n <= 16) return 22;
-  return 18;
-}
-function statCard(label, value) {
-  const numEl = $('div', { class: 'display-num stat-value', style: `font-size:${statValueSize(value)}px;margin-top:8px;` }, value);
-  return $('div', { class: 'card stat-card' },
-    $('div', { class: 'eyebrow' }, label),
-    numEl,
-  );
-}
-function bar(label, value, max, isMax) {
-  return $('div', null,
-    $('div', { class: 'row between', style: 'font-size:13px;margin-bottom:8px;' },
-      $('span', null, label),
-      $('span', { class: 'display-num', style: 'font-size:14px;' }, fmt(value)),
-    ),
-    $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
-      $('div', { style: `height:100%;width:${(value/max)*100}%;background:${isMax ? 'var(--accent)' : 'var(--bar-soft)'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
-    ),
-  );
-}
-
-// ---------- category bars with sparkline ----------
-/** Monthly spending totals for a category over the last N months. */
-function categorySparkData(catId, months = 12) {
-  const now = new Date();
-  const keys = [];
-  for (let i = months - 1; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-  }
-  return keys.map(key => entriesForMonth(key).filter(e => isSpendingEntry(e) && e.category === catId).reduce((s, e) => s + e.amount, 0));
-}
-
-function sparklinePath(values, w = 60, h = 20) {
-  const mn = Math.min(...values), mx = Math.max(...values);
-  const rng = mx - mn || 1;
-  const step = values.length > 1 ? w / (values.length - 1) : 0;
-  return values.map((v, i) => `${i === 0 ? 'M' : 'L'} ${(i * step).toFixed(1)} ${(h - 3 - ((v - mn) / rng) * (h - 6)).toFixed(1)}`).join(' ');
-}
-
-function barWithSpark(cat, val, max, isMax) {
-  const values = categorySparkData(cat);
-  const hasSpark = values.some(v => v > 0);
-  return $('div', { class: 'insight-bar-row' },
-    $('div', { class: 'row between', style: 'font-size:13px;margin-bottom:8px;' },
-      $('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' },
-        hasSpark ? $('svg', { width: '60', height: '20', 'aria-hidden': 'true', style: 'flex-shrink:0;' },
-          $('path', { d: sparklinePath(values), style: 'fill:none;stroke:var(--chart-line);stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;' }),
-        ) : null,
-        $('span', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, categoryLabel(cat)),
-      ),
-      $('span', { class: 'display-num', style: 'font-size:14px;' }, fmt(val)),
-    ),
-    $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;' },
-      $('div', { style: `height:100%;width:${(val / max) * 100}%;background:${isMax ? 'var(--accent)' : 'var(--bar-soft)'};border-radius:99px;transition:width .5s cubic-bezier(0.2,0.8,0.2,1);` }),
-    ),
-  );
-}
-
-// ---------- donut chart ----------
-// SVG donut built from stroke-dasharray segments. Starts at 12 o'clock and
-// sweeps clockwise; the centre shows the total. Legend lists share per slice.
-const DONUT_PALETTE = ['var(--accent)', 'color-mix(in srgb, var(--accent) 82%, var(--bg))', 'color-mix(in srgb, var(--accent) 64%, var(--bg))', 'color-mix(in srgb, var(--accent) 48%, var(--bg))', 'color-mix(in srgb, var(--accent) 34%, var(--bg))', 'var(--muted)', 'color-mix(in srgb, var(--muted) 55%, var(--bg))', 'var(--line)'];
-function donutChart(rows) {
-  const total = rows.reduce((s, [, v]) => s + v, 0);
-  if (!total) return null;
-  const R = 52, C = 2 * Math.PI * R, W = 180, H = 180;
-  let acc = 0;
-  const segments = rows.map(([cat, val], i) => {
-    const frac = val / total;
-    const len = Math.max(0, frac * C - 2);
-    const finalOff = -acc * C;
-    const seg = $('circle', { cx: W / 2, cy: H / 2, r: R, fill: 'none', stroke: DONUT_PALETTE[i % DONUT_PALETTE.length], 'stroke-width': 16, 'stroke-dasharray': `${len} ${C - len}`, 'stroke-dashoffset': String(finalOff - len), 'data-chart-tip': `${categoryLabel(cat)} · ${fmt(val)} · ${Math.round(frac * 100)}%`, style: 'transition:stroke-dasharray .6s cubic-bezier(0.2,0.8,0.2,1);' });
-    seg._finalOff = finalOff;
-    acc += frac;
-    return seg;
-  });
-  // No draw-in: every segment is set to its final offset as it is built. A
-  // sweep here replayed on every repaint of the card, and a chart is a figure
-  // the reader has come to read rather than an arrival to announce.
-  segments.forEach(seg => seg.setAttribute('stroke-dashoffset', String(seg._finalOff)));
-  const legend = rows.map(([cat, val], i) => {
-    const pct = Math.round((val / total) * 100);
-    // The legend prints the share; the popup is where the money is.
-    return $('div', { 'data-chart-tip': `${categoryLabel(cat)} · ${fmt(val)} · ${pct}%`, style: 'display:flex;align-items:center;gap:8px;font-size:12px;' },
-      $('span', { style: `width:8px;height:8px;border-radius:2px;background:${DONUT_PALETTE[i % DONUT_PALETTE.length]};flex-shrink:0;` }),
-      $('span', { style: 'flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, categoryLabel(cat)),
-      $('span', { class: 'muted', style: 'flex-shrink:0;' }, `${pct}%`),
-    );
-  });
-  const donut = $('div', { style: 'display:flex;align-items:center;gap:28px;flex-wrap:wrap;' },
-    $('div', { style: 'position:relative;flex-shrink:0;' },
-      $('svg', { viewBox: `0 0 ${W} ${H}`, width: '150', height: '150', 'aria-label': 'Category share donut', style: 'transform:rotate(-90deg);' }, ...segments),
-      $('div', { style: 'position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;' },
-        $('span', { class: 'display-num', style: 'font-size:20px;' }, fmt(total)),
-        $('span', { class: 'muted', style: 'font-size:10px;' }, 'spent'),
-      ),
-    ),
-    $('div', { style: 'display:flex;flex-direction:column;gap:8px;flex:1;min-width:150px;' }, ...legend),
-  );
-  wireChartTips(donut, '[data-chart-tip]');
-  return donut;
-}
-
-// ---------- month-over-month comparison ----------
-// Grouped bars for the last 12 calendar months: spending (accent) vs income
-// (positive), so trends across the year read at a glance.
-function monthOverMonthChart() {
-  const now = new Date();
-  const months = [];
-  for (let i = 11; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    let exp = 0, inc = 0;
-    for (const e of entriesForMonth(key)) {
-      if (isSpendingEntry(e)) exp += e.amount;
-      else if (isIncomeEntry(e)) inc += e.amount;
-    }
-    months.push({ key, exp, inc });
-  }
-  const max = Math.max(1, ...months.flatMap(m => [m.exp, m.inc]));
-  const W = 640, H = 170, padB = 24, padT = 10;
-  const slot = W / months.length;
-  const bw = Math.min(16, slot * 0.2);
-  const xAt = i => i * slot + (slot - bw * 2 - 4) / 2;
-  const yAt = v => H - padB - (v / max) * (H - padB - padT);
-  const rects = [];
-  const labels = [];
-  const hits = [];
-  months.forEach((m, i) => {
-    const x = xAt(i);
-    if (m.exp > 0) rects.push($('rect', { x, y: yAt(m.exp), width: bw, height: H - padB - yAt(m.exp), rx: 2, style: 'fill:var(--chart-bar);' }));
-    if (m.inc > 0) rects.push($('rect', { x: x + bw + 4, y: yAt(m.inc), width: bw, height: H - padB - yAt(m.inc), rx: 2, style: 'fill:var(--positive);' }));
-    labels.push($('text', { x: x + bw + 2, y: H - 8, 'text-anchor': 'middle', style: 'fill:var(--muted);font-size:9px;' }, monthLabel(m.key).split(' ')[0].slice(0, 3)));
-    // A month is one target, not two: a bw-wide bar is ~10px, which is not a
-    // hover target on a phone, and a month's two figures belong together anyway.
-    // Appended last so it sits over the bars it covers, and painted rather than
-    // `fill: none` — a transparent fill is still a fill, so it takes the events.
-    hits.push($('rect', { class: 'mom-hit', x: i * slot, y: padT, width: slot, height: H - padB - padT, rx: 4, fill: 'transparent', 'data-chart-tip': `${monthLabel(m.key)} · Spending ${fmt(m.exp)} · Income ${fmt(m.inc)}` }));
-  });
-  const chart = $('div', null,
-    $('div', { style: 'display:flex;gap:14px;justify-content:flex-end;margin-bottom:10px;' },
-      $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: 'width:8px;height:8px;border-radius:2px;background:var(--chart-bar);' }), 'Spending'),
-      $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: 'width:8px;height:8px;border-radius:2px;background:var(--positive);' }), 'Income'),
-    ),
-    $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Monthly spending vs income, last 12 months', style: 'width:100%;height:auto;' }, ...rects, ...labels, ...hits),
-  );
-  wireChartTips(chart, '[data-chart-tip]');
-  return chart;
-}
-
-// ---------- stacked area chart ----------
-// Category mix over the last 12 months as stacked SVG areas. Top 6 categories
-// by total spend; everything else is folded out so the legend stays readable.
-function stackedAreaChart() {
-  const now = new Date();
-  const months = [];
-  for (let i = 11; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-  }
-  const totals = {};
-  for (const key of months) {
-    for (const e of entriesForMonth(key)) if (isSpendingEntry(e)) totals[e.category] = (totals[e.category] || 0) + e.amount;
-  }
-  const topCats = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([c]) => c);
-  if (!topCats.length) return null;
-  const series = topCats.map(cat => months.map(key => entriesForMonth(key).filter(e => isSpendingEntry(e) && e.category === cat).reduce((s, e) => s + e.amount, 0)));
-  const W = 640, H = 170, padL = 8, padR = 8, padB = 24, padT = 10;
-  const maxTotal = Math.max(1, ...months.map((_, i) => topCats.reduce((s, __, ci) => s + series[ci][i], 0)));
-  const xAt = i => padL + (months.length === 1 ? 0 : i * ((W - padL - padR) / (months.length - 1)));
-  const yAt = v => H - padB - (v / maxTotal) * (H - padB - padT);
-  const layers = topCats.map((cat, ci) => {
-    const stack = series[ci].map((v, i) => {
-      const base = ci === 0 ? 0 : topCats.slice(0, ci).reduce((s, __, cj) => s + series[cj][i], 0);
-      return { top: base + v, bottom: base };
-    });
-    const fwd = stack.map((s, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i).toFixed(1)} ${yAt(s.top).toFixed(1)}`).join(' ');
-    const back = stack.slice().reverse().map((s, i) => `L ${xAt(months.length - 1 - i).toFixed(1)} ${yAt(s.bottom).toFixed(1)}`).join(' ');
-    return $('path', { d: `${fwd} ${back} Z`, style: `fill:${DONUT_PALETTE[ci % DONUT_PALETTE.length]};opacity:0.85;` });
-  });
-  const labels = months.map((key, i) => $('text', { x: xAt(i), y: H - 6, 'text-anchor': i === 0 ? 'start' : i === months.length - 1 ? 'end' : 'middle', style: 'fill:var(--muted);font-size:9px;' }, monthLabel(key).split(' ')[0].slice(0, 3)));
-  return $('div', { class: 'chart-fade' },
-    $('div', { style: 'display:flex;gap:14px;flex-wrap:wrap;justify-content:flex-end;margin-bottom:10px;' },
-      ...topCats.map((cat, ci) => $('span', { class: 'muted', style: 'font-size:11px;display:flex;align-items:center;gap:5px;' }, $('span', { style: `width:8px;height:8px;border-radius:2px;background:${DONUT_PALETTE[ci % DONUT_PALETTE.length]};flex-shrink:0;` }), categoryLabel(cat))),
-    ),
-    $('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Category mix over the last 12 months', style: 'width:100%;height:auto;' }, ...layers, ...labels),
-  );
-}
-
-// ---------- modal: year in review ----------
-function openYearInReview() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const yearEntries = state.entries.filter(e => e.date >= `${year}-01-01` && e.date <= `${year}-12-31`);
-  const expOnly = yearEntries.filter(isSpendingEntry);
-  const incOnly = yearEntries.filter(isIncomeEntry);
-  const totalSpent = expOnly.reduce((s,e) => s + e.amount, 0);
-  const totalEarned = incOnly.reduce((s,e) => s + e.amount, 0);
-  const topCat = Object.entries(expOnly.reduce((a,e) => { a[e.category] = (a[e.category]||0) + e.amount; return a; }, {})).sort((a,b) => b[1]-a[1])[0];
-  const busiestDay = Object.entries(expOnly.reduce((a,e) => { const v = a[e.date]||{count:0,total:0}; a[e.date] = {count:v.count+1,total:v.total+e.amount}; return a; }, {})).sort((a,b) => b[1].total - a[1].total)[0];
-  const months = {};
-  for (const e of expOnly) { const k = monthKey(e.date); months[k] = (months[k]||0) + e.amount; }
-  const bestMonth = Object.entries(months).sort((a,b) => a[1]-b[1])[0];
-  const worstMonth = Object.entries(months).sort((a,b) => b[1]-a[1])[0];
-
-  const bg = $('div', { class: 'modal-bg', onClick: (ev) => { if (ev.target === bg) close(); } });
-  const modal = $('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Year in review', tabindex: '-1', style: 'max-width:560px;' });
-  bg.appendChild(modal);
-  document.body.appendChild(bg);
-  const close = () => { document.removeEventListener('keydown', onEsc, true); bg.remove(); };
-  const onEsc = (ev) => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
-  document.addEventListener('keydown', onEsc, true);
-
-  modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;' },
-    $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:28px;' }, `Your ${year} in review`),
-    $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close'),
-  ));
-
-  const rows = [
-    ['Total earned', fmt(totalEarned), 'var(--positive)'],
-    ['Total spent', fmt(totalSpent), 'var(--negative)'],
-    ['Net', fmt(totalEarned - totalSpent), (totalEarned - totalSpent) >= 0 ? 'var(--positive)' : 'var(--negative)'],
-    ['Entries logged', String(yearEntries.length), ''],
-    ['Top category', topCat ? `${categoryLabel(topCat[0])} · ${fmt(topCat[1])}` : '-', ''],
-    ['Best month', bestMonth ? `${monthLabel(bestMonth[0])} · ${fmt(bestMonth[1])}` : '-', ''],
-    ['Toughest month', worstMonth ? `${monthLabel(worstMonth[0])} · ${fmt(worstMonth[1])}` : '-', ''],
-    ['Busiest day', busiestDay ? `${friendlyDate(busiestDay[0])} - ${busiestDay[1].count} entries, ${fmt(busiestDay[1].total)}` : '-', ''],
-  ];
-  for (const [label, value, color] of rows) {
-    modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line);font-size:14px;' },
-      $('span', { class: 'muted' }, label),
-      $('span', { class: 'display-num', style: color ? `color:${color};font-size:16px;` : 'font-size:16px;' }, value),
-    ));
-  }
-
-  modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:16px;' },
-    $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Close'),
-    $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
-      const text = rows.map(([l,v]) => `${l}: ${v}`).join('\n');
-      const doCopy = () => {
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        let ok = false;
-        try { ok = document.execCommand('copy'); } catch { ok = false; }
-        ta.remove();
-        toast(ok ? 'Copied to clipboard!' : 'Could not copy.');
-      };
-      if (navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(text).then(() => toast('Copied to clipboard!'), doCopy);
-      } else {
-        doCopy();
-      }
-    } }, 'Copy summary'),
-  ));
 }
 
 // ---------- modal: transfer delete ----------
@@ -8800,6 +9107,9 @@ function openSplitEditor(legs) {
   wireFlatpickr(dateInput, { defaultDate: legs[0].date });
 
   const totalEl = $('span', { class: 'display-num', style: 'font-size:22px;' }, '');
+  // Same flag the single-entry edit sheet carries, applied to every leg: the
+  // row used to hold the only control for it, and a group's legs move together.
+  const budgetInput = $('input', { type: 'checkbox', checked: legs.every(l => l.budgetExcluded === true), 'aria-label': 'Exclude this split payment from budget calculations' });
   const listWrap = $('div', { style: 'margin-top:10px;display:flex;flex-direction:column;gap:8px;' });
   function updateTotal() {
     let t = 0;
@@ -8836,6 +9146,7 @@ function openSplitEditor(legs) {
     $('label', { class: 'eyebrow', style: 'display:block;margin-top:16px;' }, 'Split'),
     listWrap,
     $('div', null, $('button', { type: 'button', class: 'btn btn-ghost', style: 'font-size:12px;', onClick: () => { rows.push({ method: rows.some(r => r.method === 'AIB') ? 'Cash' : 'AIB', amount: '' }); redraw(); } }, '+ Add slice')),
+    $('label', { style: 'display:flex;align-items:center;gap:9px;font-size:13px;margin-top:14px;cursor:pointer;color:var(--muted);' }, budgetInput, $('span', null, 'Exclude this payment from budget calculations')),
     $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);' }, $('span', { class: 'eyebrow' }, 'Total'), totalEl),
     $('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:16px;' },
       $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
@@ -8858,8 +9169,13 @@ function openSplitEditor(legs) {
     // splitId intact, silently keeping their balance effect forever).
     const newLegs = parsed.map(r => {
       const existing = state.entries.find(x => x.id === r.id && x.splitId === splitId);
-      if (existing) return { ...existing, method: r.method, amount: Math.round(r.amount * 100) / 100, details, date: dateInput.value };
-      return { id: uid(), createdAt, date: dateInput.value, type, category, details, amount: Math.round(r.amount * 100) / 100, method: r.method, note, splitId };
+      const leg = existing
+        ? { ...existing, method: r.method, amount: Math.round(r.amount * 100) / 100, details, date: dateInput.value }
+        : { id: uid(), createdAt, date: dateInput.value, type, category, details, amount: Math.round(r.amount * 100) / 100, method: r.method, note, splitId };
+      // One switch for the whole group — it is one payment, so it is either in
+      // the budget or out of it, whatever each leg's old flag happened to say.
+      if (budgetInput.checked) leg.budgetExcluded = true; else delete leg.budgetExcluded;
+      return leg;
     });
     const removedLegs = before.filter(b => !newLegs.some(l => l.id === b.id));
     state.entries = state.entries
@@ -9134,6 +9450,51 @@ function openSyncSettings() {
     It merges the old morning digest, cash runway, financial pulse and spending
     forecast cards into one glance: a headline number, the key figures, and a
     tap-through to Insights for the full picture. */
+/**
+ * The dashboard's Pulse for a ledger with nothing in it.
+ *
+ * Every figure on the real pulse is zero on day one, and painting zeros as
+ * status is what made a fresh install look like an emergency: a red "watch
+ * out", "0/5 paid", empty gift cards, "Vouchers €0.00". A new user gets the
+ * three things that actually start the app instead, in the order they matter.
+ */
+function getStartedCard() {
+  const hasCheckpoint = Object.values(state.settings.balanceCheckpoints || {})
+    .some(points => Array.isArray(points) && points.length > 0);
+  const hasRecurring = Array.isArray(state.settings.recurring) && state.settings.recurring.length > 0;
+  const step = (index, text, hint, action) => $('div', {
+    style: 'display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line);',
+  },
+    $('span', {
+      'aria-hidden': 'true',
+      style: `width:22px;height:22px;flex-shrink:0;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;border:1px solid var(--line);color:var(--muted);`,
+    }, String(index)),
+    $('div', { style: 'flex:1;min-width:0;' },
+      $('div', { style: 'font-size:13px;font-weight:600;' }, text),
+      $('div', { class: 'muted', style: 'font-size:12px;margin-top:1px;' }, hint),
+    ),
+    action || null,
+  );
+  return $('div', { class: 'card financial-pulse', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
+    $('div', { class: 'pulse-heading' },
+      $('div', null,
+        $('div', { class: 'eyebrow' }, 'Pulse'),
+        $('div', { style: 'display:flex;align-items:baseline;gap:8px;margin-top:6px;' },
+          $('span', { class: 'serif', style: `font-size:${isNarrow() ? '24px' : '28px'};line-height:1.1;color:var(--muted);` }, 'Getting started'),
+        ),
+        $('div', { class: 'muted', style: 'font-size:13px;margin-top:4px;' }, 'Three things and this screen fills itself in.'),
+      ),
+      $('span', { class: 'pulse-status', style: 'color:var(--muted);border-color:var(--muted);' }, 'New'),
+    ),
+    step(1, 'Add your first entry', 'Quick entry takes an amount and a note.',
+      tabVisible('add') ? $('a', { href: '#add', class: 'btn btn-primary', style: 'padding:7px 14px;font-size:12px;flex-shrink:0;' }, 'Add entry') : null),
+    step(2, 'Set your main balance', hasCheckpoint ? 'Reconciled - edit it any time.' : 'What is actually in the account today.',
+      tabVisible('balances') ? $('a', { href: '#balances', class: 'btn btn-ghost', style: 'padding:7px 14px;font-size:12px;flex-shrink:0;' }, hasCheckpoint ? 'Edit' : 'Set balance') : null),
+    step(3, 'Add a recurring bill', hasRecurring ? 'Rent and subscriptions are on the list.' : 'Rent, subscriptions - the charges that arrive on schedule.',
+      $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:7px 14px;font-size:12px;flex-shrink:0;', onClick: () => openRecurringManager() }, hasRecurring ? 'Edit' : 'Add a bill')),
+  );
+}
+
 function dashboardPulse(key, expenseSum, runningBalance) {
   const t = today();
   const todays = state.entries.filter(e => e.date === t && e.type !== 'note');
@@ -9142,6 +9503,9 @@ function dashboardPulse(key, expenseSum, runningBalance) {
   const todaySummary = todays.length
     ? `${todays.length} entr${todays.length === 1 ? 'y' : 'ies'}${spentToday ? ' · −' + fmt(spentToday) : ''}${earnedToday ? ' · +' + fmt(earnedToday) : ''}`
     : 'nothing yet';
+
+  // Nothing recorded yet: the checklist, never the alarm below.
+  if (!state.entries.length) return getStartedCard();
 
   const items = [];
   for (const r of state.settings.recurring || []) for (const date of upcomingOccurrences(r)) items.push({ rec: r, date });
@@ -9169,17 +9533,17 @@ function dashboardPulse(key, expenseSum, runningBalance) {
     headline = `${Math.max(1, runway.daysToZero)} days`; caption = 'to €0';
     message = 'At your current pace.';
     tone = 'var(--negative)'; status = 'Watch out';
-  } else if (forecast.budget && forecast.projected > forecast.budget) {
+  } else if (forecast.projectedReady && forecast.budget && forecast.projected > forecast.budget) {
     headline = `${Math.round((forecast.projected / forecast.budget) * 100)}%`; caption = 'of budget';
     message = `Projected ${fmt(forecast.projected)} against ${fmt(forecast.budget)}.`;
     tone = 'var(--negative)'; status = 'Over budget';
-  } else if (forecast.budget) {
+  } else if (forecast.budget && forecast.projectedReady) {
     headline = fmt(Math.max(0, forecast.remaining)); caption = 'left this month';
     message = 'You are comfortably within budget.';
     tone = 'var(--positive)'; status = 'On track';
   } else {
     headline = fmt(runningBalance); caption = 'balance';
-    message = 'Set a monthly budget to see your pace.';
+    message = forecast.budget ? 'Projection starts after a week of entries.' : 'Set a monthly budget to see your pace.';
     tone = 'var(--muted)'; status = 'Tracking';
   }
 
@@ -9213,26 +9577,24 @@ function dashboardPulse(key, expenseSum, runningBalance) {
       $('span', { class: 'pulse-status', style: `color:${tone};border-color:${tone};` }, status),
     ),
     $('div', { class: 'pulse-grid' },
-      stat('Runway', runway.dailyAvg > 0 && runway.daysToZero !== null ? `${runway.daysToZero} days` : '-'),
-      stat('Spent', fmt(forecast.spent), 'var(--negative)'),
-      stat('Projected', fmt(forecast.projected), 'var(--negative)'),
-      forecast.budget ? stat('Remaining', fmt(forecast.remaining)) : stat('Balance', fmt(runningBalance)),
-      monthBudget ? stat('Safe today', fmt(safeToday), remainingBudget <= 0 ? 'var(--negative)' : '') : null,
-      stat('Avg / day', fmt(expenseSum / Math.max(nowP.getDate(), 1)), 'var(--negative)'),
-      monthBudget && expenseSum > 0 ? stat('Burn rate', (() => {
-        const daysLeft = new Date(nowP.getFullYear(), nowP.getMonth() + 1, 0).getDate() - nowP.getDate();
-        const projected = expenseSum + (expenseSum / Math.max(nowP.getDate(), 1)) * daysLeft;
-        const pctProj = Math.round((projected / monthBudget) * 100);
+      stat('Runway', runway.dailyAvg > 0 && runway.daysToZero !== null ? `${runway.daysToZero} days` : '-', null, 'Days until today\u2019s balance runs out at your current daily pace. Fixed charges like rent are spent, not repeated.'),
+      stat('Spent', fmt(forecast.spent), 'var(--negative)', 'Everything this month that counts against your budget.'),
+      stat('Projected', forecast.projected === null ? '\u00b7' : fmt(forecast.projected), 'var(--negative)', 'Where the month lands at your current pace. Shown once there is a week of entries to read.'),
+      forecast.budget && forecast.projectedReady ? stat('Remaining', fmt(forecast.remaining)) : stat('Balance', fmt(runningBalance)),
+      monthBudget ? stat('Safe today', fmt(safeToday), remainingBudget <= 0 ? 'var(--negative)' : '', 'What is left of this month\u2019s budget, shared over the days left in it.') : null,
+      stat('Avg / day', fmt(forecast.dailyAverage), 'var(--negative)', 'This month\u2019s variable spending divided by the days elapsed \u2014 fixed bills left out.'),
+      monthBudget && expenseSum > 0 && forecast.projectedReady ? stat('Burn rate', (() => {
+        const pctProj = Math.round((forecast.projected / monthBudget) * 100);
         return pctProj > 100 ? $('span', { style: 'display:inline-flex;align-items:center;gap:5px;' }, iconSpan('alert', 'md'), `${pctProj}%`) : `${pctProj}%`;
-      })()) : null,
+      })(), null, 'This month projected at your current pace, as a share of your budget.') : null,
       tescoWeek,
     ),
     $('div', { style: 'display:flex;flex-wrap:wrap;gap:4px 20px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--muted);' },
       $('span', null, 'Today ', $('span', { style: 'color:var(--ink);' }, todaySummary)),
       $('span', null, 'Next due ', $('span', { style: 'color:var(--ink);' }, next ? `${next.rec.details}${daysUntil(next.date) === 0 ? ' today' : ` in ${daysUntil(next.date)}d`}` : '-')),
     ),
-    comparison.previous > 0 ? $('div', { class: 'pulse-footnote muted' },
-      `${comparison.difference <= 0 ? 'Down' : 'Up'} ${fmt(Math.abs(comparison.difference))} from ${monthLabel(comparison.previousKey)}.`,
+    comparison.proratedPrevious > 0 ? $('div', { class: 'pulse-footnote muted' },
+      `${comparison.difference <= 0 ? 'Down' : 'Up'} ${fmt(Math.abs(comparison.difference))} vs ${monthLabel(comparison.previousKey)} to date.`,
     ) : null,
     tabVisible('insights') ? $('a', { href: '#insights', class: 'btn-link', style: 'margin-top:10px;font-size:13px;' }, 'See details ', iconSpan('arrow-right', 'sm')) : null,
   );
@@ -9249,13 +9611,8 @@ function toast(text, undoFn, undoLabel) {
   if (!host) { host = $('div', { class: 'toast-host' }); document.body.appendChild(host); }
   // Snapshot the undo at creation: an explicit undoFn wins, otherwise capture
   // the currently-tracked action so an old toast never undoes a newer one.
-  const tracked = _lastAction;
-  const runUndo = undoFn || (tracked ? () => {
-    tracked.undo();
-    if (_lastAction === tracked) _lastAction = null;
-    toast(`Undone: ${tracked.label}`);
-    render();
-  } : null);
+  const tracked = _undoStack[0];
+  const runUndo = undoFn || (tracked ? () => undoAction(tracked) : null);
   const children = [text];
   if (runUndo) {
     children.push($('button', { type: 'button', class: 'toast-undo', onClick: () => { runUndo(); t.remove(); } }, undoLabel || (runUndo ? 'Undo' : '')));
@@ -9358,24 +9715,41 @@ function setAlertDismissed(id, dismissed) {
   try { localStorage.setItem(ALERT_DISMISS_KEY(), JSON.stringify(map)); } catch {}
 }
 
+// ---------- the Tesco tab's folded cards ----------
+// tesco.js decides WHAT is folded and asks for nothing else: browser storage is
+// off limits there (check-image-hygiene pins that the roster-photo module
+// never touches localStorage), and this choice is a view preference anyway —
+// device-local, never part of the synced document.
+const TESCO_FOLD_PREFIX = 'cents:tesco-fold:';
+function foldGet(id, fallback) {
+  try {
+    const raw = localStorage.getItem(TESCO_FOLD_PREFIX + id);
+    if (raw !== null) return raw === '1';
+  } catch { /* storage unavailable: fall back to the default */ }
+  return fallback;
+}
+function foldSet(id, open) {
+  try { localStorage.setItem(TESCO_FOLD_PREFIX + id, open ? '1' : '0'); } catch { /* ignore */ }
+}
+
 // Offer the persisted undo journal after a reload. The toast is transient, but
 // the journal is kept until it is actually undone (or superseded) so the
 // persistent Undo button keeps offering it after the toast expires.
 function offerPersistedUndo() {
-  const journal = loadUndoJournal();
-  if (!journal || !(journal.entries?.length || journal.checkpoints?.length)) return;
-  const missing = missingJournalData(journal);
-  if (!missing.entries.length && !missing.checkpoints.length) {
-    // Nothing left to restore (the data still exists, e.g. a load that was
-    // never undone, or an already-restored delete). Drop the stale journal
-    // silently so the offer stops appearing on every reload.
-    clearUndoJournal();
-    return;
+  // Walk spent records off the front first: one whose data is already back in
+  // the document must not go on hiding the action behind it on every reload.
+  let journal = loadUndoJournal();
+  while (journal && (journal.entries?.length || journal.checkpoints?.length)) {
+    const missing = missingJournalData(journal);
+    if (missing.entries.length || missing.checkpoints.length) break;
+    popUndoJournal();
+    journal = loadUndoJournal();
   }
+  if (!journal || !(journal.entries?.length || journal.checkpoints?.length)) return;
   toast(`You can undo “${journal.label || 'that change'}” from before your last reload.`, () => {
     restoreUndoJournal(journal);
     toast(`Undone: ${journal.label || 'that change'}`);
-    clearUndoJournal();
+    dropUndoJournal(journal);
     render();
   }, 'Undo');
 }
@@ -9550,6 +9924,9 @@ function _render() {
           // card is the one thing in tesco.js that fetches a library of its own
           // (SheetJS).
           getState: () => state, $, iconSpan, toast, persist, render, trackAction, swalConfirm, fmt, stackModal, isTopModal, loadVendor,
+          // Which of its cards are folded, read and written by app.js (see
+          // foldGet): tesco.js itself never touches browser storage.
+          foldGet, foldSet,
           // The ledger's half of a Tesco commit: recording a week's pay writes
           // its Balances entry in the same undo step (see the function above).
           recordTescoPayToLedger,
@@ -9559,7 +9936,11 @@ function _render() {
       }
       break;
     }
-    case 'insights': screen.appendChild(screenInsights()); break;
+    case 'insights': {
+      const insights = insightsScreen();
+      screen.appendChild(insights ? insights.screenInsights() : insightsLoadingCard());
+      break;
+    }
     default:         screen.appendChild(screenDashboard());
   }
   main.appendChild(screen);
@@ -9607,16 +9988,6 @@ function _render() {
   main.appendChild($('footer', { style: 'max-width:var(--shell-max,980px);margin:0 auto;padding:32px 28px 64px;color:var(--muted);font-size:12px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;border-top:1px solid var(--line);' },
     $('span', null, String(state.entries.length), ` entr${state.entries.length === 1 ? 'y' : 'ies'} \u00b7 `, getSyncSettings().enabled ? 'cloud-synced' : 'stored locally'),
     $('span', { style: 'display:flex;justify-content:flex-end;flex-wrap:wrap;gap:0 8px;align-items:center;' },
-      $('button', { type: 'button', class: 'footer-action danger', onClick: function() {
-        if (this.textContent === 'Reset') { this.textContent = 'Confirm reset'; return; }
-        syncRevision++;
-        state = resetToBlank();
-        clearBalanceCaches();
-        scheduleSyncPush();
-        render();
-        toast('All entries cleared.');
-        this.textContent = 'Reset';
-      } }, 'Reset'),
       $('button', { type: 'button', class: 'footer-action', onClick: () => {
         const startY = window.scrollY;
         window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -9725,6 +10096,18 @@ window.addEventListener('DOMContentLoaded', () => {
   // silent when the browser has no such API): the ledger is the whole of the
   // app's data, so "best-effort" storage is the one thing worth asking for.
   void requestDurableStorage();
+  // The Lidl pull runs once per page open, the moment the app is accessible:
+  // immediately with no lock, after the PIN/biometric otherwise. Polling one
+  // boolean is deliberately dumber than wiring every unlock path (PIN match,
+  // biometric, profile re-entry) — and the module's own once-flag keeps
+  // repeated fires honest. It is reached only through import(), so this stays
+  // out of the boot payload.
+  (function pullOnOpen() {
+    if (hasPinLock() && !pinUnlocked) { setTimeout(pullOnOpen, 500); return; }
+    void import('./lidl.js')
+      .then(m => m.autoPullLidl({ state, commit: commitAdded, notify: toast }))
+      .catch(() => {});
+  })();
   // ── OTA update flow ──────────────────────────────────────────────
   // A redeploy swaps the served index.html; the service worker notices the
   // changed document and asks open, controlled tabs to reload so they leave
@@ -9797,6 +10180,9 @@ window.addEventListener('DOMContentLoaded', () => {
   // and the persisted-undo offer still start after unlock. The reminder
   // scheduler runs regardless of lock state so a reminder can never be
   // missed because the app is sitting on the lock screen.
+  // The local reminder counts what is due from the live document; the sender
+  // counts the same thing from the synced copy, so both deliveries say it.
+  setDueBillsProvider(() => billsDueHintFor(state.settings.recurring, today()));
   startReminderScheduler();
   onReminderFired(({ body }) => {
     toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;' }, iconSpan('clock'), body));
@@ -9820,6 +10206,20 @@ window.addEventListener('DOMContentLoaded', () => {
   if (storageNotice) raiseNotice(storageNotice);
   flushNotices();
 });
+
+// What the deferred Insights module reaches back for (see the top of
+// insights.js). Exported rather than passed in a context object: these are
+// plain hoisted declarations, so the circular reference is resolved at link
+// time and every binding — `state` especially — stays live.
+export {
+  $, state, today, fmt, friendlyDate, monthKey, monthLabel, offsetDateKey,
+  persist, toast, iconSpan, isTopModal, methodLabel, methodShort, categoryLabel,
+  entriesForMonth, catTotalsForEntries, emptyIcon, emptyStateCard,
+  heatColor, heatDigitInk, stat, accountBalanceHistory, computeDataHealth,
+  duplicateGroups, removeDuplicateEntry, reviewForMonth, wireChartTips,
+  wireFlatpickr, isSpendingEntry, isIncomeEntry, isBudgetSpendingEntry,
+  isBudgetIncomeEntry,
+};
 
 // Expose tiny global for DevTools tinkering
 window.__cents = {

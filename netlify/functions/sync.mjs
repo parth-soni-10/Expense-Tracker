@@ -36,6 +36,7 @@
        but the blanket '*' is gone.
    ============================================================ */
 
+import { RECURRING_FREQUENCIES } from '../../seed.js';
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
 import { resolveProfileForAuth, profileAuthMessage, cloudFileFor } from './lib/profiles.mjs';
 import { ghConfig } from './lib/gh.mjs';
@@ -190,7 +191,7 @@ function validIncomingSettings(settings) {
       if (!recurring || typeof recurring !== 'object' || typeof recurring.id !== 'string' || recurring.id.length === 0 || recurring.id.length > 200 || ids.has(recurring.id)
         || !['expense', 'credit'].includes(recurring.type) || !VALID_METHODS.has(recurring.method)
         || !allowedCategoryIds.has(recurring.category)
-        || !validDate(recurring.nextDate) || !['weekly', 'monthly'].includes(recurring.frequency)
+        || !validDate(recurring.nextDate) || !RECURRING_FREQUENCIES.includes(recurring.frequency)
         || !Number.isFinite(amount) || amount <= 0 || amount > MAX_AMOUNT || Math.round(amount * 100) / 100 !== amount
         || !Number.isInteger(Number(recurring.dayOfMonth)) || Number(recurring.dayOfMonth) < 1 || Number(recurring.dayOfMonth) > 31
         || typeof recurring.details !== 'string' || recurring.details.length > 5000

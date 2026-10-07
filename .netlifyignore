@@ -17,12 +17,19 @@ node_modules/
 *.xlsx
 data*.json
 
-# Running convert-tesco-csv.py can leave Python's bytecode cache behind.
-# convert-tesco-csv.py itself is covered by its own 404 rule in netlify.toml
-# (the same treatment serve.sh gets), so check-freshness can still account for
-# it — and ocr-harness.html is served the same way: it is opened from a laptop
-# against a local http server, with the real pipeline and synthetic roster
-# photos, and never from the deploy.
+# The Lidl spike's output folder holds real credentials, a refresh token and
+# pulled receipts. It sits in the repo (so the .env template and otp.txt have
+# one obvious home) but must never reach the CDN — `publish = "."` would
+# otherwise serve lidl.env at a predictable URL. Gitignored too, so it cannot
+# be committed; excluded here as the second, independent half.
+lidl-spike-out/
+
+# Python bytecode caches: the local scripts (lidl-spike.py, and formerly
+# convert-tesco-csv.py) can leave __pycache__ behind, so it never ships.
+# ocr-harness.html is belt-and-braces: it already has its own 404 rule in
+# netlify.toml, and this keeps it off the upload entirely — it is opened from
+# a laptop against a local http server, with the real pipeline and synthetic
+# roster photos, and never from the deploy.
 __pycache__/
 *.pyc
 ocr-harness.html

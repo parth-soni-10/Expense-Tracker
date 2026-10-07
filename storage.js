@@ -6,7 +6,7 @@
    Every key here is namespaced per profile by profiles.js, so one
    profile's document can never be read or overwritten by another.
    ============================================================ */
-import { SEED_SETTINGS, TABS } from './seed.js';
+import { SEED_SETTINGS, TABS, RECURRING_FREQUENCIES } from './seed.js';
 import { getPrivacyPin, setPrivacyPin } from './settings.js';
 import { nsKey } from './profiles.js';
 // The one CSV field rule in the app. tesco.js writes and reads the workbook
@@ -409,7 +409,7 @@ function normalizeRecurring(raw, customCategoryIds) {
     if (typeof item.id !== 'string' || !item.id || !FINANCIAL_TYPES.has(item.type)
       || !METHODS_OK.has(item.method) || !allowedCategories.has(item.category)
       || !isValidCheckpointDate(item.nextDate) || !Number.isFinite(amount) || amount <= 0 || amount > 1_000_000
-      || !['weekly', 'monthly'].includes(item.frequency)) return out;
+      || !RECURRING_FREQUENCIES.includes(item.frequency)) return out;
     const details = typeof item.details === 'string' ? item.details.trim().slice(0, 240) : '';
     const fingerprint = [item.type, details.toLowerCase(), +amount.toFixed(2), item.method, item.category, item.frequency, Number.isInteger(day) ? Math.min(31, Math.max(1, day)) : 1].join('|');
     if (seen.has(fingerprint)) return out;
@@ -985,21 +985,29 @@ export function exportJSON(state) {
 // category 'gro' called" — one free to drift from the one on screen.
 export const ENTRIES_CSV_HEADER = Object.freeze(['Date', 'Type', 'Category', 'Details', 'Amount', 'Method', 'Note']);
 
-export function entriesCsv(state, labels = {}) {
+export function entriesCsv(state, labels = {}, ordered = null) {
   const category = typeof labels.category === 'function' ? labels.category : (id) => id;
   const method = typeof labels.method === 'function' ? labels.method : (id) => id;
-  const entries = (Array.isArray(state?.entries) ? state.entries : [])
+  // `ordered` is the caller's already-sorted view (the History screen's own
+  // export, which can be oldest-first or a search ranking): a list the caller
+  // chose the order of is taken as given, and everything else gets the file's
+  // own contract below. The filter applies either way — a row that is not an
+  // object has no fields to print.
+  const source = Array.isArray(ordered)
+    ? ordered
+    : (Array.isArray(state?.entries) ? state.entries : []);
+  const entries = source
     // A row that is not an object has no fields to print, and a validated
     // document cannot hold one — but this is also reachable from a hostile
     // merge, and a pure function that can throw half way through is worse than
     // one that skips a row it cannot read.
     .filter(e => e && typeof e === 'object')
-    // Newest first — the order the History screen reads in, with its own
-    // tie-breaks, so two entries on one day come out in the order they were
-    // written rather than in whatever order the array happens to hold.
-    .slice().sort((a, b) => String(b.date).localeCompare(String(a.date))
+    .slice();
+  if (!Array.isArray(ordered)) {
+    entries.sort((a, b) => String(b.date).localeCompare(String(a.date))
       || String(b.createdAt || '').localeCompare(String(a.createdAt || ''))
       || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  }
   const rows = [ENTRIES_CSV_HEADER];
   for (const e of entries) {
     rows.push([
@@ -1022,8 +1030,12 @@ export function entriesCsv(state, labels = {}) {
  *  Windows opens a BOM-less UTF-8 file in the machine's own ANSI code page, so a
  *  note carrying a euro sign or an accent arrives as mojibake. Nothing in this
  *  app reads the file back, so the byte costs no round trip. */
-export function exportEntriesCsv(state, labels = {}) {
-  downloadText(`expenses-${exportStamp()}.csv`, CSV_BOM + entriesCsv(state, labels), 'text/csv;charset=utf-8');
+export function exportEntriesCsv(state, labels = {}, opts = {}) {
+  // A view export is named for what it is: a file called `expenses-…` that
+  // holds only the filtered rows reads as a truncated full export.
+  const entries = Array.isArray(opts.entries) ? opts.entries : null;
+  const name = entries ? `history-${exportStamp()}` : `expenses-${exportStamp()}`;
+  downloadText(`${name}.csv`, CSV_BOM + entriesCsv(state, labels, entries), 'text/csv;charset=utf-8');
 }
 
 /** Why a CSV was refused, in the words a user can act on (the app prints the
@@ -1140,24 +1152,64 @@ export function parseEntriesCsv(text, resolve = {}, existing = []) {
 }
 
 // ---------- persistent undo journal ----------
-// A single-slot undo record that survives a reload. The in-memory `_lastAction`
-// (app.js) is a closure and cannot be serialised, so destructive actions also
-// write a small journal — the removed entries — to storage. On boot, app.js
-// offers to restore them. The journal is intentionally kept out of the synced
-// state: it is a per-device safety net, never part of the cloud payload.
+// A single-slot undo record that survives a reload. The in-memory `_undoStack`
+// (app.js) holds closures and cannot be serialised, so destructive actions also
+// write their removed entries here — one record each, newest first. On boot,
+// app.js offers the newest one that still has something to restore. The journal
+// is intentionally kept out of the synced state: it is a per-device safety net,
+// never part of the cloud payload.
 const UNDO_KEY = () => nsKey('undo');
-export function saveUndoJournal(journal) {
-  try { localStorage.setItem(UNDO_KEY(), JSON.stringify(journal)); }
-  catch (e) { console.warn('Failed to save undo journal:', e); }
-}
-export function loadUndoJournal() {
+// The undo journal is a STACK of up to UNDO_STACK_MAX records, newest first:
+// the FAB offering "the last action" only ever read the newest one, so an older
+// record was being overwritten rather than outgrown. A single object — the
+// pre-stack shape, still sitting in storage for a session that wrote it — reads
+// as a one-record stack.
+export const UNDO_STACK_MAX = 5;
+function readUndoStack() {
   try {
     const raw = localStorage.getItem(UNDO_KEY());
-    if (!raw) return null;
+    if (!raw) return [];
     const parsed = JSON.parse(raw);
-    if (!parsed || (!Array.isArray(parsed.entries) && !Array.isArray(parsed.checkpoints))) return null;
-    return parsed;
-  } catch { return null; }
+    const stack = Array.isArray(parsed) ? parsed
+      : (parsed && (Array.isArray(parsed.entries) || Array.isArray(parsed.checkpoints)) ? [parsed] : []);
+    return stack.filter(r => r && (Array.isArray(r.entries) || Array.isArray(r.checkpoints)));
+  } catch { return []; }
+}
+
+export function saveUndoJournal(journal) {
+  // Pushed onto that stack rather than replacing the one record. Newest first,
+  // capped, one record per undoable action — each self-contained (the
+  // entries/checkpoints THAT action needs), so undoing twice after a reload
+  // re-adds two independent batches.
+  try {
+    const stack = readUndoStack();
+    stack.unshift(journal);
+    localStorage.setItem(UNDO_KEY(), JSON.stringify(stack.slice(0, UNDO_STACK_MAX)));
+  } catch (e) { console.warn('Failed to save undo journal:', e); }
+}
+export function loadUndoJournal() {
+  return readUndoStack()[0] || null;
+}
+/** Spend the newest record: the action it describes has been undone. */
+export function popUndoJournal() {
+  try {
+    const stack = readUndoStack();
+    if (!stack.length) return;
+    localStorage.setItem(UNDO_KEY(), JSON.stringify(stack.slice(1)));
+  } catch { /* noop */ }
+}
+/** Spend ONE record — the one a captured toast closure holds — without
+ *  touching a newer action that may already be in front of it. Unmatched
+ *  records fall back to the front, which is what the offer was made from. */
+export function dropUndoJournal(record) {
+  try {
+    const stack = readUndoStack();
+    if (!stack.length) return;
+    const at = record && record.at;
+    const idx = at ? stack.findIndex(r => r && r.at === at) : 0;
+    const drop = idx < 0 ? 0 : idx;
+    localStorage.setItem(UNDO_KEY(), JSON.stringify(stack.filter((_, i) => i !== drop)));
+  } catch { /* noop */ }
 }
 export function clearUndoJournal() {
   try { localStorage.removeItem(UNDO_KEY()); } catch { /* noop */ }

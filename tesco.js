@@ -320,7 +320,7 @@ export function parseTescoCsv(text) {
 
 // ---------- import: a workbook (.xlsx), read as the sheet's own two tables ----------
 // The reference document is a workbook, and until now the only way in was to save a
-// CSV out of Excel (or run convert-tesco-csv.py) and hand that over. SheetJS reads
+// CSV out of Excel if you prefer, and hand that over. SheetJS reads
 // the file itself — and this is the whole of the new importer: the two sheets' cells
 // are written back out as the very CSV text `parseTescoCsv` already reads, so every
 // rule about headers, aliases, dates, times, hours and round-trips stays in one
@@ -3188,9 +3188,60 @@ export function scanSlotForProfile(slot, profileId) {
 let showAllWeeks = false;
 let showAllSlips = false;
 
+// ================= foldable cards =================
+// The Tesco tab is nine cards in one scroll, and the ones a user is not
+// working in — the manual form, the roster scanner, the tax table, the
+// importer — were all paying for that scroll every visit. Each becomes a
+// disclosure whose title is its own control: no chevron-only affordance, no
+// nested interactive elements, and the choice is remembered between visits.
+//
+// The reading and writing of that choice are HANDED IN: this module keeps its
+// hands off browser storage entirely (the roster photo must never be near a
+// persistence path — scripts/check-image-hygiene.mjs pins it), so app.js owns
+// the little key and this file only says what it wants remembered.
+
+/** Fold a card behind its own title. Everything after `.tesco-card-title` moves
+ *  into a body the button controls; the card's own layout is untouched, so a
+ *  folded card is just its heading. Returns the card for chaining. */
+function foldCard(card, id, defaultOpen = false, foldGet = null, foldSet = null) {
+  const title = card.querySelector('.tesco-card-title');
+  if (!title) return card;
+  const body = document.createElement('div');
+  body.className = 'tesco-card-body';
+  body.id = `tesco-fold-${id}`;
+  let node = title.nextSibling;
+  while (node) {
+    const next = node.nextSibling;
+    body.appendChild(node);          // reparent, never re-render: the card's
+    node = next;                     // handlers and inputs survive the move
+  }
+  card.appendChild(body);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'tesco-fold-btn';
+  btn.setAttribute('aria-controls', body.id);
+  while (title.firstChild) btn.appendChild(title.firstChild);
+  title.appendChild(btn);
+  let open = defaultOpen;
+  try { if (typeof foldGet === 'function') open = !!foldGet(id, defaultOpen); } catch { open = defaultOpen; }
+  const paint = () => {
+    body.style.display = open ? '' : 'none';
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  btn.addEventListener('click', () => {
+    open = !open;
+    try { if (typeof foldSet === 'function') foldSet(id, open); } catch { /* storage unavailable */ }
+    paint();
+  });
+  paint();
+  return card;
+}
+
 export function screenTesco(ctx) {
   const { $, iconSpan, toast, persist, render, trackAction, swalConfirm, fmt, stackModal, isTopModal, loadVendor } = ctx;
   const state = () => ctx.getState();
+  // Fold state lives in app.js's storage (see foldCard above).
+  const fold = (card, id, open = false) => foldCard(card, id, open, ctx.foldGet, ctx.foldSet);
   const t = state().tesco || { shifts: [], payslips: [] };
   const rates = { ...TESCO_RATE_DEFAULTS, ...(state().settings.tescoRates || {}) };
   const now = new Date();
@@ -3307,23 +3358,25 @@ export function screenTesco(ctx) {
   // flow — two buttons for one camera, so the one beside the form is gone.
 
   // ----- add shift -----
-  screen.appendChild(buildAddCard());
+  screen.appendChild(fold(buildAddCard(), 'add-shift'));
   // ----- week off -----
-  screen.appendChild(buildWeekOffCard());
+  screen.appendChild(fold(buildWeekOffCard(), 'week-off'));
   // The Add tab's quick field, in shift clothes: describe it, watch the preview
   // resolve, then add it. Same grammar-shaped chips and example chips, because
   // the two fields teach the same habit — say it, check it, save it.
-  screen.appendChild(buildQuickCard());
+  screen.appendChild(fold(buildQuickCard(), 'quick-entry', true));
   // ----- roster scan -----
-  screen.appendChild(buildScanCard());
+  screen.appendChild(fold(buildScanCard(), 'scan-roster'));
   // ----- pay weeks -----
-  screen.appendChild(buildWeeksCard());
+  // Stays open: it is the screen's answer — the week you were paid for — and
+  // the shift rows it holds are the only way to edit one from here.
+  screen.appendChild(fold(buildWeeksCard(), 'pay-weeks', true));
   // ----- payslips -----
-  screen.appendChild(buildPayslipsCard());
+  screen.appendChild(fold(buildPayslipsCard(), 'payslips'));
   // ----- rates -----
   screen.appendChild(buildRatesCard());
   // ----- import / export -----
-  screen.appendChild(buildDataCard());
+  screen.appendChild(fold(buildDataCard(), 'import-export'));
   // ----- start over -----
   screen.appendChild(buildClearCard());
 

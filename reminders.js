@@ -214,15 +214,32 @@ export async function requestNotificationPermission() {
   try { return await Notification.requestPermission(); } catch { return 'denied'; }
 }
 
+/**
+ * What is DUE, said the same way the sender says it.
+ *
+ * The push path counts bills from the profile's synced document; the local
+ * path (system banner + in-app toast) has no document — reminders.js is the
+ * module the scheduler, the worker wake and the push client all share, and it
+ * must not import app state. So app.js hands in the source once at boot. Same
+ * leading space, same pluralisation, same "due means nextDate <= today": the
+ * words are supposed to be independent of how the reminder is delivered.
+ */
+let dueBillsHint = () => '';
+export function setDueBillsProvider(fn) {
+  dueBillsHint = typeof fn === 'function' ? fn : () => '';
+}
+
 /** The reminder's words, independent of how it is delivered: the system banner
  *  and the in-app toast say the same thing, and only one of them is ever the
  *  right one. */
 function reminderCopy(profileName) {
+  let hint = '';
+  try { hint = dueBillsHint() || ''; } catch { hint = ''; } // a hint never costs a delivery
   return {
     title: 'cents. — time to upload your transactions',
-    body: profileName
+    body: (profileName
       ? `Quick tally for ${profileName} — it takes a minute.`
-      : 'Log today\'s spending while it\'s fresh.',
+      : 'Log today\'s spending while it\'s fresh.') + hint,
   };
 }
 

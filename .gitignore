@@ -16,6 +16,17 @@ desktop.ini
 .env.local
 .env.*.local
 
+# The Lidl spike's output folder — credentials, refresh token and pulled
+# receipts. It lives in the repo so the paths are simple, but nothing inside
+# may ever be committed (mirrored in .netlifyignore so the deploy never serves
+# it either).
+lidl-spike-out/
+
+# Python bytecode (the spikes are stdlib-only, but importing one in a test
+# leaves this behind). .netlifyignore already keeps it off the deploy.
+__pycache__/
+*.pyc
+
 # Logs
 *.log
 

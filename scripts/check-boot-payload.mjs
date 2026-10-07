@@ -45,22 +45,20 @@ const BOOT_MODULES = [
   '/tesco-pay.js',
 ];
 // Modules that must NOT be in the boot closure: the ones the lazy paths own.
-const DEFERRED_MODULES = ['/tesco.js', '/ocr-pixels.js', '/ocr-prep-worker.js'];
+const DEFERRED_MODULES = ['/tesco.js', '/insights.js', '/ocr-pixels.js', '/ocr-prep-worker.js'];
 
 // Decoded JS parsed before the first paint, with headroom for growth (~4 %).
-// Measured today: 700 KB — app.js 534 KB (the back-gesture wiring, the
-// share-target reader and the Tesco pay tracker's pay-date join, all of which
-// must be installed at boot — a sheet can open before any screen is built) +
-// reminders.js 31 KB (three delivery paths now: the minute loop, the push
-// subscribe, and the background wake's schedule mirror — a worker cannot read
-// the page's localStorage, so every settings write carries the schedule into
-// Cache Storage and every start arms the wake) + storage/sync/profiles and the
-// small ones + tesco-pay.js 33 KB + csv.js 3 KB. The number to watch is not
-// the ceiling, it is the shape: this should stay "the shell and arithmetic",
-// with every screen and every library behind import() — and ~4 % is the whole
-// of the allowance, so a new eager import (240 KB for tesco.js) still fails
-// loudly.
-const BOOT_JS_BUDGET = 725 * 1024;
+// Measured today: 732 KB — app.js 558 KB + reminders.js 31 KB + storage/sync/
+// profiles and the small ones + tesco-pay.js 33 KB + csv.js 3 KB. app.js grew
+// for the end-user pass, and every piece of it is shell: the get-started
+// Pulse that replaces an all-zero alarm on a fresh ledger, the cash re-anchor
+// a restore needs, the prorated month comparison, the Tesco-Thursday gate,
+// the fixed-cost run-rate and its projection guard, and the reset's undo
+// journal. The number to watch is not the ceiling, it is the shape: this
+// should stay "the shell and arithmetic", with every screen and every library
+// behind import() — and ~4 % is the whole of the allowance, so a new eager
+// import (240 KB for tesco.js) still fails loudly.
+const BOOT_JS_BUDGET = 760 * 1024;
 
 /** Every static dependency of a module's own text: `import … from 'x'`,
  *  `import 'x'` and `export … from 'x'` (a re-export loads the module just as
@@ -172,6 +170,11 @@ for (const spec of dynamicSpecs) {
 // The Tesco module must still be reached lazily — the split's whole point.
 if (![...dynamicSpecs].some(s => s.endsWith('./tesco.js'))) {
   fail("nothing imports './tesco.js' dynamically; the screen would never load");
+}
+// Same for Insights, which split off app.js for the same reason: ~39 KB of
+// chart drawing parsed on every boot for a tab most sessions never open.
+if (![...dynamicSpecs].some(s => s.endsWith('./insights.js'))) {
+  fail("nothing imports './insights.js' dynamically; the screen would never load");
 }
 if (!boot.has('/tesco-pay.js')) fail('/tesco-pay.js is not on the boot path; the dashboard figure would lose its engine');
 

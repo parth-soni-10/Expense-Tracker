@@ -53,6 +53,10 @@
 import { readFileSync } from 'node:fs';
 
 const app = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+// The Insights row (statCard, statValueSize, every call site) moved into the
+// deferred insights.js in the boot split, so both files are scanned: a bare
+// figure must not become legal by changing file.
+const insights = readFileSync(new URL('../insights.js', import.meta.url), 'utf8');
 const cssRaw = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
 // Comments come off first, and not for tidiness: the notes in both files name
 // what was removed and why, so a search for `statValueSize` or `min-width` would
@@ -99,10 +103,13 @@ function statCardCalls(src) {
 }
 
 // ---- 1. a figure reaches the card already formatted ----------------------
-const calls = statCardCalls(app);
+// Each call carries the file it lives in: `line 1234` is meaningless when the
+// next line of the failure could be in the other module.
+const callsOf = (src, file) => statCardCalls(src).map(c => ({ ...c, where: `${file}:${c.line}` }));
+const calls = [...callsOf(app, 'app.js'), ...callsOf(insights, 'insights.js')];
 ok('statCard is still called from the Insights row', calls.length >= 2, true);
 ok('and every call passes a label and a value',
-  calls.filter(c => c.args.length !== 2).map(c => `line ${c.line}`), []);
+  calls.filter(c => c.args.length !== 2).map(c => c.where), []);
 
 // A bare value: `avg`, a number literal, or `x.y` — a figure handed over as
 // itself rather than as the string the card renders. `fmt(x)`, `String(x)` and a
@@ -120,19 +127,19 @@ const unformatted = calls.filter(c => {
   if (BARE.some(re => re.test(v))) return true;
   const whole = WHOLE_CALL.exec(v);
   return whole ? !FORMATTERS.has(whole[1]) : false;
-}).map(c => `line ${c.line}: ${c.args[1]}`);
+}).map(c => `${c.where}: ${c.args[1]}`);
 ok('no stat value is handed over as a bare figure', unformatted, []);
 
 // ---- 2. the size the value is set at fits the card -----------------------
-const fnAt = app.indexOf('function statValueSize');
-const fnEnd = app.indexOf('\n}\n', fnAt);
+const fnAt = insights.indexOf('function statValueSize');
+const fnEnd = insights.indexOf('\n}\n', fnAt);
 if (fnAt < 0 || fnEnd < 0) {
-  console.error('check-mobile-layout: statValueSize is no longer where this guard looks for it in app.js.');
+  console.error('check-mobile-layout: statValueSize is no longer where this guard looks for it in insights.js.');
   process.exit(1);
 }
-const fnCode = app.slice(fnAt, fnEnd + 2);
+const fnCode = insights.slice(fnAt, fnEnd + 2);
 if (!/function statValueSize/.test(fnCode) || fnCode.length > 600) {
-  console.error(`check-mobile-layout: lifted an implausible slice (${fnCode.length} chars) — check the markers in app.js.`);
+  console.error(`check-mobile-layout: lifted an implausible slice (${fnCode.length} chars) — check the markers in insights.js.`);
   process.exit(1);
 }
 const statValueSize = new Function(`${fnCode}\nreturn statValueSize;`)();
@@ -202,9 +209,10 @@ ok('and can wrap rather than spill its card',
   /overflow-wrap\s*:\s*(anywhere|break-word)/.test(statValue ?? ''), true);
 
 // The phone has to be able to change the row: an inline gap/margin outranks a
-// media query, which is how the phone rule below was dead text.
+// media query, which is how the phone rule below was dead text. Scanned across
+// both files — the row itself is built in insights.js since the boot split.
 ok('the stat row carries no inline layout the phone cannot override',
-  /class: 'insight-stats', style:/.test(app), false);
+  /class: 'insight-stats', style:/.test(app + insights), false);
 const phoneStats = mediaBody(css, 'max-width: 639px', '.stat-card');
 ok('the phone block tightens the row rather than the desktop rules alone',
   /\.insight-stats\s*\{[^}]*gap\s*:/.test(phoneStats ?? ''), true);
