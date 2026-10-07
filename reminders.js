@@ -99,10 +99,25 @@ function queueWakePatch(patch) {
   return wakeWriteChain; // patchWakeRecord never rejects, so the chain never breaks
 }
 
-/** Mirror this profile's schedule for the wake to read. */
+/**
+ * Mirror this profile's schedule for the wake to read — and whether an on-time
+ * push is armed for this device.
+ *
+ * The `push` field is not bookkeeping: a wake that fires BEFORE the hour marks
+ * the day as delivered (`markReminderFired`), and the push handler drops any
+ * message for a day that already has its banner — so an early wake does not
+ * just add a notification, it CANCELS the one the server is about to send at
+ * the hour the user chose. The wake's early fire exists for a device with no
+ * other closed-app path, and a subscription is the opposite of that: the
+ * on-time delivery runs on the server, which does not care whether the phone
+ * is awake. So the worker reads this field and yields (see sw.js's
+ * dailyReminderWake). It means "a push is armed", never "a push is certainly
+ * alive" — verifyReminderPush below is what keeps the two the same, and a
+ * subscription that has died leaves the wake to cover the day as before.
+ */
 function mirrorWakeRecord() {
   const s = readSettings();
-  return queueWakePatch({ enabled: s.enabled, time: s.time });
+  return queueWakePatch({ enabled: s.enabled, time: s.time, push: s.pushSubscribed });
 }
 
 /** Write today's date into the record: this path showed the reminder. */
@@ -324,9 +339,15 @@ export function startReminderScheduler() {
   // recorded zone is backfilled the same way.
   {
     const s = getReminderSettings();
-    if (s.pushSubscribed && s.pushZone !== currentZone()
-        && notificationPermission() === 'granted') {
-      updateReminderPushTime().catch(() => {}); // best effort; the app is up either way
+    if (s.pushSubscribed && notificationPermission() === 'granted') {
+      // A device whose zone no longer matches the one the server was told keeps
+      // its push on the old zone's hour; re-announce it.
+      if (s.pushZone !== currentZone()) updateReminderPushTime().catch(() => {});
+      // Then check the subscription itself — and this one needs no clock or
+      // travel to be wrong. A start is the only moment the device can find out
+      // that the reminder it promises has quietly stopped existing, so the
+      // check runs here rather than only when the settings screen is opened.
+      verifyReminderPush().catch(() => {}); // best effort; the app is up either way
     }
   }
   tick(true);
@@ -355,6 +376,21 @@ let wakeState = { state: 'unknown' }; // 'on' | 'off' | 'unsupported' | 'unavail
 
 export function periodicReminderStatus() {
   return { ...wakeState };
+}
+
+// The same honesty about the push half, and it is the half that fails silently.
+// `pushSubscribed` in this device's own settings says a subscription was once
+// stored; it cannot say that the SERVER still holds it (the scheduled sender
+// prunes a record the push service calls gone, and a store that loses one takes
+// the reminder with it) nor that the subscription is still bound to the key the
+// server signs with (browsers bind one at subscribe time, and a push signed by
+// any other key is refused — a rejection the sender can only count). Both look
+// exactly like a reminder that fires only when the app is open. So the verdict
+// is checked against the live subscription and the live server, never assumed.
+let pushState = { state: 'unknown' }; // 'live' | 'healed' | 'off' | 'unreachable' | 'no-sync' | 'unsupported' | 'permission' | 'probe-failed' | 'key-mismatch' | 'no-record' | 'no-subscription' | 'unavailable' | 'unknown'
+
+export function reminderPushStatus() {
+  return { ...pushState };
 }
 
 /**
@@ -604,6 +640,106 @@ export async function unsubscribeReminderPush() {
     patchReminderSettings({ pushSubscribed: false, pushEndpoint: null });
   }
   return { ok: true };
+}
+
+/**
+ * Is the closed-app reminder actually still deliverable to THIS device?
+ *
+ * Two silent deaths, each of which looks exactly like a reminder that fires
+ * only while the app is open, and neither of which anything else can notice:
+ *
+ *   1. the subscription is GONE. Chrome drops a push subscription on its own
+ *      schedule (a rotated FCM token, a browser update, an OS that cleared the
+ *      site's data), and the server-side record can go with it — the scheduled
+ *      sender prunes one the push service calls gone. The device's own
+ *      `pushSubscribed: true` is a memory of a subscribe that did happen, which
+ *      is why it is not the truth about what happens tonight.
+ *   2. the subscription is bound to a DIFFERENT KEY than the server signs with.
+ *      The pair comes from the site's env vars or is derived from a secret
+ *      (see lib/webpush.mjs), and changing either changes the key — after
+ *      which every push the sender signs is refused by the push service and
+ *      counted in a log nobody reads. A browser binds its subscription at
+ *      subscribe() time, so the only repair is a new subscription.
+ *
+ * Both repairs are the same operation — subscribe again and store the record
+ * again — and both are safe to attempt without a prompt, because this only runs
+ * for a device that already has permission. A failure to reach the server is
+ * NOT a verdict: nothing is cleared, nothing is re-subscribed, and the status
+ * says so, because a phone in a tunnel must not have its reminder torn down.
+ */
+export async function verifyReminderPush() {
+  const settle = (state, extra = {}) => { pushState = { state, at: Date.now(), ...extra }; return { ...pushState }; };
+  const s = getReminderSettings();
+  if (!s.pushSubscribed) return settle('off', { ok: true });
+  if (!pushSupported()) return settle('unsupported');
+  const sync = getSyncSettings();
+  const base = sync.enabled ? pushEndpoint(sync.endpoint) : null;
+  if (!base || !sync.password) return settle('no-sync');
+  if (notificationPermission() !== 'granted') return settle('permission');
+  let reg = null;
+  try { reg = await navigator.serviceWorker.ready; } catch { return settle('unavailable'); }
+  if (!reg || typeof reg.pushManager?.getSubscription !== 'function') return settle('unavailable');
+  let sub = null;
+  try { sub = await reg.pushManager.getSubscription(); } catch { return settle('unavailable'); }
+  if (!sub) {
+    // 1a. Nothing for a push to arrive at. Repair, don't ask — and if the
+    // repair itself fails, say THAT rather than blaming the browser for not
+    // handing over a subscription it no longer has.
+    const healed = await subscribeReminderPush();
+    return healed.ok ? settle('healed', { ok: true, healed: 'subscription' })
+      : settle('no-subscription', { reason: healed.reason });
+  }
+  // The key the server would sign with, and the key this subscription is bound
+  // to. `options` is the browser's own record of the subscribe() call; a
+  // browser that does not expose it skips this check rather than guessing at
+  // it (the probe below still answers for the record itself).
+  let keyResp = null;
+  try { keyResp = await pushFetch(base, { method: 'GET' }); } catch { return settle('unreachable'); }
+  if (!keyResp.ok) return settle('unreachable', { status: keyResp.status });
+  let publicKey = null;
+  try { publicKey = (await keyResp.json()).publicKey; } catch { publicKey = null; }
+  if (validPublicKey(publicKey)) {
+    let bound = null;
+    try {
+      const raw = sub.options && sub.options.applicationServerKey;
+      if (raw) bound = new Uint8Array(raw);
+    } catch { bound = null; }
+    if (bound) {
+      const current = b64urlToBytes(publicKey);
+      const same = bound.length === current.length && bound.every((b, i) => b === current[i]);
+      if (!same) {
+        // 2. Bound to a key the sender does not hold: every push is refused.
+        try { await sub.unsubscribe(); } catch { /* dead to us either way */ }
+        const healed = await subscribeReminderPush();
+        return healed.ok ? settle('healed', { ok: true, healed: 'key' })
+          : settle('key-mismatch', { reason: healed.reason });
+      }
+    }
+  }
+  // 1b. The record itself: the address the sender writes to. Asking is the only
+  // way to know, and the ask (PUT with a probe) never sends a notification.
+  let probe = null;
+  try { probe = await probePushRecord(base, sync.password, sub.endpoint); } catch { return settle('unreachable'); }
+  if (probe.status === 404) {
+    const healed = await subscribeReminderPush();
+    return healed.ok ? settle('healed', { ok: true, healed: 'record' })
+      : settle('no-record', { reason: healed.reason });
+  }
+  if (!probe.ok) return settle('probe-failed', { status: probe.status });
+  return settle('live', { ok: true });
+}
+
+/**
+ * Ask the server whether it still holds this device's record — WITHOUT sending
+ * a test notification, which is what the plain PUT above (Send test push) is
+ * for. Same authentication, same record lookup, no delivery.
+ */
+async function probePushRecord(base, password, endpoint) {
+  return pushFetch(base, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...profileHeaders(password) },
+    body: JSON.stringify({ probe: true, endpoint }),
+  });
 }
 
 /** Ask the server to push a test message to this device's subscription. */

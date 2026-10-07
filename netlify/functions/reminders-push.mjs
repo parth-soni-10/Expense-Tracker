@@ -221,6 +221,17 @@ export default async (request, _context) => {
       // Do not reveal whether the endpoint exists under another profile.
       return err('No push subscription found for this profile', 404, cors);
     }
+    // ---------- PROBE (no delivery) ----------
+    // The device asking whether its record is still here. This is the one
+    // question a silently dead reminder cannot answer any other way: the app
+    // knows it subscribed once, and the sender prunes a record the push service
+    // calls gone, so "Push is on" can be a promise about a subscription that no
+    // longer exists anywhere but in the user's memory of toggling it. A probe
+    // never sends a notification — Send test push is the deliberate one, and it
+    // is the button a user presses when they WANT a banner — so the app can ask
+    // on every start without anyone ever receiving a stray reminder.
+    if (body.probe === true) return ok({ stored: true, time: found.record.time }, 200, cors);
+
     const { key, record } = found;
     const vapid = vapidConfig();
     if (!vapid.ok) return err('VAPID keys not configured on the function', 500, cors);

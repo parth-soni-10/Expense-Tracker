@@ -48,17 +48,21 @@ const BOOT_MODULES = [
 const DEFERRED_MODULES = ['/tesco.js', '/insights.js', '/ocr-pixels.js', '/ocr-prep-worker.js'];
 
 // Decoded JS parsed before the first paint, with headroom for growth (~4 %).
-// Measured today: 732 KB — app.js 558 KB + reminders.js 31 KB + storage/sync/
-// profiles and the small ones + tesco-pay.js 33 KB + csv.js 3 KB. app.js grew
-// for the end-user pass, and every piece of it is shell: the get-started
-// Pulse that replaces an all-zero alarm on a fresh ledger, the cash re-anchor
-// a restore needs, the prorated month comparison, the Tesco-Thursday gate,
-// the fixed-cost run-rate and its projection guard, and the reset's undo
-// journal. The number to watch is not the ceiling, it is the shape: this
-// should stay "the shell and arithmetic", with every screen and every library
-// behind import() — and ~4 % is the whole of the allowance, so a new eager
-// import (240 KB for tesco.js) still fails loudly.
-const BOOT_JS_BUDGET = 760 * 1024;
+// Measured today: 756 KB — app.js 562 KB + reminders.js 38 KB + storage/sync/
+// profiles and the small ones + tesco-pay.js 33 KB + csv.js 3 KB. The last
+// addition is the developer pass on the reminder's silent half: the closed-app
+// push can die without anything on screen changing (the sender prunes a record
+// the push service calls gone, or the subscription is bound to a key the server
+// no longer signs with), so the page checks it against the live server on every
+// start and repairs both cases — plus the modal's verdict and its one-tap
+// re-register, and the worker's yield to an armed push (its own file). Every
+// piece of it is shell for the same reason the scheduler is: it has to be
+// installed before any screen exists, and the alternative is a reminder that
+// reports as on and never arrives. The number to watch is not the ceiling, it
+// is the shape: this should stay "the shell and arithmetic", with every screen
+// and every library behind import() — and ~4 % is the whole of the allowance,
+// so a new eager import (240 KB for tesco.js) still fails loudly.
+const BOOT_JS_BUDGET = 790 * 1024;
 
 /** Every static dependency of a module's own text: `import … from 'x'`,
  *  `import 'x'` and `export … from 'x'` (a re-export loads the module just as

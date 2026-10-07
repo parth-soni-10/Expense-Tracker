@@ -358,6 +358,17 @@ self.addEventListener('periodicsync', (event) => {
  * gate alone would never fire at all, and a whole day would pass with no
  * closed-app reminder from any path. A late reminder beats a skipped one; a
  * record from yesterday means today is simply waiting its turn.
+ *
+ * And the one thing that rule must NOT do: pre-empt the hour itself. The catch-
+ * up fire below marks the day as delivered, and the push handler drops any
+ * message for a day that already has its banner — so an early wake does not add
+ * a notification, it CANCELS the on-time one the server is about to send. That
+ * is why `record.push` ends it: a device with an armed subscription has its
+ * closed-app reminder delivered by the SERVER at the hour the user chose, which
+ * needs nothing awake here, so the catch-up has nothing to cover — and it is
+ * exactly the device whose 20:00 reminder would be eaten by a 03:00 wake. With
+ * no subscription the record cannot exist, and the rule is unchanged: a late
+ * reminder beats a skipped one.
  */
 async function dailyReminderWake() {
   try {
@@ -369,8 +380,11 @@ async function dailyReminderWake() {
     const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(String(record.time));
     const dueAt = match ? Number(match[1]) * 60 + Number(match[2]) : 20 * 60; // normalize()'s own default
     const due = now.getHours() * 60 + now.getMinutes() >= dueAt;
-    const yesterday = reminderDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
-    if (!due && record.fired === yesterday) return;
+    if (!due) {
+      if (record.push === true) return; // the server has this hour covered
+      const yesterday = reminderDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+      if (record.fired === yesterday) return;
+    }
     await self.registration.showNotification(REMINDER_TITLE, reminderNotification(REMINDER_BODY, REMINDER_TAG));
     await markReminderFired(day);
   } catch {

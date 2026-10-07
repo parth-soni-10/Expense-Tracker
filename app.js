@@ -13,7 +13,7 @@ import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, s
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfile, setActiveProfileId, getActiveProfileId, hasSessionChoice, nsKey, profileEnvName, isAdminProfile, setProfileIcon } from './profiles.js';
-import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, setDueBillsProvider, periodicReminderStatus, syncPeriodicReminder } from './reminders.js';
+import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, setDueBillsProvider, periodicReminderStatus, syncPeriodicReminder, verifyReminderPush, reminderPushStatus } from './reminders.js';
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
@@ -1475,6 +1475,11 @@ function openReminderSettings() {
   // may draw before it lands. Probe exactly once per open — once, because a
   // browser that answers 'unknown' would otherwise redraw forever.
   let wakeProbed = false;
+  // Same for the push half, and this is the probe that matters for a reminder
+  // that "just stopped": `pushSubscribed` is this device's memory of a toggle,
+  // not evidence that the server still holds the record or that the
+  // subscription is bound to the key it signs with.
+  let pushProbed = false;
   const draw = () => {
     const s = getReminderSettings();
     const enabledRow = $('label', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin:18px 0;cursor:pointer;' },
@@ -1534,6 +1539,47 @@ function openReminderSettings() {
     const sync = getSyncSettings();
     const pushUsable = pushSupported() && sync.enabled && !!sync.endpoint && !!sync.password;
     const wakeOn = s.enabled && periodicReminderStatus().state === 'on';
+    // The one thing `pushSubscribed` cannot say. A subscription the server has
+    // forgotten — pruned on a push service's "gone", or lost with the store —
+    // and one bound to a key the server no longer signs with are both silent:
+    // nothing is delivered, and every screen still reads "Push is on".
+    // verifyReminderPush() asks the live server and repairs what it finds; the
+    // row says what it found instead of what was toggled.
+    const pushVerdict = reminderPushStatus();
+    const PUSH_VERDICT_TEXT = {
+      live: 'Push is on — the reminder reaches you even when cents. is closed.',
+      healed: 'Push is on — this device was re-registered just now, so tonight\'s reminder fires at your set time.',
+      unreachable: 'Push is on — the server could not be reached just now, so this device could not be checked. It is checked again the next time the app opens.',
+      unknown: 'Push is on — checking this device with the server…',
+      'no-record': 'Push is on, but the server no longer holds this device\'s record — nothing would be delivered. Re-register it below.',
+      'key-mismatch': 'Push is on, but this device is bound to an older key, so the server\'s pushes are refused. Re-register it below.',
+      'probe-failed': 'Push is on, but the server could not confirm this device\'s record. Re-register it below.',
+      'no-sync': 'Push is on, but Cloud sync is off on this device, so it cannot be checked.',
+      'no-subscription': 'Push is on, but this device no longer holds a push subscription and re-creating it failed.',
+      permission: 'Push is on, but notifications are not allowed in the browser, so none can be shown.',
+      unavailable: 'Push is on, but this browser would not hand over its subscription to check it.',
+      unsupported: 'Push is on, but this browser cannot receive push notifications.',
+    };
+    // Which verdicts a fresh registration actually fixes — an offline phone and
+    // a blocked permission are not ones to send the user round again for.
+    const PUSH_HEALABLE = { 'no-record': true, 'key-mismatch': true, 'probe-failed': true, 'no-subscription': true };
+    const reregisterPush = async (ev) => {
+      ev.currentTarget.disabled = true;
+      // Drop the dead record and the browser's own binding first: the repair
+      // for both failure modes is a NEW subscription, and subscribe() reuses
+      // whatever the browser already holds.
+      await unsubscribeReminderPush();
+      const r = await subscribeReminderPush();
+      ev.currentTarget.disabled = false;
+      if (!r.ok) {
+        toast('Push is off — re-registering failed: ' + (r.message || r.reason || 'error') + '.');
+        draw();
+        return;
+      }
+      await verifyReminderPush().catch(() => {});
+      toast('Push re-registered — the reminder fires at your set time again.');
+      draw();
+    };
     const pushRow = $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:14px;border-top:1px solid var(--line);margin-bottom:14px;' },
       $('span', { class: 'muted', style: 'font-size:12px;line-height:1.5;' },
         !pushSupported()
@@ -1542,9 +1588,11 @@ function openReminderSettings() {
         : !pushUsable
           ? (wakeOn ? 'Background reminder is on - it reaches you even when cents. is closed, with no cloud sync. Cloud sync adds a push at your exact time.'
                     : 'Turn on Cloud sync to also get the reminder when the app is closed.')
-        : s.pushSubscribed ? 'Push is on — the reminder reaches you even when cents. is closed.'
+        : s.pushSubscribed
+          ? (PUSH_VERDICT_TEXT[pushVerdict.state] || PUSH_VERDICT_TEXT.live)
         : 'Also get the reminder when the app is closed (uses this browser\'s push channel).'),
-      pushUsable ? $('button', { type: 'button', class: s.pushSubscribed ? 'btn btn-danger' : 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: async (ev) => {
+      pushUsable ? $('div', { style: 'display:flex;gap:8px;flex:none;' },
+        $('button', { type: 'button', class: s.pushSubscribed ? 'btn btn-danger' : 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: async (ev) => {
         const btn = ev.currentTarget;
         btn.disabled = true;
         const r = s.pushSubscribed ? await unsubscribeReminderPush() : await subscribeReminderPush();
@@ -1559,7 +1607,14 @@ function openReminderSettings() {
           ? messages[r.reason] + detail
           : ('Could not ' + (s.pushSubscribed ? 'disable' : 'enable') + ' push: ' + (r.message || r.reason || 'error') + '.'));
         draw();
-      } }, s.pushSubscribed ? 'Disable push' : 'Enable push') : null,
+      } }, s.pushSubscribed ? 'Disable push' : 'Enable push'),
+        // The repair, offered exactly where the failure is reported. A reminder
+        // that has been delivered by a dead subscription for weeks is not
+        // something to describe and leave: re-registering is one tap, and the
+        // verdict above says which case it is.
+        s.pushSubscribed && PUSH_HEALABLE[pushVerdict.state]
+          ? $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: reregisterPush }, 'Re-register') : null,
+      ) : null,
     );
     const testPushRow = s.pushSubscribed ? $('div', { style: 'display:flex;justify-content:flex-end;margin-bottom:14px;' },
       $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: async (ev) => {
@@ -1614,6 +1669,13 @@ function openReminderSettings() {
     if (!wakeProbed && s.enabled && periodicReminderStatus().state === 'unknown') {
       wakeProbed = true;
       syncPeriodicReminder().catch(() => {}).then(draw);
+    }
+    // The push verdict, asked of the live server exactly once per open. Only for
+    // a subscribed device with a usable sync config: anything else has a row
+    // that already says why push is not the one carrying the reminder.
+    if (!pushProbed && s.pushSubscribed && pushUsable && pushVerdict.state === 'unknown') {
+      pushProbed = true;
+      verifyReminderPush().catch(() => {}).then(draw);
     }
   };
   draw();

@@ -1161,9 +1161,26 @@ delete process.env.GITHUB_TOKEN;
   FakeNotification.requestPermission = async () => FakeNotification.permission;
   globalThis.Notification = FakeNotification;
   globalThis.PushManager = class {};
+  // A subscription the browser still holds, bound to the key the server signs
+  // with. The SAME boots this section measures also run the start-up push check
+  // (section 18 — "what `pushSubscribed` cannot say"), and a device that check
+  // can CONFIRM writes nothing, so the announce counts below stay the announce's
+  // own. Returning null here would make every one of these starts look like a
+  // device whose subscription the browser had dropped, and the repair POST that
+  // follows would be counted as zone traffic.
+  const pointBytes = (b64) => {
+    const buf = Buffer.from(String(b64), 'base64url');
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  };
+  const heldSub = {
+    endpoint: 'http://push-ep/local',
+    options: { userVisibleOnly: true, applicationServerKey: pointBytes(keys.publicKey) },
+    toJSON: () => ({ endpoint: 'http://push-ep/local', keys: { p256dh: 'x', auth: 'y' } }),
+    unsubscribe: async () => true,
+  };
   const fakeReg = {
     pushManager: {
-      getSubscription: async () => null,
+      getSubscription: async () => heldSub,
       subscribe: async () => ({
         endpoint: 'http://push-ep/local',
         toJSON: () => ({ endpoint: 'http://push-ep/local', keys: { p256dh: 'x', auth: 'y' } }),
@@ -1249,8 +1266,14 @@ delete process.env.GITHUB_TOKEN;
     check('a start after travelling re-announces the new zone',
       storedZone() === expectedZone && logOf('POST') === 1,
       `stored=${storedZone()} log=${seq()}`);
+    // The subscribe and the verify share this boot, so the ORDER is asserted on
+    // the announce alone (exactly one POST, after a key fetch) — the sequence
+    // that matters is what section (a) pins byte for byte, where the boot makes
+    // no other request.
     check('in the order the sender needs: key first, then the record',
-      seq() === 'GET,POST', seq());
+      logOf('POST') === 1
+        && fetchLog.findIndex((f) => f.method === 'GET') < fetchLog.findIndex((f) => f.method === 'POST'),
+      seq());
 
     // (c) The gates. Permission first: starting the app must never be what
     // asks for the prompt, so a non-granted start does not even fetch the key.
@@ -1278,7 +1301,7 @@ delete process.env.GITHUB_TOKEN;
     settled.startReminderScheduler();
     await flush();
     check('a start whose zone already agrees does not announce again',
-      fetchLog.length === 0 && storedZone() === expectedZone,
+      logOf('POST') === 0 && storedZone() === expectedZone,
       `log=${seq()} stored=${storedZone()}`);
 
     // (e) Backfill: subscriptions made before zones were recorded have none —
@@ -1319,7 +1342,7 @@ delete process.env.GITHUB_TOKEN;
     check('the announce body carries that one read',
       /zone:\s*currentZone\(\)/.test(tzSource));
     check('the start gate is subscription AND disagreement AND permission',
-      /s\.pushSubscribed && s\.pushZone !== currentZone\(\)/.test(tzSource)
+      /s\.pushSubscribed && notificationPermission\(\) === 'granted'[\s\S]{0,400}?s\.pushZone !== currentZone\(\)/.test(tzSource)
         && /notificationPermission\(\) === 'granted'/.test(tzSource));
     check('and the announce is best effort: a failure can never break the start',
       /updateReminderPushTime\(\)\.catch\(\(\) => \{\}\)/.test(tzSource));
@@ -1543,6 +1566,42 @@ delete process.env.GITHUB_TOKEN;
         && env.records.has('cents-build') && env.records.has('cents-reminder'),
       JSON.stringify(env.deleted));
   }
+  // A12: an armed push IS the on-time path, and the catch-up has to yield to
+  // it. The early fire marks the day as delivered, and the push handler drops
+  // any message for a day that already has its banner — so a wake that fires
+  // before the hour does not ADD a notification, it CANCELS the one the server
+  // is about to send at the hour the user chose. That is the whole reported
+  // failure: "Push is on", a subscription the sender is happy to deliver to
+  // every day at 20:00, and a phone whose only reminder arrives at whatever
+  // moment the browser decided to wake the worker.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '21:00', fired: '2026-10-01', push: true });
+    await dispatchWake(env);
+    check('a wake before the hour never pre-empts an armed push — the catch-up would cancel the hour it exists to cover',
+      env.shown.length === 0 && readRecord(env).fired === '2026-10-01',
+      `shown=${env.shown.length} ${JSON.stringify(readRecord(env))}`);
+  }
+  // A13: with NO subscription the rule above is untouched — this is the case
+  // section A4 pins from the other side, and it is why the yield is a field on
+  // the record rather than "a push row exists in the app somewhere".
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '21:00', fired: '2026-10-01', push: false });
+    await dispatchWake(env);
+    check('the same day with no push armed still catches up — the net is withdrawn only for a device with a better path',
+      env.shown.length === 1, String(env.shown.length));
+  }
+  // A14: once the hour has PASSED the wake keeps its own duty. A push is
+  // bounded (TTL 3600 — see pushSend), so a phone that was unreachable at its
+  // hour has nothing else left to fire it, and the field must not reach here.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '20:00', push: true });
+    await dispatchWake(env);
+    check('after the hour an armed push does not silence the wake — a push that expired is a day with no reminder',
+      env.shown.length === 1, String(env.shown.length));
+  }
 
   // ---- the page half: arming, withdrawing, and the two markers ----
   const savedWake = {
@@ -1558,6 +1617,11 @@ delete process.env.GITHUB_TOKEN;
     hadCaches: Object.prototype.hasOwnProperty.call(globalThis, 'caches'),
     caches: Object.prototype.hasOwnProperty.call(globalThis, 'caches') ? globalThis.caches : undefined,
     setInterval: globalThis.setInterval,
+    // The push half below needs the two functions it talks to. Every other
+    // section in this file uses the suite's real fake push service on
+    // localhost; this one is about what the PAGE asks and what it repairs, so
+    // the transport is a stub whose answers each check sets.
+    fetch: globalThis.fetch,
   };
   try {
     const pageStore = new Map();
@@ -1722,6 +1786,156 @@ delete process.env.GITHUB_TOKEN;
     check('and a start arms the wake beside the loop — no sync, no password, no prompt',
       registerCalls.length === 1 && registerCalls[0].tag === 'cents-daily-reminder',
       JSON.stringify(registerCalls));
+
+    // ---- the push half: what `pushSubscribed` cannot say ----
+    // The failure this exists for: "Push is on", a row promising a notification
+    // with the app closed, and no reminder at the hour — because the RECORD the
+    // sender writes to is gone (it prunes one the push service calls gone) or
+    // because the subscription is bound to a key the server no longer signs
+    // with (every push refused, counted in a log nobody reads). Neither is
+    // visible from the device unless it asks, and asking is what heals them.
+    const { patchSyncSettings } = await import('../settings.js');
+    patchSyncSettings({
+      enabled: true,
+      endpoint: 'https://cents-app.netlify.app/.netlify/functions/sync',
+      password: 'pw-test',
+    });
+    globalThis.window.PushManager = class {}; // pushSupported() reads this
+    const pointBytes = (b64) => {
+      const buf = Buffer.from(String(b64), 'base64url');
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    };
+    const OLD_KEY = generateVapidKeys().publicKey; // a pair the server no longer holds
+    const pushToken = { p256dh: 'p'.repeat(60), auth: 'a'.repeat(20) };
+    let subscribed = 0;
+    let unsubscribed = 0;
+    let currentSub = null;
+    let submitted = null; // the last POST body — what the server was told
+    const makeSub = (endpoint, applicationServerKey) => ({
+      endpoint,
+      options: { userVisibleOnly: true, applicationServerKey },
+      toJSON: () => ({ endpoint, keys: pushToken }),
+      // A real unsubscribe drops the browser's binding, and subscribe() then
+      // creates a NEW one — the repair for a dead key rests on that, so the
+      // fake has to do it too rather than leaving a subscription behind.
+      unsubscribe: async () => {
+        unsubscribed += 1;
+        if (currentSub && currentSub.endpoint === endpoint) currentSub = null;
+        return true;
+      },
+    });
+    workingReg.pushManager = {
+      getSubscription: async () => currentSub,
+      subscribe: async () => {
+        subscribed += 1;
+        currentSub = makeSub(`https://push.example/sub-${subscribed}`, pointBytes(keys.publicKey));
+        return currentSub;
+      },
+    };
+    const netCalls = [];
+    let keyStatus = 200;
+    let probeStatus = 200;
+    let netDown = false;
+    globalThis.fetch = async (url, init = {}) => {
+      const method = String(init.method || 'GET').toUpperCase();
+      const body = init.body ? JSON.parse(init.body) : null;
+      const headers = init.headers || {};
+      netCalls.push({ url: String(url), method, body, password: headers['X-Cents-Password'] });
+      if (netDown) throw new TypeError('offline'); // a phone in a tunnel
+      if (method === 'GET') return new Response(JSON.stringify({ publicKey: keys.publicKey }), { status: keyStatus });
+      if (method === 'PUT') return new Response('{}', { status: probeStatus });
+      submitted = body;
+      return new Response(JSON.stringify({ stored: true }), { status: 200 });
+    };
+
+    // C1: a healthy subscription is CONFIRMED, not assumed — and confirming it
+    // is read-only: one key lookup, one probe, no notification, no writes.
+    currentSub = makeSub('https://push.example/current', pointBytes(keys.publicKey));
+    wmod.patchReminderSettings({ pushSubscribed: true, pushEndpoint: currentSub.endpoint });
+    await flush();
+    netCalls.length = 0;
+    let verdict = await wmod.verifyReminderPush();
+    check('a live subscription is verified against the server rather than assumed',
+      verdict.state === 'live' && verdict.ok === true, JSON.stringify(verdict));
+    check('and verifying it delivers nothing — one key lookup and one probe, no push, no writes',
+      netCalls.length === 2 && netCalls[0].method === 'GET' && netCalls[1].method === 'PUT'
+        && netCalls[1].body && netCalls[1].body.probe === true && subscribed === 0,
+      JSON.stringify(netCalls.map(c => c.method)));
+    check('the probe asks about THIS device, at the push endpoint, with this profile\'s password',
+      netCalls[1].body.endpoint === 'https://push.example/current'
+        && netCalls[1].url.endsWith('/reminders-push') && netCalls[1].password === 'pw-test',
+      JSON.stringify(netCalls[1]));
+
+    // C2: the record is gone — the sender pruned it on a push service's "gone",
+    // which is the one delete the device never hears about. The reminder is dead
+    // until the subscription is stored again, so the check is a repair.
+    probeStatus = 404;
+    netCalls.length = 0;
+    verdict = await wmod.verifyReminderPush();
+    check('a record the server no longer holds is repaired, not merely reported',
+      verdict.state === 'healed' && verdict.healed === 'record', JSON.stringify(verdict));
+    check('and the repair stores the live subscription again, with this device\'s schedule',
+      !!submitted && submitted.subscription.endpoint === 'https://push.example/current'
+        && submitted.time === wmod.getReminderSettings().time
+        && submitted.zone === new Intl.DateTimeFormat().resolvedOptions().timeZone,
+      JSON.stringify(submitted));
+    check('with push left switched on — the row must not go dark over a repair it made',
+      wmod.getReminderSettings().pushSubscribed === true, JSON.stringify(wmod.getReminderSettings()));
+
+    // C3: bound to a key the server no longer signs with. Every push it sends is
+    // refused by the push service — invisible everywhere except the sender's own
+    // counter — and a browser binds its subscription at subscribe() time, so the
+    // only repair is a new subscription.
+    currentSub = makeSub('https://push.example/old-key', pointBytes(OLD_KEY));
+    wmod.patchReminderSettings({ pushSubscribed: true, pushEndpoint: currentSub.endpoint });
+    probeStatus = 200;
+    const unsubsBefore = unsubscribed;
+    submitted = null;
+    verdict = await wmod.verifyReminderPush();
+    check('a subscription bound to a key the server no longer signs with is re-subscribed, not left to fail in silence',
+      verdict.state === 'healed' && verdict.healed === 'key' && unsubscribed === unsubsBefore + 1,
+      JSON.stringify(verdict));
+    check('and the NEW subscription is the one stored — the old binding cannot be talked round',
+      !!submitted && submitted.subscription.endpoint === 'https://push.example/sub-1'
+        && wmod.getReminderSettings().pushEndpoint === 'https://push.example/sub-1',
+      JSON.stringify({ submitted: submitted && submitted.subscription.endpoint, settings: wmod.getReminderSettings().pushEndpoint }));
+
+    // C4: offline. A phone in a tunnel must not have its reminder torn down: no
+    // write, no re-subscribe, and a status that says "could not check" rather
+    // than a verdict on a device nobody could reach.
+    netDown = true;
+    const before = currentSub.endpoint;
+    wmod.patchReminderSettings({ pushSubscribed: true, pushEndpoint: before });
+    const subsBefore = subscribed;
+    verdict = await wmod.verifyReminderPush();
+    netDown = false;
+    check('a device that cannot reach the server keeps its subscription and its flag — unreachable is not a verdict',
+      verdict.state === 'unreachable' && wmod.getReminderSettings().pushSubscribed === true
+        && currentSub.endpoint === before && subscribed === subsBefore,
+      JSON.stringify(verdict));
+
+    // C5: the browser dropped the subscription itself (a rotated token, an OS
+    // that cleared the site's data). Nothing the server signs can be delivered
+    // to a device that is not listening, and `pushSubscribed: true` is then a
+    // promise about a subscription that exists nowhere but in the settings.
+    currentSub = null;
+    verdict = await wmod.verifyReminderPush();
+    check('a subscription the browser no longer holds is re-created rather than reported',
+      verdict.state === 'healed' && verdict.healed === 'subscription' && subscribed === subsBefore + 1,
+      JSON.stringify(verdict));
+
+    // C6: and the worker is TOLD, because the yield in A12 rests on this field
+    // alone. Every settings write carries it — the mirror is a patch, so a
+    // withdrawal has to be written as a value rather than left as an old key.
+    wmod.patchReminderSettings({ pushSubscribed: false });
+    await flush();
+    check('the mirror withdraws the armed-push field when push is switched off',
+      mirrored() && mirrored().push === false, JSON.stringify(mirrored()));
+    wmod.patchReminderSettings({ pushSubscribed: true, pushEndpoint: currentSub.endpoint });
+    await flush();
+    check('and mirrors it again with a subscription, so the wake yields to the on-time path',
+      mirrored() && mirrored().push === true && mirrored().enabled === true,
+      JSON.stringify(mirrored()));
   } finally {
     if (savedWake.hadLocalStorage) globalThis.localStorage = savedWake.localStorage;
     else delete globalThis.localStorage;
@@ -1735,6 +1949,7 @@ delete process.env.GITHUB_TOKEN;
     else delete globalThis.matchMedia;
     if (savedWake.hadCaches) globalThis.caches = savedWake.caches;
     else delete globalThis.caches;
+    globalThis.fetch = savedWake.fetch;
     globalThis.setInterval = savedWake.setInterval;
   }
 
@@ -1754,8 +1969,9 @@ delete process.env.GITHUB_TOKEN;
       && /syncPeriodicReminder\(\)\.catch\(\(\) => \{\}\)\.then\(draw\)/.test(modalBody),
     String(modalWakes));
   check('and it imports the status the row is drawn from',
-    /periodicReminderStatus, syncPeriodicReminder \} from '\.\/reminders\.js'/.test(appSource)
-      && /periodicReminderStatus\(\)/.test(modalBody));
+    /periodicReminderStatus, syncPeriodicReminder, verifyReminderPush, reminderPushStatus \} from '\.\/reminders\.js'/.test(appSource)
+      && /periodicReminderStatus\(\)/.test(modalBody)
+      && /reminderPushStatus\(\)/.test(modalBody));
   check('the row claims a background reminder only when the register said on',
     /Background reminder is on/.test(modalBody)
       && /periodicReminderStatus\(\)\.state === 'on'/.test(modalBody));
@@ -1781,8 +1997,61 @@ delete process.env.GITHUB_TOKEN;
   // `enabled: true` is how a wake stops firing while everything looks right.
   check('record writes are chained so a mirror cannot erase the day beside it',
     /wakeWriteChain = wakeWriteChain\.then\(\(\) => patchWakeRecord\(patch\)\)/.test(remindersSource)
-      && /return queueWakePatch\(\{ enabled: s\.enabled, time: s\.time \}\)/.test(remindersSource)
+      && /return queueWakePatch\(\{ enabled: s\.enabled, time: s\.time, push: s\.pushSubscribed \}\)/.test(remindersSource)
       && /return queueWakePatch\(\{ fired: day \}\)/.test(remindersSource));
+  // The yield itself: pinned in the worker's own text because the property that
+  // makes it correct is WHERE it sits — a `push` check inside the due-time
+  // branch would silence the one path with nothing else behind it (A14), and a
+  // check outside the `!due` branch would never run.
+  const wakeAt = swSource.indexOf('async function dailyReminderWake');
+  const wakeBody = swSource.slice(wakeAt, swSource.indexOf('self.addEventListener(\'notificationclick\'', wakeAt));
+  check('the wake yields to an armed push, and only before the hour — after it the net has nothing else behind it',
+    wakeAt > -1
+      && /if \(!due\) \{\s*\n\s*if \(record\.push === true\) return;[\s\S]{0,200}?if \(record\.fired === yesterday\) return;\s*\n\s*\}/.test(wakeBody),
+    wakeBody.slice(wakeBody.indexOf('if (!due)'), wakeBody.indexOf('if (!due)') + 220));
+  // The page's own half of the same rule: `push` is only ever mirrored from the
+  // live setting, so a device that switches push off gets its net back.
+  check('the armed-push field comes from the live setting, never a constant',
+    /mirrorWakeRecord\(\) \{\s*\n\s*const s = readSettings\(\);\s*\n\s*return queueWakePatch\(\{ enabled: s\.enabled, time: s\.time, push: s\.pushSubscribed \}\);/.test(remindersSource));
+  // And the check is run where it can be: on a start, beside the zone
+  // re-announce, gated on a device that is subscribed AND permitted. A prompt
+  // must never come out of starting the app, and a device that never subscribed
+  // has nothing to check.
+  check('a start re-checks a subscribed device\'s push — the only moment a silently dead reminder can be found',
+    /s\.pushSubscribed && notificationPermission\(\) === 'granted'[\s\S]{0,600}?verifyReminderPush\(\)\.catch/.test(schedBody));
+  check('and the check never asks for permission — it runs for a device that already granted it',
+    /export async function verifyReminderPush[\s\S]{0,1400}?notificationPermission\(\) !== 'granted'\) return settle\('permission'\)/.test(remindersSource)
+      && !/export async function verifyReminderPush[\s\S]{0,1600}?requestNotificationPermission\(\)/.test(remindersSource));
+  // The modal's two new halves: the probe that asks, and the repair offered at
+  // the failure rather than described three taps away.
+  check('the modal asks the server about a subscribed device, once per open',
+    /if \(!pushProbed && s\.pushSubscribed && pushUsable && pushVerdict\.state === 'unknown'\)/.test(modalBody)
+      && /verifyReminderPush\(\)\.catch\(\(\) => \{\}\)\.then\(draw\)/.test(modalBody));
+  check('and a failure the server can fix is offered as one tap, not as a sentence',
+    /'Re-register'/.test(modalBody) && /await unsubscribeReminderPush\(\);\s*\n\s*const r = await subscribeReminderPush\(\);/.test(modalBody)
+      && /PUSH_HEALABLE\[pushVerdict\.state\]/.test(modalBody));
+  check('the row reports the verdict, not the toggle that produced it',
+    /PUSH_VERDICT_TEXT\[pushVerdict\.state\] \|\| PUSH_VERDICT_TEXT\.live/.test(modalBody)
+      && /'no-record':/.test(modalBody) && /'key-mismatch':/.test(modalBody));
+  // Both maps are plain data and both are read out of the file's own text: a
+  // state can offer the repair and have no sentence for it, and the fallback
+  // (`|| PUSH_VERDICT_TEXT.live`) would then print the all-clear — "the reminder
+  // reaches you even when cents. is closed" — over a subscription the code has
+  // just decided is DEAD. That is the defect this pins, and it is one line away
+  // at all times.
+  const textMap = /\n    const PUSH_VERDICT_TEXT = (\{[\s\S]*?\n    \});/.exec(modalBody)?.[1];
+  const healMap = /\n    const PUSH_HEALABLE = (\{[^}]*\});/.exec(modalBody)?.[1];
+  const parse = (src) => { try { return new Function(`return ${src}`)(); } catch { return null; } };
+  const verdicts = parse(textMap);
+  const healable = parse(healMap);
+  check('every state that offers a repair has a sentence of its own — a healable verdict must never print the all-clear',
+    !!verdicts && !!healable && Object.keys(healable).every((k) => k in verdicts)
+      && Object.keys(verdicts).length >= 8,
+    JSON.stringify({ healable: healable && Object.keys(healable), sentenced: verdicts && Object.keys(verdicts) }));
+  check('and the verdicts that are not failures keep their own words',
+    !!verdicts && !!verdicts.live && !!verdicts.unreachable && !!verdicts.unknown
+      && !verdicts.unreachable.includes('Re-register'),
+    JSON.stringify(verdicts));
 }
 
 // ---------- 19. the reminder says what bills are due ----------
@@ -1869,6 +2138,46 @@ delete process.env.GITHUB_TOKEN;
     JSON.stringify(received.map(r => r.body)));
 
   await cloud.del('doc/personal.json');
+  for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k);
+}
+
+// ---------- 21. the probe: "is my reminder still deliverable?" ----------
+// A record the sender has pruned leaves a device whose app still reads "Push is
+// on" and whose reminder arrives only when the app is opened. The device cannot
+// know without asking, and the ask has to be safe to make on EVERY start — which
+// rules out the call that already exists (PUT without a flag is Send test push,
+// and it delivers a notification). So the probe is the same lookup with a flag,
+// and the point of this section is the thing it must not do.
+{
+  const endpoint = subscription.endpoint;
+  await pushHandler(new Request('http://localhost/.netlify/functions/reminders-push', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Cents-Password': 'test-password-123' },
+    body: JSON.stringify({ subscription, profileName: 'Parth', time: '20:00', zone: 'Europe/Dublin' }),
+  }), {});
+  received = [];
+  const probed = await call(pushHandler, 'PUT', { probe: true, endpoint });
+  const probedBody = await probed.json().catch(() => null);
+  check('a probe is answered about the record that exists',
+    probed.status === 200 && probedBody && probedBody.stored === true, `${probed.status} ${JSON.stringify(probedBody)}`);
+  check('and it delivers NOTHING — a probe that notified would be a banner on every start',
+    received.length === 0, String(received.length));
+  check('the probe carries the record\'s own time back, so the app can say what it checked',
+    probedBody && probedBody.time === '20:00', JSON.stringify(probedBody));
+
+  // The healthy device is the case that must stay silent; the dead one is the
+  // case the app acts on, and "not here" has to be distinguishable from
+  // "wrong password" — one is a repair, the other is a setup problem.
+  const missing = await call(pushHandler, 'PUT', { probe: true, endpoint: 'https://push.example/never-stored' });
+  check('a probe for a record the server does not hold says so rather than sending',
+    missing.status === 404 && received.length === 0, String(missing.status));
+  const unauthed = await pushHandler(new Request('http://localhost/.netlify/functions/reminders-push', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ probe: true, endpoint }),
+  }), {});
+  check('and a probe is authenticated like every other write — the record is not a public read',
+    unauthed.status === 401, String(unauthed.status));
   for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k);
 }
 
