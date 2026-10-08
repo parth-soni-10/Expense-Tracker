@@ -149,17 +149,36 @@ const HEADER_SCORE = [
 ];
 
 /**
+ * One cell of a row that may not be a row at all.
+ *
+ * A bank file is a print somebody else made, so no shape about it is
+ * guaranteed — and not being a list of cells is the same as being an empty
+ * one. bankAmount/bankDate answer null for junk rather than throwing, and the
+ * guesser has to hold that same line: a throw in here takes the whole mapping
+ * screen down before it can draw, which is the one moment the user could have
+ * fixed the file by hand.
+ */
+const cellAt = (row, i) => (row && typeof row === 'object' ? String(row[i] ?? '') : '');
+
+/**
  * The mapper's first guess, from the header words and then from the cells
  * themselves — because a header is only a header if the bank wrote one.
  * Answers indexes into `columns`, `-1` when nothing looks like that field.
+ *
+ * Total on both arguments, for the reason above: a column list or row list
+ * that is missing, empty or the wrong shape gets the same answer a file with
+ * no recognisable columns gets — "nothing looks like that field" — which is a
+ * state the screen already knows how to render (every field starts blank and
+ * the user picks), where a throw is a screen that never appears.
  */
 export function suggestBankMapping(columns, rows) {
-  const sample = rows.slice(0, 40);
+  const cols = Array.isArray(columns) ? columns : [];
+  const sample = (Array.isArray(rows) ? rows : []).slice(0, 40);
   const find = (name) => {
     const rule = HEADER_SCORE.find(([key]) => key === name)[1];
-    const hit = columns.findIndex(c => rule.test(String(c).trim()));
+    const hit = cols.findIndex(c => rule.test(String(c).trim()));
     // "Balance" is a running total, not a transaction amount: never guess it.
-    if (name === 'amount' && hit >= 0 && /balance/i.test(columns[hit])) return -1;
+    if (name === 'amount' && hit >= 0 && /balance/i.test(cols[hit])) return -1;
     return hit;
   };
   const date = find('date');
@@ -167,19 +186,19 @@ export function suggestBankMapping(columns, rows) {
   let amount = find('amount');
   const debit = find('debit');
   const credit = find('credit');
-  const usable = (i, test) => i >= 0 && sample.length && sample.filter(r => test(String(r[i] ?? ''))).length >= sample.length * 0.6;
+  const usable = (i, test) => i >= 0 && sample.length && sample.filter(r => test(cellAt(r, i))).length >= sample.length * 0.6;
   // A running total is never the amount, whichever way the cells look: it is
   // the sum of every column that IS one.
-  const notBalance = (i) => i >= 0 && !/balance/i.test(String(columns[i] || ''));
+  const notBalance = (i) => i >= 0 && !/balance/i.test(String(cols[i] || ''));
   if (!usable(date, v => bankDate(v) !== null)) {
-    const guess = columns.findIndex((_, i) => usable(i, v => bankDate(v) !== null));
-    return columnGuess(guess, columns, rows, description);
+    const guess = cols.findIndex((_, i) => usable(i, v => bankDate(v) !== null));
+    return columnGuess(guess, cols, sample, description);
   }
   if (amount < 0 || debit < 0 || credit < 0) {
     // Fall back to the cells: a column most of whose values are signed numbers
     // is the amount column, whichever word the bank put on top of it.
-    const signedNumeric = columns.findIndex((_, i) => i !== date && notBalance(i) && usable(i, v => bankAmount(v) !== null && /[+\-(]|^-/.test(v)));
-    const anyNumeric = columns.findIndex((_, i) => i !== date && notBalance(i) && usable(i, v => bankAmount(v) !== null));
+    const signedNumeric = cols.findIndex((_, i) => i !== date && notBalance(i) && usable(i, v => bankAmount(v) !== null && /[+\-(]|^-/.test(v)));
+    const anyNumeric = cols.findIndex((_, i) => i !== date && notBalance(i) && usable(i, v => bankAmount(v) !== null));
     if (amount < 0) amount = signedNumeric >= 0 ? signedNumeric : anyNumeric;
     if (debit < 0 && credit < 0) {
       // One signed column instead of a pair: leave both unset so the user
@@ -190,9 +209,9 @@ export function suggestBankMapping(columns, rows) {
   if (!usable(desc, v => v.trim().length > 0)) {
     // The widest text column that is neither the date nor the amount.
     let best = -1, bestWidth = 0;
-    columns.forEach((_, i) => {
+    cols.forEach((_, i) => {
       if (i === date || i === amount) return;
-      const width = sample.reduce((sum, r) => sum + String(r[i] ?? '').trim().length, 0);
+      const width = sample.reduce((sum, r) => sum + cellAt(r, i).trim().length, 0);
       if (width > bestWidth) { bestWidth = width; best = i; }
     });
     desc = best;
@@ -201,20 +220,21 @@ export function suggestBankMapping(columns, rows) {
 }
 
 /** The headerless case: the date column was found from its cells, and the rest
- *  follows from there rather than from words that are not in the file. */
-function columnGuess(dateIndex, columns, rows, descriptionHeader) {
+ *  follows from there rather than from words that are not in the file.
+ *  `sample` is already the first 40 rows and `cols` is already a column list:
+ *  the caller above is the one that makes both of those true. */
+function columnGuess(dateIndex, cols, sample, descriptionHeader) {
   if (dateIndex < 0) return { date: -1, description: descriptionHeader ?? -1, amount: -1, debit: -1, credit: -1 };
-  const sample = rows.slice(0, 40);
-  const notBalance = (i) => !/balance/i.test(String(columns[i] || ''));
-  const numeric = columns.findIndex((_, i) => i !== dateIndex && notBalance(i)
-    && sample.filter(r => bankAmount(String(r[i] ?? '')) !== null).length >= sample.length * 0.6);
-  const signed = columns.findIndex((_, i) => i !== dateIndex && i !== numeric && notBalance(i)
-    && sample.filter(r => { const n = bankAmount(String(r[i] ?? '')); return n !== null && n < 0; }).length >= Math.min(3, sample.length));
-  const described = columns.findIndex((_, i) => i !== dateIndex && i !== numeric
-    && sample.reduce((sum, r) => sum + String(r[i] ?? '').trim().length, 0) > sample.length * 3);
+  const notBalance = (i) => !/balance/i.test(String(cols[i] || ''));
+  const numeric = cols.findIndex((_, i) => i !== dateIndex && notBalance(i)
+    && sample.filter(r => bankAmount(cellAt(r, i)) !== null).length >= sample.length * 0.6);
+  const signed = cols.findIndex((_, i) => i !== dateIndex && i !== numeric && notBalance(i)
+    && sample.filter(r => { const n = bankAmount(cellAt(r, i)); return n !== null && n < 0; }).length >= Math.min(3, sample.length));
+  const described = cols.findIndex((_, i) => i !== dateIndex && i !== numeric
+    && sample.reduce((sum, r) => sum + cellAt(r, i).trim().length, 0) > sample.length * 3);
   // With three columns and no words to go on, the one that is neither the day
   // nor the money is where the description went.
-  const fallbackText = columns.findIndex((_, i) => i !== dateIndex && i !== numeric);
+  const fallbackText = cols.findIndex((_, i) => i !== dateIndex && i !== numeric);
   return {
     date: dateIndex,
     description: described >= 0 ? described : (fallbackText >= 0 ? fallbackText : -1),

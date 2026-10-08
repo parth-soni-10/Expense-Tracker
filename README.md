@@ -125,10 +125,10 @@ Headline figures **count when they change**: the month total, the running balanc
 
 ## Checks
 
-Eighteen pure-Node guardrails run in the Netlify build command and **block the deploy when one fails**. `run-guards.mjs` runs all eighteen in build order — that single command is also what CI calls:
+Nineteen pure-Node guardrails run in the Netlify build command and **block the deploy when one fails**. `run-guards.mjs` runs all nineteen in build order — that single command is also what CI calls:
 
 ```
-node scripts/run-guards.mjs            # all eighteen, in build order
+node scripts/run-guards.mjs            # all nineteen, in build order
 node scripts/check-netlify-config.mjs  # netlify.toml's shape, its scheduled functions, the CI wiring, the env-var docs below
 node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
 node scripts/check-image-hygiene.mjs   # the roster photo can never be persisted
@@ -141,7 +141,7 @@ node scripts/check-a11y.mjs            # the a11y harness still covers every rou
 node scripts/check-mobile-layout.mjs   # a stat value reaches its card formatted and sized for its own length; the card and the value cannot spill it; six dock tabs compress instead of hanging off the screen
 node scripts/check-css-tokens.mjs      # the stylesheet is a closed system: every custom property read is defined, every @keyframes is animated by something, and the braces balance
 
-node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or resurrect data (including the payment methods you own)
+node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or resurrect data (including the payment methods you own, the one date rule, and the document's own shape)
 node scripts/test-profiles.mjs         # profiles stay isolated, and their cloud credentials never fall back
 node scripts/test-tesco.mjs            # the pay/tax engine still matches the workbook's figures
 node scripts/test-sync.mjs             # the sync contract still round-trips all state

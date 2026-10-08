@@ -16,7 +16,7 @@ import { createRequire } from 'node:module';
 import {
   scanSlotForProfile,
   paidHours, parseHM, fmtHM, shiftPay, simulateTax, r2,
-  weekStartOf, payDateOf, buildPayWeeks, monthSummary, lifetimeTotals,
+  weekStartOf, payDateOf, dateOk, buildPayWeeks, monthSummary, lifetimeTotals,
   payslipTotal, parseTimeCell, parseRosterWords, isSunday, nameMatches, ocrStripRanges, ocrFlatField,
   TESCO_RATE_DEFAULTS,
   tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf, payslipWeekNumberOf,
@@ -137,6 +137,18 @@ ok('a Sunday starts the pay week', weekStartOf('2026-09-20'), '2026-09-20');
 ok('the Saturday before it closes the previous week', weekStartOf('2026-09-19'), '2026-09-13');
 ok('Sunday→Saturday is one week', weekStartOf('2026-09-26'), '2026-09-20');
 ok('the payslip lands 11 days later (Thursday)', payDateOf('2026-09-20'), '2026-10-01');
+// The engine's date rule is csv.js's isRealDate, delegated rather than
+// re-implemented (see `dateOk`). It used to be a shape check plus "does it
+// parse", and Date.UTC ROLLS a day that does not exist over to the next month:
+// a workbook cell typed 31/02/2026 arrived as a shift dated the 31st of
+// February, grouped into the week of 3 March and drawn on a card as a day that
+// is not on any calendar. Every door into a shift or a payslip asks this one.
+ok('the 31st of February is not a day', dateOk('2026-02-31'), false);
+ok('nor the 31st of April', dateOk('2026-04-31'), false);
+ok('nor a month 13', dateOk('2026-13-01'), false);
+ok('a real day is one', dateOk('2026-03-03'), true);
+ok('and a leap day is one in a leap year', dateOk('2024-02-29'), true);
+ok('but not in a common year', dateOk('2026-02-29'), false);
 
 const weeks = buildPayWeeks(weekShifts, []);
 ok('one pay week', weeks.length, 1);

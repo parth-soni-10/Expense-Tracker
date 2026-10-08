@@ -112,6 +112,35 @@ function writeImported(map) {
   try { localStorage.setItem(IMPORTED_KEY, JSON.stringify(map)); } catch { /* quota: pull again next open */ }
 }
 
+/**
+ * Can THIS page reach the relay at all?
+ *
+ * The relay listens on loopback of the machine the browser runs on, so the page
+ * has to be served from that machine — `./serve.sh` locally, or a http page on
+ * the same LAN box. A page served over https from anywhere else cannot: the
+ * request goes to the DEVICE's own 127.0.0.1, where nothing is listening, and
+ * it fails with a console error on every single open (measured: one ERR_FAILED
+ * per page load in the served app). Two more reasons that probe was wrong to
+ * make: Chrome's Local Network Access rules treat a public page reaching for
+ * loopback as something to gate, and a phone's 127.0.0.1 is the phone — so on
+ * the deployed site the app was asking every visitor's device a question no
+ * visitor could answer.
+ *
+ * The gate is therefore where the page is served FROM, never a device guess,
+ * and it is deliberately narrow: a local hostname, or any plain-http page
+ * (which is how this app is developed and how the relay is documented to be
+ * used). Everything else skips the probe silently — the manual pull still
+ * reports the relay's absence in words, because a tap deserves an answer.
+ */
+function relayReachable() {
+  try {
+    if (typeof location === 'undefined') return false;
+    const host = String(location.hostname || '').toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '[::1]' || host === '::1' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+    return location.protocol !== 'https:';
+  } catch { return false; }
+}
+
 async function relayJson(path) {
   const res = await fetch(`${LIDL_RELAY}${path}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`relay ${res.status}`);
@@ -127,6 +156,13 @@ async function relayJson(path) {
 export async function pullLidl({ state, commit, notify, manual = false } = {}) {
   const say = msg => { if (manual && typeof notify === 'function') notify(msg); };
   if (!state || !Array.isArray(state.entries) || typeof localStorage === 'undefined') return null;
+  // Behind the lock on every open, so this must not be a request the page
+  // cannot complete — see relayReachable. Silent when automatic; a manual tap
+  // is told why there is nothing to pull instead of nothing happening.
+  if (!relayReachable()) {
+    say('The Lidl relay runs on the machine you use it from - open cents. there to pull receipts.');
+    return null;
+  }
   let status;
   try { status = await relayJson('/status'); }
   catch { say('Lidl relay is not running. Start it: python lidl-spike.py serve'); return null; }

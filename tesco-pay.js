@@ -20,6 +20,13 @@
    the screen have always imported them from there.
    ============================================================ */
 
+// One date rule for the whole app, owned by csv.js (see isRealDate): the "is
+// this a day that exists" question is the same one its CSV reader asks of a
+// cell, and a second copy here is a copy that could roll 2026-02-31 over to
+// March while the other refused it. csv.js imports nothing, so the boot path
+// this file is on does not grow a dependency chain for it.
+import { isRealDate } from './csv.js';
+
 // ---------- constants ----------
 export const TESCO_RATE_DEFAULTS = Object.freeze({
   normal: 14.44,          // €/h Monday–Saturday
@@ -72,7 +79,15 @@ export function isoToUtcMidnight(dateStr) {
   const [y, m, d] = String(dateStr).split('-').map(Number);
   return new Date(Date.UTC(y, m - 1, d));
 }
-export function dateOk(s) { return /^\d{4}-\d{2}-\d{2}$/.test(String(s)) && !Number.isNaN(isoToUtcMidnight(s).getTime()); }
+// A REAL calendar day, asked of csv.js's one date rule rather than answered
+// here a second way. The old shape check (`^\d{4}-\d{2}-\d{2}$` plus "does it
+// parse") passed 2026-02-31 happily — Date.UTC rolls an out-of-range day over
+// to March 3 and hands back a finite timestamp — so a workbook cell typed
+// `31/02/2026` arrived as a shift dated the 31st of February: shown on the
+// card as a day that does not exist and grouped by weekStartOf into the week of
+// the 3rd of March. Every caller of this one (the shift importer, the week-off
+// form, the quick parser, the payslip grouping) inherits the fix.
+export function dateOk(s) { return isRealDate(s); }
 
 // ---------- engine: hours ----------
 // Break deduction ladder, exactly the spreadsheet's IFS:

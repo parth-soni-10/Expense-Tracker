@@ -11,7 +11,7 @@ import { getPrivacyPin, setPrivacyPin } from './settings.js';
 import { nsKey } from './profiles.js';
 // The one CSV field rule in the app. tesco.js writes and reads the workbook
 // with the same one, so a note that is guarded here is guarded there too.
-import { csvDocument, csvRows, csvDate, csvUnquote, CSV_BOM } from './csv.js';
+import { csvDocument, csvRows, csvDate, csvUnquote, isRealDate, CSV_BOM } from './csv.js';
 
 const KEY = () => nsKey('state');
 // Where an UNREADABLE stored document is parked instead of being lost. Kept
@@ -197,7 +197,6 @@ function validateEntry(e) {
 
 export const BALANCE_METHOD_IDS = ['AIB', 'Revolut', 'RS', 'TG', 'LG', 'AG'];
 const MAX_BALANCE = 1_000_000;
-const CHECKPOINT_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 function normalizeTimestamp(value) {
   if (typeof value !== 'string' || value.length > 100) return null;
@@ -211,13 +210,12 @@ function normalizePastTimestamp(value) {
 }
 
 export function isValidCheckpointDate(date) {
-  if (!CHECKPOINT_DATE_RE.test(date)) return false;
-  const [year, month, day] = date.split('-').map(Number);
-  const parsed = new Date(`${date}T00:00:00Z`);
-  return !Number.isNaN(parsed.getTime())
-    && parsed.getUTCFullYear() === year
-    && parsed.getUTCMonth() + 1 === month
-    && parsed.getUTCDate() === day;
+  // Delegated, not re-implemented: the entry validator, the checkpoint list,
+  // the recurring bills and the Tesco tables all ask this one question, and
+  // csv.js owns the answer because it is the same question its own reader asks
+  // of a cell that arrived in a file. Two copies of it is one copy that a
+  // rollover (2026-02-31) can pass and the other reject, silently.
+  return isRealDate(date);
 }
 
 function normalizeBalanceCheckpoints(rawSettings) {
@@ -455,8 +453,24 @@ function normalizeCategoryBudgets(raw, validIds) {
     .map(([key, value]) => [key, Math.round(Number(value) * 100) / 100]));
 }
 
+// The empty document, and the ONE shape a document has.
+//
+// It is validated rather than written out by hand, and that is the whole point:
+// this is what loadState() hands the app on a fresh install (no stored key,
+// blocked storage, unreadable bytes) and what validateState() answers for
+// anything that is not a document — so a literal here was a SECOND shape, eight
+// settings keys short of the one the validator produces (customCategories,
+// customMethods, methodHidden, recurring, coins, tescoRates, tescoWeekNos,
+// tescoPayLedger — none of them in SEED_SETTINGS). Every reader guards with
+// `|| []`/`|| {}`, so nothing broke; what it cost was a first session running on
+// a document its own validator would have rewritten, and a stored shape that
+// changed by itself on the second load — validateState was not idempotent
+// (measured: 8 settings keys, then 16). Validating the literal closes the class
+// at the source instead of at every reader: there is one shape, and this is it.
+// The literal carries entries/tesco/schemaVersion so it takes the normal path —
+// never the junk-input branch, which leads back here.
 function defaultState() {
-  return {
+  return validateState({
     entries: [],
     settings: {
       ...SEED_SETTINGS,
@@ -464,14 +478,13 @@ function defaultState() {
     },
     tesco: emptyTesco(),
     schemaVersion: 2,
-  };
+  });
 }
 
 // ---------- Tesco Pay (shifts + payslips) ----------
 function emptyTesco() {
   return { shifts: [], payslips: [], deletedShiftIds: [], deletedPayslipIds: [] };
 }
-const TESCO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TESCO_TIME_RE = /^\d{1,2}:\d{2}$/;
 const TESCO_MAX_SHIFTS = 2000;
 const TESCO_MAX_PAYSLIPS = 500;
@@ -511,7 +524,10 @@ function normalizeTesco(raw) {
       if (!s || typeof s !== 'object' || Array.isArray(s)) continue;
       const id = typeof s.id === 'string' && s.id && s.id.length <= 200 ? s.id : uid();
       if (seen.has(id)) continue;
-      if (!TESCO_DATE_RE.test(String(s.date || '')) || Number.isNaN(Date.parse(s.date))) continue;
+      // A date that does not exist is not a date: `Date.parse` rolls 2026-02-31
+      // over to 2026-03-03 and answers a finite timestamp for it, so the shape
+      // alone is not the check (see isRealDate in csv.js).
+      if (!isValidCheckpointDate(String(s.date || ''))) continue;
       const start = TESCO_TIME_RE.test(String(s.start || '')) ? s.start : '';
       const end = TESCO_TIME_RE.test(String(s.end || '')) ? s.end : '';
       // A shift needs clock times OR its own hours. The sheet books a full week
@@ -545,7 +561,7 @@ function normalizeTesco(raw) {
       if (!p || typeof p !== 'object' || Array.isArray(p)) continue;
       const id = typeof p.id === 'string' && p.id && p.id.length <= 200 ? p.id : uid();
       if (seenSlip.has(id)) continue;
-      if (!TESCO_DATE_RE.test(String(p.weekStart || '')) || Number.isNaN(Date.parse(p.weekStart))) continue;
+      if (!isValidCheckpointDate(String(p.weekStart || ''))) continue;
       seenSlip.add(id);
       // The week number the row itself carries. A week's own record is per row,
       // not per week: the sheet's tax table numbers two rows in one Sun→Sat week
@@ -986,8 +1002,13 @@ export function exportJSON(state) {
 export const ENTRIES_CSV_HEADER = Object.freeze(['Date', 'Type', 'Category', 'Details', 'Amount', 'Method', 'Note']);
 
 export function entriesCsv(state, labels = {}, ordered = null) {
-  const category = typeof labels.category === 'function' ? labels.category : (id) => id;
-  const method = typeof labels.method === 'function' ? labels.method : (id) => id;
+  // `labels` is held to the same rule as `state` below: a caller that has no
+  // custom-category table passes nothing, and a caller that passes something
+  // that is not a table gets the fallback resolvers (print the stored id)
+  // rather than a TypeError half way through the document.
+  const L = labels && typeof labels === 'object' ? labels : {};
+  const category = typeof L.category === 'function' ? L.category : (id) => id;
+  const method = typeof L.method === 'function' ? L.method : (id) => id;
   // `ordered` is the caller's already-sorted view (the History screen's own
   // export, which can be oldest-first or a search ranking): a list the caller
   // chose the order of is taken as given, and everything else gets the file's

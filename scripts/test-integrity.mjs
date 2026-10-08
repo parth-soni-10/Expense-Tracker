@@ -39,8 +39,8 @@ globalThis.sessionStorage = new MemoryStorage();
 // (profiles.js), which resolves to "personal" on a device with no registry.
 const LIVE_KEY = 'cents:p/personal/state';
 
-const { validateState, loadState, saveState, parseBackup, parseEntriesCsv, CSV_REFUSAL, foreignWriteNeeded, readStateText, unreadableBackup, entriesCsv, ENTRIES_CSV_HEADER, MAX_BACKUP_BYTES, MAX_BACKUP_ENTRIES } = await import('../storage.js');
-const { csvCell, csvUnquote, csvDocument, CSV_BOM } = await import('../csv.js');
+const { validateState, loadState, saveState, parseBackup, parseEntriesCsv, CSV_REFUSAL, foreignWriteNeeded, readStateText, unreadableBackup, entriesCsv, ENTRIES_CSV_HEADER, MAX_BACKUP_BYTES, MAX_BACKUP_ENTRIES, isValidCheckpointDate } = await import('../storage.js');
+const { csvCell, csvUnquote, csvDocument, csvRows, csvDate, isRealDate, CSV_BOM } = await import('../csv.js');
 const { getPrivacyPin } = await import('../settings.js');
 const { mergeStates } = await import('../sync-merge.js');
 const { paidHours, shiftPay, simulateTax, tescoCsv, parseTescoCsv } = await import('../tesco.js');
@@ -125,6 +125,82 @@ if (looksLikeState(hostileOut)) {
   check('oversized text bounded', hostileOut.entries.every(e => e.details.length <= 5000 && e.note.length <= 10000));
   check('audio payload rejected', !hostileOut.entries.some(e => e.audioData != null));
 }
+
+// --------------------------------- 2b. one shape, and days that exist
+// Two classes the fit-all audit found, both of them a rule with two answers.
+//
+// (a) `validateState` was not idempotent, because the DEFAULT document was a
+// hand-written literal eight settings keys short of what the validator itself
+// produces (customCategories, customMethods, methodHidden, recurring, coins,
+// tescoRates, tescoWeekNos, tescoPayLedger — none of them in SEED_SETTINGS).
+// Every reader guards with `|| []`/`|| {}`, so nothing broke: a fresh install
+// simply ran its first session on a document its own validator would have
+// rewritten, and the stored shape changed by itself on the second load. The pin
+// below is the property, not the literal: whatever the junk-input path answers
+// has the SAME settings shape as a validated document.
+//
+// (b) A date of the right shape but not a real day passed every check the app
+// had. `Date.parse('2026-02-31')` answers a finite timestamp for March 3 — JS
+// rolls the day over — so "the shape looks right" and "it parses" were both the
+// wrong question; `isRealDate` in csv.js asks the round trip (read the day back
+// out, compare it to what was written) and csvDate/isValidCheckpointDate/dateOk
+// all delegate to it, because a rule with three implementations is a rule that
+// can disagree with itself, silently.
+check('a day that does not exist is not a date, in every form one arrives in',
+  csvDate('2026-02-31') === null && csvDate('2026-04-31') === null
+  && csvDate('2026-13-01') === null && csvDate('2026-00-10') === null
+  && csvDate('31/02/2026') === null && csvDate('2026-02-31T10:00:00Z') === null,
+  [csvDate('2026-02-31'), csvDate('31/02/2026')].join(' / '));
+check('a real day still reads, leap years included, and a serial is a day count',
+  csvDate('2026-10-01') === '2026-10-01' && csvDate('2026-1-1') === '2026-01-01'
+  && csvDate('29/02/2024') === '2024-02-29' && csvDate('2024-02-29') === '2024-02-29'
+  && csvDate('2026-02-29') === null && csvDate(45000) === '2023-03-15');
+check('and the document validator asks the same one question',
+  isValidCheckpointDate('2026-02-31') === false && isValidCheckpointDate('2024-02-29') === true
+  && isValidCheckpointDate('2026-02-28') === true && isValidCheckpointDate('2026-2-8') === false);
+check('a shift or payslip row dated the 31st of February is dropped, never rolled to March', (() => {
+  const v = validateState({ entries: [], settings: {}, tesco: {
+    shifts: [
+      { id: 'rolled', date: '2026-02-31', hours: 8, createdAt: '2026-10-01T00:00:00.000Z' },
+      { id: 'real', date: '2026-03-03', hours: 8, createdAt: '2026-10-01T00:00:00.000Z' },
+    ],
+    payslips: [{ id: 'rolled', weekStart: '2026-02-31', paye: 1, createdAt: '2026-10-01T00:00:00.000Z' }],
+  } });
+  return v.tesco.shifts.length === 1 && v.tesco.shifts[0].id === 'real' && v.tesco.payslips.length === 0;
+})(), 'a rollover would have kept both shifts');
+check('the default document is a VALIDATED document — one shape, not two', (() => {
+  const keys = (doc) => Object.keys(doc.settings).sort().join(',');
+  const fresh = validateState(null);            // the junk-input answer loadState() hands a new device
+  const full = validateState({ entries: [], settings: {} });
+  return keys(fresh) === keys(full)
+    && Array.isArray(fresh.settings.customCategories) && Array.isArray(fresh.settings.customMethods)
+    && Array.isArray(fresh.settings.recurring) && fresh.settings.coins && typeof fresh.settings.coins === 'object'
+    && !!fresh.settings.methodHidden && !!fresh.settings.tescoRates
+    && !!fresh.settings.tescoWeekNos && !!fresh.settings.tescoPayLedger;
+})(), Object.keys(validateState(null).settings).join(','));
+check('validateState is idempotent — validating twice is validating once', (() => {
+  const once = validateState({ entries: hostileEntries, settings: {} });
+  const twice = validateState(once);
+  const d1 = validateState(null);
+  return JSON.stringify(twice) === JSON.stringify(once) && JSON.stringify(validateState(d1)) === JSON.stringify(d1);
+})());
+check('and the fresh document survives its own round trip byte-for-byte', (() => {
+  localStorage = new MemoryStorage();
+  const fresh = loadState();
+  saveState(fresh);
+  return JSON.stringify(loadState()) === JSON.stringify(fresh);
+})());
+check('the CSV reader answers no rows for no text rather than throwing',
+  Array.isArray(csvRows(null)) && csvRows(null).length === 0 && csvRows(undefined).length === 0 && csvRows('').length === 0);
+check('the export survives a labels argument that is not a table, like a hostile state',
+  noThrow('entriesCsv(state, null)', () => entriesCsv({ entries: [null, 42, { date: '2026-09-20' }] }, null)) !== undefined);
+check('an apostrophe the user typed is escaped, not eaten by the formula guard',
+  csvCell("'=x") === "''=x" && csvUnquote(csvCell("'=x")) === "'=x"
+  && csvUnquote(csvCell("'hello")) === "'hello" && csvUnquote(csvCell('=SUM(A1)')) === '=SUM(A1)'
+  && csvUnquote("'12.40") === "'12.40",
+  `${csvCell("'=x")} → ${csvUnquote(csvCell("'=x"))}`);
+check('and the apostrophe guard still leaves a negative amount a number',
+  csvCell(-56.08) === '-56.08' && csvUnquote(csvCell(-56.08)) === '-56.08' && isRealDate('2026-02-31') === false);
 
 // ------------------------------------- 3. unreadable storage is not erased
 const corruptBytes = '{"entries":[{"id":"keep-me"';
@@ -989,6 +1065,37 @@ check('the pull fires once per open, only once the app is accessible',
 check('lidl.js is reached only through import() — the boot payload does not grow',
   !/from '\.\/lidl\.js'/.test(appSource)
   && (appSource.match(/import\('\.\/lidl\.js'\)/g) || []).length >= 2);
+// The relay probe is asked only where it can be ANSWERED, and the gate is the
+// one thing this module cannot answer in Node (it is private, and it asks about
+// a `location` this process does not have), so it is lifted out of the source
+// and run with one — the shape test-ui-libs uses for paintFigure. What it
+// replaces: a fetch to 127.0.0.1:8787 on every page load, which is a console
+// error per open on a served app (measured), a request Chrome's Local Network
+// Access rules gate on a public page, and on a phone a question about the
+// PHONE's loopback. A tap still gets its sentence; the automatic path is silent.
+const lidlSource = readFileSync(new URL('../lidl.js', import.meta.url), 'utf8');
+// Built per call: the lifted function closes over the `location` its scope was
+// given (passing one to relayReachable() itself does nothing — it takes none).
+const reachable = (hostname, protocol) => {
+  const at = lidlSource.indexOf('function relayReachable(');
+  if (at < 0) return undefined;
+  const body = lidlSource.slice(at, lidlSource.indexOf('\n}', at) + 2);
+  try { return new Function('location', `${body}\nreturn relayReachable;`)({ hostname, protocol })(); } catch { return undefined; }
+};
+check('the relay is probed from a local page, and only from a local page',
+  reachable('localhost', 'https:') === true && reachable('127.0.0.1', 'https:') === true
+  && reachable('[::1]', 'http:') === true && reachable('mac.local', 'http:') === true
+  && reachable('192.168.1.9', 'http:') === true,
+  String(reachable('localhost', 'https:')));
+check('and a page served from anywhere else never reaches for a device it cannot see',
+  reachable('cents-app.netlify.app', 'https:') === false && reachable('192.168.1.9', 'https:') === false
+  && reachable('', 'https:') === false && reachable('example.com:8787', 'https:') === false);
+check('the gate is what stands in front of /status, and a tap is told why', (() => {
+  const at = lidlSource.indexOf('if (!relayReachable())');
+  return at > 0 && at < lidlSource.indexOf("relayJson('/status')")
+    && /say\('The Lidl relay runs on the machine/.test(lidlSource.slice(at, at + 400))
+    && /say\('Lidl relay is not running/.test(lidlSource);      // the manual wording is untouched
+})());
 
 // ----------------- 16. balance checkpoints: the Reconcile editor's rules
 // The Tesco gift-card balance feature was REMOVED outright. It went through
@@ -1064,6 +1171,16 @@ check('with no header at all the mapper falls back to the cells', (() => {
   const m = suggestBankMapping(['Column 1', 'Column 2', 'Column 3'], bankRows);
   return m.date === 0 && m.description === 1 && m.amount === 2;
 })());
+// Total on both arguments: a print the app did not write is the one input whose
+// shape cannot be assumed, and "nothing looks like that field" is a state the
+// mapping screen already renders (every field blank, the user picks). A throw
+// here is the screen that never draws.
+check('the mapper answers "nothing looks like that field" for a list it cannot read',
+  JSON.stringify(suggestBankMapping(null, null)) === JSON.stringify({ date: -1, description: -1, amount: -1, debit: -1, credit: -1 })
+  && JSON.stringify(suggestBankMapping([], [])) === JSON.stringify({ date: -1, description: -1, amount: -1, debit: -1, credit: -1 }),
+  JSON.stringify(suggestBankMapping(null, null)));
+check('and a junk row inside a real column list is read as no cells, not a crash',
+  noThrow('suggestBankMapping(junk rows)', () => suggestBankMapping(['Date', 'Description', 'Amount'], [null, 42, 'x', {}, ['02/10/2026', 'Tesco', '-12.40']])) !== undefined);
 
 const bankBuild = (rows, over = {}) => buildBankEntries({
   rows,
