@@ -168,13 +168,32 @@ if (reminderSchedule) {
   const cron = unquote(reminderSchedule.value);
   const first = /^(\S+)/.exec(cron)?.[1];
   const period = first === '*' ? 1 : /^\*\/\d+$/.test(first || '') ? Number(first.slice(2)) : /^\d+$/.test(first || '') ? 60 : null;
+  // Both the window and the job itself live in the shared run: the scheduled
+  // function is only the platform's entry point to it, and the HTTP trigger
+  // (reminders-tick) is the other. A second copy of the loop would be a second
+  // answer to "was this device already sent to today" — one that fires at its
+  // own hour and marks a day the other half never delivered.
   const senderSrc = readFileSync(new URL('netlify/functions/reminders-send.mjs', root), 'utf8');
-  const windowMinutes = Number(/const WINDOW_MINUTES = (\d+)/.exec(senderSrc)?.[1]);
+  const tickSrc = readFileSync(new URL('netlify/functions/reminders-tick.mjs', root), 'utf8');
+  const runSrc = readFileSync(new URL('netlify/functions/lib/reminder-run.mjs', root), 'utf8');
+  const windowMinutes = Number(/const WINDOW_MINUTES = (\d+)/.exec(runSrc)?.[1]);
   if (period !== 1) {
     add(reminderSchedule.line, `the daily-reminder cron is "${cron}" — it must tick every minute ("* * * * *"), or a reminder arrives up to a period late at the hour the user chose.`);
   } else if (!Number.isFinite(windowMinutes) || windowMinutes <= period) {
-    add(reminderSchedule.line, `reminders-send.mjs's WINDOW_MINUTES reads ${windowMinutes} — with a one-minute cron the look-back window must be wider than the tick, or one late run skips the day's reminder.`);
+    add(reminderSchedule.line, `lib/reminder-run.mjs's WINDOW_MINUTES reads ${windowMinutes} — with a one-minute cron the look-back window must be wider than the tick, or one late run skips the day's reminder.`);
   }
+  if (!/runReminderTick/.test(senderSrc) || !/runReminderTick/.test(tickSrc)) {
+    add(reminderSchedule.line, 'the reminder job is not shared: reminders-send.mjs and reminders-tick.mjs must both run lib/reminder-run.mjs, or the cron and the trigger can each believe the other delivered the day.');
+  }
+}
+
+// The trigger is the fallback for a platform whose scheduler has gone quiet, so
+// it must stay URL-reachable — and Netlify cannot invoke a SCHEDULED function
+// by URL, which is the whole reason it is a separate file from the cron's
+// entry point. Declaring it scheduled would silently take that away.
+const tickSchedule = get('functions.reminders-tick', 'schedule');
+if (tickSchedule) {
+  add(tickSchedule.line, 'reminders-tick is declared scheduled — a scheduled function cannot be invoked by URL, and being invocable by URL is the only reason this trigger exists. Leave it unscheduled.');
 }
 
 const guardFiles = readdirSync(scriptsDir).filter(f => /^(check|test)-[\w.-]+\.mjs$/.test(f));

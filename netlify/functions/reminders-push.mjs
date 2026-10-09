@@ -18,6 +18,11 @@
            not judged dead by a 404/410 from the push service — the send
            is retried once, and answered 425 while the registration is
            still arriving (pushSendWarming in lib/webpush.mjs).
+           PUT { probe: true } is the same lookup WITHOUT a delivery, and it
+           answers with more than the record: the scheduler's own last run
+           (lib/reminder-run.mjs's heartbeat). "Your device is stored" and
+           "somebody is being sent to" are two different promises, and the
+           second one is the one a platform whose cron quietly stops breaks.
 
    Why the app password gates this: a subscription endpoint URL is
    a capability — anyone who has it can push to that browser. We
@@ -46,6 +51,7 @@
 import { createHash } from 'node:crypto';
 import { getStore } from './lib/store.mjs';
 import { pushSendWarming, vapidConfig, PUSH_WARMUP_RETRY_MS } from './lib/webpush.mjs';
+import { readSchedulerHeartbeat } from './lib/reminder-run.mjs';
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
 import { resolveProfileForAuth, profileAuthMessage, DEFAULT_PROFILE } from './lib/profiles.mjs';
 
@@ -230,7 +236,25 @@ export default async (request, _context) => {
     // never sends a notification — Send test push is the deliberate one, and it
     // is the button a user presses when they WANT a banner — so the app can ask
     // on every start without anyone ever receiving a stray reminder.
-    if (body.probe === true) return ok({ stored: true, time: found.record.time }, 200, cors);
+    if (body.probe === true) {
+      const meta = await readSchedulerHeartbeat(store);
+      return ok({
+        stored: true,
+        time: found.record.time,
+        // When THIS device was last actually pushed to — the record's own
+        // memory of a delivery, which the app can show beside the verdict.
+        lastFiredAt: found.record.lastFiredAt || null,
+        // null means the scheduler has never run against this store at all,
+        // which is a different (and louder) fact than a stale timestamp.
+        scheduler: meta ? {
+          ranAt: meta.ranAt,
+          ok: meta.ok === true,
+          error: meta.error || null,
+          considered: meta.considered || 0,
+          sent: meta.sent || 0,
+        } : null,
+      }, 200, cors);
+    }
 
     const { key, record } = found;
     const vapid = vapidConfig();

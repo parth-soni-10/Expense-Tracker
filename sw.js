@@ -276,18 +276,48 @@ async function reminderFiredToday() {
   return !!record && record.fired === reminderDay();
 }
 
-/** Record today as shown, keeping the schedule fields the page mirrored. */
-async function markReminderFired(day = reminderDay()) {
+/**
+ * Record today as shown, keeping the schedule fields the page mirrored.
+ *
+ * `by` and `at` are for the page, not for the dedupe: the three paths write
+ * the same field and the record is the only place they can be told apart, so
+ * the app's reminder modal can answer "did it ever actually fire, and which
+ * path delivered it?" — the question a silent reminder leaves the user with.
+ */
+async function markReminderFired(day = reminderDay(), by = 'wake') {
   try {
     const record = await reminderRecord();
     await (await caches.open(REMINDER_CACHE)).put(
       REMINDER_KEY,
-      new Response(JSON.stringify({ ...(record || {}), fired: day }))
+      new Response(JSON.stringify({ ...(record || {}), fired: day, by, at: new Date().toISOString() }))
     );
   } catch {
     // A record that cannot be written costs a possible repeat (the shared tag
     // replaces it), never the banner itself.
   }
+}
+
+/**
+ * May this wake stay quiet because the server is about to push the reminder?
+ *
+ * That is what the page's `push` field asks, and on its own it is a promise
+ * with no end: a subscription is stored, the platform's cron stops invoking the
+ * scheduled sender (an incident, not a bug in this repo — the dashboard keeps
+ * showing the next run), and the device defers to a push that is never sent.
+ * Nothing arrives, ever, while every screen in the app reads "Push is on".
+ *
+ * So the deferral carries an EXPIRY, written by the page (mirrorWakeRecord) from
+ * the sender's own heartbeat, which the push probe reports. A positive, future
+ * `pushAliveUntil` means the server was heard from recently; anything else —
+ * an expired horizon, a zero, a record from a page that never checked — means
+ * this wake keeps its own duty, late rather than never. Once the hour has
+ * passed the field is not consulted at all (see the caller): a push is bounded
+ * by its TTL, so a phone that was unreachable at its hour has nothing else left.
+ */
+function pushCoversHour(record, nowMs) {
+  if (record.push !== true) return false;
+  const until = Number(record.pushAliveUntil);
+  return Number.isFinite(until) && until > nowMs;
 }
 
 /** The one notification shape every path shows — tag/icon/deep-link cannot drift. */
@@ -325,8 +355,15 @@ self.addEventListener('push', (event) => {
     // wake got there first) must not get a second banner: the shared tag would
     // only REPLACE the first — renotify re-alerts — rather than deduplicate it.
     if (await reminderFiredToday()) return;
+    // And a reminder the user switched OFF cannot arrive at all. The switch
+    // drops this device's record at the server (the app's own unsubscribe), but
+    // a push can already be in flight, or that delete can fail on a train —
+    // and the page mirrors `enabled` into this record on every settings write,
+    // so a reminder cancelled on the sofa does not ring from the pocket.
+    const record = await reminderRecord();
+    if (record && record.enabled === false) return;
     await self.registration.showNotification(title, options);
-    await markReminderFired();
+    await markReminderFired(undefined, 'push');
   })());
 });
 
@@ -369,6 +406,11 @@ self.addEventListener('periodicsync', (event) => {
  * exactly the device whose 20:00 reminder would be eaten by a 03:00 wake. With
  * no subscription the record cannot exist, and the rule is unchanged: a late
  * reminder beats a skipped one.
+ *
+ * Which makes that deferral the one place this net can be talked out of its job
+ * for good, so it is not a bare boolean: pushCoversHour() requires an unexpired
+ * horizon the page wrote from the SENDER's own heartbeat. A server that has
+ * stopped sending withdraws it, and this path takes the day back.
  */
 async function dailyReminderWake() {
   try {
@@ -381,12 +423,12 @@ async function dailyReminderWake() {
     const dueAt = match ? Number(match[1]) * 60 + Number(match[2]) : 20 * 60; // normalize()'s own default
     const due = now.getHours() * 60 + now.getMinutes() >= dueAt;
     if (!due) {
-      if (record.push === true) return; // the server has this hour covered
+      if (pushCoversHour(record, now.getTime())) return; // the server has this hour covered
       const yesterday = reminderDay(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
       if (record.fired === yesterday) return;
     }
     await self.registration.showNotification(REMINDER_TITLE, reminderNotification(REMINDER_BODY, REMINDER_TAG));
-    await markReminderFired(day);
+    await markReminderFired(day, 'wake');
   } catch {
     // A failed wake costs at most one reminder; it must never take the worker down.
   }

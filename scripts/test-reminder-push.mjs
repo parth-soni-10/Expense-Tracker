@@ -27,6 +27,13 @@
  *   17. the zone a travelling device announces to the sender: re-told on
  *         start only when subscribed, mismatched and permitted — and a
  *         refused announce leaves the old record so the NEXT start retries
+ *   18. the background wake: one banner a day across the three paths, and a
+ *         deferral to an armed push that EXPIRES — a scheduler that stopped
+ *         sending hands the day back rather than silencing the net forever
+ *   19-21. the bills hint the sender appends, the read path behind it, and the
+ *         probe that answers "is my reminder still deliverable?"
+ *   22. the sender's own heartbeat, and the HTTP trigger (reminders-tick) that
+ *         runs the same job when the platform's cron stops firing
  *
  *   node scripts/test-reminder-push.mjs
  *
@@ -216,6 +223,9 @@ process.env.VAPID_PRIVATE_KEY = keys.privateKey;
 const { default: pushHandler } = await import('../netlify/functions/reminders-push.mjs');
 const sendModule = await import('../netlify/functions/reminders-send.mjs');
 const sendHandler = sendModule.default;
+const tickModule = await import('../netlify/functions/reminders-tick.mjs');
+const tickHandler = tickModule.default;
+const runModule = await import('../netlify/functions/lib/reminder-run.mjs');
 const { getStore, openStore } = await import('../netlify/functions/lib/store.mjs');
 
 function call(handler, method, body, extraHeaders = {}) {
@@ -1086,7 +1096,9 @@ delete process.env.GITHUB_TOKEN;
     // scheduler carry the same tag, so a subscribed device shows one — without
     // it, a phone with push on gets a second notification from a different
     // process right after the first.
-    const senderSource = readFileSync(new URL('../netlify/functions/reminders-send.mjs', import.meta.url), 'utf8');
+    // The tag lives in the shared run now (the scheduled function and the HTTP
+    // trigger are one job); the pin follows it there.
+    const senderSource = readFileSync(new URL('../netlify/functions/lib/reminder-run.mjs', import.meta.url), 'utf8');
     const localTag = (edgeSource.match(/tag: '([a-z-]+)'/) || [])[1];
     const pushTag = (senderSource.match(/tag: '([a-z-]+)'/) || [])[1];
     check('the local banner and the scheduled push are tagged as one notification',
@@ -1539,6 +1551,9 @@ delete process.env.GITHUB_TOKEN;
     check('the scheduled push records the day it delivered',
       env.shown.length === 1 && readRecord(env).fired === TODAY,
       `shown=${env.shown.length} ${JSON.stringify(readRecord(env))}`);
+    check('and it names the path that delivered and when — the modal reads that back',
+      readRecord(env).by === 'push' && typeof readRecord(env).at === 'string',
+      JSON.stringify(readRecord(env)));
     await dispatchWake(env);
     check('then the wake is quiet — one reminder a day across both closed-app paths',
       env.shown.length === 1, String(env.shown.length));
@@ -1576,7 +1591,7 @@ delete process.env.GITHUB_TOKEN;
   // moment the browser decided to wake the worker.
   {
     const env = bootWorker();
-    seedRecord(env, { enabled: true, time: '21:00', fired: '2026-10-01', push: true });
+    seedRecord(env, { enabled: true, time: '21:00', fired: '2026-10-01', push: true, pushAliveUntil: fixedNow.getTime() + 60 * 60 * 1000 });
     await dispatchWake(env);
     check('a wake before the hour never pre-empts an armed push — the catch-up would cancel the hour it exists to cover',
       env.shown.length === 0 && readRecord(env).fired === '2026-10-01',
@@ -1601,6 +1616,39 @@ delete process.env.GITHUB_TOKEN;
     await dispatchWake(env);
     check('after the hour an armed push does not silence the wake — a push that expired is a day with no reminder',
       env.shown.length === 1, String(env.shown.length));
+  }
+  // A15/A16: the deferral A12 makes carries an EXPIRY, and this is the failure
+  // it exists for. A subscription is stored, the platform's scheduled function
+  // stops being invoked (an incident, not a bug in this repo — the dashboard
+  // keeps counting down to the next run), and a wake that deferred to a bare
+  // boolean would stay quiet for ever: no push, no wake, no reminder, while the
+  // app still says "Push is on". Two shapes are not a promise: a horizon that
+  // passed, and one that was never granted at all.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '21:00', fired: '2026-10-01', push: true, pushAliveUntil: fixedNow.getTime() - 1000 });
+    await dispatchWake(env);
+    check('an expired push deferral hands the day back to the wake — a sender that stopped must not silence the net',
+      env.shown.length === 1 && readRecord(env).fired === TODAY,
+      `shown=${env.shown.length} ${JSON.stringify(readRecord(env))}`);
+  }
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: true, time: '21:00', fired: '2026-10-01', push: true });
+    await dispatchWake(env);
+    check('and a deferral that was never granted is not one — the net keeps its own duty',
+      env.shown.length === 1, String(env.shown.length));
+  }
+  // A17: a reminder switched OFF cannot arrive. The toggle drops this device's
+  // record at the server (the app's own unsubscribe), but a push can already be
+  // in flight, or the delete can fail — so the page mirrors `enabled` into the
+  // record and the banner is dropped here.
+  {
+    const env = bootWorker();
+    seedRecord(env, { enabled: false, time: '20:00' });
+    await dispatchPush(env, { title: 'cents. — time to upload your transactions', body: 'x', tag: 'cents-daily-reminder' });
+    check('a push for a reminder the user switched off never raises a banner',
+      env.shown.length === 0, String(env.shown.length));
   }
 
   // ---- the page half: arming, withdrawing, and the two markers ----
@@ -1969,9 +2017,35 @@ delete process.env.GITHUB_TOKEN;
       && /syncPeriodicReminder\(\)\.catch\(\(\) => \{\}\)\.then\(draw\)/.test(modalBody),
     String(modalWakes));
   check('and it imports the status the row is drawn from',
-    /periodicReminderStatus, syncPeriodicReminder, verifyReminderPush, reminderPushStatus \} from '\.\/reminders\.js'/.test(appSource)
+    /reminderPushStatus, reminderSchedulerStatus, readLastReminderDelivery, triggerServerTick \} from '\.\/reminders\.js'/.test(appSource)
       && /periodicReminderStatus\(\)/.test(modalBody)
       && /reminderPushStatus\(\)/.test(modalBody));
+  // The two sentences the modal could not say, and both are why a reminder that
+  // never fires used to look identical to one that does: what the server's own
+  // scheduler is doing (`reminderSchedulerStatus`, from the sender's heartbeat),
+  // and whether a reminder ever actually ARRIVED here
+  // (`readLastReminderDelivery`, from the record every path writes).
+  check('the modal reports the server scheduler, and not as a guess',
+    /const sched = reminderSchedulerStatus\(\)/.test(modalBody)
+      && /The server's scheduler last ran/.test(modalBody)
+      && /no closed-app push is being sent/.test(modalBody));
+  check('and it answers "did it ever fire?" with the path and the time',
+    /readLastReminderDelivery\(\)\.catch\(\(\) => null\)\.then\(d => \{ lastDelivery = d; draw\(\); \}\)/.test(modalBody)
+      && /const DELIVERY_BY = \{ push: 'sent by the server', wake:/.test(appSource)
+      && /No reminder has reached this device yet/.test(modalBody));
+  // The repair for the one failure re-registering cannot touch: run the
+  // sender's job now. It needs no new credential (the app already holds the
+  // sync password) and it either delivers the day or names why not.
+  check('and a scheduler that is not running is offered a one-tap run, not a sentence',
+    /sched\.state !== 'alive'/.test(modalBody)
+      && /await triggerServerTick\(\)/.test(modalBody)
+      && /'Run server reminder now'/.test(modalBody));
+  // Off is off: the toggle that switches the reminder off drops this device's
+  // push record too, or the server keeps sending a reminder the user cancelled
+  // (a record's existence IS the server's memory that a device wants pushes).
+  check('switching the reminder off withdraws the push record with it',
+    /if \(!enabled && s\.pushSubscribed\) \{/.test(modalBody)
+      && /unsubscribeReminderPush\(\)\.catch\(\(\) => \{\}\)\.then\(\(\) => \{/.test(modalBody));
   check('the row claims a background reminder only when the register said on',
     /Background reminder is on/.test(modalBody)
       && /periodicReminderStatus\(\)\.state === 'on'/.test(modalBody));
@@ -1997,8 +2071,8 @@ delete process.env.GITHUB_TOKEN;
   // `enabled: true` is how a wake stops firing while everything looks right.
   check('record writes are chained so a mirror cannot erase the day beside it',
     /wakeWriteChain = wakeWriteChain\.then\(\(\) => patchWakeRecord\(patch\)\)/.test(remindersSource)
-      && /return queueWakePatch\(\{ enabled: s\.enabled, time: s\.time, push: s\.pushSubscribed \}\)/.test(remindersSource)
-      && /return queueWakePatch\(\{ fired: day \}\)/.test(remindersSource));
+      && /return queueWakePatch\(\{[\s\S]{0,200}?push: s\.pushSubscribed,/.test(remindersSource)
+      && /return queueWakePatch\(\{ fired: day, by: 'page', at: new Date\(\)\.toISOString\(\) \}\)/.test(remindersSource));
   // The yield itself: pinned in the worker's own text because the property that
   // makes it correct is WHERE it sits — a `push` check inside the due-time
   // branch would silence the one path with nothing else behind it (A14), and a
@@ -2007,12 +2081,33 @@ delete process.env.GITHUB_TOKEN;
   const wakeBody = swSource.slice(wakeAt, swSource.indexOf('self.addEventListener(\'notificationclick\'', wakeAt));
   check('the wake yields to an armed push, and only before the hour — after it the net has nothing else behind it',
     wakeAt > -1
-      && /if \(!due\) \{\s*\n\s*if \(record\.push === true\) return;[\s\S]{0,200}?if \(record\.fired === yesterday\) return;\s*\n\s*\}/.test(wakeBody),
+      && /if \(!due\) \{\s*\n\s*if \(pushCoversHour\(record, now\.getTime\(\)\)\) return;[\s\S]{0,200}?if \(record\.fired === yesterday\) return;\s*\n\s*\}/.test(wakeBody),
     wakeBody.slice(wakeBody.indexOf('if (!due)'), wakeBody.indexOf('if (!due)') + 220));
+  // …and the deferral that branch makes EXPIRES. A bare `record.push === true`
+  // is the version that shipped and the version that fails silently: the
+  // platform stops invoking the sender, and the wake — the only path left with
+  // nothing behind it — keeps waiting for a push that is never sent.
+  check('and the deferral is a promise with a horizon, not an armed flag',
+    /function pushCoversHour\(record, nowMs\) \{\s*\n\s*if \(record\.push !== true\) return false;\s*\n\s*const until = Number\(record\.pushAliveUntil\);\s*\n\s*return Number\.isFinite\(until\) && until > nowMs;\s*\n\s*\}/.test(swSource)
+      && !/if \(record\.push === true\) return;/.test(swSource));
   // The page's own half of the same rule: `push` is only ever mirrored from the
   // live setting, so a device that switches push off gets its net back.
   check('the armed-push field comes from the live setting, never a constant',
-    /mirrorWakeRecord\(\) \{\s*\n\s*const s = readSettings\(\);\s*\n\s*return queueWakePatch\(\{ enabled: s\.enabled, time: s\.time, push: s\.pushSubscribed \}\);/.test(remindersSource));
+    /mirrorWakeRecord\(\) \{\s*\n\s*const s = readSettings\(\);\s*\n\s*const alive = schedulerAlive\(s\);/.test(remindersSource)
+      && /pushAliveUntil: s\.pushSubscribed && alive !== false \? Date\.now\(\) \+ PUSH_TRUST_MS : 0,/.test(remindersSource));
+  // The horizon is written from the SENDER's own heartbeat, which the push
+  // probe reports — a scheduler that ran is trusted, one that has not is not,
+  // and one nobody has ever heard from is left alone rather than blamed.
+  check('and the horizon is decided by what the server said, not by hope',
+    /schedulerAt: scheduler\.ranAt, schedulerOk: scheduler\.ok === true/.test(remindersSource)
+      && /if \(s\.schedulerOk === false\) return false;/.test(remindersSource));
+  // A device that is OPEN at the hour also fires the server's own run, so the
+  // devices that are closed still get their push on a platform whose cron has
+  // gone quiet — any copy of the app that is running is a trigger for the rest.
+  const fireAt = remindersSource.indexOf('function fire(');
+  const fireBody = remindersSource.slice(fireAt, remindersSource.indexOf('function tick(', fireAt));
+  check('a device that fires its own reminder also fires the server\'s run — any open app is a trigger for the closed ones',
+    fireAt > -1 && /triggerServerTick\(\)\.catch\(\(\) => \{\}\);/.test(fireBody), fireBody.slice(0, 120));
   // And the check is run where it can be: on a start, beside the zone
   // re-announce, gated on a device that is subscribed AND permitted. A prompt
   // must never come out of starting the app, and a device that never subscribed
@@ -2030,6 +2125,19 @@ delete process.env.GITHUB_TOKEN;
   check('and a failure the server can fix is offered as one tap, not as a sentence',
     /'Re-register'/.test(modalBody) && /await unsubscribeReminderPush\(\);\s*\n\s*const r = await subscribeReminderPush\(\);/.test(modalBody)
       && /PUSH_HEALABLE\[pushVerdict\.state\]/.test(modalBody));
+  // An event's `currentTarget` is only set WHILE the event is being dispatched,
+  // so a handler that reaches for it after an await throws ("Cannot set
+  // properties of null (setting 'disabled')"), dies there, and leaves the
+  // button disabled with no toast — a tap that really did the thing and said
+  // nothing, which is indistinguishable from a feature that does not work.
+  // Measured live on Send test push. Every async handler here captures its
+  // button first, and the rule is per handler so a new one cannot slip in.
+  const asyncHandlers = modalBody.split('onClick: async (ev) => {').slice(1);
+  check('every async handler in the modal captures its button before it awaits',
+    asyncHandlers.length >= 4
+      && asyncHandlers.every((h) => /const btn = ev\.currentTarget;/.test(h)
+        && (h.match(/ev\.currentTarget/g) || []).length === 1),
+    JSON.stringify(asyncHandlers.map((h) => (h.match(/ev\.currentTarget/g) || []).length)));
   check('the row reports the verdict, not the toggle that produced it',
     /PUSH_VERDICT_TEXT\[pushVerdict\.state\] \|\| PUSH_VERDICT_TEXT\.live/.test(modalBody)
       && /'no-record':/.test(modalBody) && /'key-mismatch':/.test(modalBody));
@@ -2090,12 +2198,25 @@ delete process.env.GITHUB_TOKEN;
   })());
 
   // ---- the read path: one store, one key, the record's own date ----
+  // The job lives in ONE place, and both entry points run THAT: the scheduled
+  // function is the platform's clock, the HTTP trigger is the one a user can
+  // point anywhere else when that clock stops. A second copy of the loop would
+  // be a second answer to "was this device already sent to today".
   const senderSource = readFileSync(new URL('../netlify/functions/reminders-send.mjs', import.meta.url), 'utf8');
-  check('the sender reads the document through cloud.mjs, not a copy',
-    /import \{ CLOUD_STORE, keyFor \} from '\.\/lib\/cloud\.mjs'/.test(senderSource)
-      && !/openStore\('cents-cloud'\)/.test(senderSource));
+  const tickSource = readFileSync(new URL('../netlify/functions/reminders-tick.mjs', import.meta.url), 'utf8');
+  const runSource = readFileSync(new URL('../netlify/functions/lib/reminder-run.mjs', import.meta.url), 'utf8');
+  check('both entry points run the same job rather than keeping a copy each',
+    /await runReminderTick\(\{ store \}\)/.test(senderSource) && /await runReminderTick\(\{ store \}\)/.test(tickSource)
+      && !/for \(const key of keys\)/.test(senderSource) && !/for \(const key of keys\)/.test(tickSource));
+  check('the run reads the document through cloud.mjs, not a copy',
+    /import \{ CLOUD_STORE, keyFor \} from '\.\/cloud\.mjs'/.test(runSource)
+      && !/openStore\('cents-cloud'\)/.test(runSource));
   check('the hint is appended to the body, keyed by profile and date',
-    /\+\s*\(await billsHint\(record\.profileId, localDate\)\)/.test(senderSource));
+    /\+\s*\(await billsHint\(rec\.profileId, localDate\)\)/.test(runSource));
+  check('and every run records a heartbeat the app can read',
+    /export async function writeSchedulerHeartbeat/.test(runSource)
+      && /await record\(summary\);/.test(runSource)
+      && /export async function readSchedulerHeartbeat/.test(runSource));
 
   // ---- end to end: a profile with bills gets them appended ----
   const { store: cloud } = await openStore('cents-cloud');
@@ -2178,6 +2299,83 @@ delete process.env.GITHUB_TOKEN;
   }), {});
   check('and a probe is authenticated like every other write — the record is not a public read',
     unauthed.status === 401, String(unauthed.status));
+  for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k);
+}
+
+// ---------- 22. the sender's heartbeat, and the trigger that replaces a dead cron ----------
+// Two halves of one failure. A platform whose scheduled function stops being
+// invoked sends nothing at all, and from a phone that is indistinguishable from
+// a subscription that died: no notification, and an app that still reads "Push
+// is on". So every run leaves a heartbeat the device can read (which is what
+// lets its background wake stop deferring — section 18), and the same run is
+// reachable over HTTP for whoever can keep a schedule when the platform cannot.
+{
+  const dueRecord = (over = {}) => ({
+    time: hhmm('UTC'), zone: 'UTC', lastFiredDate: '1999-01-01',
+    subscription: { endpoint: `http://localhost:${pushPort}/fake-push`, keys: subscription.keys },
+    profileId: 'personal', profileName: 'Parth', ...over,
+  });
+
+  // ---- the heartbeat: every run says it ran ----
+  await store.del('meta:reminder-send');
+  received.length = 0;
+  await store.setJSON('push:beat-test', dueRecord());
+  await sendHandler(null, {});
+  const beat = await runModule.readSchedulerHeartbeat(store);
+  check('a run records when it happened and what it met',
+    !!beat && typeof beat.ranAt === 'string' && beat.ok === true
+      && beat.considered >= 1 && beat.sent >= 1,
+    JSON.stringify(beat));
+  await store.del('push:beat-test');
+  await sendHandler(null, {});
+  const beatAfterQuietRun = await runModule.readSchedulerHeartbeat(store);
+  check('and a run with nothing due still says it ran — silence is not the same as absence',
+    !!beatAfterQuietRun && typeof beatAfterQuietRun.ranAt === 'string' && beatAfterQuietRun.sent === 0,
+    JSON.stringify(beatAfterQuietRun));
+
+  // ---- the trigger: the same job, reachable by URL ----
+  await store.setJSON('push:tick-test', dueRecord());
+  received.length = 0;
+  const denied = await tickHandler(new Request('http://localhost/.netlify/functions/reminders-tick', { method: 'POST' }), {});
+  check('the trigger refuses to run without the app password', denied.status === 401, String(denied.status));
+  const ran = await tickHandler(new Request('http://localhost/.netlify/functions/reminders-tick', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Cents-Password': 'test-password-123' },
+  }), {});
+  const ranBody = await ran.json();
+  check('the trigger runs the sender\'s own job and delivers the due reminder',
+    ran.status === 200 && received.length === 1 && ranBody.scheduler && ranBody.scheduler.sent === 1,
+    `${ran.status} ${JSON.stringify(ranBody)} delivered=${received.length}`);
+  check('and it answers with the run\'s own heartbeat, which the app stores',
+    !!ranBody.scheduler && typeof ranBody.scheduler.ranAt === 'string' && ranBody.scheduler.ok === true,
+    JSON.stringify(ranBody.scheduler));
+  received.length = 0;
+  const again = await tickHandler(new Request('http://localhost/.netlify/functions/reminders-tick', {
+    method: 'POST', headers: { 'X-Cents-Password': 'test-password-123' },
+  }), {});
+  const againBody = await again.json();
+  check('a second trigger the same day delivers nothing — it is the same idempotent job, not a second sender',
+    again.status === 200 && received.length === 0 && againBody.scheduler.sent === 0,
+    `${again.status} delivered=${received.length} ${JSON.stringify(againBody.scheduler)}`);
+  // A cron service that can only reach a URL, and a named profile's own password.
+  const viaQuery = await tickHandler(new Request('http://localhost/.netlify/functions/reminders-tick?password=test-password-123', { method: 'GET' }), {});
+  check('a cron that can only reach a URL is served too — GET plus ?password=', viaQuery.status === 200, String(viaQuery.status));
+  const otherProfile = await tickHandler(new Request('http://localhost/.netlify/functions/reminders-tick?password=test-password-123&profile=sam', { method: 'GET' }), {});
+  check('and ?profile= checks the password against THAT profile\'s own variable, not the default one',
+    otherProfile.status === 401, String(otherProfile.status));
+  const ownProfile = await tickHandler(new Request('http://localhost/.netlify/functions/reminders-tick?password=sam-password-123&profile=sam', { method: 'GET' }), {});
+  check('so a named profile can fire the run with its own password', ownProfile.status === 200, String(ownProfile.status));
+  await store.del('push:tick-test');
+
+  // ---- what the app is told: the probe carries the heartbeat ----
+  await call(pushHandler, 'POST', { subscription, profileName: 'Parth', time: '20:00', zone: 'Europe/Dublin' });
+  received.length = 0;
+  const probed = await call(pushHandler, 'PUT', { probe: true, endpoint: subscription.endpoint });
+  const probedBody = await probed.json().catch(() => null);
+  check('the probe hands the sender\'s heartbeat to the device that asks',
+    probed.status === 200 && !!probedBody && !!probedBody.scheduler
+      && typeof probedBody.scheduler.ranAt === 'string' && probedBody.scheduler.considered >= 1,
+    JSON.stringify(probedBody));
+  check('and a probe still delivers NOTHING while answering', received.length === 0, String(received.length));
   for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k);
 }
 

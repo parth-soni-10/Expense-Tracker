@@ -28,12 +28,21 @@
         phone that never sets up sync, and it is best-effort:
         the browser picks the moment, so path 2 stays the
         on-time one and this is the safety net under both.
-        See syncPeriodicReminder / sw.js's dailyReminderWake.
-
-   All three dedupe through one record in Cache Storage (the
+        See syncPeriodicReminder / sw.js's dailyReminderWake.   All three dedupe through one record in Cache Storage (the
    worker cannot read localStorage): every path writes "today"
-   there when it shows a banner and reads it before showing
-   one — see markWakeFired.
+   there when it shows a banner and reads it before showing one — see
+   markWakeFired. The record also carries WHICH path delivered it and when
+   (the modal shows it, because "did it ever fire?" was unanswerable).
+
+   Two rules keep the first two paths honest about each other:
+     * the wake defers to an armed push only while that push is PROVEN alive —
+       the server reports its scheduler's own last run through the push probe
+       (verifyReminderPush), and that heartbeat sets an expiry on the deferral
+       (mirrorWakeRecord). Without it, a platform whose cron stops invoking the
+       function leaves a device that defers forever and NEVER fires.
+     * a device that is open at the hour also fires the server's tick
+       (triggerServerTick), so any open copy of the app is a trigger for the
+       devices that are closed — and the reply refreshes the heartbeat.
 
    Every key and the fire state ("last fired" date) are namespaced per
    profile, so each user is reminded about their own data.
@@ -64,6 +73,23 @@ const WAKE_TAG = 'cents-daily-reminder';
 // lets it land once a day while leaving room for a day whose only wake came
 // before the reminder hour.
 const WAKE_MIN_INTERVAL_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * How long the wake may keep deferring to a push the page last saw the server
+ * actually sending, and how long ago that server may have run.
+ *
+ * The deferral is a bet — the wake stays quiet because a push is coming at the
+ * hour — and the thing it bets on can stop without saying so: a platform that
+ * stops invoking the scheduled function, a site that loses its store, a VAPID
+ * pair that stops signing. A device cannot see any of that; what it CAN see is
+ * the sender's own heartbeat, which the push probe returns (see
+ * verifyReminderPush). So: the scheduler ran within the hour → trust tonight;
+ * it has not run → withdraw the bet and let the wake cover the day (late beats
+ * never); nothing ever heard → trust, so a device that has not probed yet (or
+ * is on an older deploy) keeps the on-time path it already had.
+ */
+const SCHEDULER_ALIVE_MS = 90 * 60 * 1000; // the cron runs every minute
+const PUSH_TRUST_MS = 26 * 60 * 60 * 1000; // one day of cover, from the last check
 
 /**
  * Merge `patch` into the worker's record, keeping every field not named.
@@ -117,12 +143,70 @@ function queueWakePatch(patch) {
  */
 function mirrorWakeRecord() {
   const s = readSettings();
-  return queueWakePatch({ enabled: s.enabled, time: s.time, push: s.pushSubscribed });
+  const alive = schedulerAlive(s);
+  return queueWakePatch({
+    enabled: s.enabled,
+    time: s.time,
+    push: s.pushSubscribed,
+    // The expiry on the deferral the worker makes (see SCHEDULER_ALIVE_MS).
+    // 0 is a withdrawn bet, not an absent field: the worker reads it as "do not
+    // yield", which is exactly what a scheduler that is not running deserves.
+    pushAliveUntil: s.pushSubscribed && alive !== false ? Date.now() + PUSH_TRUST_MS : 0,
+    at: new Date().toISOString(),
+  });
 }
 
-/** Write today's date into the record: this path showed the reminder. */
+/** Write today's date into the record: this path showed the reminder, and which
+ *  path it was — the record is the only place the three can be told apart, and
+ *  the modal reads it back so "did it ever fire?" has an answer. */
 function markWakeFired(day) {
-  return queueWakePatch({ fired: day });
+  return queueWakePatch({ fired: day, by: 'page', at: new Date().toISOString() });
+}
+
+/**
+ * Has the server's own scheduler been heard from recently? Tri-state on
+ * purpose: true = ran recently, false = it has run and is not running now (or
+ * cannot sign), null = nothing has ever been reported, which is not the same
+ * claim as either.
+ */
+function schedulerAlive(s = readSettings()) {
+  if (s.schedulerOk === false) return false;
+  if (!s.schedulerAt) return null;
+  const at = Date.parse(s.schedulerAt);
+  if (!Number.isFinite(at)) return null;
+  return Date.now() - at <= SCHEDULER_ALIVE_MS;
+}
+
+/** The scheduler's verdict for the modal: what it is, and when it last ran. */
+export function reminderSchedulerStatus() {
+  const s = readSettings();
+  const alive = schedulerAlive(s);
+  return { state: alive === false ? 'dead' : alive === true ? 'alive' : 'unknown', at: s.schedulerAt, ok: s.schedulerOk };
+}
+
+/**
+ * The last reminder this device actually received, and by which path — read
+ * from the same record every path writes. `by` is 'push' (the server sent it),
+ * 'wake' (the browser's own background wake) or 'page' (the app was open).
+ * Null when nothing has ever been recorded, which is itself the answer to
+ * "it never fired".
+ */
+export async function readLastReminderDelivery() {
+  if (typeof caches === 'undefined') return null;
+  try {
+    const cache = await caches.open(WAKE_CACHE);
+    const hit = await cache.match(WAKE_KEY);
+    const rec = hit ? await hit.json() : null;
+    if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return null;
+    if (typeof rec.fired !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rec.fired)) return null;
+    return {
+      day: rec.fired,
+      by: typeof rec.by === 'string' && rec.by ? rec.by : null,
+      at: typeof rec.at === 'string' && rec.at ? rec.at : null,
+    };
+  } catch {
+    return null; // an unreadable record is "nothing known", never a delivery
+  }
 }
 
 // The settings are re-read on EVERY tick, and localStorage is neither a
@@ -194,7 +278,13 @@ function normalize(raw) {
     ? source.lastFiredDate : null;
   const pushSubscribed = source.pushSubscribed === true;
   const pushEndpoint = typeof source.pushEndpoint === 'string' && source.pushEndpoint ? source.pushEndpoint : null;
-  return { enabled, time, lastFiredDate, pushSubscribed, pushEndpoint, pushZone };
+  // The server's own last scheduler run, as the push probe reported it. Only a
+  // timestamp with `schedulerOk: false` means "it ran and could not sign"; a
+  // missing timestamp means "never asked", which must not read as a failure.
+  const schedulerAt = typeof source.schedulerAt === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(source.schedulerAt)
+    ? source.schedulerAt : null;
+  const schedulerOk = source.schedulerOk === true ? true : source.schedulerOk === false ? false : null;
+  return { enabled, time, lastFiredDate, pushSubscribed, pushEndpoint, pushZone, schedulerAt, schedulerOk };
 }
 
 export function getReminderSettings() {
@@ -298,6 +388,11 @@ function fire(catchUp = false) {
   try { profileName = activeProfile().name; } catch { /* registry unavailable */ }
   const payload = showReminderNotification(profileName, { catchUp });
   for (const fn of listeners) { try { fn(payload); } catch { /* listener error never breaks the loop */ } }
+  // Any open copy of the app is a trigger for the copies that are closed: the
+  // same idempotent tick the platform's cron runs, fired at the hour the user
+  // chose. Best effort and never awaited — a device with no sync has nothing
+  // to fire it with, and its own banner has already been raised by then.
+  triggerServerTick().catch(() => {});
 }
 
 function tick(catchUp = false) {
@@ -474,6 +569,13 @@ function pushEndpoint(syncEndpoint) {
   if (typeof syncEndpoint !== 'string' || !syncEndpoint) return null;
   const m = /^(.*\/)[^/]+$/.exec(syncEndpoint);
   return m ? `${m[1]}reminders-push` : null;
+}
+
+/** The sibling URL that runs the sender's job on demand (same directory). */
+function tickEndpoint(syncEndpoint) {
+  if (typeof syncEndpoint !== 'string' || !syncEndpoint) return null;
+  const m = /^(.*\/)[^/]+$/.exec(syncEndpoint);
+  return m ? `${m[1]}reminders-tick` : null;
 }
 
 function b64urlToBytes(b64url) {
@@ -726,7 +828,57 @@ export async function verifyReminderPush() {
       : settle('no-record', { reason: healed.reason });
   }
   if (!probe.ok) return settle('probe-failed', { status: probe.status });
+  // The probe answers with the sender's own heartbeat as well as this device's
+  // record. Keep it: "your device is stored" and "the sender is running" are
+  // two different promises, and the second one is what a platform whose cron
+  // has stopped breaks — silently, with a phone that shows nothing and an app
+  // that still reads "Push is on". mirrorWakeRecord turns it into the worker's
+  // deferral expiry.
+  let scheduler = null;
+  try { scheduler = (await probe.json())?.scheduler ?? null; } catch { scheduler = null; }
+  if (scheduler && typeof scheduler.ranAt === 'string') {
+    patchReminderSettings({ schedulerAt: scheduler.ranAt, schedulerOk: scheduler.ok === true });
+  } else {
+    // A server that reports no heartbeat at all (an older deploy) is not a
+    // dead scheduler: keep the answer unknown rather than inventing either.
+    patchReminderSettings({ schedulerAt: null, schedulerOk: null });
+  }
   return settle('live', { ok: true });
+}
+
+/**
+ * Fire the server's own sender job right now — the same run the platform's
+ * scheduled function makes (netlify/functions/reminders-tick.mjs). Returns
+ * `{ ok, scheduler }` where scheduler is the run's heartbeat.
+ *
+ * Two callers, one job: the reminder firing while this device is open (so any
+ * open copy of the app is a trigger for the closed ones), and the modal's
+ * "the scheduler has not run" repair, which needs both to run and to report.
+ */
+export async function triggerServerTick() {
+  const sync = getSyncSettings();
+  if (!sync.enabled || !sync.endpoint || !sync.password) return { ok: false, reason: 'no-sync' };
+  const base = tickEndpoint(sync.endpoint);
+  if (!base) return { ok: false, reason: 'invalid_endpoint' };
+  try {
+    const resp = await pushFetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...profileHeaders(sync.password) },
+      body: '{}',
+    });
+    const body = await resp.json().catch(() => null);
+    // The status rides along on every failure: "could not be reached" and "a
+    // server answered and said no" are different problems, and only one of them
+    // is worth retrying.
+    if (!resp.ok) return { ok: false, reason: resp.status === 401 ? 'auth' : 'http', status: resp.status, message: `HTTP ${resp.status}` };
+    const scheduler = body && body.scheduler && typeof body.scheduler === 'object' ? body.scheduler : null;
+    if (scheduler && typeof scheduler.ranAt === 'string') {
+      patchReminderSettings({ schedulerAt: scheduler.ranAt, schedulerOk: scheduler.ok === true });
+    }
+    return { ok: true, scheduler };
+  } catch (e) {
+    return { ok: false, reason: 'network', message: e?.message || 'tick failed' };
+  }
 }
 
 /**

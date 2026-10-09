@@ -13,7 +13,7 @@ import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, s
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfile, setActiveProfileId, getActiveProfileId, hasSessionChoice, nsKey, profileEnvName, isAdminProfile, setProfileIcon } from './profiles.js';
-import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, setDueBillsProvider, periodicReminderStatus, syncPeriodicReminder, verifyReminderPush, reminderPushStatus } from './reminders.js';
+import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, setDueBillsProvider, periodicReminderStatus, syncPeriodicReminder, verifyReminderPush, reminderPushStatus, reminderSchedulerStatus, readLastReminderDelivery, triggerServerTick } from './reminders.js';
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
@@ -1462,6 +1462,41 @@ function openAdminPanel(onChanged = null) {
   modal.focus();
 }
 
+// ---------- when things happened (the reminder modal's status lines) ---------
+// "The server's scheduler last ran 4 days ago" IS the diagnosis of a reminder
+// that stopped arriving, and it is only readable in words: an ISO timestamp
+// makes the reader do the arithmetic that hides the failure.
+function sinceLabel(iso) {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return null;
+  const mins = Math.max(0, Math.round((Date.now() - at) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} h ago`;
+  const days = Math.round(hours / 24);
+  return days <= 1 ? 'yesterday' : `${days} days ago`;
+}
+
+/** "20:03" for a timestamp, in this device's own clock. */
+function clockLabel(iso) {
+  const d = new Date(iso);
+  return Number.isFinite(d.getTime()) ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : null;
+}
+
+/** "today" / "yesterday" / "2026-10-01" for a stored YYYY-MM-DD day key. */
+function dayPhrase(day) {
+  if (day === today()) return 'today';
+  if (day === offsetDateKey(today(), -1)) return 'yesterday';
+  return day;
+}
+
+// How the delivered reminder's path reads out loud. The three paths are the
+// whole reason the record exists, so they are named rather than collapsed into
+// a generic "delivered" — "the browser's background wake" and "sent by the
+// server" are the two very different promises the modal makes.
+const DELIVERY_BY = { push: 'sent by the server', wake: "the browser's background wake", page: 'shown while the app was open' };
+
 // ---------- daily reminder settings ----------
 function openReminderSettings() {
   const bg = $('div', { class: 'modal-bg', onClick: ev => { if (ev.target === bg) close(); } });
@@ -1480,6 +1515,11 @@ function openReminderSettings() {
   // not evidence that the server still holds the record or that the
   // subscription is bound to the key it signs with.
   let pushProbed = false;
+  // …and the one thing neither probe can answer: did a reminder ever actually
+  // ARRIVE here? Every path writes the day it delivered into one worker record,
+  // and that record says which path and when.
+  let lastDelivery = null;
+  let deliveryRead = false;
   const draw = () => {
     const s = getReminderSettings();
     const enabledRow = $('label', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin:18px 0;cursor:pointer;' },
@@ -1487,6 +1527,17 @@ function openReminderSettings() {
       $('input', { type: 'checkbox', checked: s.enabled, 'aria-label': 'Daily reminder on', onChange: ev => {
         const enabled = ev.target.checked;
         patchReminderSettings({ enabled });
+        // Off is off: the stored push record is dropped with the switch, or a
+        // reminder the user just cancelled keeps arriving on the phone every
+        // night (the server only knows a device wants reminders because a
+        // record exists — there is no second flag to consult). The wake path is
+        // withdrawn by syncPeriodicReminder below; this is the push half of it.
+        if (!enabled && s.pushSubscribed) {
+          unsubscribeReminderPush().catch(() => {}).then(() => {
+            toast('Push reminders are off with it - this device is no longer registered for them.');
+            draw();
+          });
+        }
         // The background wake follows this switch the same way the minute loop
         // does: armed on the way on, withdrawn on the way off — so tonight
         // cannot fire from a schedule the user just closed. It is never what
@@ -1545,6 +1596,13 @@ function openReminderSettings() {
     // nothing is delivered, and every screen still reads "Push is on".
     // verifyReminderPush() asks the live server and repairs what it finds; the
     // row says what it found instead of what was toggled.
+    // What the SERVER is doing, as opposed to what this device is set to do.
+    // The verdict below answers "is this device's record still there"; this
+    // answers "is anything being sent to it at all" — the half that dies
+    // silently when a platform's cron stops invoking the sender, and the half
+    // no amount of re-registering can fix. It comes from the sender's own
+    // heartbeat, which every push probe returns.
+    const sched = reminderSchedulerStatus();
     const pushVerdict = reminderPushStatus();
     const PUSH_VERDICT_TEXT = {
       live: 'Push is on — the reminder reaches you even when cents. is closed.',
@@ -1563,14 +1621,22 @@ function openReminderSettings() {
     // Which verdicts a fresh registration actually fixes — an offline phone and
     // a blocked permission are not ones to send the user round again for.
     const PUSH_HEALABLE = { 'no-record': true, 'key-mismatch': true, 'probe-failed': true, 'no-subscription': true };
+    // The button is captured BEFORE the first await in every async handler here,
+    // and that is not tidiness: an event's `currentTarget` is only set while it
+    // is being dispatched, so reaching for it after an await throws
+    // ("Cannot set properties of null") — the handler then dies with the button
+    // still disabled and no toast, which reads exactly like a feature that does
+    // nothing. Measured on Send test push: the tap really sent the push, and
+    // the screen said nothing at all.
     const reregisterPush = async (ev) => {
-      ev.currentTarget.disabled = true;
+      const btn = ev.currentTarget;
+      btn.disabled = true;
       // Drop the dead record and the browser's own binding first: the repair
       // for both failure modes is a NEW subscription, and subscribe() reuses
       // whatever the browser already holds.
       await unsubscribeReminderPush();
       const r = await subscribeReminderPush();
-      ev.currentTarget.disabled = false;
+      btn.disabled = false;
       if (!r.ok) {
         toast('Push is off — re-registering failed: ' + (r.message || r.reason || 'error') + '.');
         draw();
@@ -1616,11 +1682,50 @@ function openReminderSettings() {
           ? $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: reregisterPush }, 'Re-register') : null,
       ) : null,
     );
+    // The two sentences the modal could not say before, and both are why a
+    // reminder that never fires looked identical to one that does.
+    const schedulerTail = wakeOn
+      ? " The browser's own background reminder covers the day instead."
+      : ' Only an open app will show it.';
+    const schedulerText = sched.state === 'alive'
+      ? `The server's scheduler last ran ${sinceLabel(sched.at) || 'recently'} — push is being sent.`
+      : sched.state === 'dead'
+        ? (sched.ok === false
+          ? `The server ran but cannot sign a push, so none is being sent.${schedulerTail}`
+          : `The server's scheduler last ran ${sinceLabel(sched.at) || 'a while ago'} — no closed-app push is being sent.${schedulerTail}`)
+        : 'The server\'s scheduler has not been checked yet.';
+    const deliveryText = lastDelivery
+      ? `Last reminder: ${dayPhrase(lastDelivery.day)}${lastDelivery.at ? ` at ${clockLabel(lastDelivery.at) || ''}` : ''}${DELIVERY_BY[lastDelivery.by] ? ` — ${DELIVERY_BY[lastDelivery.by]}` : ''}.`
+      : 'No reminder has reached this device yet.';
+    // The repair for the one failure re-registering cannot touch: run the
+    // sender's own job right now. It both proves the chain (a push arrives if
+    // this device is due) and, on a platform whose scheduled function has gone
+    // quiet, delivers the day that would otherwise be lost.
+    const runTickRow = s.pushSubscribed && pushUsable && sched.state !== 'alive'
+      ? $('div', { style: 'display:flex;justify-content:flex-end;margin-bottom:14px;' },
+          $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: async (ev) => {
+            const btn = ev.currentTarget; // captured before the await — see reregisterPush
+            btn.disabled = true;
+            const r = await triggerServerTick();
+            btn.disabled = false;
+            if (!r.ok) {
+              const messages = { 'no-sync': 'Set up Cloud sync first.', auth: 'Sync password was rejected - check Sync settings.', network: 'Network error - try again when online.', http: 'The site answered with an error - is it deployed with the reminder functions?' };
+              toast(messages[r.reason] || ('The server could not be reached: ' + (r.message || r.reason || 'error') + '.'));
+            } else if (r.scheduler && r.scheduler.ok === false) {
+              toast('The server ran but cannot sign a push: ' + (r.scheduler.error || 'configuration error') + '.');
+            } else if (r.scheduler) {
+              toast(`Server ran — sent ${r.scheduler.sent} of ${r.scheduler.considered} stored device${r.scheduler.considered === 1 ? '' : 's'}.`);
+            } else {
+              toast('The server ran.');
+            }
+            draw();
+          } }, 'Run server reminder now')) : null;
     const testPushRow = s.pushSubscribed ? $('div', { style: 'display:flex;justify-content:flex-end;margin-bottom:14px;' },
       $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: async (ev) => {
-        ev.currentTarget.disabled = true;
+        const btn = ev.currentTarget; // captured before the await — see reregisterPush
+        btn.disabled = true;
         const r = await sendTestPush();
-        ev.currentTarget.disabled = false;
+        btn.disabled = false;
         if (r.ok) { toast('Test push sent - check your system notifications.'); return; }
         const messages = { 'not-subscribed': 'Enable push first.', stale: 'Subscription expired - push was disabled, enable it again.', auth: 'Sync password was rejected.', warming: 'This device is still registering for push - tap again in a moment.' };
         toast(messages[r.reason] || ('Test push failed: ' + (r.message || r.reason || 'error') + '.'));
@@ -1639,7 +1744,8 @@ function openReminderSettings() {
     const installRow = canInstallApp() ? $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:14px;border-top:1px solid var(--line);margin-bottom:14px;' },
       $('span', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, 'Install cents. on this device to get reminders even when the app is closed.'),
       $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: async (ev) => {
-        ev.currentTarget.disabled = true;
+        const btn = ev.currentTarget; // captured before the await — see reregisterPush
+        btn.disabled = true;
         await promptInstall(); // consumes the captured prompt; the browser may still decline
         draw();
       } }, 'Install app')) : null;
@@ -1655,6 +1761,11 @@ function openReminderSettings() {
         $('span', { class: 'muted', style: 'font-size:12px;' }, 'Time'), timeInput),
       permRow,
       ...(pushSection ? [pushSection] : []),
+      ...(s.enabled || s.pushSubscribed ? [$('div', { style: 'padding-top:14px;border-top:1px solid var(--line);margin-bottom:14px;' },
+        $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, deliveryText),
+        s.pushSubscribed && pushUsable ? $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, schedulerText) : null,
+        runTickRow,
+      )] : []),
       ...(installRow ? [installRow] : []),
       $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' },
         $('button', { type: 'button', class: 'btn btn-ghost', onClick: () => {
@@ -1669,6 +1780,12 @@ function openReminderSettings() {
     if (!wakeProbed && s.enabled && periodicReminderStatus().state === 'unknown') {
       wakeProbed = true;
       syncPeriodicReminder().catch(() => {}).then(draw);
+    }
+    // The delivery record, read once per open — the click that answers "did it
+    // ever fire?" with the path and the time rather than with a shrug.
+    if (!deliveryRead && s.enabled) {
+      deliveryRead = true;
+      readLastReminderDelivery().catch(() => null).then(d => { lastDelivery = d; draw(); });
     }
     // The push verdict, asked of the live server exactly once per open. Only for
     // a subscribed device with a usable sync config: anything else has a row
