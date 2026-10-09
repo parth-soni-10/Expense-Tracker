@@ -2017,7 +2017,7 @@ delete process.env.GITHUB_TOKEN;
       && /syncPeriodicReminder\(\)\.catch\(\(\) => \{\}\)\.then\(draw\)/.test(modalBody),
     String(modalWakes));
   check('and it imports the status the row is drawn from',
-    /reminderPushStatus, reminderSchedulerStatus, readLastReminderDelivery, triggerServerTick \} from '\.\/reminders\.js'/.test(appSource)
+    /reminderPushStatus, reminderSchedulerStatus, readLastReminderDelivery, triggerServerTick, reminderServerSchedule \} from '\.\/reminders\.js'/.test(appSource)
       && /periodicReminderStatus\(\)/.test(modalBody)
       && /reminderPushStatus\(\)/.test(modalBody));
   // The two sentences the modal could not say, and both are why a reminder that
@@ -2029,6 +2029,62 @@ delete process.env.GITHUB_TOKEN;
     /const sched = reminderSchedulerStatus\(\)/.test(modalBody)
       && /The server's scheduler last ran/.test(modalBody)
       && /no closed-app push is being sent/.test(modalBody));
+  // A run that sends to none of the devices it found (every push refused) and a
+  // run with nothing due are the same sentence — "the scheduler is running" —
+  // and they are fixed by completely different things: the first by
+  // re-registering this device, the second by looking at the record's own time
+  // and zone. The counts ride in the heartbeat, the modal names the refused
+  // case, and that case gets the same one-tap repair a dead verdict gets.
+  check('a run the push service refused is named, and repairs like a dead verdict',
+    /const refusedAll = !!runCounts && runCounts\.considered > 0 && runCounts\.sent === 0 && runCounts\.rejected > 0;/.test(modalBody)
+      && /the push service refused \$\{runCounts\.rejected\}/.test(modalBody)
+      && /const needReRegister = s\.pushSubscribed && !!pushUsable && \(PUSH_HEALABLE\[pushVerdict\.state\] \|\| refusedAll\);/.test(modalBody));
+  // …and the declaration ORDER, because this is not style: a `const` does not
+  // hoist, so a reader above the declaration is a throw the moment the modal
+  // opens — and the counts are read by both the repair button and the
+  // scheduler sentence, so there is one declaration with two readers.
+  check('the run counts are declared above every reader (a const does not hoist)',
+    modalBody.indexOf('const runCounts = sched.counts;') > -1
+      && modalBody.indexOf('const runCounts = sched.counts;') < modalBody.indexOf('const needReRegister =')
+      && modalBody.indexOf('const refusedAll =') > -1
+      && modalBody.indexOf('const refusedAll =') < modalBody.indexOf('const needReRegister =')
+      && modalBody.indexOf('const refusedAll =') < modalBody.indexOf('const schedulerText ='),
+    'needReRegister must not read refusedAll before it is declared');
+  // "has not been checked yet" and "the server has never run its scheduler" are
+  // the same `schedulerAt: null` and completely different news.
+  check('and a server that has never run its scheduler says that, not "not checked"',
+    /sched\.state === 'never'/.test(modalBody)
+      && /The server has never run its scheduler/.test(modalBody)
+      && /\(s\.schedulerChecked && !s\.schedulerAt\) \? 'never' : 'unknown'/.test(remindersSource)
+      && /rejected: Number\(scheduler\.rejected\) \|\| 0,/.test(remindersSource));
+  // The one half of a closed-app reminder neither side can see alone: the
+  // sender's due check reads the RECORD's time and zone, so a stale copy pushes
+  // at the old hour while the picker shows the new one, and a zone Intl cannot
+  // read makes every run answer "not due" and send nothing, for ever. Kept as
+  // an OBSERVATION, repaired on the spot, and reported by the modal.
+  check('the server\'s own copy of the schedule is read back and compared',
+    /const serverTime = typeof source\.serverTime === 'string'/.test(remindersSource)
+      && /const serverZone = typeof source\.serverZone === 'string'/.test(remindersSource)
+      && /export function reminderServerSchedule\(\)/.test(remindersSource)
+      && /matches: s\.serverTime === s\.time && s\.serverZone === localZone && zoneUsable\(s\.serverZone\)/.test(remindersSource));
+  check('a zone the sender cannot parse counts as a mismatch, not as agreement',
+    /try \{ new Intl\.DateTimeFormat\('en-GB', \{ timeZone: zone \}\); return true; \}/.test(remindersSource)
+      && /if \(!zone\) return false;/.test(remindersSource)
+      && /catch \{ return false; \} \/\/ isDue\(\) answers false for ever: nothing is ever sent/.test(remindersSource));
+  check('and a mismatch is REWRITTEN, not merely described',
+    /serverTime: typeof payload\.time === 'string' \? payload\.time : null,/.test(remindersSource)
+      && /const observed = reminderServerSchedule\(\);/.test(remindersSource)
+      && /if \(observed && !observed\.matches\) \{\s*\n\s*const fixed = await updateReminderPushTime\(\)\.catch\(\(\) => null\);/.test(remindersSource)
+      && /fixed && fixed\.ok === true\) patchReminderSettings\(\{ pushTimeFixedAt: new Date\(\)\.toISOString\(\) \}\)/.test(remindersSource));
+  check('the probe hands the record\'s own zone back with its time',
+    /zone: found\.record\.zone \|\| null,/.test(readFileSync(new URL('../netlify/functions/reminders-push.mjs', import.meta.url), 'utf8')));
+  check('and the modal says which hour the server is aimed at, or that it is aimed at none',
+    /triggerServerTick, reminderServerSchedule \} from '\.\/reminders\.js'/.test(appSource)
+      && /const serverScheduleText = !srv \? null/.test(modalBody)
+      && /that is the hour it pushes at\./.test(modalBody)
+      && /so no scheduled push can be sent at all\./.test(modalBody)
+      && /not the \$\{srv\.localTime\} \$\{srv\.localZone\} set here\./.test(modalBody)
+      && /s\.pushSubscribed && pushUsable && serverScheduleText \? \$\('div'/.test(modalBody));
   // …and the half the heartbeat cannot answer: a running scheduler that never
   // reaches THIS device. "No push has been sent to this device yet" beside
   // "last ran 2 min ago — push is being sent" is the refused-subscription pair.
@@ -2393,6 +2449,17 @@ delete process.env.GITHUB_TOKEN;
     probed.status === 200 && !!probedBody && !!probedBody.scheduler
       && typeof probedBody.scheduler.ranAt === 'string' && probedBody.scheduler.considered >= 1,
     JSON.stringify(probedBody));
+  // …and the RECORD'S OWN schedule beside it, because that — not the device's
+  // picker — is what the sender's due check reads. A copy that went stale is a
+  // push at the 0LD hour while every screen on the device reads the new one,
+  // and nothing else can see it.
+  check('and the record\'s own time and zone, which decide when the push is sent',
+    probedBody.time === hhmm('UTC') && probedBody.zone === 'UTC',
+    JSON.stringify({ time: probedBody.time, zone: probedBody.zone }));
+  check('and what that run MET, not only when it ran',
+    typeof probedBody.scheduler.rejected === 'number' && typeof probedBody.scheduler.pruned === 'number'
+      && typeof probedBody.scheduler.warming === 'number',
+    JSON.stringify(probedBody.scheduler));
   check('and it says when this device was last actually pushed to',
     typeof probedBody.lastFiredAt === 'string', JSON.stringify(probedBody));
   check('and a probe still delivers NOTHING while answering', received.length === 1, String(received.length));

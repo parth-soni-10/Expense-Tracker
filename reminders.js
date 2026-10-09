@@ -177,11 +177,59 @@ function schedulerAlive(s = readSettings()) {
   return Date.now() - at <= SCHEDULER_ALIVE_MS;
 }
 
-/** The scheduler's verdict for the modal: what it is, and when it last ran. */
+/**
+ * The scheduler's verdict for the modal: what it is, when it last ran, and what
+ * that run met. Four states, and each one is a different thing to do:
+ *   'alive'   — it ran inside the last 90 minutes;
+ *   'dead'    — it has run before and has not recently (or cannot sign);
+ *   'never'   — a probe answered and the server holds NO heartbeat at all, so
+ *               the scheduled function has never run against this store;
+ *   'unknown' — nothing has been asked yet (or the last probe failed), which is
+ *               not evidence of anything and must not read as a failure.
+ */
 export function reminderSchedulerStatus() {
   const s = readSettings();
   const alive = schedulerAlive(s);
-  return { state: alive === false ? 'dead' : alive === true ? 'alive' : 'unknown', at: s.schedulerAt, ok: s.schedulerOk };
+  const state = alive === false ? 'dead'
+    : alive === true ? 'alive'
+      : (s.schedulerChecked && !s.schedulerAt) ? 'never' : 'unknown';
+  return { state, at: s.schedulerAt, ok: s.schedulerOk, counts: s.schedulerCounts };
+}
+
+/**
+ * What the SERVER has this device down for, beside what is set here.
+ *
+ * This is the half neither side can see on its own. The sender's due check
+ * reads the RECORD's own time and zone (`isDue(record.time, now, record.zone)`),
+ * not this device's setting, so a record whose copy went stale — the time was
+ * changed while the phone was offline and the follow-up write never landed —
+ * pushes at the OLD hour while every screen here reads the new one. And a zone
+ * `Intl` cannot parse makes every run answer "not due": no scheduled push is
+ * sent at all, for ever, with nothing anywhere saying so. Both are repaired by
+ * verifyReminderPush() the moment they are seen; this is what lets the modal
+ * report it instead of the user wondering why the hour drifts.
+ *
+ * Answers null until a probe has answered, because "we have not asked" is not
+ * "they agree".
+ */
+export function reminderServerSchedule() {
+  const s = readSettings();
+  if (!s.serverTime) return null;
+  const localZone = currentZone();
+  const zoneUsable = (zone) => {
+    if (!zone) return false; // no zone at all ⇒ the sender reads UTC, which is not this device's hour
+    try { new Intl.DateTimeFormat('en-GB', { timeZone: zone }); return true; }
+    catch { return false; } // isDue() answers false for ever: nothing is ever sent
+  };
+  return {
+    time: s.serverTime,
+    zone: s.serverZone,
+    localTime: s.time,
+    localZone,
+    zoneUsable: zoneUsable(s.serverZone),
+    matches: s.serverTime === s.time && s.serverZone === localZone && zoneUsable(s.serverZone),
+    fixedAt: s.pushTimeFixedAt,
+  };
 }
 
 /**
@@ -291,7 +339,30 @@ function normalize(raw) {
   // for) is invisible from the heartbeat alone.
   const pushDeliveredAt = typeof source.pushDeliveredAt === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(source.pushDeliveredAt)
     ? source.pushDeliveredAt : null;
-  return { enabled, time, lastFiredDate, pushSubscribed, pushEndpoint, pushZone, schedulerAt, schedulerOk, pushDeliveredAt };
+  // Whether a probe has ever ANSWERED about the scheduler. It is what separates
+  // "this app has not asked yet" from "the server answered and has never run
+  // its scheduler at all" — two states with the same `schedulerAt: null` and
+  // completely different meanings to the user.
+  const schedulerChecked = source.schedulerChecked === true;
+  const counts = source.schedulerCounts && typeof source.schedulerCounts === 'object' && !Array.isArray(source.schedulerCounts)
+    ? source.schedulerCounts : null;
+  const schedulerCounts = counts ? {
+    considered: Number(counts.considered) || 0,
+    sent: Number(counts.sent) || 0,
+    rejected: Number(counts.rejected) || 0,
+    pruned: Number(counts.pruned) || 0,
+    warming: Number(counts.warming) || 0,
+  } : null;
+  // The SERVER's own copy of this device's schedule, as the last probe reported
+  // it — an observation, not a promise (see reminderServerSchedule()). Only a
+  // probe writes these, and a fresh probe clears the repair stamp: the value
+  // that stamp was about is gone the moment a new answer arrives.
+  const serverTime = typeof source.serverTime === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(source.serverTime)
+    ? source.serverTime : null;
+  const serverZone = typeof source.serverZone === 'string' && source.serverZone ? source.serverZone : null;
+  const pushTimeFixedAt = typeof source.pushTimeFixedAt === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(source.pushTimeFixedAt)
+    ? source.pushTimeFixedAt : null;
+  return { enabled, time, lastFiredDate, pushSubscribed, pushEndpoint, pushZone, schedulerAt, schedulerOk, schedulerChecked, schedulerCounts, serverTime, serverZone, pushTimeFixedAt, pushDeliveredAt };
 }
 
 export function getReminderSettings() {
@@ -848,16 +919,45 @@ export async function verifyReminderPush() {
     const patch = {
       schedulerAt: typeof scheduler.ranAt === 'string' ? scheduler.ranAt : null,
       schedulerOk: scheduler.ok === true,
+      schedulerChecked: true,
+      // The record's own schedule, observed — and the repair stamp cleared,
+      // because a fresh answer is what replaces the observation that stamp was
+      // about (see reminderServerSchedule()).
+      serverTime: typeof payload.time === 'string' ? payload.time : null,
+      serverZone: typeof payload.zone === 'string' ? payload.zone : null,
+      pushTimeFixedAt: null,
+      schedulerCounts: {
+        considered: Number(scheduler.considered) || 0,
+        sent: Number(scheduler.sent) || 0,
+        rejected: Number(scheduler.rejected) || 0,
+        pruned: Number(scheduler.pruned) || 0,
+        warming: Number(scheduler.warming) || 0,
+      },
     };
     // The record's own memory of delivering here. Absent (an older deploy, or a
     // subscription that was just re-created) leaves what we knew alone — an
     // unknown is not a delivery, and it is not an erasure either.
     if (typeof payload.lastFiredAt === 'string') patch.pushDeliveredAt = payload.lastFiredAt;
     patchReminderSettings(patch);
+    // A record the server has the wrong hour for — or a zone it cannot read, in
+    // which case EVERY run answers "not due" and nothing is ever sent — is
+    // repaired here rather than merely reported: rewriting the record is one
+    // request, and the whole point of knowing is that the push is aimed at the
+    // wrong moment. The modal reports which of the two happened.
+    const observed = reminderServerSchedule();
+    if (observed && !observed.matches) {
+      const fixed = await updateReminderPushTime().catch(() => null);
+      if (fixed && fixed.ok === true) patchReminderSettings({ pushTimeFixedAt: new Date().toISOString() });
+    }
   } else {
-    // A server that reports no heartbeat at all (an older deploy) is not a
-    // dead scheduler: keep the answer unknown rather than inventing either.
-    patchReminderSettings({ schedulerAt: null, schedulerOk: null });
+    // The probe answered and reported no heartbeat — which is the one fact a
+    // device cannot get any other way. It is NOT "an older deploy": a server
+    // that predates the heartbeat returns no `scheduler` key at all, and one
+    // whose scheduled function has never run returns `scheduler: null`. Both
+    // land here, so the record keeps `schedulerChecked` (it was asked) and the
+    // modal words the difference it can actually see: a server that has never
+    // run its scheduler is a server where the sent-sentence would be false.
+    patchReminderSettings({ schedulerAt: null, schedulerOk: null, schedulerChecked: true, schedulerCounts: null });
   }
   return settle('live', { ok: true });
 }

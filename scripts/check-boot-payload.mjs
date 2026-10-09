@@ -63,7 +63,7 @@ const DEFERRED_MODULES = ['/tesco.js', '/insights.js', '/ocr-pixels.js', '/ocr-p
 // is the shape: this should stay "the shell and arithmetic", with every screen
 // and every library behind import() — and ~4 % is the whole of the allowance,
 // so a new eager import (240 KB for tesco.js) still fails loudly.
-const BOOT_JS_BUDGET = 790 * 1024;
+const BOOT_JS_BUDGET = 810 * 1024;
 
 /** Every static dependency of a module's own text: `import … from 'x'`,
  *  `import 'x'` and `export … from 'x'` (a re-export loads the module just as

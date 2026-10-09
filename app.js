@@ -13,7 +13,7 @@ import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, s
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfile, setActiveProfileId, getActiveProfileId, hasSessionChoice, nsKey, profileEnvName, isAdminProfile, setProfileIcon } from './profiles.js';
-import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, setDueBillsProvider, periodicReminderStatus, syncPeriodicReminder, verifyReminderPush, reminderPushStatus, reminderSchedulerStatus, readLastReminderDelivery, triggerServerTick } from './reminders.js';
+import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, setDueBillsProvider, periodicReminderStatus, syncPeriodicReminder, verifyReminderPush, reminderPushStatus, reminderSchedulerStatus, readLastReminderDelivery, triggerServerTick, reminderServerSchedule } from './reminders.js';
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
@@ -1628,6 +1628,20 @@ function openReminderSettings() {
     // still disabled and no toast, which reads exactly like a feature that does
     // nothing. Measured on Send test push: the tap really sent the push, and
     // the screen said nothing at all.
+    // What the last run MET, which the timestamp alone cannot say: a scheduler
+    // that runs on time while every message is refused by the push service and
+    // one that has nothing due are both "running", and they need different
+    // things done about them (a new subscription; a look at the record's own
+    // time and zone). Declared HERE — above both of its readers — because a
+    // `const` does not hoist: a reader ahead of this line does not read it, it
+    // throws, and this modal is the only place the fact is visible at all.
+    const runCounts = sched.counts;
+    const refusedAll = !!runCounts && runCounts.considered > 0 && runCounts.sent === 0 && runCounts.rejected > 0;
+    // A subscription the push service refuses is not a "live" verdict the
+    // probe can see — the record is there and the key matches, and every message
+    // is still rejected at the far end. The sender's own counts are the only
+    // place that shows up, so they get the same one-tap repair.
+    const needReRegister = s.pushSubscribed && !!pushUsable && (PUSH_HEALABLE[pushVerdict.state] || refusedAll);
     const reregisterPush = async (ev) => {
       const btn = ev.currentTarget;
       btn.disabled = true;
@@ -1678,7 +1692,7 @@ function openReminderSettings() {
         // that has been delivered by a dead subscription for weeks is not
         // something to describe and leave: re-registering is one tap, and the
         // verdict above says which case it is.
-        s.pushSubscribed && PUSH_HEALABLE[pushVerdict.state]
+        needReRegister
           ? $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: reregisterPush }, 'Re-register') : null,
       ) : null,
     );
@@ -1688,12 +1702,18 @@ function openReminderSettings() {
       ? " The browser's own background reminder covers the day instead."
       : ' Only an open app will show it.';
     const schedulerText = sched.state === 'alive'
-      ? `The server's scheduler last ran ${sinceLabel(sched.at) || 'recently'} — push is being sent.`
+      ? (refusedAll
+        ? `The server's scheduler last ran ${sinceLabel(sched.at) || 'recently'}, and sent to none of its ${runCounts.considered} stored device${runCounts.considered === 1 ? '' : 's'} — the push service refused ${runCounts.rejected}. Re-registering this device is what fixes that.`
+        : runCounts && runCounts.considered === 0
+          ? `The server's scheduler last ran ${sinceLabel(sched.at) || 'recently'} — no device is stored for a push, so nothing is being sent.`
+          : `The server's scheduler last ran ${sinceLabel(sched.at) || 'recently'} — push is being sent.`)
       : sched.state === 'dead'
         ? (sched.ok === false
           ? `The server ran but cannot sign a push, so none is being sent.${schedulerTail}`
           : `The server's scheduler last ran ${sinceLabel(sched.at) || 'a while ago'} — no closed-app push is being sent.${schedulerTail}`)
-        : 'The server\'s scheduler has not been checked yet.';
+        : sched.state === 'never'
+          ? `The server has never run its scheduler — no closed-app push is being sent.${schedulerTail}`
+          : 'The server\'s scheduler has not been checked yet.';
     const deliveryText = lastDelivery
       ? `Last reminder: ${dayPhrase(lastDelivery.day)}${lastDelivery.at ? ` at ${clockLabel(lastDelivery.at) || ''}` : ''}${DELIVERY_BY[lastDelivery.by] ? ` — ${DELIVERY_BY[lastDelivery.by]}` : ''}.`
       : 'No reminder has reached this device yet.';
@@ -1705,6 +1725,19 @@ function openReminderSettings() {
     const pushDeliveryText = s.pushDeliveredAt
       ? `Last push sent to this device: ${sinceLabel(s.pushDeliveredAt) || 'recently'}.`
       : 'No push has been sent to this device yet.';
+    // And what the SERVER has this device down FOR — the sender's due check
+    // reads the record's own time and zone, so a record whose copy is stale
+    // pushes at the old hour while the picker here shows the new one, and a
+    // zone Intl cannot read makes every run answer "not due" and send nothing
+    // at all. Both are repaired the moment they are seen; this is what says so
+    // rather than leaving the user to wonder why the hour drifts.
+    const srv = reminderServerSchedule();
+    const serverScheduleText = !srv ? null
+      : srv.matches
+        ? `The server has this device down for ${srv.localTime} ${srv.localZone} - that is the hour it pushes at.`
+        : !srv.zoneUsable
+          ? `The server has a time zone it cannot read for this device (${srv.zone || 'none'}), so no scheduled push can be sent at all.${srv.fixedAt ? ' It was rewritten just now.' : ' Re-registering rewrites it.'}`
+          : `The server has this device down for ${srv.time} ${srv.zone || 'UTC'}, not the ${srv.localTime} ${srv.localZone} set here.${srv.fixedAt ? ' It was rewritten just now.' : ' Re-registering rewrites it.'}`;
     // The repair for the one failure re-registering cannot touch: run the
     // sender's own job right now. It both proves the chain (a push arrives if
     // this device is due) and, on a platform whose scheduled function has gone
@@ -1773,6 +1806,7 @@ function openReminderSettings() {
         $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, deliveryText),
         s.pushSubscribed && pushUsable ? $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, schedulerText) : null,
         s.pushSubscribed && pushUsable ? $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, pushDeliveryText) : null,
+        s.pushSubscribed && pushUsable && serverScheduleText ? $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, serverScheduleText) : null,
         runTickRow,
       )] : []),
       ...(installRow ? [installRow] : []),

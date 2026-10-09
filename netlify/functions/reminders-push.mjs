@@ -240,18 +240,33 @@ export default async (request, _context) => {
       const meta = await readSchedulerHeartbeat(store);
       return ok({
         stored: true,
+        // The record's OWN schedule — which is what the sender's due check
+        // reads (isDue(record.time, now, record.zone)), not the device's
+        // current setting. Returned so the app can tell a record whose copy
+        // went stale (a time changed while offline, a push at the OLD hour
+        // while every screen there reads the new one) from an agreeing one,
+        // and repair it rather than describe it.
         time: found.record.time,
+        zone: found.record.zone || null,
         // When THIS device was last actually pushed to — the record's own
         // memory of a delivery, which the app can show beside the verdict.
         lastFiredAt: found.record.lastFiredAt || null,
         // null means the scheduler has never run against this store at all,
         // which is a different (and louder) fact than a stale timestamp.
+        // The counts ride along with the timestamp because they answer a
+        // different question than it does: a run that considers devices and
+        // sends to none of them (every push refused) and a run that has
+        // nothing due both look like "the scheduler is running", and they are
+        // fixed by completely different things.
         scheduler: meta ? {
           ranAt: meta.ranAt,
           ok: meta.ok === true,
           error: meta.error || null,
           considered: meta.considered || 0,
           sent: meta.sent || 0,
+          rejected: meta.rejected || 0,
+          pruned: meta.pruned || 0,
+          warming: meta.warming || 0,
         } : null,
       }, 200, cors);
     }
