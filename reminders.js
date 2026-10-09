@@ -284,7 +284,14 @@ function normalize(raw) {
   const schedulerAt = typeof source.schedulerAt === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(source.schedulerAt)
     ? source.schedulerAt : null;
   const schedulerOk = source.schedulerOk === true ? true : source.schedulerOk === false ? false : null;
-  return { enabled, time, lastFiredDate, pushSubscribed, pushEndpoint, pushZone, schedulerAt, schedulerOk };
+  // When the SERVER last actually pushed to this device. The heartbeat above
+  // says the sender is running; this says it is reaching this phone, and the two
+  // are different failures: a scheduler that runs while every message to one
+  // subscription is refused (an expired token, a key the service will not sign
+  // for) is invisible from the heartbeat alone.
+  const pushDeliveredAt = typeof source.pushDeliveredAt === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(source.pushDeliveredAt)
+    ? source.pushDeliveredAt : null;
+  return { enabled, time, lastFiredDate, pushSubscribed, pushEndpoint, pushZone, schedulerAt, schedulerOk, pushDeliveredAt };
 }
 
 export function getReminderSettings() {
@@ -834,10 +841,19 @@ export async function verifyReminderPush() {
   // has stopped breaks — silently, with a phone that shows nothing and an app
   // that still reads "Push is on". mirrorWakeRecord turns it into the worker's
   // deferral expiry.
-  let scheduler = null;
-  try { scheduler = (await probe.json())?.scheduler ?? null; } catch { scheduler = null; }
-  if (scheduler && typeof scheduler.ranAt === 'string') {
-    patchReminderSettings({ schedulerAt: scheduler.ranAt, schedulerOk: scheduler.ok === true });
+  let payload = null;
+  try { payload = await probe.json(); } catch { payload = null; }
+  if (payload && typeof payload.scheduler === 'object' && payload.scheduler !== null) {
+    const scheduler = payload.scheduler;
+    const patch = {
+      schedulerAt: typeof scheduler.ranAt === 'string' ? scheduler.ranAt : null,
+      schedulerOk: scheduler.ok === true,
+    };
+    // The record's own memory of delivering here. Absent (an older deploy, or a
+    // subscription that was just re-created) leaves what we knew alone — an
+    // unknown is not a delivery, and it is not an erasure either.
+    if (typeof payload.lastFiredAt === 'string') patch.pushDeliveredAt = payload.lastFiredAt;
+    patchReminderSettings(patch);
   } else {
     // A server that reports no heartbeat at all (an older deploy) is not a
     // dead scheduler: keep the answer unknown rather than inventing either.

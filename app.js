@@ -1697,6 +1697,14 @@ function openReminderSettings() {
     const deliveryText = lastDelivery
       ? `Last reminder: ${dayPhrase(lastDelivery.day)}${lastDelivery.at ? ` at ${clockLabel(lastDelivery.at) || ''}` : ''}${DELIVERY_BY[lastDelivery.by] ? ` — ${DELIVERY_BY[lastDelivery.by]}` : ''}.`
       : 'No reminder has reached this device yet.';
+    // The heartbeat above says the SENDER is running; this says it is reaching
+    // THIS phone. A scheduler that runs while every message to one subscription
+    // is refused (a retired token, a subscription bound to a key the service no
+    // longer signs for) shows up nowhere else — the phone is silent and the
+    // server is healthy, which is the hardest pair to tell apart from outside.
+    const pushDeliveryText = s.pushDeliveredAt
+      ? `Last push sent to this device: ${sinceLabel(s.pushDeliveredAt) || 'recently'}.`
+      : 'No push has been sent to this device yet.';
     // The repair for the one failure re-registering cannot touch: run the
     // sender's own job right now. It both proves the chain (a push arrives if
     // this device is due) and, on a platform whose scheduled function has gone
@@ -1764,6 +1772,7 @@ function openReminderSettings() {
       ...(s.enabled || s.pushSubscribed ? [$('div', { style: 'padding-top:14px;border-top:1px solid var(--line);margin-bottom:14px;' },
         $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, deliveryText),
         s.pushSubscribed && pushUsable ? $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, schedulerText) : null,
+        s.pushSubscribed && pushUsable ? $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' }, pushDeliveryText) : null,
         runTickRow,
       )] : []),
       ...(installRow ? [installRow] : []),

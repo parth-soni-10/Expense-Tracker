@@ -2029,6 +2029,14 @@ delete process.env.GITHUB_TOKEN;
     /const sched = reminderSchedulerStatus\(\)/.test(modalBody)
       && /The server's scheduler last ran/.test(modalBody)
       && /no closed-app push is being sent/.test(modalBody));
+  // …and the half the heartbeat cannot answer: a running scheduler that never
+  // reaches THIS device. "No push has been sent to this device yet" beside
+  // "last ran 2 min ago — push is being sent" is the refused-subscription pair.
+  check('and what the server has actually sent to this device, if anything',
+    /Last push sent to this device/.test(modalBody)
+      && /No push has been sent to this device yet/.test(modalBody)
+      && /s\.pushDeliveredAt/.test(modalBody)
+      && /if \(typeof payload\.lastFiredAt === 'string'\) patch\.pushDeliveredAt = payload\.lastFiredAt;/.test(remindersSource));
   check('and it answers "did it ever fire?" with the path and the time',
     /readLastReminderDelivery\(\)\.catch\(\(\) => null\)\.then\(d => \{ lastDelivery = d; draw\(\); \}\)/.test(modalBody)
       && /const DELIVERY_BY = \{ push: 'sent by the server', wake:/.test(appSource)
@@ -2366,16 +2374,28 @@ delete process.env.GITHUB_TOKEN;
   check('so a named profile can fire the run with its own password', ownProfile.status === 200, String(ownProfile.status));
   await store.del('push:tick-test');
 
-  // ---- what the app is told: the probe carries the heartbeat ----
-  await call(pushHandler, 'POST', { subscription, profileName: 'Parth', time: '20:00', zone: 'Europe/Dublin' });
+  // ---- what the app is told: the probe carries the heartbeat, and the one
+  // fact the heartbeat cannot. A scheduler that runs while every message to ONE
+  // subscription is refused (a retired token, a subscription bound to a key the
+  // service will not sign for) is a healthy server and a silent phone — the pair
+  // nothing else can tell apart, and the reason the probe also reports when this
+  // device was last actually sent to.
+  await call(pushHandler, 'POST', { subscription, profileName: 'Parth', time: hhmm('UTC'), zone: 'UTC' });
   received.length = 0;
+  const delivered = await tickHandler(new Request('http://localhost/.netlify/functions/reminders-tick', {
+    method: 'POST', headers: { 'X-Cents-Password': 'test-password-123' },
+  }), {});
+  check('the trigger delivers to the device the app subscribed with',
+    delivered.status === 200 && received.length === 1, `status=${delivered.status} delivered=${received.length}`);
   const probed = await call(pushHandler, 'PUT', { probe: true, endpoint: subscription.endpoint });
   const probedBody = await probed.json().catch(() => null);
   check('the probe hands the sender\'s heartbeat to the device that asks',
     probed.status === 200 && !!probedBody && !!probedBody.scheduler
       && typeof probedBody.scheduler.ranAt === 'string' && probedBody.scheduler.considered >= 1,
     JSON.stringify(probedBody));
-  check('and a probe still delivers NOTHING while answering', received.length === 0, String(received.length));
+  check('and it says when this device was last actually pushed to',
+    typeof probedBody.lastFiredAt === 'string', JSON.stringify(probedBody));
+  check('and a probe still delivers NOTHING while answering', received.length === 1, String(received.length));
   for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k);
 }
 
