@@ -13,7 +13,7 @@ import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, s
 import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfile, setActiveProfileId, getActiveProfileId, hasSessionChoice, nsKey, profileEnvName, isAdminProfile, setProfileIcon } from './profiles.js';
-import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, setDueBillsProvider, periodicReminderStatus, syncPeriodicReminder, verifyReminderPush, reminderPushStatus, reminderSchedulerStatus, readLastReminderDelivery, triggerServerTick, reminderServerSchedule } from './reminders.js';
+import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, setDueBillsProvider, periodicReminderStatus, syncPeriodicReminder, verifyReminderPush, reminderPushStatus, reminderSchedulerStatus, readLastReminderDelivery, triggerServerTick, reminderServerSchedule, reminderSenderAlert } from './reminders.js';
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
@@ -7174,6 +7174,41 @@ function screenDashboard() {
     attachSwipeDismiss(voucherCard, () => {
       setAlertDismissed('voucher-notice', true);
       toast('Notification dismissed', () => { setAlertDismissed('voucher-notice', false); render(); }, 'Undo');
+    });
+  }
+
+  // The one reminder fault worth interrupting this screen for: the sender that
+  // pushes the reminder has stopped running, so a device that believes it will
+  // be reminded at its hour will not be. It belongs here rather than only in
+  // the reminder sheet, because that sheet is opened by somebody who already
+  // suspects something and the whole symptom of this fault is silence on the
+  // phone. Re-armed once the sender runs again, exactly like the voucher
+  // notice — a dismissed alarm that stays dismissed after it is fixed would
+  // never come back for the next one.
+  const senderAlert = reminderSenderAlert();
+  // Guarded rather than called unconditionally: `!senderAlert` is the state of
+  // every dashboard render on almost every device, and each call is a write.
+  if (!senderAlert && alertDismissed('reminder-sender')) setAlertDismissed('reminder-sender', false);
+  if (senderAlert && !alertDismissed('reminder-sender')) {
+    const senderTail = getReminderSettings().enabled && periodicReminderStatus().state === 'on'
+      ? " The phone's own background reminder still covers the day, at whatever hour the browser picks."
+      : ' The reminder still appears while cents. is open.';
+    const senderCard = $('div', { class: 'card', role: 'alert', style: `padding:${isNarrow() ? '14px 16px' : '16px'};margin-bottom:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border:1px solid color-mix(in srgb, var(--negative) 35%, transparent);background:color-mix(in srgb, var(--negative) 8%, transparent);` },
+      iconSpan('alert', 'md'),
+      $('div', { style: 'flex:1;min-width:0;' },
+        $('div', { style: 'font-weight:600;font-size:13px;' },
+          senderAlert.kind === 'stale' ? "The reminder's sender has stopped running" : "The reminder's sender has never run"),
+        $('div', { class: 'muted', style: 'font-size:12px;margin-top:2px;' },
+          senderAlert.kind === 'stale'
+            ? `Last run ${sinceLabel(senderAlert.at) || 'a while ago'} — no closed-app push is being sent.${senderTail}`
+            : `No run recorded in the ${senderAlert.days} day${senderAlert.days === 1 ? '' : 's'} since this device was set up for push — no closed-app push is being sent.${senderTail}`),
+      ),
+      $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 14px;font-size:12px;flex-shrink:0;', onClick: () => openReminderSettings() }, 'Reminder settings'),
+    );
+    screen.appendChild(senderCard);
+    attachSwipeDismiss(senderCard, () => {
+      setAlertDismissed('reminder-sender', true);
+      toast('Notification dismissed', () => { setAlertDismissed('reminder-sender', false); render(); }, 'Undo');
     });
   }
 

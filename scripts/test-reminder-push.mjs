@@ -2003,9 +2003,17 @@ delete process.env.GITHUB_TOKEN;
 
   // ---- the halves no behavioral run can reach ----
   const appSource = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  // The names app.js takes from reminders.js, read out of the statement itself:
+  // pinning the list's exact tail made every new import a test failure, which
+  // teaches the next reader to edit the assertion instead of reading it.
+  const reminderImport = (appSource.match(/import \{([^}]*)\} from '\.\/reminders\.js';/) || [])[1] || '';
   const modalAt = appSource.indexOf('function openReminderSettings');
   const modalBody = appSource.slice(modalAt, appSource.indexOf('\nfunction isTopModal', modalAt));
   const modalWakes = (modalBody.match(/syncPeriodicReminder\(\)/g) || []).length;
+  // The dashboard's own slice, for the notice that has to be visible WITHOUT
+  // opening that sheet — the reason it exists at all.
+  const dashAt = appSource.indexOf('function screenDashboard');
+  const dashSource = appSource.slice(dashAt, appSource.indexOf('\nfunction ', dashAt + 10));
   // Each call site by its OWN shape — a count would pass with any one of the
   // three gone, and each is a different promise: the toggle withdraws tonight,
   // the Allow click re-arms right after the prompt, the open probe corrects a
@@ -2017,7 +2025,8 @@ delete process.env.GITHUB_TOKEN;
       && /syncPeriodicReminder\(\)\.catch\(\(\) => \{\}\)\.then\(draw\)/.test(modalBody),
     String(modalWakes));
   check('and it imports the status the row is drawn from',
-    /reminderPushStatus, reminderSchedulerStatus, readLastReminderDelivery, triggerServerTick, reminderServerSchedule \} from '\.\/reminders\.js'/.test(appSource)
+    ['reminderPushStatus', 'reminderSchedulerStatus', 'readLastReminderDelivery', 'triggerServerTick', 'reminderServerSchedule', 'reminderSenderAlert']
+      .every(name => reminderImport.includes(name))
       && /periodicReminderStatus\(\)/.test(modalBody)
       && /reminderPushStatus\(\)/.test(modalBody));
   // The two sentences the modal could not say, and both are why a reminder that
@@ -2079,7 +2088,7 @@ delete process.env.GITHUB_TOKEN;
   check('the probe hands the record\'s own zone back with its time',
     /zone: found\.record\.zone \|\| null,/.test(readFileSync(new URL('../netlify/functions/reminders-push.mjs', import.meta.url), 'utf8')));
   check('and the modal says which hour the server is aimed at, or that it is aimed at none',
-    /triggerServerTick, reminderServerSchedule \} from '\.\/reminders\.js'/.test(appSource)
+    reminderImport.includes('reminderServerSchedule')
       && /const serverScheduleText = !srv \? null/.test(modalBody)
       && /that is the hour it pushes at\./.test(modalBody)
       && /so no scheduled push can be sent at all\./.test(modalBody)
@@ -2464,6 +2473,86 @@ delete process.env.GITHUB_TOKEN;
     typeof probedBody.lastFiredAt === 'string', JSON.stringify(probedBody));
   check('and a probe still delivers NOTHING while answering', received.length === 1, String(received.length));
   for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k);
+}
+
+// ---------- 23. the sender that stopped is on the DASHBOARD, not only in the
+// reminder sheet — and only when it is really news ----------
+// A phone that is told "push is on" and never gets a reminder has one fault
+// worth interrupting the home screen for: the sender has stopped running. The
+// sheet already words it, but the sheet is opened by somebody who already
+// suspects something, and the whole symptom here is silence. The rule is the
+// part worth pinning: a heartbeat a day old is ~1,440 missed runs of a cron
+// that ticks every minute, and anything younger than that is NOT an alarm —
+// including the minute after a site is configured, before its scheduler has had
+// a chance to write the first heartbeat at all.
+{
+  const saved = {
+    hadLocalStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage'),
+    localStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage') ? globalThis.localStorage : undefined,
+  };
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+  };
+  try {
+    const local = await import('../reminders.js');
+    const hoursAgo = (h) => new Date(Date.now() - h * 3600 * 1000).toISOString();
+    const armed = { enabled: true, time: '08:00', pushSubscribed: true, pushEndpoint: 'https://fcm.googleapis.com/fcm/send/x', schedulerChecked: true };
+    const alertOf = (patch) => { local.patchReminderSettings(patch); return local.reminderSenderAlert(); };
+
+    // 2.5 h is deliberately NOT the old 90-minute "alive" threshold: a cron
+    // that ticks every minute being two and a half hours late is a stall, and a
+    // stall is not what this notice is for — nothing on the dashboard should
+    // alarm about a sender that missed a few runs.
+    check('a heartbeat hours old is not a day-old alarm',
+      alertOf({ ...armed, schedulerAt: hoursAgo(2.5), schedulerOk: true }) === null);
+    check('a heartbeat a day old is — the cron runs every minute, so that is ~1,440 missed runs',
+      (() => { const a = alertOf({ ...armed, schedulerAt: hoursAgo(25), schedulerOk: true }); return !!a && a.kind === 'stale' && a.days === 1; })());
+    check('and it says how long, so the notice can word itself',
+      (() => { const a = alertOf({ ...armed, schedulerAt: hoursAgo(72), schedulerOk: true }); return !!a && a.days === 3 && a.at === local.getReminderSettings().schedulerAt; })());
+    check('a sender that stopped after a run that could not sign is still the same notice',
+      (() => { const a = alertOf({ ...armed, schedulerAt: hoursAgo(48), schedulerOk: false }); return !!a && a.kind === 'stale'; })());
+    check('a sender nobody has asked about is NOT an alarm — we have not asked is not they stopped',
+      alertOf({ ...armed, schedulerAt: null, schedulerOk: null, schedulerChecked: false }) === null);
+    check('a reminder that is off promises nothing, so there is nothing to interrupt for',
+      alertOf({ ...armed, enabled: false, schedulerAt: hoursAgo(48) }) === null);
+    check('nor does a device with no subscription — no push was ever promised to it',
+      alertOf({ ...armed, pushSubscribed: false, schedulerAt: hoursAgo(48) }) === null);
+    // A store with NO heartbeat at all is "never ran" — and the day it is
+    // measured against is the device's own, because a site configured a minute
+    // ago has not had the chance to write one yet.
+    check('a store with no heartbeat at all is not news on the day the device subscribed',
+      alertOf({ ...armed, schedulerAt: null, schedulerOk: null, schedulerChecked: true, pushSubscribedAt: hoursAgo(2) }) === null);
+    check('but a day after subscribing it is — nothing has ever run',
+      (() => { const a = alertOf({ ...armed, schedulerAt: null, schedulerOk: null, schedulerChecked: true, pushSubscribedAt: hoursAgo(50) }); return !!a && a.kind === 'never' && a.days === 2; })());
+    check('and the sender coming back clears it — the notice re-arms with it',
+      alertOf({ ...armed, schedulerAt: hoursAgo(1), schedulerOk: true, pushSubscribedAt: hoursAgo(50) }) === null);
+
+    // The stamp the 'never' case is measured from: written once, on the way ON.
+    // A re-register repairs a record, it does not make this device newer to a
+    // promise it has been holding for weeks.
+    check('the subscribed-at stamp survives a re-register',
+      /pushSubscribedAt: wasSubscribed \? getReminderSettings\(\)\.pushSubscribedAt : new Date\(\)\.toISOString\(\),/.test(remindersSource)
+        && /const wasSubscribed = getReminderSettings\(\)\.pushSubscribed;/.test(remindersSource)
+        && /const pushSubscribedAt = typeof source\.pushSubscribedAt === 'string'/.test(remindersSource));
+    // …and the dashboard is where it shows: the rule, the two wordings, the one
+    // tap into the sheet that can run the sender, and the re-arm.
+    const dashSrc = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+    const dashAt = dashSrc.indexOf('function screenDashboard');
+    const dashSource = dashAt > -1 ? dashSrc.slice(dashAt, dashSrc.indexOf('\nfunction ', dashAt + 10)) : '';
+    check('the dashboard carries the notice, with the repair one tap away',
+      ((dashSrc.match(/import \{([^}]*)\} from '\.\/reminders\.js';/) || [])[1] || '').includes('reminderSenderAlert')
+        && /const senderAlert = reminderSenderAlert\(\);/.test(dashSource)
+        && /if \(!senderAlert && alertDismissed\('reminder-sender'\)\) setAlertDismissed\('reminder-sender', false\);/.test(dashSource)
+        && /senderAlert\.kind === 'stale' \? "The reminder's sender has stopped running" : "The reminder's sender has never run"/.test(dashSource)
+        && /onClick: \(\) => openReminderSettings\(\) \}, 'Reminder settings'\)/.test(dashSource)
+        && /No run recorded in the \$\{senderAlert\.days\} day/.test(dashSource));
+  } finally {
+    if (saved.hadLocalStorage) globalThis.localStorage = saved.localStorage;
+    else delete globalThis.localStorage;
+  }
 }
 
 fakePushServer.close();

@@ -89,6 +89,11 @@ const WAKE_MIN_INTERVAL_MS = 12 * 60 * 60 * 1000;
  * is on an older deploy) keeps the on-time path it already had.
  */
 const SCHEDULER_ALIVE_MS = 90 * 60 * 1000; // the cron runs every minute
+// A day: the point at which a scheduler that has stopped is not a bad minute
+// but a broken promise. The cron runs every MINUTE, so a heartbeat a day old is
+// a sender that has not run once in 1,440 chances — and this is the threshold
+// the dashboard's own notice uses to come on screen (see reminderSenderAlert).
+const SENDER_STALE_MS = 24 * 60 * 60 * 1000;
 const PUSH_TRUST_MS = 26 * 60 * 60 * 1000; // one day of cover, from the last check
 
 /**
@@ -194,6 +199,43 @@ export function reminderSchedulerStatus() {
     : alive === true ? 'alive'
       : (s.schedulerChecked && !s.schedulerAt) ? 'never' : 'unknown';
   return { state, at: s.schedulerAt, ok: s.schedulerOk, counts: s.schedulerCounts };
+}
+
+/**
+ * The one reminder fault worth interrupting the dashboard for: the sender has
+ * stopped, so no closed-app push is being sent at all — for a device whose
+ * reminder is on and subscribed, which is exactly the device that believes it
+ * will be reminded.
+ *
+ * This is the same fact the modal words, and the reason it also belongs on the
+ * dashboard is that the modal is only opened when someone already suspects
+ * something. Two shapes, both a day old before they are news:
+ *
+ *   'stale' — a heartbeat exists and is older than SENDER_STALE_MS. The cron
+ *             runs every minute, so a day without one is ~1,440 missed runs;
+ *   'never' — a probe answered and the store holds no heartbeat at all, on a
+ *             site whose scheduled function has never run. Held back by the
+ *             same day, measured from when THIS device subscribed, because the
+ *             heartbeat of a site that was configured a minute ago is not late
+ *             yet — it is simply not written.
+ *
+ * Answers null for everything else: not subscribed (nothing is promised), not
+ * enabled, never checked ("we have not asked" is not "they stopped"), inside
+ * the day, or a heartbeat that is merely old enough to be interesting.
+ */
+export function reminderSenderAlert() {
+  const s = readSettings();
+  if (!s.enabled || !s.pushSubscribed || !s.schedulerChecked) return null;
+  const now = Date.now();
+  const at = Date.parse(s.schedulerAt || '');
+  if (Number.isFinite(at)) {
+    const age = now - at;
+    if (age <= SENDER_STALE_MS) return null;
+    return { kind: 'stale', days: Math.floor(age / (24 * 60 * 60 * 1000)), at: s.schedulerAt, since: null };
+  }
+  const subscribed = Date.parse(s.pushSubscribedAt || '');
+  if (!Number.isFinite(subscribed) || now - subscribed <= SENDER_STALE_MS) return null;
+  return { kind: 'never', days: Math.floor((now - subscribed) / (24 * 60 * 60 * 1000)), at: null, since: s.pushSubscribedAt };
 }
 
 /**
@@ -362,7 +404,14 @@ function normalize(raw) {
   const serverZone = typeof source.serverZone === 'string' && source.serverZone ? source.serverZone : null;
   const pushTimeFixedAt = typeof source.pushTimeFixedAt === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(source.pushTimeFixedAt)
     ? source.pushTimeFixedAt : null;
-  return { enabled, time, lastFiredDate, pushSubscribed, pushEndpoint, pushZone, schedulerAt, schedulerOk, schedulerChecked, schedulerCounts, serverTime, serverZone, pushTimeFixedAt, pushDeliveredAt };
+  // When this device's subscription was first armed — the clock reminder
+  // senderAlert() measures a store with NO heartbeat against ("never ran" is
+  // only news once the site has had a day to run it). Kept across a
+  // re-register: the question it answers is how long this device has been
+  // promised a push, and a repair does not make that promise younger.
+  const pushSubscribedAt = typeof source.pushSubscribedAt === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(source.pushSubscribedAt)
+    ? source.pushSubscribedAt : null;
+  return { enabled, time, lastFiredDate, pushSubscribed, pushEndpoint, pushZone, pushSubscribedAt, schedulerAt, schedulerOk, schedulerChecked, schedulerCounts, serverTime, serverZone, pushTimeFixedAt, pushDeliveredAt };
 }
 
 export function getReminderSettings() {
@@ -791,7 +840,16 @@ export async function subscribeReminderPush() {
     });
     if (resp.status === 401) return { ok: false, reason: 'auth' };
     if (!resp.ok) return { ok: false, reason: 'http', message: `HTTP ${resp.status}` };
-    patchReminderSettings({ pushSubscribed: true, pushEndpoint: sub.endpoint, pushZone: currentZone() });
+    const wasSubscribed = getReminderSettings().pushSubscribed;
+    patchReminderSettings({
+      pushSubscribed: true,
+      pushEndpoint: sub.endpoint,
+      pushZone: currentZone(),
+      // Stamped once, on the way ON. A re-register repairs the record, it does
+      // not make this device newer to the promise — and reminderSenderAlert()
+      // counts the days from here (see its 'never' case).
+      pushSubscribedAt: wasSubscribed ? getReminderSettings().pushSubscribedAt : new Date().toISOString(),
+    });
     return { ok: true };
   } catch (e) {
     return { ok: false, reason: 'network', message: e?.message || 'subscribe failed' };
