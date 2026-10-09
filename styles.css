@@ -664,6 +664,20 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
   color: var(--muted); margin: 6px 0 0;
 }
 .dashboard-hero .dashboard-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+
+/* ── Net worth strip ──
+   One card, two halves: the figure it labels and the trend behind it. The
+   sparkline's width is capped (its viewBox is 300 wide, so letting it fill a
+   1,200px shell letterboxed the line into the middle of the card and left the
+   rest of the strip empty), and below 640px the halves stack rather than
+   squeezing the trend into a sliver beside the number. */
+.net-worth-strip { display: flex; flex-direction: column; gap: 10px; }
+.net-worth-head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.net-worth-spark { width: 100%; height: 44px; }
+@media (min-width: 640px) {
+  .net-worth-strip { flex-direction: row; align-items: center; justify-content: space-between; gap: 24px; }
+  .net-worth-spark { flex: 0 0 auto; width: 320px; }
+}
 @media (max-width: 639px) {
   .dashboard-hero { align-items: flex-start; margin-bottom: var(--page-title-gap); padding: 20px 18px; border-radius: var(--radius-lg); }
 }
@@ -1248,9 +1262,15 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
 }
 .pulse-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  /* Two columns on a phone, four above it — deliberately not `auto-fit`, which
+     put the seven figures six-to-a-row and left the seventh alone against five
+     columns of white space. 4 + 3 gives every figure the same width and uses
+     the card's full measure, and the layout no longer depends on how wide the
+     shell happens to be on the route it is drawn in. */
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px; padding-top: 16px; border-top: 1px solid var(--line);
 }
+@media (min-width: 640px) { .pulse-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 .pulse-footnote { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; }
 
 /* ── Consistent history actions and day groups ── */
@@ -1582,6 +1602,19 @@ body .flatpickr-time .numInputWrapper span.arrowDown:after { border-color: var(-
    ============================================================ */
 .cal-dow { text-align: center; font-size: 10px; color: var(--muted); padding-bottom: 6px; text-transform: uppercase; letter-spacing: .08em; }
 .cal-cell { aspect-ratio: 1; border-radius: 12px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 0; }
+/* The month grid keeps a calendar's measure. The History route widens the shell
+   to 1,780px for the table below it, and seven `1fr` cells carrying a square
+   aspect-ratio grew to 184px each — a 1,083px-tall card, taller than the
+   viewport, which pushed the list the calendar exists to filter off screen.
+   The card's content is capped and centred as ONE column (header, grid and
+   legend together, so nothing is left hanging at the card's far left) and the
+   cells get a height as well, so they stay squares instead of tracking the
+   shell. The phone is untouched: its seven columns are already ~50px, under
+   every cap here. */
+.cal-inner { max-width: 630px; margin: 0 auto; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.cal-legend { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 10px; color: var(--muted); }
+@media (min-width: 640px) { .cal-cell { max-height: 76px; } }
 .cal-empty { visibility: hidden; }
 .cal-day {
   border: 1px solid var(--line); background: var(--card);

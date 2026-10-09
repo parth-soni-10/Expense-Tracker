@@ -290,7 +290,35 @@ ok('and the sparkline ends at today, where the number reads',
   /points\.at\(-1\)\.date < today\(\)/.test(app)
   && /\[\.\.\.points, \{ date: today\(\), balance: runningBalance \}\]/.test(app), true);
 
+// ---- 8. proportions that only fail on a WIDE screen ----
+// Three cards are drawn inside a shell that changes width by route: the History
+// route sets body[data-wide], which takes --shell-max from 980px to 1,780px so
+// the table below the calendar can hold its columns. Anything measured in `fr`
+// follows that — so on a 1440px window the month grid's seven cells came to
+// 184px each with a square aspect-ratio and the card to 1,083px, taller than the
+// viewport and pushing the very list the calendar filters off screen; the pulse's
+// `auto-fit` grid put six figures in one row and the seventh alone against five
+// columns of white space; and the net worth sparkline (a 300-wide viewBox) was
+// stretched into a 1,200px box, letterboxing the line into the middle of a card
+// made almost entirely of dead space. None of it is visible in a static read of
+// the phone rules, which is why it is pinned here rather than trusted.
+ok('the month grid is capped as ONE centred column, header and legend with it',
+  /\.cal-inner\s*\{\s*max-width:\s*630px;\s*margin:\s*0 auto;/.test(css)
+  && /'card cal-card'/.test(app) && /class: 'cal-inner'/.test(app), true);
+ok('and its cells take a height above the phone, so they stay squares',
+  /\.cal-cell\s*\{\s*max-height:\s*76px;/.test(mediaBody(css, 'min-width: 640px', '.cal-cell') ?? ''), true);
+ok('the pulse figures are 2-up on a phone and 4-up above it, never auto-fit',
+  /\.pulse-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,/.test(css)
+  && /\.pulse-grid\s*\{\s*grid-template-columns:\s*repeat\(4,/.test(mediaBody(css, 'min-width: 640px', '.pulse-grid') ?? '')
+  && !/\.pulse-grid\s*\{[^}]*auto-fit/.test(css), true);
+ok('the net worth strip stacks its halves on a phone and caps the trend above it',
+  /\.net-worth-strip\s*\{\s*display:\s*flex;\s*flex-direction:\s*column;/.test(css)
+  && /\.net-worth-spark\s*\{\s*flex:\s*0 0 auto;\s*width:\s*320px;\s*\}/.test(mediaBody(css, 'min-width: 640px', '.net-worth-spark') ?? '')
+  && /class: 'net-worth-spark'/.test(app), true);
+ok('and nothing in that strip stretches the sparkline again',
+  /net-worth-spark[^>]*flex:1|\.net-worth-spark\s*\{[^}]*flex:\s*1[;\s]/.test(css + app), false);
+
 console.log(fails.length
   ? `check-mobile-layout: ${fails.length} FAILED\n\n${fails.join('\n')}`
-  : `check-mobile-layout: OK — ${pass} assertions passed (a figure reaches its card formatted, at a size its own length chose; the card and the value can neither push their track wider nor spill; six dock tabs compress instead of hanging off the screen; a history row's action buttons cannot starve the column its labels sit in, and the account meta line wraps where the row stacks; net worth reads today's checkpoint-aware balance, never the last entry's book value)`);
+  : `check-mobile-layout: OK — ${pass} assertions passed (a figure reaches its card formatted, at a size its own length chose; the card and the value can neither push their track wider nor spill; six dock tabs compress instead of hanging off the screen; a history row's action buttons cannot starve the column its labels sit in, and the account meta line wraps where the row stacks; net worth reads today's checkpoint-aware balance, never the last entry's book value; and the three cards that only break on a wide shell — the month grid, the pulse figures and the net worth strip — keep their measure there)`);
 process.exitCode = fails.length ? 1 : 0;

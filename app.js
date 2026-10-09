@@ -7055,14 +7055,21 @@ function screenDashboard() {
     const lastVal = runningBalance;
     const netWorthEl = $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` });
     paintFigure(netWorthEl, 'dashboard-net-worth', lastVal);
-    screen.appendChild($('div', { class: 'card dashboard-full', style: `padding:${isNarrow() ? '14px 16px' : '18px 16px'};margin-bottom:24px;display:flex;align-items:center;gap:16px;` },
-      $('svg', { viewBox: `0 0 ${sparkW} ${sparkH}`, style: 'flex:1;min-width:120px;height:40px;', 'aria-label': 'Net worth trend' },
-        $('path', { d: areaD, style: `fill:${isUp ? 'var(--positive)' : 'var(--negative)'};opacity:0.1;` }),
-        $('path', { d: pathD, style: `fill:none;stroke:${isUp ? 'var(--positive)' : 'var(--negative)'};stroke-width:1.5;stroke-linecap:round;` }),
-      ),
-      $('div', { style: 'text-align:right;flex-shrink:0;' },
+    // Read as one card header: the figure it labels on the left, the trend
+    // beside it. The sparkline's own width is capped because its viewBox is 300
+    // wide — stretched into a full-width shell the default `meet` scaling kept
+    // the 300px line centred in a 1,200px box, and that letterboxing is the dead
+    // space this card used to be. Below 640px the same flex box stacks, so the
+    // trend sits under the figure at the card's own width (a phone's width is
+    // the viewBox's, so nothing is letterboxed there at all).
+    screen.appendChild($('div', { class: 'card dashboard-full net-worth-strip', style: `padding:${isNarrow() ? '14px 16px' : '18px 16px'};margin-bottom:24px;` },
+      $('div', { class: 'net-worth-head' },
         $('div', { class: 'eyebrow' }, 'Net worth'),
         netWorthEl,
+      ),
+      $('svg', { viewBox: `0 0 ${sparkW} ${sparkH}`, class: 'net-worth-spark', 'aria-label': 'Net worth trend' },
+        $('path', { d: areaD, style: `fill:${isUp ? 'var(--positive)' : 'var(--negative)'};opacity:0.1;` }),
+        $('path', { d: pathD, style: `fill:none;stroke:${isUp ? 'var(--positive)' : 'var(--negative)'};stroke-width:1.5;stroke-linecap:round;` }),
       ),
     ));
   }
@@ -8992,7 +8999,14 @@ function calendarCard(activeMonth, activeDay, onDayChange) {
       val ? $('span', { class: 'cal-dot', style: `width:${size}px;height:${size}px;` }) : null,
     ));
   }
-  return $('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
+  // The card's own content is one centred column (`.cal-inner`): the History
+  // route widens the shell to 1,780px for the table below, and a month grid that
+  // tracked that width was 1,083px tall with 184px cells. Capping only the grid
+  // would leave its header at the card's far left and the grid in the middle —
+  // an alignment nobody asked for — so the header, the grid and the legend move
+  // together. A phone's width is under the cap, so nothing changes there.
+  return $('div', { class: 'card cal-card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
+    $('div', { class: 'cal-inner' },
     $('div', { class: 'row between', style: 'margin-bottom:14px;' },
       $('div', null,
         $('div', { class: 'eyebrow' }, 'Calendar'),
@@ -9000,12 +9014,13 @@ function calendarCard(activeMonth, activeDay, onDayChange) {
       ),
       activeDay ? $('button', { type: 'button', class: 'btn-link', style: 'font-size:12px;', onClick: () => onDayChange('') }, 'Clear') : null,
     ),
-    $('div', { style: 'display:grid;grid-template-columns:repeat(7,1fr);gap:4px;' },
+    $('div', { class: 'cal-grid' },
       ...['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(l => $('div', { class: 'cal-dow' }, l)),
       ...cells,
     ),
-    $('div', { style: 'display:flex;align-items:center;gap:6px;margin-top:10px;font-size:10px;color:var(--muted);' },
+    $('div', { class: 'cal-legend' },
       $('span', null, 'Less'), ...[0.2, 0.4, 0.6, 0.8, 1].map(p => $('span', { style: `display:inline-block;width:10px;height:10px;border-radius:50%;background:${heatColor(p)};opacity:0.85;` })), $('span', null, 'More'),
+    ),
     ),
   );
 }
