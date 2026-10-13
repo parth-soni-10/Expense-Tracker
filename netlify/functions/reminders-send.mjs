@@ -1,11 +1,11 @@
 /* ============================================================
-   reminders-send.mjs — SCHEDULED function (Netlify Scheduled
-   Functions, cron in netlify.toml) that delivers the daily
+   reminders-send.mjs — SCHEDULED function (the Worker's per-minute
+   cron in wrangler.toml) that delivers the daily
    "upload your transactions" Web Push to every subscribed device
    at its profile's chosen local time.
 
    The job itself lives in lib/reminder-run.mjs, because it is also
-   reachable over HTTP (reminders-tick.mjs): Netlify's scheduler is the one
+   reachable over HTTP (reminders-tick.mjs): The platform's scheduler is the one
    piece of this feature that runs on somebody else's clock, and it has
    stopped invoking functions for hours with no error anywhere — the run is
    not allowed to be reachable only from there.

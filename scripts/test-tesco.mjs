@@ -9,7 +9,7 @@
  * drifts the math, this fails the deploy instead of silently mis-paying.
  *
  * Run: node scripts/test-tesco.mjs
- * Also wired into the Netlify build command (netlify.toml).
+ * Also a step in scripts/run-guards.mjs.
  */
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';

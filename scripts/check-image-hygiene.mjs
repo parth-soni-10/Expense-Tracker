@@ -18,7 +18,7 @@
  * gone on passing while the worker grew a cache of its own.
  *
  * Run standalone:  node scripts/check-image-hygiene.mjs
- * Also wired into the Netlify build command (netlify.toml).
+ * Also a step in scripts/run-guards.mjs.
  */
 import { readFileSync } from 'node:fs';
 

@@ -209,7 +209,13 @@ const VAPID_DERIVE_SALT = 'cents/vapid/keys/v1';
 // one: it is eight-ish characters a human chose and the user can read it,
 // while this file is public — the password would be the only unknown, so
 // anyone holding the public key could brute-force the private half offline.
-const VAPID_DERIVE_SECRETS = ['GITHUB_TOKEN'];
+//
+// CENTS_SECRET comes first so the deployment's own root secret is the key
+// material, and GITHUB_TOKEN stays behind it: a deployment configured the old
+// way derives exactly the pair it derived before (no subscription re-bound by
+// this change), while one configured the new way stops having a code host in the
+// middle of its push keys. See lib/secret.mjs.
+const VAPID_DERIVE_SECRETS = ['CENTS_SECRET', 'GITHUB_TOKEN'];
 const MIN_SECRET_LENGTH = 16;
 
 /** A P-256 seed and its public point, derived from one secret. */

@@ -21,7 +21,7 @@
  *
  *   node scripts/check-boot-payload.mjs
  *
- * Also wired as a predeploy build step in netlify.toml.
+ * Also a step in scripts/run-guards.mjs.
  */
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';

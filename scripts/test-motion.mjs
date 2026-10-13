@@ -51,7 +51,7 @@
  * headless bridge emits no hover at all — so this is the half that can be.
  *
  * Run: node scripts/test-motion.mjs
- * Also wired into the Netlify build command (netlify.toml).
+ * Also a step in scripts/run-guards.mjs.
  */
 import { readFileSync } from 'node:fs';
 

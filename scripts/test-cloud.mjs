@@ -2,9 +2,11 @@
 /**
  * Cloud storage contract test — the durable path.
  *
- * `netlify/functions/lib/cloud.mjs` keeps each profile's document in Netlify
- * Blobs and mirrors it into GitHub. On this machine `@netlify/blobs` does not
- * resolve (there is no node_modules — the runtime supplies it), so every other
+ * `netlify/functions/lib/cloud.mjs` keeps each profile's document in the
+ * deployment's durable store (a KV namespace in production; a Blobs-compatible
+ * module handed in here) and mirrors it into GitHub when a mirror is
+ * configured. On this machine `@netlify/blobs` does not resolve (there is no
+ * node_modules — the runtime supplies it), so every other
  * test exercises only the fallback branch, where the GitHub mirror is the
  * commit point. That leaves the code that actually runs in production as the
  * one path no test reaches — which is what `useBlobsModule` in lib/store.mjs
@@ -22,13 +24,16 @@
  *   - the owner's tab policy lands where the account's device will read it
  *
  * Run: node scripts/test-cloud.mjs
- * Also wired into the Netlify build command (netlify.toml).
+ * Also a step in scripts/run-guards.mjs.
  */
 const REPO = new URL('..', import.meta.url).href.replace(/\/$/, '');
 
 process.env.APP_PASSWORD = 'test-password-1234';
 process.env.APP_PASSWORD_SAM = 'sam-password-123456';
 process.env.GITHUB_TOKEN = 'stub-token';
+// The root secret the owner's invite links are encrypted with (see
+// lib/secret.mjs). 16+ characters, because shorter is refused as key material.
+process.env.CENTS_SECRET = 'cents-root-secret-for-tests';
 process.env.REPO_OWNER = 'stub-owner';
 process.env.REPO_NAME = 'stub-repo';
 process.env.REPO_BRANCH = 'main';
@@ -253,9 +258,34 @@ check('a never-synced account reports pending, not failure', pending.pending ===
 check('and no document is invented for it', storedRecord('cents-cloud', 'doc/kate.json') === null);
 delete process.env.APP_PASSWORD_KATE;
 
+// ---- no mirror configured is a supported shape, not an outage --------------
+// Last, because it empties one profile's document on purpose. A deployment with
+// no token has no mirror at all (lib/gh.mjs's mirrorConfigured), which is the
+// same "one durable primary" shape the site ran on with Blobs — so a missing
+// document must read as absent, and a save must still commit. Reporting either
+// one as a code host that failed would make a deployment that never had a token
+// look permanently broken.
+const savedMirrorToken = process.env.GITHUB_TOKEN;
+delete process.env.GITHUB_TOKEN;
+gh.calls.length = 0;
+gh.broken = 'all';
+backing.get('cents-cloud').delete(DOC_KEY);
+const noMirrorRead = await call('GET');
+const noMirrorReadBody = await noMirrorRead.json();
+check('with no mirror configured, a missing document reads as absent, not as an error',
+  noMirrorRead.status === 200 && noMirrorReadBody.content === null && noMirrorReadBody.sha === null,
+  `${noMirrorRead.status} ${JSON.stringify(noMirrorReadBody)}`);
+check('and it never calls a code host it has no credential for', gh.calls.length === 0, gh.calls.join(', '));
+const noMirrorSave = await call('PUT', { content: { version: 2, entries: [], settings: { monthlyBudget: 1234 } }, sha: null });
+check('and the store still commits the save',
+  noMirrorSave.status === 200 && storedRecord('cents-cloud', DOC_KEY)?.content?.settings?.monthlyBudget === 1234,
+  `got ${noMirrorSave.status}`);
+process.env.GITHUB_TOKEN = savedMirrorToken;
+gh.broken = null;
+
 if (fails.length) {
   console.error(`test-cloud: ${fails.length} FAILED, ${pass} passed\n`);
   for (const f of fails) console.error('  ✗ ' + f);
   process.exit(1);
 }
-console.log(`test-cloud: OK — ${pass} checks passed (Blobs is the primary, GitHub the mirror, and the version token decides conflicts)`);
+console.log(`test-cloud: OK — ${pass} checks passed (the store is the primary, GitHub the mirror when one is configured, and the version token decides conflicts)`);

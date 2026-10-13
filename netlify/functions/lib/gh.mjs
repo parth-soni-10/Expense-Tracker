@@ -27,6 +27,20 @@ export async function ghFetch(path, opts = {}) {
   });
 }
 
+/**
+ * True when a mirror is configured at all: a token AND repository coordinates.
+ *
+ * The mirror is optional by design — the primary store is the commit point
+ * (lib/cloud.mjs), and the GitHub copy is a second, human-readable one. So a
+ * deployment with no token has no mirror rather than a broken one, and that has
+ * to be distinguishable from a mirror that failed: "there is nothing to read"
+ * and "the store is down" are different answers, and only the second one is
+ * something to report.
+ */
+export function mirrorConfigured(env = process.env) {
+  return !!(env.GITHUB_TOKEN && env.REPO_OWNER && env.REPO_NAME);
+}
+
 /** Repo coordinates for this deployment. */
 export function ghConfig() {
   return {

@@ -24,7 +24,7 @@
  *   · the focus trap's two load-order rules and its two Escape rules (see below).
  *
  * Run: node scripts/test-ui-libs.mjs
- * Also wired into the Netlify build command (netlify.toml).
+ * Also a step in scripts/run-guards.mjs.
  */
 import { readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';

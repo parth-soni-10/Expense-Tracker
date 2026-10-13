@@ -1,7 +1,8 @@
 /* ============================================================
-   Netlify Function v2 — cloud sync proxy for cents.
+   Function v2 — cloud sync proxy for cents, bundled into the Worker.
 
-   Holds each profile's JSON document in Netlify Blobs and mirrors it
+   Holds each profile's JSON document in the deployment's durable store
+   (a KV namespace on Cloudflare) and mirrors it
    into a configured GitHub repo. Gated by an admin password sent via
    the X-Cents-Password header; the PAT itself lives only in this
    function's environment, never in the client bundle. lib/cloud.mjs
@@ -20,7 +21,7 @@
    slug). The password is resolved per profile — APP_PASSWORD for the
    default "personal" id, APP_PASSWORD_<ID> for any other, with NO
    fallback between them — and the document is kept under that id,
-   privately in Netlify Blobs and mirrored to data-<id>.json.
+   privately in that store and mirrored to data-<id>.json.
    Two profiles therefore never share a password or a document, so one
    profile's credential cannot read another's data. A profile whose
    env var is missing is refused with the name to set, rather than

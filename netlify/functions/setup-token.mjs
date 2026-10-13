@@ -1,11 +1,15 @@
 /* ============================================================
-   Netlify Function — setup-token issuance + redemption.
+   Function — setup-token issuance + redemption (served from
+   /.netlify/functions/setup-token by worker.js, and derived from the sync
+   endpoint by the app's own sync.js).
 
    POST with header  X-Cents-Password: <app password>
      → issues an ENCRYPTED, 30-day setup token for embedding in a
        ?centsSync= link (instead of the raw password). The payload
-       is AES-256-GCM encrypted with a key derived from
-       GITHUB_TOKEN, so the password is unrecoverable from the
+       is AES-256-GCM encrypted with a key derived from the
+       deployment's root secret (CENTS_SECRET, or GITHUB_TOKEN for a
+       deployment configured before that name existed — see
+       lib/secret.mjs), so the password is unrecoverable from the
        token without the server secret.
    POST with header  X-Cents-Setup-Token: <token>
      → redeems the token for the app password — ONCE. Redemption
@@ -19,15 +23,15 @@
 
    Auth model: whoever holds an UNUSED token holds the capability —
    treat setup links like passwords. Tokens cannot be forged or
-   read without GITHUB_TOKEN, expire after 30 days, and are
+   read without the root secret, expire after 30 days, and are
    invalidated by first use.
    The issue path is protected by the same constant-time compare,
    failure sleep, and per-IP throttle as sync.mjs.
 
-   Required env vars: same as sync.mjs (GITHUB_TOKEN, plus the
-   profile's own password: APP_PASSWORD, or APP_PASSWORD_<ID>).
-   Blobs need no configuration inside Netlify Functions; the store
-   falls back to in-memory outside the Netlify runtime.
+   Required env vars: CENTS_SECRET (or GITHUB_TOKEN), plus the
+   profile's own password: APP_PASSWORD, or APP_PASSWORD_<ID>. The
+   store is the deployment's durable one; it falls back to in-memory
+   where no store is bound.
    ============================================================ */
 
 import { createHash } from 'node:crypto';
@@ -35,6 +39,7 @@ import { issueSetupToken, redeemSetupToken, SETUP_TOKEN_TTL_MS } from './lib/tok
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
 import { resolveProfileForAuth, profileAuthMessage } from './lib/profiles.mjs';
 import { getStore } from './lib/store.mjs';
+import { rootSecret } from './lib/secret.mjs';
 
 // In-memory sliding-window throttle: 15 failed issue attempts per IP per 5 min.
 const failureThrottle = createFailureThrottle({ windowMs: 5 * 60 * 1000, max: 15 });
@@ -73,8 +78,9 @@ export default async (request, _context) => {
   const profile = resolveProfileForAuth(request);
   if (!profile.ok) return err(profileAuthMessage(profile), 500, cors);
   const expected = profile.expected;
-  const secret = process.env.GITHUB_TOKEN;
-  if (!secret) return err('GITHUB_TOKEN env var not set on the function', 500, cors);
+  const root = rootSecret();
+  if (!root.ok) return err(root.error, 500, cors);
+  const secret = root.secret;
 
   const token = request.headers.get('x-cents-setup-token');
   const password = request.headers.get('x-cents-password');
@@ -97,8 +103,9 @@ export default async (request, _context) => {
     }
     const redeemed = redeemSetupToken(secret, token);
     if (!redeemed.ok) {
-      // Tokens can't be forged without GITHUB_TOKEN, so a failure here means
-      // junk or an expired/unknown link. Throttle + sleep to absorb the noise.
+      // Tokens can't be forged without the root secret, so a failure here
+      // means junk or an expired/unknown link. Throttle + sleep to absorb the
+      // noise.
       throttle.record();
       await new Promise(r => setTimeout(r, 500));
       // 410 (Gone) for a genuinely expired link; 401 for anything invalid.

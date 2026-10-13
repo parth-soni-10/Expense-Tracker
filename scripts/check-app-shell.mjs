@@ -42,7 +42,7 @@ const check = (name, ok, detail = '') => {
 const manifest = JSON.parse(read('manifest.json'));
 const appSource = read('app.js');
 const css = read('styles.css');
-const toml = read('netlify.toml');
+const headers = read('_headers');
 const { TABS } = await import('../seed.js');
 
 // ---------------------------------------------------------------- 1. identity
@@ -275,10 +275,13 @@ check('the layout uses the dynamic viewport unit, so a keyboard cannot break it'
 // dot-directory a CDN does serve — so it needs its own rule. The rule exists
 // before the file does, which is the point: dropping the file in is then the
 // whole step.
+// Read as the rule's own block — a path at column 0, its headers indented below
+// it — so a Content-Type on some other path cannot satisfy this.
+const wellKnownBlock = /^\/\.well-known\/\*[ \t]*\n((?:[ \t]+\S[^\n]*\n?)*)/m.exec(headers)?.[1] || '';
 check('the deploy serves /.well-known/ as JSON',
-  /for = "\/\.well-known\/\*"[\s\S]{0,200}?Content-Type = "application\/json/.test(toml));
+  /Content-Type:[ \t]*application\/json/.test(wellKnownBlock));
 check('with a revalidating cache, so a corrected fingerprint is not cached for a day',
-  /for = "\/\.well-known\/\*"[\s\S]{0,260}?Cache-Control = "no-cache, must-revalidate"/.test(toml));
+  /Cache-Control:[ \t]*no-cache, must-revalidate/.test(wellKnownBlock));
 if (has('.well-known/assetlinks.json')) {
   const links = JSON.parse(read('.well-known/assetlinks.json'));
   const entry = Array.isArray(links) ? links[0] : null;

@@ -6,7 +6,7 @@
  *
  *   node scripts/check-sw-shell.mjs
  *
- * Also wired as a predeploy build step in netlify.toml, so a broken shell
+ * Also a step in scripts/run-guards.mjs, so a broken shell
  * list fails the deploy instead of shipping.
  */
 import { readFileSync, existsSync } from 'node:fs';

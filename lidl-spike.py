@@ -30,7 +30,7 @@ has been fetched end to end. The client is UNOFFICIAL (github.com/Andre0512/lidl
 and can stop working at any time - that is exactly what this spike measures.
 
 Every output lands in ./lidl-spike-out/, which is gitignored and kept off the
-deploy by .netlifyignore, so a refresh token or a receipt can never be committed
+deploy by .assetsignore, so a refresh token or a receipt can never be committed
 or published with the static site. Data stays on this machine - same rule the
 app itself follows. (The local dev server does serve the folder, so treat a
 running serve as machine-local, not a URL to share.)

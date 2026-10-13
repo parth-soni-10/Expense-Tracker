@@ -48,7 +48,7 @@
  * past the viewport are the table scrolling inside its own box.
  *
  * Run: node scripts/check-mobile-layout.mjs
- * Also wired into the Netlify build command (netlify.toml).
+ * Also a step in scripts/run-guards.mjs.
  */
 import { readFileSync } from 'node:fs';
 

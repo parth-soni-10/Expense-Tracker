@@ -1,12 +1,14 @@
 /* ============================================================
-   lib/store.mjs — tiny durable key/value adapter for the
-   Netlify Functions.
+   lib/store.mjs — tiny durable key/value adapter for the functions
+   under netlify/functions/ (the directory is named for the host this
+   code came from; the functions themselves are bundled into worker.js
+   and served from the same paths).
 
-   On Netlify, state persists in Netlify Blobs (zero config —
-   getStore(name) resolves the site automatically inside a function).
-   Everywhere else (local `netlify dev`, unit tests, a non-Netlify
-   host) it falls back to an in-memory map so the functions never
-   hard-fail because the Blobs package is missing.
+   Where the host has a durable store it is used: Netlify Blobs resolves
+   the site by itself inside a function, and any other host hands one in
+   (see lib/kv-store.mjs, which puts a KV namespace into the same shape).
+   Where there is neither — local `netlify dev`, unit tests — it falls back
+   to an in-memory map so the functions never hard-fail for want of a store.
 
    The adapter is intentionally narrow — getJSON / setJSON / an
    atomic consume-once / delete / prefix list — so its callers
@@ -31,12 +33,13 @@ let blobsLoadAttempted = false;
 const blobStores = new Map();
 
 /**
- * Install a Blobs-compatible module (anything with getStore(name) → store).
- * Netlify's runtime provides `@netlify/blobs` by itself, so a deploy never
- * calls this. It exists because that runtime is the only place the durable
- * path is reachable: without a way to hand one in, the code that runs in
- * production would be the one piece no test could ever run. Pass null to
- * reset, and note the reset drops cached stores but keeps in-memory data.
+ * Install a store module (anything with getStore(name) → store).
+ *
+ * Two callers, and neither of them is a test: Netlify's runtime provides
+ * `@netlify/blobs` by itself, and the Worker calls this with lib/kv-store.mjs's
+ * KV-backed module, because a KV namespace is what this deployment's durable
+ * store is. Pass null to reset, and note the reset drops cached stores but
+ * keeps in-memory data.
  */
 export function useBlobsModule(mod) {
   blobsModule = mod && typeof mod.getStore === 'function' ? mod : null;

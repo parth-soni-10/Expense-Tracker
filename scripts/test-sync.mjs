@@ -12,7 +12,7 @@
  * Tesco Pay state and its rates.
  *
  * Run: node scripts/test-sync.mjs
- * Also wired into the Netlify build command (netlify.toml).
+ * Also a step in scripts/run-guards.mjs.
  */
 import { readFileSync } from 'node:fs';
 
@@ -22,6 +22,13 @@ process.env.APP_PASSWORD = 'test-password-1234';
 process.env.APP_PASSWORD_SAM = 'sam-password-123456';
 delete process.env.APP_PASSWORD_KATE;
 process.env.GITHUB_TOKEN = 'stub-token';
+// The root secret the recovery links are encrypted with, under the name a new
+// deployment sets (GITHUB_TOKEN is the fallback for one configured before that
+// name existed — see lib/secret.mjs). It has to clear that module's length
+// floor, which is why it is not the short GitHub stub above: a link encrypted
+// with a guessable secret is a password anyone can read.
+process.env.CENTS_SECRET = 'cents-root-secret-for-tests';
+const ROOT_SECRET = process.env.CENTS_SECRET;
 process.env.REPO_OWNER = 'stub-owner';
 process.env.REPO_NAME = 'stub-repo';
 process.env.REPO_BRANCH = 'main';
@@ -165,7 +172,7 @@ const admin = (payload, password = 'test-password-1234') => adminHandler(new Req
 const invited = await admin({ action: 'invite', profile: 'sam', enabledTabs: ['dashboard', 'add', 'insights'] });
 check('the owner can mint an invite for another account', invited.status === 200, `got ${invited.status} ${(await invited.text()).slice(0, 160)}`);
 const inviteBody = await (await admin({ action: 'invite', profile: 'sam', enabledTabs: ['dashboard', 'add', 'insights'] })).json();
-const redeemedInvite = redeemSetupToken('stub-token', inviteBody.token);
+const redeemedInvite = redeemSetupToken(ROOT_SECRET, inviteBody.token);
 check('the invite carries that account\u2019s own password',
   redeemedInvite.ok && redeemedInvite.password === 'sam-password-123456', JSON.stringify(redeemedInvite && { ok: redeemedInvite.ok }));
 check('and names the account it belongs to', redeemedInvite.profileId === 'sam', redeemedInvite.profileId);
@@ -182,6 +189,20 @@ const noEnvInvite = await admin({ action: 'invite', profile: 'kate' });
 const noEnvInviteText = await noEnvInvite.text();
 check('inviting an account with no credential is refused (500)', noEnvInvite.status === 500, `got ${noEnvInvite.status}`);
 check('and the refusal names the env var to set', /APP_PASSWORD_KATE/.test(noEnvInviteText), noEnvInviteText.slice(0, 160));
+
+// A deployment whose only candidate secret is a short PAT must refuse to mint an
+// invite rather than encrypt one with guessable key material — the link carries a
+// password, and the derivation is in this public repo.
+const savedRootSecret = process.env.CENTS_SECRET;
+const savedGithubStub = process.env.GITHUB_TOKEN;
+delete process.env.CENTS_SECRET;
+process.env.GITHUB_TOKEN = 'short';
+const noRoot = await admin({ action: 'invite', profile: 'sam' });
+const noRootText = await noRoot.text();
+check('no usable root secret: an invite is refused (500)', noRoot.status === 500, `got ${noRoot.status}`);
+check('and the refusal names CENTS_SECRET', /CENTS_SECRET/.test(noRootText), noRootText.slice(0, 160));
+process.env.CENTS_SECRET = savedRootSecret;
+process.env.GITHUB_TOKEN = savedGithubStub;
 
 // The policy write: it must land in that account's file, preserve every entry,
 // and change ONLY settings.enabledTabs.

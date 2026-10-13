@@ -1,0 +1,92 @@
+# Files in this repo that are NOT part of the published site.
+#
+# The assets directory is the repository root (the same directory Netlify
+# published), so this file is the whole answer to "what is downloadable" — it
+# replaces netlify.toml's nine 404 rules. On Cloudflare nothing here is uploaded
+# at all, which is a stronger statement than refusing it at the CDN: a path that
+# never reached the edge cannot be served by a rule that was later edited away.
+#
+# It is also, unlike the old redirect rules, one engine with one glob syntax
+# (gitignore's), so check-freshness.mjs reads it directly and fails the suite
+# when a published file is neither an app asset nor listed here — and when a
+# rule here would exclude something the app itself loads (sw.js's SHELL list).
+# The rules that used to be written one-per-path because Netlify's redirect
+# globbing could not express them — the docs, the README imagery, the two
+# harnesses, the spikes — are now single lines with the same effect.
+
+# Repo plumbing and local tooling.
+.git/
+.github/
+.gitignore
+.gitattributes
+.freebuff/
+.wrangler/
+.netlify/
+node_modules/
+
+# The Worker itself, its config, and the function sources it bundles. The
+# functions are compiled into worker.js by wrangler, so the sources are not
+# needed at the edge — and publishing them would hand out the sync proxy's
+# validation logic and every env var name (what netlify.toml's rules refused).
+netlify/
+worker.js
+wrangler.toml
+_headers
+.assetsignore
+
+# Local secrets for `wrangler dev` — the same file .gitignore refuses.
+.dev.vars
+
+# The guard suite: laptop-run, and its scripts read the deploy's own config.
+scripts/
+testing/
+
+# README imagery, and the docs themselves: they carry the install steps, the
+# secret names and the hosting model. A bare name matches at any depth, so
+# README.md covers vendor/README.md too — which had its own Netlify rule for
+# exactly this reason.
+screenshots/
+README.md
+CLAUDE.md
+package.json
+package-lock.json
+
+# The local dev server, the Lidl receipt spike, the Tesco gift-card spike and
+# the roster OCR harness: all run on a laptop, none has any business being
+# downloadable.
+serve.sh
+lidl-spike.py
+ocr-harness.html
+
+# The accessibility harness: it drives the real app in an iframe, so it is a
+# laptop tool like the roster harness above and never part of the deploy.
+a11y-harness.html
+
+# Data-shaped artefacts must never be served, even committed by accident: an
+# exported CSV or a pulled cloud copy is somebody's real spending, and the
+# assets directory would otherwise publish it at the same URL as the app.
+*.csv
+*.xlsx
+data*.json
+
+# The Lidl spike's output folder holds real credentials, a refresh token and
+# pulled receipts. It sits in the repo (so the .env template and otp.txt have
+# one obvious home) but must never reach the edge — this would otherwise serve
+# lidl.env at a predictable URL. Gitignored too, so it cannot be committed;
+# excluded here as the second, independent half.
+lidl-spike-out/
+
+# Python bytecode caches from the local scripts.
+__pycache__/
+*.pyc
+
+# Standard noise
+.DS_Store
+*.log
+*.tlog
+*.swp
+*.swo
+.idea/
+.vscode/
+.env
+.env.*

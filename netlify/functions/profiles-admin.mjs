@@ -1,5 +1,6 @@
 /* ============================================================
-   Netlify Function — profile administration, for the OWNER only.
+   Function — profile administration, for the OWNER only (served from
+   /.netlify/functions/profiles-admin by worker.js).
 
    The owner shares one deployed site with friends; each friend signs
    in on their own phone with their own account. Two things the owner
@@ -28,15 +29,19 @@
    constant-time compare, failure sleep and per-IP throttle as the
    other functions.
 
-   Env vars: GITHUB_TOKEN, REPO_OWNER/REPO_NAME/REPO_BRANCH/REPO_FILE,
-   APP_PASSWORD, plus APP_PASSWORD_<ID> for each account being invited
-   (the refusal names the exact variable to set).
+   Env vars: CENTS_SECRET (or GITHUB_TOKEN), plus REPO_OWNER/REPO_NAME/
+   REPO_BRANCH/REPO_FILE and APP_PASSWORD, plus APP_PASSWORD_<ID> for
+   each account being invited (the refusal names the exact variable to
+   set). The root secret is what encrypts the invite links, so it is the
+   only one of these that has to stay the same from one deploy to the
+   next — see lib/secret.mjs.
    ============================================================ */
 
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
 import { isProfileId, passwordEnvName, DEFAULT_PROFILE, profileAuthMessage } from './lib/profiles.mjs';
 import { issueSetupToken, SETUP_TOKEN_TTL_MS, cleanTabs } from './lib/tokens.mjs';
 import { ghConfig } from './lib/gh.mjs';
+import { rootSecret } from './lib/secret.mjs';
 import { readCloudDoc, writeCloudDoc, CloudError } from './lib/cloud.mjs';
 
 const failureThrottle = createFailureThrottle({ windowMs: 5 * 60 * 1000, max: 15 });
@@ -94,8 +99,9 @@ export default async (request, _context) => {
   if (!isProfileId(target)) return err('Body.profile must be a profile id (lowercase letters, digits, dashes)', 400, cors);
   const tabs = cleanTabs(body.enabledTabs);
 
-  const secret = process.env.GITHUB_TOKEN;
-  if (!secret) return err('GITHUB_TOKEN env var not set on the function', 500, cors);
+  const root = rootSecret();
+  if (!root.ok) return err(root.error, 500, cors);
+  const secret = root.secret;
 
   // The target account's own credential. No fallback to APP_PASSWORD: an
   // account without its own variable cannot sync, so it cannot be invited.

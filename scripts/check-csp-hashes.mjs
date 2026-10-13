@@ -4,24 +4,26 @@
  * index.html.
  *
  * index.html boots from five inline scripts (theme init, chrome sync, SW
- * register, boot-fail diagnostic, splash removal) and netlify.toml pins each
+ * register, boot-fail diagnostic, splash removal) and _headers pins each
  * one by SHA-256. Edit any of them without re-hashing and the browser silently
  * refuses to run it: the app still loads, but boot behaviour goes missing —
  * and it looks fine locally, because a static dev server sends no CSP at all.
  *
  * Run: node scripts/check-csp-hashes.mjs
- * Also wired into the Netlify build command (netlify.toml), where a mismatch
- * should stop the deploy rather than ship a half-dead boot.
+ * Also a step in scripts/run-guards.mjs, where a mismatch should stop a deploy
+ * rather than ship a half-dead boot.
  */
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-const toml = readFileSync(new URL('../netlify.toml', import.meta.url), 'utf8');
+const headers = readFileSync(new URL('../_headers', import.meta.url), 'utf8');
 
-const cspMatch = /Content-Security-Policy\s*=\s*"([^"]+)"/.exec(toml);
+// `_headers` syntax: the directive sits on its own line in the /* block, as
+// `Name: value` — not as netlify.toml's `Name = "value"`.
+const cspMatch = /^[ \t]*Content-Security-Policy:[ \t]*(.+)$/m.exec(headers);
 if (!cspMatch) {
-  console.error('check-csp-hashes: no Content-Security-Policy found in netlify.toml.');
+  console.error('check-csp-hashes: no Content-Security-Policy found in _headers.');
   process.exit(1);
 }
 const declared = new Set([...cspMatch[1].matchAll(/'sha256-([A-Za-z0-9+/=]+)'/g)].map(m => m[1]));

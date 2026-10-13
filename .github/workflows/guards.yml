@@ -1,13 +1,18 @@
 # The guard suite, run somewhere the failure is visible before it costs a deploy.
 #
-# Netlify parses netlify.toml BEFORE it runs the build command, so a config
-# mistake fails the deploy with every guard unreported — the `[[functions]]`
-# array form did that for seven commits and left production frozen on an older
-# build. No guard inside the build can catch that; this can, because it runs
-# before Netlify reads the file.
+# Why this exists: the platform reads the deploy's config BEFORE any of the
+# project's code runs, so a config mistake fails a deploy with every guard
+# unreported. On Netlify the `[[functions]]` array form did exactly that for
+# seven commits and left production frozen on an older build, and no gate inside
+# the build could say so. CI runs before anything is deployed, so it can.
 #
-# It runs exactly the command netlify.toml declares (see scripts/run-guards.mjs),
-# so CI and the deploy cannot drift apart.
+# It runs exactly the list in scripts/run-guards.mjs — the single source now that
+# the build step is gone — so CI and a deploy cannot drift apart. That includes
+# scripts/check-worker-config.mjs, which validates wrangler.toml and worker.js
+# statically: the entry point, the assets config, the KV binding, the routes, the
+# per-minute reminder cron, and that no secret has been pasted into a committed
+# file. No wrangler install is needed for any of it, which keeps this job
+# dependency-free like the rest of the repo.
 name: guards
 
 on:
@@ -21,13 +26,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Matches NODE_VERSION in netlify.toml, so the suite runs under the same
-      # runtime the deploy uses — the guards rely on ESM-by-syntax-detection for
-      # this repo's plain .js modules, which older Node parses as CommonJS.
+      # Node 22 is the floor, not a preference: the guards import this repo's
+      # plain .js modules (seed.js, tesco.js) and the repo has no package.json,
+      # so ESM-vs-CommonJS is decided by syntax detection — on by default from
+      # 22.7. Older Node parses them as CommonJS and dies with "Cannot use import
+      # statement outside a module", which looks like a broken guard.
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
       # No install step: the repo has no dependencies by design.
-      - name: Run the guards netlify.toml declares
+      - name: Run the guard suite
         run: node scripts/run-guards.mjs

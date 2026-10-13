@@ -1,7 +1,11 @@
 /* ============================================================
    lib/cloud.mjs — where a profile's cloud document actually lives.
 
-   Netlify Blobs holds it; GitHub holds a mirror of it.
+   The deployment's durable store holds it (Netlify Blobs there, a KV namespace
+   on Cloudflare — see lib/store.mjs and lib/kv-store.mjs); GitHub holds a mirror
+   of it, when a mirror is configured at all. It is optional and stays optional:
+   nothing below fails a save or a read because there is no token, only because
+   the store that COMMITS the save did not take it.
 
    Why the move: the GitHub Contents API was the only store, so every
    read and every save was a round trip to a code host that rate-limits,
@@ -22,7 +26,7 @@
 
    TWO MODES, decided by whether a durable store exists:
 
-     durable (on Netlify)   Blobs is the commit point. The mirror is
+     durable (a real deployment)  The durable store is the commit point. The mirror is
                             written on every save and its failure is
                             logged, never returned: a code host having a
                             bad day must not fail someone's save. Losing
@@ -37,19 +41,21 @@
                             module existed, which is also what keeps a
                             non-Netlify host and every local test honest.
 
-   Reads consult GitHub only for a profile that has no document in Blobs
-   yet, and that read seeds Blobs — which is what migrates an existing
-   deployment rather than emptying it. After that the mirror is written,
-   not read.
+   Reads consult GitHub only for a profile that has no document in the primary
+   store yet, and that read seeds the primary — which is what migrates an
+   existing deployment rather than emptying it. After that the mirror is
+   written, not read. With no mirror configured (no token) that lookup is
+   skipped outright: an absent mirror has no document to offer, and asking a
+   code host with no credential is an error, not a read.
 
-   Recovery: to fall back to the GitHub copy for one profile, delete its
-   Blobs key (cents-cloud / doc/<profile>.json); the next read seeds from
-   the mirror again.
+   Recovery: to fall back to the GitHub copy for one profile, delete its key in
+   the primary store (cents-cloud / doc/<profile>.json — under the KV prefix
+   cents:cents-cloud: on Cloudflare); the next read seeds from the mirror again.
    ============================================================ */
 
 import { createHash } from 'node:crypto';
 import { openStore } from './store.mjs';
-import { ghFetch, decodeBase64, encodeBase64, contentsPath } from './gh.mjs';
+import { ghFetch, decodeBase64, encodeBase64, contentsPath, mirrorConfigured } from './gh.mjs';
 import { cloudFileFor } from './profiles.mjs';
 
 // Exported for reminders-send, which reads a profile's document from the same
@@ -175,6 +181,10 @@ async function readRecord(store, key) {
 /** Read the GitHub copy. `ghSha` is not part of the document — the writer
  *  needs it to update the mirror instead of colliding with it. */
 async function readGithubDoc(profileId, config) {
+  // No mirror, nothing to read from it. Returning an absent document here (not
+  // an error) is what lets a deployment without a token answer honestly: the
+  // profile simply has no cloud copy yet.
+  if (!mirrorConfigured()) return { exists: false };
   const file = cloudFileFor(profileId, config.file);
   const r = await ghFetch(contentsPath({ ...config, file }));
   if (r.status === 404) return { exists: false };
@@ -207,6 +217,7 @@ async function readGithubDoc(profileId, config) {
  * mirror conflict must never become a failed save for the user.
  */
 async function mirrorToGithub(profileId, config, json, { sha, message, branch }) {
+  if (!mirrorConfigured()) return null;
   const file = cloudFileFor(profileId, config.file);
   const path = `/repos/${config.owner}/${config.repo}/contents/${encodeURIComponent(file)}`;
   const put = s => ghFetch(path, {

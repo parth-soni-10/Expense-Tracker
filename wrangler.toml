@@ -1,0 +1,99 @@
+# Cloudflare Workers config for Cents.
+#
+# The app is served from the repository root (the same directory Netlify
+# published), and the six functions under netlify/functions/ are bundled into
+# worker.js rather than copied — see its header for what the Worker wires up
+# (the KV store, the /.netlify/functions/* routes, the environment, the cron).
+#
+#   npx wrangler dev            → local test on http://localhost:8787
+#   npx wrangler deploy         → publish to cents-app.<your-subdomain>.workers.dev
+#   npx wrangler tail           → watch requests and the reminder tick
+#   npx wrangler secret bulk .dev.vars   → the secrets (see below)
+#
+# `run_worker_first` is scoped to the function paths only, so ordinary page and
+# asset requests never invoke the Worker.
+
+name = "cents-app"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# The app is served from the workers.dev hostname; the versioned Preview URLs
+# are off. They would serve this same Worker — the sync proxy, the profiles
+# admin and the reminder endpoints included, against the one production KV —
+# from a second hostname nobody asked for, on an app whose cloud copy is
+# somebody's real spending.
+workers_dev = true
+preview_urls = false
+
+# Everything the functions use from Node: node:crypto (createECDH / createSign /
+# createCipheriv for the VAPID pair, the payload encryption and the recovery
+# tokens), Buffer, and the process.env object the config loop writes into.
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "."
+binding = "ASSETS"
+run_worker_first = ["/.netlify/functions/*"]
+
+# HTML handling, which this app had written out at length before the move
+# because it is the difference between an app and a blank page.
+#
+#   not_found_handling = "none"   an unknown path is a 404, never index.html with
+#                                 a 200. The app uses hash routing, so it needs
+#                                 no server-side deep-link fallback, and a greedy
+#                                 rewrite is the classic blank-page failure: an
+#                                 asset request answered with the app's HTML.
+#
+# `html_handling` is deliberately LEFT AT ITS DEFAULT. Setting it to "none" looks
+# like the tidier choice — /index.html is then served as the file it is, instead
+# of the default's 307 to "/" — and it was deployed here before it was measured:
+# it ALSO drops the "/" → index.html mapping, so the app's own address answered
+# 404 (empty body, md5 d41d8cd98f00). The 307 is harmless by comparison: /index.html
+# is in sw.js's SHELL list, cache.addAll follows the redirect and stores the same
+# bytes under the same key, and the app's own routes are hashes — nothing
+# navigates to /index.html.
+not_found_handling = "none"
+
+# The durable store. This was Netlify Blobs — the primary for every profile's
+# cloud document and for the reminder push records — and it is a KV namespace
+# now. netlify/functions/lib/store.mjs has not changed: the Worker hands it this
+# namespace through the injection point that file documents (lib/kv-store.mjs),
+# so every caller still just calls openStore(name).
+[[kv_namespaces]]
+binding = "CENTS_KV"
+id = "b07228078d274906ab86bbb9a7cd07f4"
+
+# The GitHub mirror's coordinates. These are NOT secrets (they name a private
+# repo whose contents only a token can read), and they are what sync.mjs and the
+# cloud store use to mirror a profile's document into git — data.json for the
+# default profile, data-<id>.json for any other. The credential is a secret
+# (GITHUB_TOKEN below) and without it the mirror is simply inactive: the cloud
+# documents commit to KV, which is the same "one durable primary" model the
+# app ran on with Blobs, and a mirror failure has never been allowed to fail a
+# save (lib/cloud.mjs). Set the token and the mirror turns itself on, including
+# the one-time read that seeds KV from an existing repository.
+[vars]
+REPO_OWNER = "parth-soni-10"
+REPO_NAME = "cents-data"
+REPO_BRANCH = "main"
+REPO_FILE = "data.json"
+
+# The reminder tick. Netlify's per-minute schedule on reminders-send is this
+# cron, and the pairing that made it correct still holds: the tick is one minute
+# and the run's look-back window (lib/reminder-run.mjs's WINDOW_MINUTES) is
+# wider than that, so one late invocation cannot skip a day. Each subscription
+# carries its own IANA zone and HH:MM, so a reminder lands at the hour the user
+# chose rather than up to a period late.
+[triggers]
+crons = ["* * * * *"]
+
+# Secrets — never in this file, and never in the repo:
+#
+#   npx wrangler secret put CENTS_SECRET        (or GITHUB_TOKEN)
+#   npx wrangler secret put APP_PASSWORD        (and APP_PASSWORD_<ID> per account)
+#   npx wrangler secret put GITHUB_TOKEN        (only needed for the mirror)
+#   npx wrangler secret put VAPID_PUBLIC_KEY    (a matching P-256 pair; without
+#   npx wrangler secret put VAPID_PRIVATE_KEY    them the pair is derived from
+#                                                CENTS_SECRET instead)
+#
+# For local `wrangler dev`, the same names go in .dev.vars (gitignored).

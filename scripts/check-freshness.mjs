@@ -7,11 +7,11 @@
  * Five parts, each one a thing that can regress silently:
  *
  *   1. Every app asset revalidates. Each app-loaded file and the root path "/"
- *      must be matched by a [[headers]] rule that sets a revalidating
- *      Cache-Control. A path with no such rule inherits Netlify's platform
- *      default instead, and a long default there would serve the previous
- *      deploy for as long as the browser keeps it. That is invisible in the
- *      repo and invisible locally, where no such header is ever sent.
+ *      must be matched by a `_headers` rule that sets a revalidating
+ *      Cache-Control. A path with no such rule inherits the platform default
+ *      instead, and a long default there would serve the previous deploy for as
+ *      long as the browser keeps it. That is invisible in the repo and invisible
+ *      locally, where no such header is ever sent.
  *   2. sw.js stays network-first. The worker must answer with fetch(...) using
  *      cache: 'no-store', and use Cache Storage only as the offline fallback.
  *      A cache-first handler hands an online user the previous deploy — the
@@ -21,20 +21,25 @@
  *      its own cached copy of the script for up to 24 hours, holding back a
  *      new worker — and with it the new cache namespace and the shell warm —
  *      for a day after a deploy.
- *   4. No 404 rule can black-hole an app file. `publish = "."` serves the whole
- *      repo, so [[redirects]] 404 the non-app surface (guard scripts, function
- *      sources, docs). Those rules need force = true to win against the real
- *      file, which also means a too-broad pattern would break the app at the
- *      CDN and nowhere else.
+ *   4. No ignore rule can take the app down. The deploy's shape is now the
+ *      INVERSE of the old one: the assets directory is the repository root and
+ *      `.assetsignore` decides what is uploaded at all, so a too-broad rule does
+ *      not merely expose a file, it deletes one from the deploy. A rule that
+ *      matches an app asset, or anything sw.js's SHELL list loads offline, is
+ *      therefore a broken app at the edge and nowhere else. (This replaces the
+ *      old part 4, which watched the same failure through Netlify's 404 rules:
+ *      back then a greedy `from = "/*"` 404'd the app; now a greedy ignore rule
+ *      removes it.)
  *   5. Everything that ships is classified. Part 1 asks whether an app asset
  *      revalidates; this asks whether a file that is NOT an app asset is meant
  *      to be downloadable at all. Nothing did — README imagery sat on the live
  *      site with no guard reporting it — and the next artefact to land in the
  *      repo (an exported CSV, a pulled cloud copy, another screenshot) would
- *      have shipped the same way, silently.
+ *      have shipped the same way, silently. On this host the answer is
+ *      `.assetsignore`: a non-app file must be listed there, or it is uploaded.
  *
  * Run: node scripts/check-freshness.mjs
- * Also wired into the Netlify build command (netlify.toml).
+ * Also a step in scripts/run-guards.mjs.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -42,7 +47,7 @@ import { join, extname, relative, sep } from 'node:path';
 
 const root = new URL('../', import.meta.url);
 const read = p => readFileSync(new URL(p, root), 'utf8');
-const toml = read('netlify.toml');
+const headersFile = read('_headers');
 const sw = read('sw.js');
 const html = read('index.html');
 
@@ -61,53 +66,69 @@ const swCode = stripComments(sw);
 const htmlCode = stripComments(html);
 
 // ---- 1. every app asset revalidates ---------------------------------------
-// The [[headers]] blocks, each `for` pattern with the Cache-Control inside its
-// [headers.values] table (absent on the catch-all rule, which is deliberate:
-// a specific rule owns the value for the paths it covers).
-const rules = toml
-  .split(/^\[\[headers\]\]\s*$/m)
-  .slice(1)
-  .map(block => ({
-    pattern: /^\s*for\s*=\s*"([^"]+)"/m.exec(block)?.[1] || '',
-    cacheControl: /^\s*Cache-Control\s*=\s*"([^"]+)"/m.exec(block)?.[1] || '',
-  }))
-  .filter(r => r.pattern);
+// `_headers` blocks: a path at column 0, then its indented `Name: value` lines,
+// then optional `#` comments (which the file uses between header lines).
+// Cloudflare's `*` in a path spans slashes — verified against a deployed site,
+// where a `/*.png` rule answers for /icons/icon-192.png — so the glob below is
+// the same one netlify.toml's `for =` patterns used.
+const rules = [];
+for (const block of headersFile.split(/^(?=[^\s#])/m).slice(1)) {
+  const lines = block.split('\n');
+  const pattern = lines[0].trim();
+  if (!pattern || pattern.startsWith('#')) continue;
+  let cacheControl = '';
+  for (const line of lines.slice(1)) {
+    const m = /^[ \t]+([A-Za-z-]+)\s*:\s*(.+?)\s*$/.exec(line);
+    if (m && m[1].toLowerCase() === 'cache-control') cacheControl = m[2];
+  }
+  rules.push({ pattern, cacheControl });
+}
+if (!rules.length) fail('_headers declares no rules — every asset would be served with the platform default cache policy.');
 
-// Netlify's `for` patterns are globs and `*` spans slashes — the live site
-// settles it: `/*.js` is what puts no-cache on /vendor/sweetalert2.min.js.
 const escapeRx = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const matches = (pattern, path) =>
   pattern === path || new RegExp(`^${pattern.split('*').map(escapeRx).join('.*')}$`).test(path);
 const revalidates = cc => /no-cache|no-store|max-age=0/i.test(cc);
 
-// What actually ships: `publish = "."` publishes the checkout, so a file is
-// public unless something says otherwise. Two things can say so, and both are
-// read here rather than restated, so this cannot drift from the deploy:
-// .netlifyignore keeps a file off the CDN entirely, a [[redirects]] 404 rule
-// refuses it at the CDN.
+// What actually ships: the assets directory is the repository root, so a file is
+// public unless `.assetsignore` says otherwise — and unlike the old 404 rules,
+// saying otherwise now means the file is not uploaded at all.
 const APP_EXT = new Set(['.js', '.css', '.html', '.json', '.png', '.woff2', '.wasm', '.gz']);
 // Directories whose files the app never loads: README imagery, the guard
-// scripts, the function sources. Publishing them is `publish = "."`'s doing
-// like everything else, and part 5 requires each to be 404'd — but none of them
-// is an app asset for part 1 to demand a cache rule for.
+// scripts, the function sources. Not uploading them is `.assetsignore`'s doing
+// like everything else, and part 5 requires each to be listed there — but none
+// of them is an app asset for part 1 to demand a cache rule for.
 const NON_APP_DIRS = new Set(['screenshots', 'scripts', 'netlify', 'testing', 'node_modules']);
-// Netlify never serves its own config file, so it needs no rule of its own.
-const NEVER_PUBLISHED = new Set(['netlify.toml']);
-const ignoreRules = read('.netlifyignore').split('\n')
+
+// `.assetsignore` is read with gitignore semantics — which is what Cloudflare
+// documents for it — narrowed to the shapes this file uses: comments, blank
+// lines, a trailing `/` for a directory, a leading `/` (or any `/`) meaning the
+// pattern is rooted at the repo, and a bare name matching at any depth.
+const ignoreRules = read('.assetsignore').split('\n')
   .map(line => line.trim())
   .filter(line => line && !line.startsWith('#'))
   .map(pattern => {
-    // The two shapes the ignore file uses: a bare name or glob matches at any
-    // depth (`*.log`), a pattern carrying a slash is rooted at the repo
-    // (`node_modules/`). Gitignore semantics, narrowed to what is used here.
     const dirOnly = pattern.endsWith('/');
-    const body = dirOnly ? pattern.slice(0, -1) : pattern;
+    const body = (dirOnly ? pattern.slice(0, -1) : pattern).replace(/^\//, '');
     const rx = new RegExp(`^${body.split('*').map(escapeRx).join('[^/]*')}$`);
-    return path => (dirOnly
-      ? path === body || path.startsWith(`${body}/`)
-      : (body.includes('/') ? rx.test(path) : path.split('/').some(part => rx.test(part))));
+    const rooted = pattern.startsWith('/') || body.includes('/');
+    return {
+      pattern,
+      test: path => {
+        const parts = path.split('/');
+        if (dirOnly) {
+          // A directory rule matches a file under it, at any depth for a bare
+          // name (`node_modules/`) and from the root when it carries a slash.
+          return rooted
+            ? path === body || path.startsWith(`${body}/`)
+            : parts.some(part => rx.test(part));
+        }
+        if (rooted) return rx.test(path) || path.startsWith(`${body}/`);
+        return parts.some(part => rx.test(part));
+      },
+    };
   });
-const ignoredByNetlify = path => ignoreRules.some(rule => rule(path));
+const ignoredByAssets = path => ignoreRules.find(rule => rule.test(path))?.pattern || null;
 
 const assets = new Set(['/']); // app-loaded files, asserted by part 1
 const ships = new Set();       // everything the deploy can serve, asserted by part 5
@@ -128,7 +149,7 @@ const rootDir = fileURLToPath(root);
     const full = join(dir, name);
     if (statSync(full).isDirectory()) { walk(full); continue; }
     const rel = relative(rootDir, full).split(sep).join('/');
-    if (NEVER_PUBLISHED.has(rel) || ignoredByNetlify(rel)) continue;
+    if (ignoredByAssets(rel)) continue;
     const path = `/${rel}`;
     ships.add(path);
     if (APP_EXT.has(extname(name)) && !NON_APP_DIRS.has(rel.split('/')[0])) assets.add(path);
@@ -138,8 +159,8 @@ const rootDir = fileURLToPath(root);
 for (const path of assets) {
   const matching = rules.filter(r => matches(r.pattern, path));
   if (!matching.some(r => revalidates(r.cacheControl))) {
-    fail(`${path} ships but no [[headers]] rule that matches it sets a revalidating ` +
-      `Cache-Control — it would inherit Netlify's platform default ` +
+    fail(`${path} ships but no _headers rule that matches it sets a revalidating ` +
+      `Cache-Control — it would inherit the platform default ` +
       `(matched: ${matching.map(r => `"${r.pattern}" → ${r.cacheControl || 'no Cache-Control'}`).join(', ') || 'nothing'}).`);
   }
 }
@@ -233,64 +254,36 @@ if (!/serviceWorker\.register\(/.test(htmlCode)) {
   }
 }
 
-// ---- 4. a 404 rule can never black-hole an app file -----------------------
-const notFoundRules = toml
-  .split(/^\[\[redirects\]\]\s*$/m)
-  .slice(1)
-  .map(block => ({
-    pattern: /^\s*from\s*=\s*"([^"]+)"/m.exec(block)?.[1] || '',
-    status: Number(/^\s*status\s*=\s*(\d+)/m.exec(block)?.[1] || 200),
-  }))
-  .filter(r => r.pattern);
-
-if (!notFoundRules.some(r => r.status === 404)) {
-  fail('netlify.toml 404s no non-app path, but `publish = "."` serves the whole repo — the guard scripts, the function sources and the docs would all be downloadable from the live site.');
-}
-// A [[redirects]] `from` is a DIFFERENT engine from a [[headers]] `for`: an
-// asterisk is valid only as a trailing splat ("It's not possible to use an
-// asterisk as a wildcard in the middle of a path"), so `from = "/*.md"`
-// matches nothing at all. `matches` above models the headers glob and cannot
-// see that — which is how a `/*.md` rule shipped, passed this file, and left
-// README.md, CLAUDE.md and vendor/README.md downloadable with a 200.
-const redirectMatches = (pattern, path) =>
-  pattern.endsWith('*') ? path.startsWith(pattern.slice(0, -1)) : pattern === path;
-
-for (const r of notFoundRules) {
-  if (r.pattern.includes('*') && !r.pattern.endsWith('*')) {
-    fail(`netlify.toml 404s "${r.pattern}", which Netlify can never match: a redirect path takes an asterisk ` +
-      'only as a trailing splat, so a mid-path one makes the rule a silent no-op. Write one rule per path.');
+// ---- 4. an ignore rule can never take an app file off the deploy ----------
+// The app's own manifest of what it loads offline, which is the strongest
+// statement in the repo about which files must be reachable.
+const shellEntries = [...(/const SHELL = \[([\s\S]*?)\];/.exec(swCode)?.[1] || '')
+  .matchAll(/'([^']+)'/g)].map(m => m[1]);
+for (const path of assets) {
+  const rule = ignoredByAssets(path.replace(/^\//, ''));
+  if (rule) {
+    fail(`.assetsignore rule "${rule}" matches the app asset ${path} — it would not be uploaded, so the ` +
+      'app would lose a file it loads, at the edge and nowhere else.');
   }
-  for (const path of assets) {
-    if (matches(r.pattern, path)) {
-      fail(`netlify.toml 404s "${r.pattern}", which matches the app asset ${path} — with force it wins over the real file, so the app would break in production only.`);
-    }
+}
+for (const entry of shellEntries) {
+  const rule = ignoredByAssets(entry.replace(/^\//, ''));
+  if (rule) {
+    fail(`${entry} is in sw.js's SHELL list but .assetsignore rule "${rule}" excludes it — the deploy would ` +
+      'ship an app that cannot warm its own offline cache, and nothing else would say why.');
   }
 }
 
 // ---- 5. everything that ships is classified -------------------------------
 // Part 1 asks whether an app asset revalidates. This asks the other half: is a
-// file that is not an app asset meant to be downloadable at all? Nothing did,
-// and the rules are hand-written — so README imagery sat on the live site with
-// no guard reporting it. Docs belong here too: they carry the install steps and
-// every env var name.
-const unclassified = [...ships].filter(path => !assets.has(path)
-  && !notFoundRules.some(r => r.status === 404 && redirectMatches(r.pattern, path)));
+// file that is not an app asset meant to be downloadable at all? Nothing was,
+// and the ignore list is hand-written — so README imagery sat on the live site
+// with no guard reporting it. Docs belong here too: they carry the install steps
+// and every secret name.
+const unclassified = [...ships].filter(path => !assets.has(path));
 if (unclassified.length) {
-  fail(`${unclassified.join(', ')} would be downloadable from the live site: \`publish = "."\` serves the whole ` +
-    'repo, no [[redirects]] rule 404s it, and .netlifyignore does not keep it off the CDN. Add one 404 rule per ' +
-    'path (a glob cannot match Netlify), or list it in .netlifyignore if it must never ship.');
-}
-// The other direction, now that .netlifyignore is part of this guard's
-// arithmetic: an ignore rule that matches something the app itself loads does
-// not protect anything — it deletes an asset from the deploy floor. The
-// worker's SHELL list is the app's own manifest of those files, so that is what
-// the ignore rules are checked against.
-const shellEntries = [...(/const SHELL = \[([\s\S]*?)\];/.exec(swCode)?.[1] || '')
-  .matchAll(/'([^']+)'/g)].map(m => m[1]);
-const ignoredAssets = shellEntries.filter(p => ignoredByNetlify(p.replace(/^\//, '')));
-if (ignoredAssets.length) {
-  fail(`${ignoredAssets.join(', ')} is in sw.js's SHELL list but .netlifyignore excludes it — the deploy would ship an ` +
-    'app that cannot warm its own offline cache, and nothing else would say why.');
+  fail(`${unclassified.join(', ')} would be downloadable from the live site: the assets directory is the ` +
+    'whole repository, so a file that is not part of the app belongs in .assetsignore.');
 }
 
 if (problems.length) {
@@ -298,7 +291,7 @@ if (problems.length) {
   for (const p of problems) console.error('  ' + p);
   process.exit(1);
 }
-console.log(`check-freshness: OK — ${assets.size} published app asset(s), each revalidating; ` +
-  `${notFoundRules.length} non-app path(s) 404'd, none of them an app file; ` +
-  `all ${ships.size} published file(s) classified; ` +
-  'the worker is network-first and its script is never served from cache.');
+console.log(`check-freshness: OK — ${assets.size} published app asset(s), each revalidating; `
+  + `${ignoreRules.length} ignore rule(s), none of them matching an app file; `
+  + `all ${ships.size} published file(s) classified; `
+  + 'the worker is network-first and its script is never served from cache.');

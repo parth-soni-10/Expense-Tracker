@@ -20,9 +20,9 @@
  *      problems" over a screen full of duplicate aria-labels — and aria-label is
  *      an ADDRESSED IDENTITY in this app (restoreFocusedField looks fields up by
  *      it), so two controls sharing one is a bug that reaches the wrong field.
- *   4. The harness stays dev-only: 404'd at the CDN and listed in .netlifyignore.
- *      It loads the whole app in an iframe and drives it; it is not a page to
- *      serve to a stranger.
+ *   4. The harness stays dev-only: listed in .assetsignore, which on this host
+ *      means it is never uploaded at all. It loads the whole app in an iframe
+ *      and drives it; it is not a page to serve to a stranger.
  *   5. The one defect this guard can see statically is the one that actually
  *      shipped: an ICON-ONLY monthNav button with no aria-label. Its label is an
  *      svg span with aria-hidden, so the button reads as "button, dimmed" and
@@ -41,7 +41,7 @@
  *
  *   node scripts/check-a11y.mjs
  *
- * Also wired as a predeploy build step in netlify.toml.
+ * Also a step in scripts/run-guards.mjs.
  */
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -62,7 +62,7 @@ if (!existsSync(join(root, HARNESS))) {
 const harness = read(HARNESS);
 const app = read('app.js');
 const seed = read('seed.js');
-const toml = read('netlify.toml');
+const ignore = read('.assetsignore');
 
 // ---- 1./2. what the harness drives, against what the app has
 const stepsBlock = harness.match(/const STEPS = \[([\s\S]*?)\n\];/);
@@ -138,12 +138,12 @@ if (!/window\.__a11yReport\s*=/.test(harness) || !/window\.__a11yProgress\s*=/.t
 }
 
 // ---- 4. a dev-only page stays dev-only
-const redirect = toml.match(/from = "\/a11y-harness\.html"([\s\S]{0,200})/);
-if (!redirect || !/status = 404/.test(redirect[1]) || !/force = true/.test(redirect[1])) {
-  fail('netlify.toml no longer 404s /a11y-harness.html (needs status = 404 AND force = true) — the page that loads and drives the whole app would ship to the live site.');
-}
-if (!/^a11y-harness\.html\s*$/m.test(read('.netlifyignore'))) {
-  fail('.netlifyignore does not list a11y-harness.html — the dev page would be uploaded with the site.');
+// One mechanism now instead of two. Netlify needed both a 404 rule at the CDN
+// and an ignore entry, because `publish = "."` uploaded the file and only the
+// rule refused it; the assets directory uploads what .assetsignore does not
+// exclude, so the list IS the control.
+if (!/^a11y-harness\.html\s*$/m.test(ignore)) {
+  fail('.assetsignore does not list a11y-harness.html — the dev page would be uploaded with the site, so the page that loads and drives the whole app would be served to anyone who guessed its name.');
 }
 
 // ---- 5. the icon-only control that shipped unnamed

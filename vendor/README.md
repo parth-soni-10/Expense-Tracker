@@ -51,7 +51,7 @@ wraps the worker in a blob URL, and a relative URL cannot be resolved against
 `blob:` (`Failed to parse URL from tesseract-core-….wasm`). Both settings are
 load-bearing: change one and the scan stops finding its core.
 
-`netlify.toml` also pins `Content-Type: application/wasm` for `*.wasm`, which
+`_headers` also pins `Content-Type: application/wasm` for `*.wasm`, which
 the streaming compiler requires — a mislabelled response is rejected outright.
 
 ## Load strategy (kept deliberately light)

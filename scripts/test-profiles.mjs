@@ -15,7 +15,7 @@
  *     profile's data to be read back as the next profile's.
  *
  * Run: node scripts/test-profiles.mjs
- * Also wired into the Netlify build command (netlify.toml).
+ * Also a step in scripts/run-guards.mjs.
  */
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 
