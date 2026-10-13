@@ -70,7 +70,7 @@ The setting is stored in *that person's own document*, which means it travels to
 
 ## Self-hosting notes (Cloudflare Workers)
 
-The whole site is one Worker: the static app, the functions that answer the `/.netlify/functions/*` paths the browser already calls, a KV namespace, and a per-minute cron trigger. `npx wrangler deploy` publishes it. Non-secret coordinates live in `wrangler.toml`'s `[vars]`; everything below is a secret and goes in with `npx wrangler secret put <NAME>` (for local `wrangler dev`, the same names in `.dev.vars`).
+The whole site is one Worker: the static app, the functions that answer the `/.netlify/functions/*` paths the browser already calls, a KV namespace, and a per-minute cron trigger. A push to `main` publishes it — the repo is connected to this Worker in **Cloudflare Workers Builds**, which runs `npx wrangler deploy` on every push — and `npx wrangler deploy` on your own machine publishes exactly the same thing. Non-secret coordinates live in `wrangler.toml`'s `[vars]`; everything below is a secret and goes in with `npx wrangler secret put <NAME>` (for local `wrangler dev`, the same names in `.dev.vars`).
 
 The optional sync and push features need:
 
