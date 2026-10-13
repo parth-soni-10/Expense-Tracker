@@ -9,7 +9,7 @@
  *         deploy already has (the fallback that makes push work on a site whose
  *         environment was never configured, and the reason a swapped pair can
  *         no longer be served as if it were public)
- *   1-11. browser subscribe → server store → scheduled dispatch → delivery
+ *   1-11. browser subscribe → server store → dispatch → delivery
  *         to a FAKE local push service → dead-subscription pruning →
  *         unsubscribe → two profiles on one device
  *   7c. a device that has only just subscribed: 404/410 on a record seconds old
@@ -32,8 +32,9 @@
  *         sending hands the day back rather than silencing the net forever
  *   19-21. the bills hint the sender appends, the read path behind it, and the
  *         probe that answers "is my reminder still deliverable?"
- *   22. the sender's own heartbeat, and the HTTP trigger (reminders-tick) that
- *         runs the same job when the platform's cron stops firing
+ *   22. the run's own heartbeat, and the HTTP trigger (reminders-tick) that is
+ *         now the ONLY entry point to the job — the per-minute cron and its
+ *         scheduled function were removed on 13 Oct 2026
  *
  *   node scripts/test-reminder-push.mjs
  *
@@ -52,7 +53,7 @@
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 
 // ---------- verifying the VAPID JWT, the way a push service does ----------
 // The harness used to record the Authorization header and assert the `k` inside
@@ -221,12 +222,18 @@ process.env.VAPID_PRIVATE_KEY = keys.privateKey;
 // and letting the fallback resolve in-memory means everything in this
 // process shares one map. (No cross-run leakage: process exits at end.)
 const { default: pushHandler } = await import('../netlify/functions/reminders-push.mjs');
-const sendModule = await import('../netlify/functions/reminders-send.mjs');
-const sendHandler = sendModule.default;
 const tickModule = await import('../netlify/functions/reminders-tick.mjs');
 const tickHandler = tickModule.default;
 const runModule = await import('../netlify/functions/lib/reminder-run.mjs');
 const { getStore, openStore } = await import('../netlify/functions/lib/store.mjs');
+
+// Nothing runs the reminder job on its own clock any more: the per-minute cron
+// and the scheduled function it woke (reminders-send.mjs) were removed on
+// 13 Oct 2026, and the job is reached over HTTP (reminders-tick) instead. This is
+// that same run — literally the call the deleted function made, store and all —
+// so every delivery, pruning, clock, hint and heartbeat check below still drives
+// the shipped code rather than a copy of it kept alive for the harness.
+const sendHandler = async () => runModule.runReminderTick({ store: await getStore() });
 
 function call(handler, method, body, extraHeaders = {}) {
   const req = new Request('http://localhost/.netlify/functions/reminders-push', {
@@ -525,9 +532,9 @@ check('dead-subscription-pruned', !pruneKeys.includes('push:prune-test') && send
 // longer signs with, most often, which no later run will heal) and the service
 // could not be reached (no status — transient, and the next run may deliver it).
 // The app has to say which, because a phone that shows nothing is the symptom of
-// both: the test push names the status, and the scheduled run's one-line summary
-// counts what was refused — `sent=0` on its own was the same line for a push
-// service that refused everything and one that had nothing to send.
+// both: the test push names the status, and the run's own summary counts what was
+// refused — `sent: 0` on its own was the same answer for a push service that
+// refused everything and one that had nothing to send.
 await store.setJSON('push:refuse-test', {
   time: utcNow, zone: 'UTC', lastFiredDate: '1999-01-01',
   subscription: { endpoint: `http://localhost:${pushPort}/fake-push`, keys: subscription.keys },
@@ -537,17 +544,15 @@ const refusedTest = await call(pushHandler, 'PUT', { endpoint: subscription.endp
 const refusedBody = await text(refusedTest);
 check('a refused test push names the status the push service gave',
   refusedTest.status === 502 && refusedBody.includes('(HTTP 503)'), `${refusedTest.status} ${refusedBody}`);
-const runLogs = [];
-const realLog = console.log;
-const captureRun = async () => {
-  runLogs.length = 0;
-  console.log = (...args) => { runLogs.push(args.join(' ')); };
-  try { await sendHandler(null, {}); } finally { console.log = realLog; }
-  return runLogs.join(' | ');
-};
+// The deleted scheduled sender used to print its one-line summary
+// (`sent=… rejected=…`) and these checks scraped that text. The counts live in
+// the run's return value — the same object reminders-tick hands the app — so
+// they are read from there now: the same numbers, with nothing that only the
+// removed file could produce.
+const captureRun = async () => await sendHandler();
 const refusedRun = await captureRun();
-check('the scheduled run counts a service that refused',
-  /sent=0\b/.test(refusedRun) && /rejected=1\b/.test(refusedRun), refusedRun);
+check('the run counts a service that refused',
+  refusedRun.sent === 0 && refusedRun.rejected === 1, JSON.stringify(refusedRun));
 // An endpoint with nothing behind it is the other state — the connection is
 // refused, so there is no status and nothing to count as refused; the record  // stays due precisely so the next run can try again. A port that was just
 // closed is the honest way to reproduce that (destroying the socket on the
@@ -567,7 +572,7 @@ await store.setJSON('push:unreachable-test', {
 });
 const unreachableRun = await captureRun();
 check('a service it could not reach is transient, not refused',
-  /sent=0\b/.test(unreachableRun) && /rejected=0\b/.test(unreachableRun), unreachableRun);
+  unreachableRun.sent === 0 && unreachableRun.rejected === 0, JSON.stringify(unreachableRun));
 // Leave the store as section 8 expects to find it.
 await store.del('push:unreachable-test');
 
@@ -650,15 +655,15 @@ check('an established subscription is still pruned on 410',
   established.status === 410 && (await store.list('push:')).length === 0, `${established.status}`);
 unregistered = 0;
 
-// (e) the scheduled run must not prune one either, and must say what it met —
-// `sent=0` on its own is the same line for "nothing was due" and "the device was
-// not registered yet".
+// (e) the run must not prune one either, and must say what it met — a bare
+// `sent: 0` is the same answer for "nothing was due" and "the device was not
+// registered yet".
 await call(pushHandler, 'POST', { subscription, time: utcNow, zone: 'UTC' });
 unregistered = Infinity;
 received.length = 0;
 const warmRun = await captureRun();
-check('the scheduled run does not prune a warming subscription',
-  /warming=1\b/.test(warmRun) && /pruned=0\b/.test(warmRun) && (await store.list('push:')).length === 1, warmRun);
+check('the run does not prune a warming subscription',
+  warmRun.warming === 1 && warmRun.pruned === 0 && (await store.list('push:')).length === 1, JSON.stringify(warmRun));
 unregistered = 0;
 for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k); // section 8 expects an empty store
 
@@ -2244,7 +2249,7 @@ delete process.env.GITHUB_TOKEN;
 // must not announce a bill a day early), and it never throws — a hint is not
 // worth the delivery it rides on.
 {
-  const { billsDueHint } = sendModule;
+  const { billsDueHint } = runModule;
   const dayAfter = (ymdStr, days) => new Date(new Date(`${ymdStr}T00:00:00Z`).getTime() + days * 86400000).toISOString().slice(0, 10);
   const todayStr = ymd('UTC');
   const tomorrowStr = dayAfter(todayStr, 1);
@@ -2271,16 +2276,17 @@ delete process.env.GITHUB_TOKEN;
   })());
 
   // ---- the read path: one store, one key, the record's own date ----
-  // The job lives in ONE place, and both entry points run THAT: the scheduled
-  // function is the platform's clock, the HTTP trigger is the one a user can
-  // point anywhere else when that clock stops. A second copy of the loop would
-  // be a second answer to "was this device already sent to today".
-  const senderSource = readFileSync(new URL('../netlify/functions/reminders-send.mjs', import.meta.url), 'utf8');
+  // The job lives in ONE place. It used to be reached twice — by the platform's
+  // scheduled function and by the HTTP trigger — and the cron half was removed on
+  // 13 Oct 2026, so what matters now is that the remaining entry point runs THAT
+  // job rather than keeping a copy: a second copy of the loop would be a second
+  // answer to "was this device already sent to today".
   const tickSource = readFileSync(new URL('../netlify/functions/reminders-tick.mjs', import.meta.url), 'utf8');
   const runSource = readFileSync(new URL('../netlify/functions/lib/reminder-run.mjs', import.meta.url), 'utf8');
-  check('both entry points run the same job rather than keeping a copy each',
-    /await runReminderTick\(\{ store \}\)/.test(senderSource) && /await runReminderTick\(\{ store \}\)/.test(tickSource)
-      && !/for \(const key of keys\)/.test(senderSource) && !/for \(const key of keys\)/.test(tickSource));
+  check('the trigger runs the shared job rather than keeping a copy of it',
+    /await runReminderTick\(\{ store \}\)/.test(tickSource) && !/for \(const key of keys\)/.test(tickSource));
+  check('and no scheduled copy of it came back',
+    !existsSync(new URL('../netlify/functions/reminders-send.mjs', import.meta.url)));
   check('the run reads the document through cloud.mjs, not a copy',
     /import \{ CLOUD_STORE, keyFor \} from '\.\/cloud\.mjs'/.test(runSource)
       && !/openStore\('cents-cloud'\)/.test(runSource));
@@ -2375,13 +2381,14 @@ delete process.env.GITHUB_TOKEN;
   for (const k of (await store.list('push:')).map(i => i.key)) await store.del(k);
 }
 
-// ---------- 22. the sender's heartbeat, and the trigger that replaces a dead cron ----------
-// Two halves of one failure. A platform whose scheduled function stops being
-// invoked sends nothing at all, and from a phone that is indistinguishable from
-// a subscription that died: no notification, and an app that still reads "Push
-// is on". So every run leaves a heartbeat the device can read (which is what
-// lets its background wake stop deferring — section 18), and the same run is
-// reachable over HTTP for whoever can keep a schedule when the platform cannot.
+// ---------- 22. the run's heartbeat, and the trigger that is now the only entry ----------
+// One failure, told apart from another. A server that sends nothing at all looks,
+// from a phone, exactly like a subscription that died: no notification, and an
+// app that still reads "Push is on". So every run leaves a heartbeat the device
+// can read (which is what lets its background wake stop deferring — section 18),
+// and the run is reachable over HTTP — the only entry point since the per-minute
+// cron was removed on 13 Oct 2026, so the heartbeat is now written by the app's
+// own call and by whoever points a schedule at the endpoint.
 {
   const dueRecord = (over = {}) => ({
     time: hhmm('UTC'), zone: 'UTC', lastFiredDate: '1999-01-01',
@@ -2481,10 +2488,10 @@ delete process.env.GITHUB_TOKEN;
 // worth interrupting the home screen for: the sender has stopped running. The
 // sheet already words it, but the sheet is opened by somebody who already
 // suspects something, and the whole symptom here is silence. The rule is the
-// part worth pinning: a heartbeat a day old is ~1,440 missed runs of a cron
-// that ticks every minute, and anything younger than that is NOT an alarm —
-// including the minute after a site is configured, before its scheduler has had
-// a chance to write the first heartbeat at all.
+// part worth pinning: a heartbeat a day old means nothing called the sender in
+// a day (no app opened, no external scheduler firing), and anything younger
+// than that is NOT an alarm — including the minute after a site is configured,
+// before its first caller has had a chance to write a heartbeat at all.
 {
   const saved = {
     hadLocalStorage: Object.prototype.hasOwnProperty.call(globalThis, 'localStorage'),
@@ -2502,13 +2509,13 @@ delete process.env.GITHUB_TOKEN;
     const armed = { enabled: true, time: '08:00', pushSubscribed: true, pushEndpoint: 'https://fcm.googleapis.com/fcm/send/x', schedulerChecked: true };
     const alertOf = (patch) => { local.patchReminderSettings(patch); return local.reminderSenderAlert(); };
 
-    // 2.5 h is deliberately NOT the old 90-minute "alive" threshold: a cron
-    // that ticks every minute being two and a half hours late is a stall, and a
+    // 2.5 h is deliberately past the 90-minute "alive" threshold but far short
+    // of a day: a sender nothing has called since this morning is a stall, and a
     // stall is not what this notice is for — nothing on the dashboard should
-    // alarm about a sender that missed a few runs.
+    // alarm about a quiet couple of hours.
     check('a heartbeat hours old is not a day-old alarm',
       alertOf({ ...armed, schedulerAt: hoursAgo(2.5), schedulerOk: true }) === null);
-    check('a heartbeat a day old is — the cron runs every minute, so that is ~1,440 missed runs',
+    check('a heartbeat a day old is — nothing called the sender in a day',
       (() => { const a = alertOf({ ...armed, schedulerAt: hoursAgo(25), schedulerOk: true }); return !!a && a.kind === 'stale' && a.days === 1; })());
     check('and it says how long, so the notice can word itself',
       (() => { const a = alertOf({ ...armed, schedulerAt: hoursAgo(72), schedulerOk: true }); return !!a && a.days === 3 && a.at === local.getReminderSettings().schedulerAt; })());

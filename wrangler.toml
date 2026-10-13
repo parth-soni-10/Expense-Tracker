@@ -1,9 +1,9 @@
 # Cloudflare Workers config for Cents.
 #
 # The app is served from the repository root (the same directory Netlify
-# published), and the six functions under netlify/functions/ are bundled into
+# published), and the five functions under netlify/functions/ are bundled into
 # worker.js rather than copied — see its header for what the Worker wires up
-# (the KV store, the /.netlify/functions/* routes, the environment, the cron).
+# (the KV store, the /.netlify/functions/* routes, the environment).
 #
 #   npx wrangler dev            → local test on http://localhost:8787
 #   npx wrangler deploy         → publish to cents-app.<your-subdomain>.workers.dev
@@ -78,14 +78,21 @@ REPO_NAME = "cents-data"
 REPO_BRANCH = "main"
 REPO_FILE = "data.json"
 
-# The reminder tick. Netlify's per-minute schedule on reminders-send is this
-# cron, and the pairing that made it correct still holds: the tick is one minute
-# and the run's look-back window (lib/reminder-run.mjs's WINDOW_MINUTES) is
-# wider than that, so one late invocation cannot skip a day. Each subscription
-# carries its own IANA zone and HH:MM, so a reminder lands at the hour the user
-# chose rather than up to a period late.
-[triggers]
-crons = ["* * * * *"]
+# NO CRON. The per-minute reminder sender (reminders-send.mjs, invoked by
+# `[triggers] crons = ["* * * * *"]`) was removed on 13 Oct 2026 along with its
+# function: it never once dispatched on this Worker, and the reminder does not
+# depend on it. Nothing here schedules a delivery any more.
+#
+# What still delivers one: the HTTP trigger (/.netlify/functions/reminders-tick,
+# the job in lib/reminder-run.mjs), which the app itself calls — on open and on
+# refocus — whenever cloud sync gives it a password. So the server push sends
+# when a device is opened, and an app that is never opened gets its reminder from
+# the local scheduler or the background wake instead (reminders.js, sw.js).
+# Point an external scheduler at that endpoint with the app password if the
+# server side ever needs to fire on its own clock again.
+#
+# check-worker-config.mjs fails if a cron comes back, so this is a decision the
+# guards hold rather than a line someone quietly re-adds.
 
 # Secrets — never in this file, and never in the repo:
 #

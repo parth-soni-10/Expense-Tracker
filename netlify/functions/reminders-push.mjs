@@ -22,7 +22,9 @@
            answers with more than the record: the scheduler's own last run
            (lib/reminder-run.mjs's heartbeat). "Your device is stored" and
            "somebody is being sent to" are two different promises, and the
-           second one is the one a platform whose cron quietly stops breaks.
+           second one is the one that breaks when nothing calls the sender any
+           more (the per-minute cron that used to guarantee a run went on
+           13 Oct 2026).
 
    Why the app password gates this: a subscription endpoint URL is
    a capability — anyone who has it can push to that browser. We
@@ -153,8 +155,8 @@ function recordFrom({ profileId, profileName, time, zone, subscription }) {
     // Display-only (the notification body); bounded like the registry's names.
     profileName: typeof profileName === 'string' ? profileName.slice(0, 24) : '',
     time: validTime(time) ? time : '20:00',
-    // IANA zone the device reported at subscribe time. The scheduled sender
-    // resolves HH:MM in this zone. An unknown zone id is rejected here so
+    // IANA zone the device reported at subscribe time. The sender resolves
+    // HH:MM in this zone. An unknown zone id is rejected here so
     // the sender can treat every stored zone as resolvable or UTC.
     zone: typeof zone === 'string' && zone.length > 1 && zone.length <= 40 && /^[A-Za-z_]+(\/[A-Za-z0-9_+-]+)*$/.test(zone) ? zone : 'UTC',
     subscription: { endpoint: subscription.endpoint, keys: subscription.keys },

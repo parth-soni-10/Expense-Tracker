@@ -39,12 +39,14 @@
  *      published to anyone who can read the repo AND served as a plain string
  *      binding — so the declared variable names are held to an allowlist of
  *      non-secret coordinates, and their values are shape-checked.
- *   6. The reminder pairing, which is spread across two files and cannot be seen
- *      from either one (see the block below).
+ *   6. The reminder job's single home — and the absence of a cron. The job is
+ *      reached over HTTP only, so a re-added `[triggers] crons` or a resurrected
+ *      reminders-send.mjs would either fail every minute against a deleted
+ *      function or silently restore a second delivery path (see the block
+ *      below).
  *   7. Routing completeness: every route in worker.js maps to a file that
- *      exists, every function file is either routed or is the cron's entry
- *      point by name, the route the browser defaults to is served, and the cron
- *      entry point is deliberately NOT URL-reachable.
+ *      exists, every function file IS routed (the cron's one exception went with
+ *      the cron), and the route the browser defaults to is served.
  *   8. Guard wiring: every guard on disk is in scripts/run-guards.mjs's list, and
  *      every name in that list exists — in both directions, because either half
  *      alone leaves a guard that never runs and a deploy that stays green.
@@ -276,37 +278,34 @@ for (const entry of varsBlock) {
   }
 }
 
-// ---- 6. the reminder pairing ------------------------------------------------
-// The daily reminder's on-time promise is a PAIR spread across two files: the
-// cron must tick every minute (a coarser tick delivers the reminder up to a
-// period late — the 15-minute tick was a reminder up to a quarter-hour after the
-// hour the user chose), and the sender's look-back window must be WIDER than
-// that tick (a window equal to the period is the old 15/15 pairing, in which ONE
-// run landing late fell outside every window and skipped the day's reminder
-// entirely). Neither file can see the other, which is what this pins.
+// ---- 6. the reminder job's single home, and no cron -------------------------
+// The per-minute cron and the scheduled function it woke (reminders-send.mjs)
+// were removed on 13 Oct 2026: that cron had never once dispatched on this
+// Worker, and the reminder does not need a platform clock — the job is reached
+// over HTTP by the app's own call. Three things have to stay true for that to be
+// a decision rather than a half-restore:
+//
+//   * nothing declares a cron (a surviving trigger would invoke a function that
+//     no longer exists, once a minute, forever);
+//   * the deleted function stays deleted, or the shape it required (a URL-
+//     unreachable entry point, a second day-marker) would come back invisibly;
+//   * the JOB itself did not go with it — one copy, still reached, still
+//     marking the day it delivered, because that is what the app reads.
 const crons = get('triggers', 'crons');
-if (!crons) {
-  fail('wrangler.toml declares no [triggers] crons — nothing would ever wake the reminder sender, and the app would look fine until a reminder silently did not arrive.');
-} else {
-  const list = crons.items || [];
-  if (list.length !== 1 || list[0] !== '* * * * *') {
-    add(crons.line, `crons = [${list.map(c => `"${c}"`).join(', ')}] — it must be exactly ["* * * * *"], one per-minute tick.`);
-  }
-  const runSrc = read('netlify/functions/lib/reminder-run.mjs');
-  const senderSrc = read('netlify/functions/reminders-send.mjs');
-  const tickSrc = read('netlify/functions/reminders-tick.mjs');
-  const windowMinutes = Number(/const WINDOW_MINUTES = (\d+)/.exec(runSrc)?.[1]);
-  const period = list[0] === '* * * * *' ? 1 : null;
-  if (period === 1 && (!Number.isFinite(windowMinutes) || windowMinutes <= period)) {
-    add(crons.line, `lib/reminder-run.mjs's WINDOW_MINUTES reads ${windowMinutes} — with a one-minute tick the look-back window must be wider than the tick, or one late run skips the day's reminder.`);
-  }
-  // Both the window and the job itself live in the shared run: the cron and the
-  // URL trigger are two entry points to it, and a second copy of the loop would
-  // be a second answer to "was this device already sent to today" — one that
-  // fires at its own hour and marks a day the other half never delivered.
-  if (!/runReminderTick/.test(senderSrc) || !/runReminderTick/.test(tickSrc)) {
-    fail('the reminder job is not shared: reminders-send.mjs and reminders-tick.mjs must both run lib/reminder-run.mjs, or the cron and the trigger can each believe the other delivered the day.');
-  }
+if (crons) {
+  fail(`wrangler.toml declares [triggers] crons (${(crons.items || []).join(', ') || 'empty'}) — the per-minute reminder sender was removed on purpose on 13 Oct 2026. Nothing schedules a delivery; re-add the sender AND its entry in worker.js and this guard, or you have restored a trigger that fails every minute against a deleted function.`);
+}
+if (existsSync(new URL('netlify/functions/reminders-send.mjs', root))) {
+  fail('netlify/functions/reminders-send.mjs is back — it was the cron\'s entry point and went with the cron on 13 Oct 2026. A scheduled sender needs its cron back too, plus the note in wrangler.toml and the routing exception in this guard, so that a revert is visible rather than half-done.');
+}
+const runSrc = read('netlify/functions/lib/reminder-run.mjs');
+const tickSrc = read('netlify/functions/reminders-tick.mjs');
+if (!/runReminderTick/.test(tickSrc)) {
+  fail('reminders-tick.mjs does not run lib/reminder-run.mjs — with the cron gone it is the ONLY entry point to the reminder job, so no reminder would ever be sent at all.');
+}
+const windowMinutes = Number(/const WINDOW_MINUTES = (\d+)/.exec(runSrc)?.[1]);
+if (!Number.isFinite(windowMinutes) || windowMinutes < 1) {
+  fail(`lib/reminder-run.mjs's WINDOW_MINUTES reads ${windowMinutes} — the run's look-back window must be at least a minute wide, or a run that lands a few seconds late finds nothing due and skips the day's reminder.`);
 }
 
 // ---- 7. routing completeness ------------------------------------------------
@@ -331,31 +330,19 @@ if (!defaultEndpoint) {
   fail(`settings.js defaults to ${defaultEndpoint}, which worker.js does not route — the app's Sync screen would 404 on every request.`);
 }
 
-// Every function is either routed or is the cron's entry point, named here so a
-// new endpoint cannot ship unreachable.
-const CRON_ONLY = new Set(['reminders-send.mjs']);
+// Every function is routed, with no exceptions left: the cron's one URL-
+// unreachable entry point went with the cron, so any function file that is
+// neither routed nor imported is bundled, deployed and answers nothing.
 const routedFiles = new Set([...routes].map(r => imports.get(r.local)).filter(Boolean));
 const functionFiles = readdirSync(functionsDir).filter(f => /\.mjs$/.test(f));
 for (const file of functionFiles) {
   const rel = `./netlify/functions/${file}`;
-  if (!routedFiles.has(rel) && !CRON_ONLY.has(file)) {
+  if (!routedFiles.has(rel)) {
     fail(`netlify/functions/${file} is not routed by worker.js — it would be bundled, deployed and unreachable, and nothing else would say so.`);
   }
 }
-
-// The cron entry point must NOT be reachable by URL, and the cron must actually
-// call it: that is the invariant the split exists for (a scheduled function
-// cannot be invoked by URL, so the URL-invocable tick is a separate file).
-for (const file of CRON_ONLY) {
-  const rel = `./netlify/functions/${file}`;
-  if (routedFiles.has(rel)) {
-    fail(`worker.js routes netlify/functions/${file}, which is the cron's entry point — it must stay URL-unreachable, or a caller could deliver the day's reminders out of band and both halves could fire.`);
-  }
-  const local = [...imports.entries()].find(([, path]) => path === rel)?.[0];
-  if (!local) fail(`worker.js does not import netlify/functions/${file} — nothing would run on the cron tick.`);
-  else if (!new RegExp(`async scheduled\\([\\s\\S]{0,400}?\\b${local}\\(`).test(worker)) {
-    fail(`worker.js imports ${file} as ${local} but its scheduled() handler never calls it — the cron would fire, find nothing to do, and report success.`);
-  }
+if (/async scheduled\s*\(/.test(worker)) {
+  fail('worker.js still declares a scheduled() handler — its only caller was the per-minute cron removed on 13 Oct 2026, so it would be dead code that looks like a live schedule.');
 }
 
 // ---- 8. every guard is wired, and every wired name exists -------------------

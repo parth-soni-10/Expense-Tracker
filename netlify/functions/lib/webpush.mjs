@@ -274,8 +274,8 @@ function pairIsValid(publicKey, privateKey) {
  * by deleting it rather than by pasting new values.
  *
  * Both halves of the pipeline resolve through here, and that is load-bearing:
- * the endpoint that hands out the public key and the scheduled sender that
- * signs with the private one must agree, or browsers bind subscriptions to a
+ * the endpoint that hands out the public key and the sender that signs with the
+ * private one must agree, or browsers bind subscriptions to a
  * key nothing ever signs with and the reminder silently never arrives.
  */
 export function vapidConfig(env = process.env) {

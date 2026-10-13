@@ -33,14 +33,13 @@
  *              scoped to that one prefix, so ordinary page and asset requests
  *              never invoke this Worker at all.
  *
- *   scheduler  Netlify's `schedule = "* * * * *"` on reminders-send is the
- *              `[triggers] crons` entry in wrangler.toml. It calls the same
- *              entry point, which runs the same shared job
- *              (lib/reminder-run.mjs) as the URL-invocable reminders-tick — the
- *              two halves that must never drift apart (the cron delivers the
- *              reminder, the trigger is the fallback for a scheduler that has
- *              gone quiet, and each marks the day the other would otherwise
- *              deliver twice).
+ *   scheduler  There is none. The per-minute cron and the scheduled function it
+ *              woke (reminders-send.mjs) were removed on 13 Oct 2026: the cron
+ *              never dispatched on this Worker, and the reminder no longer
+ *              depends on a platform clock. The job survives unchanged in
+ *              lib/reminder-run.mjs and is reached over HTTP by
+ *              reminders-tick.mjs, which the app calls when it opens (see
+ *              wrangler.toml for how to put an external schedule back).
  *
  * These are Netlify v2 functions — `export default (request, context)` — so the
  * Request is passed straight through and their Response is returned as-is.
@@ -53,7 +52,6 @@ import setupTokenFunction from './netlify/functions/setup-token.mjs';
 import remindersPushFunction from './netlify/functions/reminders-push.mjs';
 import remindersTickFunction from './netlify/functions/reminders-tick.mjs';
 import profilesAdminFunction from './netlify/functions/profiles-admin.mjs';
-import remindersSend from './netlify/functions/reminders-send.mjs';
 import { useBlobsModule } from './netlify/functions/lib/store.mjs';
 import { kvBlobsModule } from './netlify/functions/lib/kv-store.mjs';
 
@@ -64,10 +62,10 @@ import { kvBlobsModule } from './netlify/functions/lib/kv-store.mjs';
 // reminders.js's push and tick endpoints). check-worker-config.mjs reads the
 // default out of settings.js and requires this table to serve it.
 //
-// reminders-send is deliberately NOT here: it is the cron's entry point, and on
-// Netlify it was a scheduled function — which cannot be invoked by URL —
-// precisely so that the sender has one trigger and the URL-invocable tick has
-// another (each marks the day the other would otherwise deliver twice).
+// This table is now the whole set: reminders-tick is the only way the reminder
+// job is reached (the second entry point, reminders-send.mjs, was the cron's and
+// went with the cron). check-worker-config.mjs requires every function file to
+// appear here, so an endpoint cannot ship unreachable.
 const ROUTES = {
   '/.netlify/functions/sync': syncFunction,
   '/.netlify/functions/setup-token': setupTokenFunction,
@@ -116,20 +114,6 @@ export default {
       return await handler(request, { waitUntil: promise => ctx.waitUntil(promise) });
     } catch (error) {
       return failed(url.pathname, error);
-    }
-  },
-
-  // The per-minute tick: the same call Netlify's scheduled invocation made, so
-  // the reminder job does not care which platform woke it.
-  async scheduled(_controller, env, ctx) {
-    wireBindings(env);
-    try {
-      await remindersSend(null, { waitUntil: promise => ctx.waitUntil(promise) });
-    } catch (error) {
-      // Rethrown after logging so the cron invocation is marked failed in
-      // `wrangler tail` rather than looking like a quiet no-op minute.
-      console.error('cents reminders-send (cron) failed:', (error && error.stack) || error);
-      throw error;
     }
   },
 };

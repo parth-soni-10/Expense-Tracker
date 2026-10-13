@@ -1,8 +1,9 @@
 /* ============================================================
    lib/reminder-run.mjs — ONE run of the daily-reminder sender.
 
-   The scheduled function (reminders-send.mjs) and the HTTP trigger
-   (reminders-tick.mjs) are the same job, so the job is written once, here: walk
+   The HTTP trigger (reminders-tick.mjs) is now the ONLY entry point to this job —
+   the scheduled function that used to be the other one went with the per-minute
+   cron on 13 Oct 2026 — so the job is written once, here: walk
    every stored push subscription, work out whether the record's own local clock
    has reached the time its user chose (inside the look-back window below), send
    the reminder, and prune a subscription the push service calls gone.
@@ -32,16 +33,17 @@ export const PUSH_PREFIX = 'push:';
 // field sitting inside it is a shape the loop would have to keep skipping.
 export const SCHEDULER_KEY = 'meta:reminder-send';
 
-// The cron fires every MINUTE (one-minute cron is supported on every Netlify
-// plan), but the window a run looks back over is deliberately WIDER than the
-// schedule: a target fires on the first run at or after its HH:MM — so a
-// reminder lands at its hour, not up to a quarter-hour late on the next
-// 15-minute tick — while a run the platform delivers late (or skips) still
-// catches a target up to WINDOW_MINUTES old instead of losing the whole day.
-// With the old window equal to the old 15-minute schedule, a single run 16
-// minutes late fell outside every window and the day's reminder was never
-// sent. Overlap between consecutive windows is absorbed by lastFiredDate,
-// and nothing here can ever fire more than WINDOW_MINUTES after its hour.
+// HOW BIG THE LOOK-BACK IS, now that no cron decides the cadence. A run fires
+// whenever something calls it — the app on open and on refocus
+// (triggerServerTick), or whatever scheduler the user points at
+// reminders-tick.mjs — so the window is what keeps the CALLER from deciding the
+// outcome: a target fires on the first run at or after its HH:MM, so a
+// reminder lands at its hour rather than at the next caller's convenience, and
+// a run that arrives late (or a day nobody called at all, then one late in the
+// evening) still catches a target up to WINDOW_MINUTES old instead of losing
+// the whole day. Overlap between consecutive windows is absorbed by
+// lastFiredDate, and nothing here can ever fire more than WINDOW_MINUTES after
+// its hour.
 export const WINDOW_MINUTES = 10;
 
 /**

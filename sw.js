@@ -30,12 +30,12 @@ const BUILD_KEY = '/__cents-build';
 // See the background wake at the foot of this file.
 const REMINDER_CACHE = 'cents-reminder';
 const REMINDER_KEY = '/__cents-reminder';
-// One tag from register to banner: the local scheduler, the scheduled push and
+// One tag from register to banner: the local scheduler, the server's push and
 // this worker's own wake all announce the same reminder under it, so whichever
 // path reaches the device first defines the notification the others replace.
 const REMINDER_TAG = 'cents-daily-reminder';
 // The reminder's words — byte-for-byte the generic (no profile name) copy the
-// scheduled sender ships. A wake has no payload and cannot know whose profile
+// sender ships. A wake has no payload and cannot know whose profile
 // is active, so it says what the server would say without a name; both halves
 // are pinned against each other in scripts/test-reminder-push.mjs.
 const REMINDER_TITLE = 'cents. — time to upload your transactions';
@@ -301,9 +301,9 @@ async function markReminderFired(day = reminderDay(), by = 'wake') {
  * May this wake stay quiet because the server is about to push the reminder?
  *
  * That is what the page's `push` field asks, and on its own it is a promise
- * with no end: a subscription is stored, the platform's cron stops invoking the
- * scheduled sender (an incident, not a bug in this repo — the dashboard keeps
- * showing the next run), and the device defers to a push that is never sent.
+ * with no end: a subscription is stored, the sender stops being called (nothing
+ * in this repo would say so — the app's own trigger is the only clock left),
+ * and the device defers to a push that is never sent.
  * Nothing arrives, ever, while every screen in the app reads "Push is on".
  *
  * So the deferral carries an EXPIRY, written by the page (mirrorWakeRecord) from
@@ -334,8 +334,9 @@ function reminderNotification(body, tag) {
 }
 
 // ── Daily reminder Web Push (closed-app delivery) ────────────────
-// The scheduled function (reminders-send.mjs) pushes an encrypted payload
-// { title, body, tag }; the browser decrypts it and hands it here. Payloads
+// The reminder run (lib/reminder-run.mjs, reached over HTTP) pushes an
+// encrypted payload { title, body, tag }; the browser decrypts it and hands it
+// here. Payloads
 // are tiny and trusted (our own server), but parsing is still guarded — a
 // malformed push must never throw inside the SW.
 self.addEventListener('push', (event) => {

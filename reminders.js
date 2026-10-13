@@ -38,8 +38,8 @@
      * the wake defers to an armed push only while that push is PROVEN alive —
        the server reports its scheduler's own last run through the push probe
        (verifyReminderPush), and that heartbeat sets an expiry on the deferral
-       (mirrorWakeRecord). Without it, a platform whose cron stops invoking the
-       function leaves a device that defers forever and NEVER fires.
+       (mirrorWakeRecord). Without it, a sender that stops being called leaves
+       a device that defers forever and NEVER fires.
      * a device that is open at the hour also fires the server's tick
        (triggerServerTick), so any open copy of the app is a trigger for the
        devices that are closed — and the reply refreshes the heartbeat.
@@ -79,20 +79,25 @@ const WAKE_MIN_INTERVAL_MS = 12 * 60 * 60 * 1000;
  * actually sending, and how long ago that server may have run.
  *
  * The deferral is a bet — the wake stays quiet because a push is coming at the
- * hour — and the thing it bets on can stop without saying so: a platform that
- * stops invoking the scheduled function, a site that loses its store, a VAPID
- * pair that stops signing. A device cannot see any of that; what it CAN see is
+ * hour — and the thing it bets on can stop without saying so: nothing calling
+ * the sender any more, a site that loses its store, a VAPID pair that stops
+ * signing. A device cannot see any of that; what it CAN see is
  * the sender's own heartbeat, which the push probe returns (see
  * verifyReminderPush). So: the scheduler ran within the hour → trust tonight;
  * it has not run → withdraw the bet and let the wake cover the day (late beats
  * never); nothing ever heard → trust, so a device that has not probed yet (or
  * is on an older deploy) keeps the on-time path it already had.
  */
-const SCHEDULER_ALIVE_MS = 90 * 60 * 1000; // the cron runs every minute
-// A day: the point at which a scheduler that has stopped is not a bad minute
-// but a broken promise. The cron runs every MINUTE, so a heartbeat a day old is
-// a sender that has not run once in 1,440 chances — and this is the threshold
-// the dashboard's own notice uses to come on screen (see reminderSenderAlert).
+// With no cron left (13 Oct 2026) "alive" can only mean "heard from recently":
+// the callers are the app itself, on open and on refocus, plus any scheduler the
+// user points at reminders-tick.mjs. A heartbeat inside the hour and a half is
+// therefore proof of a live sender — and older than that is NOT proof of death,
+// only the absence of proof of life, so the wake quietly takes the day back.
+const SCHEDULER_ALIVE_MS = 90 * 60 * 1000;
+// A day: the point at which a scheduler that has stopped is not a bad hour but a
+// broken promise. Nothing calls the sender for a whole day — no app opened, no
+// external scheduler firing — and this is the threshold the dashboard's own
+// notice uses to come on screen (see reminderSenderAlert).
 const SENDER_STALE_MS = 24 * 60 * 60 * 1000;
 const PUSH_TRUST_MS = 26 * 60 * 60 * 1000; // one day of cover, from the last check
 
@@ -188,7 +193,7 @@ function schedulerAlive(s = readSettings()) {
  *   'alive'   — it ran inside the last 90 minutes;
  *   'dead'    — it has run before and has not recently (or cannot sign);
  *   'never'   — a probe answered and the server holds NO heartbeat at all, so
- *               the scheduled function has never run against this store;
+ *               nothing has ever called the sender against this store;
  *   'unknown' — nothing has been asked yet (or the last probe failed), which is
  *               not evidence of anything and must not read as a failure.
  */
@@ -211,10 +216,10 @@ export function reminderSchedulerStatus() {
  * dashboard is that the modal is only opened when someone already suspects
  * something. Two shapes, both a day old before they are news:
  *
- *   'stale' — a heartbeat exists and is older than SENDER_STALE_MS. The cron
- *             runs every minute, so a day without one is ~1,440 missed runs;
+ *   'stale' — a heartbeat exists and is older than SENDER_STALE_MS: nothing
+ *             called the sender in a day, so nothing was sent to anybody;
  *   'never' — a probe answered and the store holds no heartbeat at all, on a
- *             site whose scheduled function has never run. Held back by the
+ *             site whose sender has never run. Held back by the
  *             same day, measured from when THIS device subscribed, because the
  *             heartbeat of a site that was configured a minute ago is not late
  *             yet — it is simply not written.
@@ -345,7 +350,7 @@ function writeSettings(next) {
   return next;
 }
 
-/** The zone the device is in right now — the one the scheduled sender should
+/** The zone the device is in right now — the one the sender should
  *  be aiming at. Never assumed: an unset or unreadable value is UTC, because a
  *  wrong zone is a reminder at the wrong hour and UTC is at least one a user
  *  can reason about. */
@@ -516,9 +521,10 @@ function fire(catchUp = false) {
   const payload = showReminderNotification(profileName, { catchUp });
   for (const fn of listeners) { try { fn(payload); } catch { /* listener error never breaks the loop */ } }
   // Any open copy of the app is a trigger for the copies that are closed: the
-  // same idempotent tick the platform's cron runs, fired at the hour the user
-  // chose. Best effort and never awaited — a device with no sync has nothing
-  // to fire it with, and its own banner has already been raised by then.
+  // same idempotent tick, fired at the hour the user chose. With the cron gone
+  // this is one of the few clocks the sender has left, so it carries more than
+  // it used to. Best effort and never awaited — a device with no sync has
+  // nothing to fire it with, and its own banner has already been raised.
   triggerServerTick().catch(() => {});
 }
 
@@ -551,7 +557,7 @@ function tick(catchUp = false) {
  *  the app has been alive across, and those raise the reminder. */
 export function startReminderScheduler() {
   if (timer) return;
-  // The scheduled sender aims at the zone it was TOLD, which is only ever
+  // The sender aims at the zone it was TOLD, which is only ever
   // sent on subscribe or on a time change — so a device that travels keeps its
   // push on the old zone's hour while the local scheduler above uses the new
   // one, and the two halves of the same reminder drift apart. Re-announce on
@@ -602,7 +608,7 @@ export function periodicReminderStatus() {
 
 // The same honesty about the push half, and it is the half that fails silently.
 // `pushSubscribed` in this device's own settings says a subscription was once
-// stored; it cannot say that the SERVER still holds it (the scheduled sender
+// stored; it cannot say that the SERVER still holds it (the sender
 // prunes a record the push service calls gone, and a store that loses one takes
 // the reminder with it) nor that the subscription is still bound to the key the
 // server signs with (browsers bind one at subscribe time, and a push signed by
@@ -680,8 +686,8 @@ export async function syncPeriodicReminder() {
 // ---------- closed-app push (Web Push via the Netlify functions) ----------
 // While the app is open, the scheduler above is enough. When it is closed,
 // delivery needs a real Web Push subscription: the browser hands us an
-// endpoint + keys, the server stores them, and a scheduled function fires
-// the push at the chosen local time. Subscribing requires the app password
+// endpoint + keys, the server stores them, and the reminder run fires the push
+// at the chosen local time — now reached over HTTP, since the cron is gone. Subscribing requires the app password
 // (same credential as cloud sync) so random sites cannot seed reminders
 // into someone's store.
 
@@ -966,8 +972,8 @@ export async function verifyReminderPush() {
   if (!probe.ok) return settle('probe-failed', { status: probe.status });
   // The probe answers with the sender's own heartbeat as well as this device's
   // record. Keep it: "your device is stored" and "the sender is running" are
-  // two different promises, and the second one is what a platform whose cron
-  // has stopped breaks — silently, with a phone that shows nothing and an app
+  // two different promises, and the second one is what a sender nothing calls
+  // any more breaks — silently, with a phone that shows nothing and an app
   // that still reads "Push is on". mirrorWakeRecord turns it into the worker's
   // deferral expiry.
   let payload = null;
@@ -1011,7 +1017,7 @@ export async function verifyReminderPush() {
     // The probe answered and reported no heartbeat — which is the one fact a
     // device cannot get any other way. It is NOT "an older deploy": a server
     // that predates the heartbeat returns no `scheduler` key at all, and one
-    // whose scheduled function has never run returns `scheduler: null`. Both
+    // whose sender has never run returns `scheduler: null`. Both
     // land here, so the record keeps `schedulerChecked` (it was asked) and the
     // modal words the difference it can actually see: a server that has never
     // run its scheduler is a server where the sent-sentence would be false.
@@ -1022,7 +1028,7 @@ export async function verifyReminderPush() {
 
 /**
  * Fire the server's own sender job right now — the same run the platform's
- * scheduled function makes (netlify/functions/reminders-tick.mjs). Returns
+ * HTTP trigger makes (netlify/functions/reminders-tick.mjs). Returns
  * `{ ok, scheduler }` where scheduler is the run's heartbeat.
  *
  * Two callers, one job: the reminder firing while this device is open (so any

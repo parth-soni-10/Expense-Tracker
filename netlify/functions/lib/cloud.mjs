@@ -58,10 +58,10 @@ import { openStore } from './store.mjs';
 import { ghFetch, decodeBase64, encodeBase64, contentsPath, mirrorConfigured } from './gh.mjs';
 import { cloudFileFor } from './profiles.mjs';
 
-// Exported for reminders-send, which reads a profile's document from the same
-// store to count due bills — a second copy of either the store name or the key
-// format is a doc the two halves stop agreeing about (an empty store looks
-// exactly like "nothing due").
+// Exported for the reminder run (lib/reminder-run.mjs, reached over HTTP), which
+// reads a profile's document from the same store to count due bills — a second
+// copy of either the store name or the key format is a doc the two halves stop
+// agreeing about (an empty store looks exactly like "nothing due").
 export const CLOUD_STORE = 'cents-cloud';
 export const keyFor = profileId => `doc/${profileId}.json`;
 

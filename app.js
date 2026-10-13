@@ -1599,8 +1599,8 @@ function openReminderSettings() {
     // What the SERVER is doing, as opposed to what this device is set to do.
     // The verdict below answers "is this device's record still there"; this
     // answers "is anything being sent to it at all" — the half that dies
-    // silently when a platform's cron stops invoking the sender, and the half
-    // no amount of re-registering can fix. It comes from the sender's own
+    // silently when nothing invokes the sender any more, and the half no amount
+    // of re-registering can fix. It comes from the sender's own
     // heartbeat, which every push probe returns.
     const sched = reminderSchedulerStatus();
     const pushVerdict = reminderPushStatus();
@@ -1740,8 +1740,8 @@ function openReminderSettings() {
           : `The server has this device down for ${srv.time} ${srv.zone || 'UTC'}, not the ${srv.localTime} ${srv.localZone} set here.${srv.fixedAt ? ' It was rewritten just now.' : ' Re-registering rewrites it.'}`;
     // The repair for the one failure re-registering cannot touch: run the
     // sender's own job right now. It both proves the chain (a push arrives if
-    // this device is due) and, on a platform whose scheduled function has gone
-    // quiet, delivers the day that would otherwise be lost.
+    // this device is due) and, when nothing else has called the sender, delivers
+    // the day that would otherwise be lost.
     const runTickRow = s.pushSubscribed && pushUsable && sched.state !== 'alive'
       ? $('div', { style: 'display:flex;justify-content:flex-end;margin-bottom:14px;' },
           $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:6px 12px;font-size:12px;', onClick: async (ev) => {
