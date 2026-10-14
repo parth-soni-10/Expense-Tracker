@@ -9770,7 +9770,12 @@ function openSyncSettings() {
     const saveBtnLabel = $('span', null, 'Save & test');
     const saveBtn = $('button', { type: 'button', class: 'btn btn-primary', onClick: async () => {
       const newEndpoint = (endpointInput.value || '').trim();
-      const newPassword = passwordInput.value || '';
+      const typedPassword = passwordInput.value || '';
+      // Trimmed here as well as on load, exactly as the endpoint beside it always
+      // was: a paste that carries a trailing space can never match — the server
+      // compares bytes — and the field is a password field, so the difference is
+      // invisible while it is being re-saved faithfully.
+      const newPassword = typedPassword.trim();
       // Refuse weak passwords up front: the same credential gates the cloud
       // copy, and the proxy no longer accepts short ones.
       if (newPassword && newPassword.length < 8) {
@@ -9789,7 +9794,10 @@ function openSyncSettings() {
         // as soon as the connection is established.
         startSyncPolling();
         silentSyncPoll();
-        toast('Connected.');
+        // Say so when the stored value is not quite what was typed: silently
+        // keeping a different string than the one on screen is how the next
+        // "the password is right and it still fails" starts.
+        toast(newPassword === typedPassword ? 'Connected.' : 'Connected. Saved without the space at the end — a password is compared exactly.');
         notifySyncChange();
         renderBody();
         render();

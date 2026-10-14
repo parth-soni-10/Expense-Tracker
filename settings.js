@@ -120,7 +120,13 @@ function normalizeSyncSettings(raw) {
     ...SYNC_DEFAULTS,
     enabled: source.enabled === true,
     endpoint: validEndpoint && candidateEndpoint ? candidateEndpoint : SYNC_DEFAULTS.endpoint,
-    password: typeof source.password === 'string' ? source.password : '',
+    // Trimmed like the endpoint, and for the same reason: a paste can carry a
+    // trailing space or newline, a password is compared byte for byte, and the
+    // field is type="password" — so a value nothing can be seen wrong with is
+    // refused forever, and re-saving it by hand reproduces it. A secret with
+    // meaningful leading/trailing whitespace cannot exist on the project side
+    // anyway (pages-secrets.py strips it), so trimming can only ever heal.
+    password: typeof source.password === 'string' ? source.password.trim() : '',
     lastSyncAt: typeof source.lastSyncAt === 'string' ? source.lastSyncAt : null,
     lastSha: typeof source.lastSha === 'string' && source.lastSha ? source.lastSha : null,
     lastErrorAt: typeof source.lastErrorAt === 'string' ? source.lastErrorAt : null,
@@ -160,7 +166,17 @@ function normalizeMirror(raw) {
 export function getSyncSettings() {
   try {
     const raw = localStorage.getItem(KEY());
-    return normalizeSyncSettings(raw ? JSON.parse(raw) : null);
+    const stored = raw ? JSON.parse(raw) : null;
+    const settings = normalizeSyncSettings(stored);
+    // Repair the one thing normalization changes in place. Reading a padded
+    // password out and sending the trimmed one is not enough: the value stays
+    // in storage for the next reader (the reminder push, the invite flow), and
+    // the modal redraws it from there — so the repair is written back, once,
+    // the first time any of them looks.
+    if (stored && typeof stored.password === 'string' && stored.password !== settings.password) {
+      setSyncSettings(settings);
+    }
+    return settings;
   } catch {
     return { ...SYNC_DEFAULTS };
   }

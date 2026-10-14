@@ -63,6 +63,38 @@ const HINT_BY_STATUS = {
   503: ' - function unavailable, may be cold-starting - retry',
 };
 
+/**
+ * The host a sync endpoint points at, for a message the owner has to act on: a
+ * device left pointing at a stale deployment is otherwise indistinguishable
+ * from a wrong password, and naming the host is what tells the two apart.
+ */
+function endpointHost(endpoint) {
+  const base = (typeof location !== 'undefined' && location.href) ? location.href : 'https://localhost';
+  try { return new URL(endpoint, base).host; } catch { return ''; }
+}
+
+/**
+ * What a 401 from the sync endpoint MEANS, worded once for both callers.
+ *
+ * It used to be written out twice, and both copies ended in "- check the
+ * APP_PASSWORD secret", which sends the owner to the wrong place. The server's
+ * own words ("Bad app password") are true and, on their own, useless: the
+ * credential it refused is the one saved on THIS device, and the usual reason
+ * it is refused is that it was saved before the secret was changed. Read as an
+ * instruction, the old wording produced exactly the wrong move — the owner
+ * checks and even re-sets the server secret, which is already right, and the
+ * device goes on sending the old password. So the message names what was
+ * refused, which profile's secret it has to match, which host refused it, and
+ * the one action that fixes it.
+ */
+function authFailureMessage(profileId, endpoint, serverErr) {
+  const id = profileId || 'personal';
+  const secret = profileEnvName(id);
+  const host = endpointHost(endpoint);
+  const where = host ? `${secret} on ${host}` : secret;
+  return `${serverErr || 'auth failed'} - the password saved on this device was refused for profile "${id}" (${where}). Re-enter it in Cloud sync.`;
+}
+
 function withTimeout(p, ms) {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('timeout')), ms);
@@ -93,11 +125,13 @@ async function authedFetch(init = {}, endpointOverride = null) {
   if (resp.status === 401) {
     let serverErr = '';
     try { serverErr = (await resp.json()).error || ''; } catch {}
-    patchSyncSettings({ lastError: serverErr || 'auth failed', lastErrorAt: new Date().toISOString() });
     // Name the credential this PROFILE uses, not the default one: a second
     // profile with the default password is refused by design.
-    const envName = profileEnvName(getActiveProfileId() || 'personal');
-    return { ok: false, reason: 'auth', status: 401, message: serverErr ? `${serverErr} - check the ${envName} secret` : `auth failed - check the ${envName} secret` };
+    const message = authFailureMessage(getActiveProfileId(), s.endpoint, serverErr);
+    // The stored copy is the same sentence the toast shows, so the sync screen's
+    // "Last error:" line is as actionable as the failure that produced it.
+    patchSyncSettings({ lastError: message, lastErrorAt: new Date().toISOString() });
+    return { ok: false, reason: 'auth', status: 401, message };
   }
   return { ok: true, resp };
 }
@@ -202,8 +236,7 @@ export async function syncTestConnection(endpoint, password) {
   if (resp.status === 401) {
     let serverErr = '';
     try { serverErr = (await resp.json()).error || ''; } catch {}
-    const envName = profileEnvName(getActiveProfileId() || 'personal');
-    return { ok: false, reason: 'auth', status: 401, message: serverErr ? `${serverErr} - check the ${envName} secret` : `auth failed - check the ${envName} secret` };
+    return { ok: false, reason: 'auth', status: 401, message: authFailureMessage(getActiveProfileId(), candidateEndpoint, serverErr) };
   }
   if (!resp.ok) {
     let msg = '';

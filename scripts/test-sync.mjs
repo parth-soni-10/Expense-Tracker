@@ -292,6 +292,7 @@ mem.set('cents:syncSettings', JSON.stringify({
   password: 'test-password-1234',
 }));
 const { syncPull, syncPush, syncCheckMirror, mirrorStatus } = await import(REPO + '/sync.js');
+const { getSyncSettings } = await import(REPO + '/settings.js');
 const tiny = { version: 2, entries: [], settings: {} };
 const clientCalls = [];
 const clientUrls = [];
@@ -328,6 +329,24 @@ clientStatus = 401;
 clientBody = { error: 'nope' };
 const refused = await syncPull();
 check('a refused pull names its profile too', refused.ok === false && refused.profile === 'personal', `profile=${refused.profile}`);
+
+// What a 401 SAYS. The server's own words are its business; the sentence the
+// owner acts on is this one, and the mistake it exists to prevent is specific:
+// what was refused is the password saved on THIS device, so "check the
+// APP_PASSWORD secret" sent the owner off to re-set a server secret that was
+// already right, while the device went on sending the old password.
+clientStatus = 401;
+clientBody = { error: 'Bad app password' };
+const authRefused = await syncPull();
+check('a refused password blames the password saved on this device',
+  /saved on this device/.test(authRefused.message || ''), authRefused.message);
+check('and names the secret it has to match, and the host that refused it',
+  /APP_PASSWORD/.test(authRefused.message || '') && /cents\.test/.test(authRefused.message || ''), authRefused.message);
+check('and points at Cloud sync instead of at the server secret',
+  /Re-enter it in Cloud sync/.test(authRefused.message || '') && !/check the APP_PASSWORD secret/.test(authRefused.message || ''),
+  authRefused.message);
+check('the stored last error is that same sentence, so the sync screen agrees with the toast',
+  /Re-enter it in Cloud sync/.test(getSyncSettings().lastError || ''), getSyncSettings().lastError);
 
 clientCalls.length = 0;
 const oversized = await syncPush({ version: 2, entries: [{ id: 'n1', audioData: 'data:audio/webm;base64,' + 'A'.repeat(7 * 1024 * 1024) }], settings: {} });
@@ -388,6 +407,23 @@ check('every state the client words is one the server can send, with both of its
 check('a verdict with a timestamp says when it was checked',
   /Checked /.test(mirrorStatus({ state: 'in_sync', checkedAt: new Date().toISOString() }).detail),
   mirrorStatus({ state: 'in_sync', checkedAt: new Date().toISOString() }).detail);
+// A password saved with a trailing space — a paste, a phone keyboard that adds
+// one — is refused by a byte-for-byte comparison and cannot be seen in a
+// password field, so it is normalized on the way out AND repaired in storage:
+// otherwise every reader (the sync call, the reminder push, the invite flow)
+// keeps sending it and the modal keeps redrawing it as if it were fine.
+mem.set('cents:p/personal/sync', JSON.stringify({
+  enabled: true,
+  endpoint: 'https://cents.test/.netlify/functions/sync',
+  password: 'test-password-1234 ',
+}));
+const padded = getSyncSettings();
+check('a padded saved password is normalized before it is sent',
+  padded.password === 'test-password-1234', `len=${padded.password.length}, ends with a space=${/\s$/.test(padded.password)}`);
+check('and the stored copy is repaired, not only the returned one',
+  JSON.parse(mem.get('cents:p/personal/sync')).password === 'test-password-1234',
+  'the padded value is still in storage');
+
 globalThis.fetch = serverFetch;
 
 if (fails.length) {
