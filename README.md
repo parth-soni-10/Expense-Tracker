@@ -165,6 +165,7 @@ node scripts/test-profiles.mjs         # profiles stay isolated, and their cloud
 node scripts/test-tesco.mjs            # the pay/tax engine still matches the workbook's figures
 node scripts/test-sync.mjs             # the sync contract still round-trips all state
 node scripts/test-cloud.mjs            # the KV store is the primary, GitHub the mirror, and the version token decides conflicts
+node scripts/test-failure-throttle.mjs # the failed-auth damper reads the client-IP header THIS host sets (cf-connecting-ip first, Netlify's second, never x-forwarded-for), and a caller that sends its own cannot choose its bucket
 node scripts/test-reminder-push.mjs    # the push payload matches the RFC 8291 vector, and every VAPID signature is one a push service accepts
 node scripts/test-motion.mjs           # a headline figure counts only when it changed and rests on the exact total; a route change renders and waits on nothing (no transition, no entrance animation)
 node scripts/test-ui-libs.mjs          # the vendored UI libraries do what the app assumes: the search ranks through the vendored Fuse, the focus trap's load order and Escape rules hold, every vendor path resolves
