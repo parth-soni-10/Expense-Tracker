@@ -3018,7 +3018,7 @@ async function doPushNow(message) {
     }
     patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
     if (!sessionSyncFailed) {
-      toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));' }, iconSpan('alert'), 'Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.'));
+      toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));' }, iconSpan('alert'), 'Cloud sync failed: ' + sentence(r.message || r.reason || 'error') + ' Changes saved locally.'));
       sessionSyncFailed = true;
     }
     // Transient failures (offline, server hiccup) retry themselves after a
@@ -3031,7 +3031,7 @@ async function doPushNow(message) {
     const message = error?.message || 'sync failed';
     patchSyncSettings({ lastError: message, lastErrorAt: new Date().toISOString() });
     if (!sessionSyncFailed) {
-      toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));' }, iconSpan('alert'), 'Cloud sync failed: ' + message + '. Changes saved locally.'));
+      toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));' }, iconSpan('alert'), 'Cloud sync failed: ' + sentence(message) + ' Changes saved locally.'));
       sessionSyncFailed = true;
     }
     notifySyncChange();
@@ -3040,6 +3040,19 @@ async function doPushNow(message) {
     syncInFlight = false;
   }
 }
+/**
+ * A failure message, ending in exactly one full stop.
+ *
+ * The sync failures this feeds carry their own punctuation — the 401 sentence
+ * names what was refused and the action that fixes it — so appending one more
+ * turned it into "…Re-enter it in Cloud sync.. Changes saved locally.", which
+ * reads as a mistake in the very message asking to be trusted.
+ */
+function sentence(text) {
+  const trimmed = String(text || '').trim();
+  return /[.!?]$/.test(trimmed) ? trimmed : trimmed + '.';
+}
+
 function doAutoPush() { return doPushNow('cents: auto push'); }
 
 // Conflict recovery: pull, merge into local, push the merged result back.
@@ -3052,7 +3065,7 @@ async function resolveConflictAndPush() {
     if (!r.ok) {
       patchSyncSettings({ lastError: r.message || r.reason || 'error', lastErrorAt: new Date().toISOString() });
       if (!sessionSyncFailed) {
-        toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));' }, iconSpan('alert'), 'Cloud sync failed: ' + (r.message || r.reason || 'error') + '. Changes saved locally.'));
+        toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));' }, iconSpan('alert'), 'Cloud sync failed: ' + sentence(r.message || r.reason || 'error') + ' Changes saved locally.'));
         sessionSyncFailed = true;
       }
       notifySyncChange();
