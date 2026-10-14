@@ -1,0 +1,9 @@
+# The app is a private, password-gated tool: nothing here is for crawlers to
+# index, and the pages behind the password are not reachable by one anyway.
+#
+# No Sitemap line, on purpose — there is one page and it is behind that
+# password, so a sitemap would only be a list of URLs to hand out. Without this
+# file the platform answers /robots.txt with its own injected boilerplate, which
+# reads as this site's policy while saying nothing about it.
+User-agent: *
+Disallow: /

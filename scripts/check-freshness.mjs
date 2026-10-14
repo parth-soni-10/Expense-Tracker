@@ -280,7 +280,15 @@ for (const entry of shellEntries) {
 // and the ignore list is hand-written — so README imagery sat on the live site
 // with no guard reporting it. Docs belong here too: they carry the install steps
 // and every secret name.
-const unclassified = [...ships].filter(path => !assets.has(path));
+//
+// ONE exemption, and it is the file whose whole purpose is to be fetched:
+// robots.txt tells a crawler to keep out of an app nothing here is public, and it
+// can only do that if the crawler can read it. It is not an app asset (`.txt` is
+// not in APP_EXT, so part 1's revalidation rule does not claim it either) and it
+// is not documentation, which is exactly why it needs naming here rather than
+// being waved through by a pattern.
+const servedOnPurpose = new Set(['/robots.txt']);
+const unclassified = [...ships].filter(path => !assets.has(path) && !servedOnPurpose.has(path));
 if (unclassified.length) {
   fail(`${unclassified.join(', ')} would be downloadable from the live site: the assets directory is the ` +
     'whole repository, so a file that is not part of the app belongs in .assetsignore.');
