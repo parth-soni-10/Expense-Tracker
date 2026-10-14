@@ -1,12 +1,19 @@
 name: Deploy
 
 # A push to main redeploys this site's two homes together: its Worker, and the
-# Pages mirror of it. GitHub Actions rather than a Cloudflare Git integration,
-# deliberately — a Pages project created by direct upload cannot later be given
-# a Git source. Measured against this account, not assumed: PATCHing a source
-# onto one answered 400, error 8000069, "You cannot update the `source` object
-# in a Direct Uploads project." So Pages' own Git integration is not available
-# to these projects at all, and the pushes are wired up here instead.
+# Pages mirror of it.
+#
+# The mirror has two deployers, on purpose. The Pages project is connected to
+# this repository — Cloudflare Pages, production branch main, preview builds
+# off — and its build runs this same pipeline (bundle the Worker, stage the
+# upload through tools/deploy-pages.mjs, publish .pages-dist), so Cloudflare's
+# own builder publishes the mirror from the push. This workflow then uploads the
+# identical staged directory as a direct upload: that is the path that still
+# works when a Pages build is unavailable, and it is what re-asserts the
+# bindings and variables named in pages/wrangler.toml. The two used to be
+# alternatives, because a project created by direct upload cannot be given a Git
+# source afterwards (measured: PATCHing one answers 400, error 8000069) — these
+# projects were recreated with a source, so both paths exist now.
 #
 # Needs one repository secret, CLOUDFLARE_API_TOKEN (Settings → Secrets and
 # variables → Actions → New repository secret), scoped to the account below with
