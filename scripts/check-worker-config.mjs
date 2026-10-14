@@ -20,41 +20,58 @@
  * What is checked here, each one a way a Cloudflare deploy goes wrong in
  * silence:
  *
+ * There are two configs now, and the guard reads both, because they answer
+ * different questions: `wrangler.toml` is the bundle input the Pages build runs
+ * `wrangler deploy --dry-run` against, and `pages/wrangler.toml` names the Pages
+ * project with the bindings and vars the deploy runs on. Neither one deploys
+ * anything by itself — this site has one host, the Pages project — so the shape
+ * of the first matters as much as the contents of the second.
+ *
  *   1. The Worker's identity: name, an entry point that exists, a pinned
  *      compatibility date (a date in the future is rejected at deploy time).
  *   2. `nodejs_compat` — the functions use node:crypto (createECDH for the VAPID
  *      pair, createSign, createCipheriv), Buffer, and the process.env object the
  *      binding loop writes into. Without the flag those are not there, and the
  *      failure is a 500 on push and sync at runtime.
- *   3. The assets config: the site is the repo root, and `run_worker_first` must
- *      cover every route worker.js declares. Miss that and the Worker is never
- *      invoked for the API paths at all — the assets layer answers 404 for a
- *      prefix those files are not under — while the static site keeps working,
- *      which is exactly the kind of half-broken deploy nobody notices locally.
- *   4. The KV binding: the durable store. Without it lib/store.mjs answers
- *      `durable: false`, and lib/cloud.mjs then treats the GITHUB MIRROR as the
- *      commit point for someone's expenses instead of a spare copy.
- *   5. No secret in `[vars]`. wrangler.toml is committed; secrets are set with
- *      `wrangler secret put`. A password or token pasted into [vars] would be
+ *   3. The bundle input is a bundle input: no cron triggers, no workers_dev or
+ *      preview URLs, no routes, no assets block — every one of those is a
+ *      Workers-only key, and any of them in this file is a deploy command away
+ *      from publishing a second copy of this app to a hostname nobody links to,
+ *      against the one production KV. What the running process needs lives in
+ *      wrangler.dev.toml (local `wrangler dev`) and pages/wrangler.toml (the
+ *      deploy), each of which is checked below.
+ *   4. Every function route reaches the Worker. On Pages that is structural —
+ *      `_worker.js` is the entry for the whole deployment — so what has to hold
+ *      is the other half: worker.js hands anything that is not a route to
+ *      `env.ASSETS.fetch`, since a request it neither answers nor forwards is a
+ *      request nothing answers. The two spellings of every endpoint are checked
+ *      here too, and the unknown-path-is-a-404 decision now rests on
+ *      tools/deploy-pages.mjs generating the upload's 404.html.
+ *   5. The KV binding, in the config the deploy reads: the durable store. Without
+ *      it lib/store.mjs answers `durable: false`, and lib/cloud.mjs then treats
+ *      the GITHUB MIRROR as the commit point for someone's expenses instead of a
+ *      spare copy.
+ *   6. No secret in either `[vars]` block. Both files are committed; secrets are
+ *      set on the Pages project. A password or token pasted into [vars] would be
  *      published to anyone who can read the repo AND served as a plain string
  *      binding — so the declared variable names are held to an allowlist of
  *      non-secret coordinates, and their values are shape-checked.
- *   6. The reminder job's single home: the job is written once in
+ *   7. The reminder job's single home: the job is written once in
  *      lib/reminder-run.mjs, the HTTP trigger runs THAT rather than a copy of
  *      it, and the run's look-back window is wide enough that a late run still
  *      catches its target (see the block below).
- *   7. Routing completeness: every route in worker.js maps to a file that
+ *   8. Routing completeness: every route in worker.js maps to a file that
  *      exists, every function file IS routed, and the route the browser defaults
  *      to is served.
- *   8. Guard wiring: every guard on disk is in scripts/run-guards.mjs's list, and
+ *   9. Guard wiring: every guard on disk is in scripts/run-guards.mjs's list, and
  *      every name in that list exists — in both directions, because either half
  *      alone leaves a guard that never runs and a deploy that stays green.
- *   9. CI runs the same suite under the same runtime.
- *  10. Every env var the functions read is documented in README.md, and so is
+ *  10. CI runs the same suite under the same runtime.
+ *  11. Every env var the functions read is documented in README.md, and so is
  *      every guard the suite runs — the README is the install guide for a
  *      hand-configured deployment, and a variable that exists only in code
  *      surfaces as a runtime failure nobody can act on.
- *  11. netlify.toml does not come back. Cloudflare ignores it completely, so a
+ *  12. netlify.toml does not come back. Cloudflare ignores it completely, so a
  *      resurrected one is worse than none: the file the guards read would stop
  *      being the file that is served.
  *
@@ -69,6 +86,8 @@ import { join } from 'node:path';
 const root = new URL('../', import.meta.url);
 const read = p => readFileSync(new URL(p, root), 'utf8');
 const toml = read('wrangler.toml');
+const pagesToml = read('pages/wrangler.toml');
+const stageScript = read('tools/deploy-pages.mjs');
 const worker = read('worker.js');
 const functionsDir = new URL('netlify/functions/', root);
 const scriptsDir = new URL('scripts/', root);
@@ -153,6 +172,36 @@ for (const [i, raw] of toml.split('\n').entries()) {
 const get = (path, key) => keys.find(k => k.path === path && k.key === key);
 const topLevel = key => keys.find(k => k.path === null && k.key === key);
 
+/**
+ * The same key/value shapes, read out of the deploy config (pages/wrangler.toml).
+ *
+ * A second reader rather than a second pass of the one above: that one rewrites
+ * module-level maps as it goes, which is fine for the file it was written for and
+ * a trap for the second file. This one only needs each entry's table path.
+ */
+function readEntries(text) {
+  const entries = [];
+  let table = null;
+  for (const [i, raw] of text.split('\n').entries()) {
+    const line = stripComment(raw).trim();
+    if (!line) continue;
+    let m = /^\[\[(.+)\]\]$/.exec(line) || /^\[(.+)\]$/.exec(line);
+    if (m) {
+      table = tablePath(m[1]);
+      continue;
+    }
+    m = /^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/.exec(line);
+    if (m) entries.push({ path: table, key: m[1], value: unquote(m[2].trim()), line: i + 1 });
+  }
+  return entries;
+}
+
+const deployEntries = readEntries(pagesToml);
+const deployKv = deployEntries.filter(e => e.path === 'kv_namespaces');
+const deployVars = deployEntries.filter(e => e.path === 'vars');
+const deployAdd = (line, message) => problems.push(`pages/wrangler.toml:${line}: ${message}`);
+const deployTop = key => deployEntries.find(e => e.path === null && e.key === key);
+
 // ---- 1. identity -----------------------------------------------------------
 if (!topLevel('name')) fail('wrangler.toml declares no top-level `name` — the Worker has no hostname to deploy to.');
 if (!topLevel('main')) fail('wrangler.toml declares no `main` — there is nothing to deploy.');
@@ -175,13 +224,26 @@ if (!flags.includes('nodejs_compat')) {
   fail('compatibility_flags does not include "nodejs_compat" — the functions use node:crypto (the VAPID pair, the payload encryption, the recovery tokens), Buffer and process.env, so push and sync would 500 at runtime.');
 }
 
-// ---- 3. assets and the prefix that routes to this Worker -------------------
-const assets = { dir: get('assets', 'directory'), binding: get('assets', 'binding'), first: get('assets', 'run_worker_first') };
-if (!assets.dir) fail('[assets] declares no `directory` — half the app would not be served.');
-else if (assets.dir.value !== '.') {
-  add(assets.dir.line, `[assets] directory = "${assets.dir.value}" — the site is the repository root, the same directory that was published before; a different one serves a different app.`);
+// ---- 3. the bundle input is a bundle input ---------------------------------
+// The Pages build runs `wrangler deploy --dry-run` against this file, and that is
+// the only thing it is for. Every Workers-only key below is one `wrangler deploy`
+// away from publishing this app to a second hostname against the one production
+// KV — and the export would be silent, because the Pages deployment keeps working
+// either way, so nothing a reader looks at would look wrong.
+const WORKERS_ONLY = [
+  ['triggers', 'cron triggers'],
+  ['workers_dev', 'the workers.dev hostname'],
+  ['preview_urls', 'versioned Preview URLs'],
+  ['routes', 'a Workers route'],
+  ['assets', 'a static-assets block'],
+  ['vars', 'runtime variables'],
+];
+for (const [table, what] of WORKERS_ONLY) {
+  const line = tables.get(table) ?? arrays.get(table) ?? topLevel(table)?.line ?? null;
+  if (line) {
+    add(line, `declares ${what} (${table}) — this file is the Pages build's bundle input, not a deployment. It belongs in pages/wrangler.toml (the deploy) or wrangler.dev.toml (local development).`);
+  }
 }
-if (!assets.binding) fail('[assets] declares no `binding` — worker.js fetches it as env.ASSETS.');
 
 const routesBlock = /const ROUTES = \{([\s\S]*?)\n\};/.exec(worker)?.[1] || '';
 // Every route is a quoted path mapped to an imported handler. The pattern
@@ -220,73 +282,65 @@ for (const route of routes.filter(r => r.path.startsWith(LEGACY_PREFIX))) {
   }
 }
 
-if (!assets.first) {
-  fail('[assets] declares no `run_worker_first` — without it asset requests win over the Worker on every path, so the function routes would be answered by the assets layer.');
-} else {
-  // Every declared route must be behind the Worker, not merely some of them.
-  const first = assets.first.items || [];
-  for (const route of routes) {
-    const covered = first.some(pattern => pattern.endsWith('*')
-      ? route.path.startsWith(pattern.slice(0, -1))
-      : pattern === route.path);
-    if (!covered) {
-      add(assets.first.line, `run_worker_first does not cover ${route.path} — the assets layer would answer it (404, since no such file exists) while the static site kept working, so nothing would look broken locally.`);
+// Every request reaches _worker.js on Pages (advanced mode), so the coverage
+// question the Workers assets layer asked is settled structurally. What still has
+// to hold is the other half of that contract: a path this script does not route
+// must be handed to the assets layer rather than answered here.
+if (!/env\.ASSETS\.fetch\(request\)/.test(worker)) {
+  fail('worker.js never calls env.ASSETS.fetch(request) — on Pages every request arrives at this script, so a path it does not route would be answered by it (with nothing) instead of by the assets layer.');
+}
+
+// ---- 3b. an unknown path is still a 404 -------------------------------------
+// The decision the Workers assets layer carried (not_found_handling = "none")
+// has no Pages equivalent: without a 404.html in the upload, Pages answers 200
+// with index.html for every unmatched path — including an asset the app mistyped,
+// which is the blank page this app's hash routing exists to avoid. The staging
+// script writes that file when the assets have none, so the property is pinned to
+// the script that stages the upload rather than to a config key that no longer
+// exists.
+if (!/404\.html/.test(stageScript)) {
+  fail('tools/deploy-pages.mjs no longer writes a 404.html — without one in the upload, Pages answers 200 with index.html for every unknown path, which is what not_found_handling = "none" prevented on the Workers side.');
+}
+// And the keys themselves must not come back: reading one in a config that Pages
+// ignores would look like a live decision while changing nothing. (They stay in
+// wrangler.dev.toml, which only `wrangler dev` reads, so a local run still
+// answers a mistyped asset the way the deployed site does.)
+for (const [file, entries] of [['wrangler.toml', keys], ['pages/wrangler.toml', deployEntries]]) {
+  for (const entry of entries) {
+    if (entry.key === 'not_found_handling' || entry.key === 'html_handling') {
+      fail(`${file} declares ${entry.key} — Pages has no such setting, so it would read as a live decision while changing nothing. The 404 comes from the staged 404.html checked above.`);
     }
   }
 }
 
-// ---- 3b. the HTML-handling decisions ----------------------------------------
-// One is a default this app depends on, the other is a default it must NOT
-// change, and both failures are invisible in the repo and silent in production.
-//
-//   An unknown path must be a 404. An SPA-style not-found handler returns
-//   index.html with a 200 for ANY missing path, including a mistyped asset — the
-//   blank page the app's hash routing was chosen to avoid needing.
-//   `html_handling = "none"` must not come back. It looks tidier than the
-//   default (it serves /index.html as the file it is instead of answering with a
-//   307 to "/"), and it was deployed here before it was measured: it also drops
-//   the "/" → index.html mapping, so the app answered 404 at its own address.
-//   The default's redirect is harmless: /index.html is a cache.addAll SHELL
-//   entry, and a redirect is followed and stored under the same key.
-const notFound = get('assets', 'not_found_handling');
-if (notFound?.value !== 'none') {
-  add(notFound?.line ?? assets.dir?.line ?? 1,
-    'not_found_handling must be "none": an SPA fallback answers every unknown path with index.html and a 200, including an asset the app mistyped — the blank page this app\'s hash routing exists to avoid.');
+// ---- 4. the durable store, in the config the deploy reads --------------------
+// The binding moves with the deployment: wrangler.toml binds nothing (checked
+// above), and pages/wrangler.toml is what a deploy reads for its bindings.
+const deployBinding = deployKv.find(k => k.key === 'binding');
+const deployId = deployKv.find(k => k.key === 'id');
+if (!deployBinding) {
+  fail('pages/wrangler.toml binds no KV namespace — with no durable store lib/store.mjs answers `durable: false`, and lib/cloud.mjs then commits profiles to the GitHub mirror instead of the primary (and to memory when there is no mirror).');
+} else if (deployBinding.value !== 'CENTS_KV') {
+  deployAdd(deployBinding.line, `binding = "${deployBinding.value}" — worker.js hands lib/store.mjs the namespace as env.CENTS_KV, so a different binding name attaches a namespace nothing can reach.`);
 }
-const htmlHandling = get('assets', 'html_handling');
-if (htmlHandling?.value === 'none') {
-  add(htmlHandling.line,
-    'html_handling = "none" also removes the "/" → index.html mapping, so the app answers 404 at its own address (measured on the deployed Worker: empty body). Leave it at the default — the 307 to "/" for /index.html is harmless, since a cache.addAll SHELL entry follows a redirect.');
-}
-
-// ---- 4. the durable store ---------------------------------------------------
-if (!kvBlocks.length) {
-  fail('wrangler.toml binds no KV namespace — with no durable store lib/store.mjs answers `durable: false`, and lib/cloud.mjs then commits profiles to the GitHub mirror instead of the primary (and to memory when there is no mirror).');
-}
-for (const block of kvBlocks) {
-  if (!keys.some(k => k.path === 'kv_namespaces' && k.key === 'binding' && k.line > block.line)) break;
-}
-for (const [index, block] of kvBlocks.entries()) {
-  // Keys in an array-of-tables block belong to that block; take the ones before
-  // the next block starts.
-  const end = kvBlocks[index + 1]?.line ?? Infinity;
-  const fields = keys.filter(k => k.path === 'kv_namespaces' && k.line > block.line && k.line < end);
-  const binding = fields.find(k => k.key === 'binding');
-  const id = fields.find(k => k.key === 'id');
-  if (!binding) add(block.line, '[[kv_namespaces]] has no `binding` — the Worker cannot reach it.');
-  if (!id || !/^[0-9a-f]{32}$/.test(id.value || '')) {
-    add(block.line, '[[kv_namespaces]] has no 32-hex `id` — a deploy would create or refuse a namespace rather than use the one the data is in.');
-  }
+if (!deployId || !/^[0-9a-f]{32}$/.test(deployId.value || '')) {
+  deployAdd(deployId?.line ?? deployBinding?.line ?? 1, '[[kv_namespaces]] has no 32-hex `id` — the deploy would attach a namespace other than the one the data is in.');
 }
 
 // ---- 5. no secret in a committed file --------------------------------------
-const varsBlock = keys.filter(k => k.path === 'vars');
+// Both configs are committed, so both are held to the same rule. Cents' secrets
+// (the root secret, the app passwords, the VAPID pair, the GitHub token) are set
+// on the Pages project out of band and appear in no file here.
+const varsBlock = [
+  ...keys.filter(k => k.path === 'vars').map(k => ({ ...k, file: 'wrangler.toml', problem: add })),
+  ...deployVars.map(k => ({ ...k, file: 'pages/wrangler.toml', problem: deployAdd })),
+];
 for (const entry of varsBlock) {
   if (!VAR_ALLOWLIST.has(entry.key)) {
-    add(entry.line, `[vars] declares ${entry.key}. Only ${[...VAR_ALLOWLIST].join(', ')} belong here — wrangler.toml is committed and a variable is a plain string binding, so a password or key pasted here is published AND served. Use \`wrangler secret put ${entry.key}\`.`);
+    entry.problem(entry.line, `${entry.file}'s [vars] declares ${entry.key}. Only ${[...VAR_ALLOWLIST].join(', ')} belong here — the file is committed and a variable is a plain string binding, so a password or key pasted here is published AND served. Set it on the Pages project instead.`);
   }
   if (/^(ghp_|github_pat_|gho_|glpat-)/.test(entry.value) || /^[0-9a-f]{40}$/.test(entry.value)) {
-    add(entry.line, `[vars] ${entry.key} looks like a credential — this file is committed. Use \`wrangler secret put ${entry.key}\`.`);
+    entry.problem(entry.line, `${entry.file}'s [vars] ${entry.key} looks like a credential — this repository is public to anyone who can read it. Set it on the Pages project instead.`);
   }
 }
 // The other direction: a declared variable the code never reads is dead config
@@ -305,7 +359,7 @@ for (const source of functionSources) {
 }
 for (const entry of varsBlock) {
   if (!readEnv.has(entry.key)) {
-    add(entry.line, `[vars] declares ${entry.key}, but no function reads it — a setting that does nothing still reads like a configured one.`);
+    entry.problem(entry.line, `${entry.file}'s [vars] declares ${entry.key}, but no function reads it — a setting that does nothing still reads like a configured one.`);
   }
 }
 
@@ -428,6 +482,6 @@ if (problems.length) {
   for (const p of problems) console.error('  ' + p);
   process.exit(1);
 }
-console.log(`check-worker-config: OK — ${routes.length} route(s) behind the Worker, `
-  + `${kvBlocks.length} KV binding(s), ${varsBlock.length} documented variable(s), `
+console.log(`check-worker-config: OK — ${routes.length} route(s) behind the entry point, `
+  + `${deployKv.length} deploy binding(s), ${varsBlock.length} documented variable(s), `
   + `${declared.length} guard(s) wired, ${readEnv.size} env var(s) documented.`);

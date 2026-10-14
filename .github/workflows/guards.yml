@@ -8,11 +8,14 @@
 #
 # It runs exactly the list in scripts/run-guards.mjs — the single source now that
 # the build step is gone — so CI and a deploy cannot drift apart. That includes
-# scripts/check-worker-config.mjs, which validates wrangler.toml and worker.js
-# statically: the entry point, the assets config, the KV binding, the routes, the
-# reminder job's single home, and that no secret has been pasted into a committed
-# file. No wrangler install is needed for any of it, which keeps this job
-# dependency-free like the rest of the repo.
+# scripts/check-worker-config.mjs, which validates the two configs statically:
+# wrangler.toml, which must stay a bundle input (no cron trigger, no workers_dev,
+# no assets block) because the Pages build is the only deployer, and
+# pages/wrangler.toml, which is what that deploy reads for its project name, its
+# KV binding and its vars — plus worker.js and the routes, the reminder job's
+# single home, and that no secret has been pasted into a committed file. No
+# wrangler install is needed for any of it, which keeps this job dependency-free
+# like the rest of the repo.
 name: guards
 
 on:

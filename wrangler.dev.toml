@@ -1,0 +1,58 @@
+# Local development config — for `wrangler dev` only, never for a deploy.
+#
+#     npx wrangler dev --config wrangler.dev.toml --persist-to .wrangler/state
+#
+# Why this is a second file: wrangler.toml is the Pages build's bundle input, and
+# a bundle input carries only what bundling reads. The assets directory, its
+# HTML-handling rules and the KV namespace below are what a running process needs,
+# not what esbuild needs — and leaving them in wrangler.toml is how a
+# `wrangler deploy` run from this directory silently publishes a second copy of
+# this app to a workers.dev hostname, against the one production KV, on an app
+# whose cloud copy is somebody's real spending.
+#
+# Kept in step with pages/wrangler.toml by hand: the KV id is the same namespace
+# the deployed site writes to. To test what the deploy actually serves, run the
+# build command's three steps and then `npx wrangler pages dev .pages-dist`.
+
+name = "cents-app"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "."
+binding = "ASSETS"
+run_worker_first = ["/api/*", "/.netlify/functions/*"]
+
+# HTML handling, which this app had written out at length before the move
+# because it is the difference between an app and a blank page.
+#
+#   not_found_handling = "none"   an unknown path is a 404, never index.html with
+#                                 a 200. The app uses hash routing, so it needs
+#                                 no server-side deep-link fallback, and a greedy
+#                                 rewrite is the classic blank-page failure: an
+#                                 asset request answered with the app's HTML.
+#
+# `html_handling` is deliberately LEFT AT ITS DEFAULT. Setting it to "none" looks
+# like the tidier choice — /index.html is then served as the file it is, instead
+# of the default's 307 to "/" — and it was deployed here before it was measured:
+# it ALSO drops the "/" → index.html mapping, so the app's own address answered
+# 404 (empty body, md5 d41d8cd98f00). The 307 is harmless by comparison.
+not_found_handling = "none"
+
+# The durable store: the same namespace the deployed site keeps every profile's
+# cloud document and the reminder push records in.
+[[kv_namespaces]]
+binding = "CENTS_KV"
+id = "b07228078d274906ab86bbb9a7cd07f4"
+
+[vars]
+REPO_OWNER = "parth-soni-10"
+REPO_NAME = "cents-data"
+REPO_BRANCH = "main"
+REPO_FILE = "data.json"
+
+# Secrets for a local run go in .dev.vars (gitignored):
+#   CENTS_SECRET, APP_PASSWORD (and APP_PASSWORD_<ID>), GITHUB_TOKEN,
+#   VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY
+
