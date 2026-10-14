@@ -1,6 +1,7 @@
 /* ============================================================
    Function — profile administration, for the OWNER only (served from
-   /.netlify/functions/profiles-admin by worker.js).
+   /api/profiles-admin by worker.js, and under its pre-rename
+   /.netlify/functions/profiles-admin spelling for a device that stored it).
 
    The owner shares one deployed site with friends; each friend signs
    in on their own phone with their own account. Two things the owner
@@ -9,7 +10,7 @@
    POST { action: 'invite', profile: '<id>', enabledTabs: [...] }
      → mints a setup token for THAT account, embedding its own
        password. The owner never needs to know that password (it sits
-       in Netlify env as APP_PASSWORD_<ID>) and never has to sign in
+       as a secret on the Worker, APP_PASSWORD_<ID>) and never has to sign in
        as them: they send the link, the friend's phone adopts the
        account and keeps the only working copy. The account's current
        tab policy rides inside the token, so what the owner set before

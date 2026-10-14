@@ -185,9 +185,41 @@ else if (assets.dir.value !== '.') {
 if (!assets.binding) fail('[assets] declares no `binding` — worker.js fetches it as env.ASSETS.');
 
 const routesBlock = /const ROUTES = \{([\s\S]*?)\n\};/.exec(worker)?.[1] || '';
-const routes = [...routesBlock.matchAll(/'(\/\.netlify\/functions\/[a-z-]+)'\s*:\s*(\w+)/g)]
+// Every route is a quoted path mapped to an imported handler. The pattern
+// matches ANY path rather than one prefix on purpose: the Worker serves two
+// spellings of each endpoint (/api/*, and the /.netlify/functions/* name every
+// device set up before the rename still has saved), and a pattern that only
+// recognised one of them would stop checking the other — which is exactly what
+// a half-emptied route table looks like from here: no error, just fewer routes.
+const routes = [...routesBlock.matchAll(/'([\w./-]+)'\s*:\s*(\w+)/g)]
   .map(m => ({ path: m[1], local: m[2] }));
 if (!routes.length) fail('worker.js declares no ROUTES — every function path the app calls would 404.');
+
+// Both spellings of every endpoint, paired to the same handler. This table is a
+// contract with two kinds of client — a fresh install (the endpoint settings.js
+// defaults to) and a device holding the pre-rename name — and neither half may
+// go missing quietly: the app's own default would 404, or a device that never
+// re-saved its settings could only be repaired by hand. The function tests call
+// the handlers directly, so nothing else in the suite would notice either way.
+const API_PREFIX = '/api/';
+const LEGACY_PREFIX = '/.netlify/functions/';
+const twinOf = (routePath, from, to) => routes.find(r => r.path === to + routePath.slice(from.length));
+for (const route of routes.filter(r => r.path.startsWith(API_PREFIX))) {
+  const twin = twinOf(route.path, API_PREFIX, LEGACY_PREFIX);
+  if (!twin) {
+    fail('worker.js serves ' + route.path + ' but not ' + LEGACY_PREFIX + route.path.slice(API_PREFIX.length)
+      + ' — dropping the pre-rename spelling strands every device that has that name saved: its request falls through to the assets layer and 404s, and the app cannot repair it from the UI.');
+  } else if (twin.local !== route.local) {
+    fail('worker.js sends ' + route.path + ' to ' + route.local + ' and ' + twin.path + ' to ' + twin.local
+      + ' — the two spellings of one endpoint must be the same function, or which handler answers depends on the name a device happens to have stored.');
+  }
+}
+for (const route of routes.filter(r => r.path.startsWith(LEGACY_PREFIX))) {
+  if (!twinOf(route.path, LEGACY_PREFIX, API_PREFIX)) {
+    fail('worker.js serves ' + route.path + ' with no ' + API_PREFIX + route.path.slice(LEGACY_PREFIX.length)
+      + ' twin — the /api/ spelling is the endpoint a fresh install defaults to, so it would have no route at all.');
+  }
+}
 
 if (!assets.first) {
   fail('[assets] declares no `run_worker_first` — without it asset requests win over the Worker on every path, so the function routes would be answered by the assets layer.');
@@ -323,9 +355,17 @@ for (const route of routes) {
 
 // The endpoint the browser defaults to (settings.js) has to be one of them: it
 // is the path every other endpoint is derived from at runtime.
-const defaultEndpoint = /endpoint:\s*'([^']+)'/.exec(read('settings.js'))?.[1];
+// Read from the exported constant, because that is where the name lives now —
+// and require the defaults object to USE it, so the exported name and the value
+// a device actually gets cannot drift apart. A hardcoded literal in the object
+// would leave the constant decorative: shown in the Sync screen, ignored by
+// every request.
+const settingsSrc = read('settings.js');
+const defaultEndpoint = /export const DEFAULT_SYNC_ENDPOINT = '([^']+)'/.exec(settingsSrc)?.[1];
 if (!defaultEndpoint) {
-  fail("settings.js declares no default `endpoint` — this guard cannot tell which route the app calls, and neither can a reader.");
+  fail('settings.js declares no DEFAULT_SYNC_ENDPOINT — this guard cannot tell which route the app calls, and neither can a reader.');
+} else if (!/endpoint: DEFAULT_SYNC_ENDPOINT,/.test(settingsSrc)) {
+  fail('settings.js declares DEFAULT_SYNC_ENDPOINT but its SYNC_DEFAULTS do not use it, so the name this guard checks is not the endpoint a device gets.');
 } else if (!routes.some(r => r.path === defaultEndpoint)) {
   fail(`settings.js defaults to ${defaultEndpoint}, which worker.js does not route — the app's Sync screen would 404 on every request.`);
 }

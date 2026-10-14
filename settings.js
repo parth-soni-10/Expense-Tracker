@@ -17,11 +17,40 @@ const KEY = () => nsKey('sync');
 const PRIVACY_KEY = () => nsKey('privacy');
 const BIOMETRIC_KEY = () => nsKey('bio');
 
+/**
+ * The endpoint a device uses when it has not been pointed somewhere else.
+ *
+ * A SAME-ORIGIN PATH, not a host: whichever deployment answers — the Worker,
+ * or the Pages deployment running the same bundled entry point — serves it,
+ * so the app talks to the site it was loaded from and needs no configuration
+ * to do it. It is named for the host that serves it — Cloudflare — rather than
+ * for the host this project migrated off; see LEGACY_SYNC_ENDPOINT below for
+ * the old name, which is still recognised and still routed. Everything
+ * else the app calls (setup-token, reminders-push, reminders-tick,
+ * profiles-admin) is DERIVED from this at runtime by replacing the last path
+ * segment — sync.js's setupTokenEndpoint, reminders.js's pushEndpoint and
+ * tickEndpoint — so a device pointed at a custom deployment moves all of it
+ * together.
+ */
+export const DEFAULT_SYNC_ENDPOINT = '/api/sync';
+
+/**
+ * The path this app called its sync endpoint before the rename, and what every
+ * device that was set up before it still has in storage.
+ *
+ * Kept as a name it RECOGNISES rather than one it writes: worker.js still
+ * routes it, so a device that never re-saves its settings keeps working
+ * unchanged, and the two values below are what let the app treat the old name
+ * as "the default" (isDefaultSyncEndpoint) instead of as somebody's custom
+ * endpoint.
+ */
+const LEGACY_SYNC_ENDPOINT = '/.netlify/functions/sync';
+
 const SYNC_DEFAULTS = Object.freeze({
   enabled: false,
   // Same-origin by default; override if proxying somewhere else.
-  endpoint: '/.netlify/functions/sync',
-  // The password the client sends to the Netlify Function.
+  endpoint: DEFAULT_SYNC_ENDPOINT,
+  // The password the client sends to the sync endpoint.
   password: '',
   // Connection bookkeeping shown in the UI.
   lastSyncAt: null,   // ISO timestamp
@@ -30,6 +59,11 @@ const SYNC_DEFAULTS = Object.freeze({
   lastError: null,
   // Which repo we're connected to (for display).
   repoLabel: '',      // e.g. "yourname/cents-data \u00b7 data.json @ main"
+  // The last mirror-gap verdict the app saw (sync.js's mirrorStatus renders
+  // it). Cached on the device so the Data menu can say what the state was
+  // without a request, and so a gap survives the reload that would otherwise
+  // be the moment somebody would notice it.
+  mirror: null,
 });
 
 /** Is an endpoint URL acceptable? Same-origin path, https, or a localhost
@@ -42,9 +76,45 @@ export function isValidEndpoint(candidateEndpoint) {
     || /^http:\/\/localhost(?::\d+)?(?:\/|$)/i.test(candidateEndpoint);
 }
 
+/**
+ * The endpoint a STORED value should become, repairing the two shapes that are
+ * known to be dead ends rather than letting them sit in storage and fail:
+ *
+ *   * this app's own pre-rename default. It names a host that does not serve
+ *     this app — the path is served by Cloudflare — and it still answers, but
+ *     leaving it there means the Sync screen keeps showing a Netlify path to
+ *     someone whose site never ran on Netlify. Rewritten to the current
+ *     default, which is the same same-origin endpoint under its own name.
+ *   * a `*.netlify.app` URL. The site used to live on one, and that host is
+ *     gone, so a device still pointing at it cannot read a single entry and
+ *     reports only a network failure. Rewritten to this site's own endpoint —
+ *     which is where that data lives now, in the KV namespace and the GitHub
+ *     mirror — so sync recovers by itself instead of staying broken.
+ *
+ * Anything else is left exactly as it was found. A custom endpoint is a
+ * deliberate choice (self-hosted sync, a local `wrangler dev`), not a stale
+ * value, and rewriting one would be the app silently changing where somebody's
+ * data goes.
+ */
+function migrateEndpoint(value) {
+  if (typeof value !== 'string') return '';
+  const raw = value.trim();
+  if (raw === '' || raw === LEGACY_SYNC_ENDPOINT) return DEFAULT_SYNC_ENDPOINT;
+  if (/^https?:\/\/[^/]*\.netlify\.app(?:\/|$)/i.test(raw)) return DEFAULT_SYNC_ENDPOINT;
+  return raw;
+}
+
+/** Is this the site's own endpoint — the current default or the name it had
+ *  before the rename? Both are "this site", so both are shown and generated as
+ *  such: the setup-link flow omits an endpoint the receiving device already
+ *  has, and the sync screen labels it "this site" rather than printing a path. */
+export function isDefaultSyncEndpoint(value) {
+  return !value || value === DEFAULT_SYNC_ENDPOINT || value === LEGACY_SYNC_ENDPOINT;
+}
+
 function normalizeSyncSettings(raw) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
-  const candidateEndpoint = typeof source.endpoint === 'string' ? source.endpoint.trim() : '';
+  const candidateEndpoint = migrateEndpoint(source.endpoint);
   const validEndpoint = isValidEndpoint(candidateEndpoint);
   return {
     ...SYNC_DEFAULTS,
@@ -56,6 +126,34 @@ function normalizeSyncSettings(raw) {
     lastErrorAt: typeof source.lastErrorAt === 'string' ? source.lastErrorAt : null,
     lastError: typeof source.lastError === 'string' && source.lastError ? source.lastError : null,
     repoLabel: typeof source.repoLabel === 'string' ? source.repoLabel.slice(0, 240) : '',
+    mirror: normalizeMirror(source.mirror),
+  };
+}
+
+/**
+ * A mirror verdict, kept to what it is: a state name and two short opaque
+ * tokens. It is written from a server's answer and rendered in the Data menu, so
+ * it is bounded the way every other stored value here is — a value from off the
+ * device is not a layout, and an unbounded one would be a way to make the menu
+ * unreadable many saves later.
+ *
+ * The state is deliberately NOT checked against a list of known ones: this side
+ * does not own that vocabulary (lib/cloud.mjs does, and a deployment can be
+ * newer than the app that talks to it). An unknown state is kept and rendered as
+ * "not checked" by sync.js, which is the honest reading of one.
+ */
+function normalizeMirror(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const text = (value, max) => (typeof value === 'string' && value.length <= max ? value : null);
+  const state = text(raw.state, 40);
+  if (!state) return null;
+  return {
+    state,
+    checkedAt: text(raw.checkedAt, 40),
+    recordVersion: text(raw.recordVersion, 64),
+    mirrorVersion: text(raw.mirrorVersion, 64),
+    commit: text(raw.commit, 64),
+    wrote: raw.wrote === true ? true : raw.wrote === false ? false : null,
   };
 }
 

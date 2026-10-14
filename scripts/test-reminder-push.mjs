@@ -1416,7 +1416,7 @@ delete process.env.GITHUB_TOKEN;
     const deleted = [];
     const fakeSelf = {
       addEventListener: (type, fn) => { events[type] = fn; },
-      location: { origin: 'https://cents-app.netlify.app' },
+      location: { origin: 'https://cents-app.pages.dev' },
       skipWaiting: () => {},
       registration: { showNotification: async (title, opts) => { shown.push({ title, opts }); } },
       clients: { claim: async () => {}, matchAll: async () => [], openWindow: async () => null },
@@ -1850,7 +1850,7 @@ delete process.env.GITHUB_TOKEN;
     const { patchSyncSettings } = await import('../settings.js');
     patchSyncSettings({
       enabled: true,
-      endpoint: 'https://cents-app.netlify.app/.netlify/functions/sync',
+      endpoint: 'https://cents-app.pages.dev/.netlify/functions/sync',
       password: 'pw-test',
     });
     globalThis.window.PushManager = class {}; // pushSupported() reads this

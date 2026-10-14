@@ -48,9 +48,57 @@
    skipped outright: an absent mirror has no document to offer, and asking a
    code host with no credential is an error, not a read.
 
+   THE ORDER OF THE TWO WRITES: the primary commits first, and the mirror is
+   written after it. That is both a latency rule and a correctness one.
+
+     latency    a save is allowed to wait on the store that decides whether the
+                save worked, and on nothing else. The mirror is best-effort by
+                contract, so a slow (or dead) code host must not sit between a
+                keystroke and the answer. A caller that can hand work off to
+                the platform — a Worker's ctx.waitUntil, passed in as `defer`
+                — gets that promise returned while the mirror is still in
+                flight; a caller that cannot (local runs, the tests, any host
+                with no such hook) waits for it as before.
+
+     correctness the backup must never lead the primary. Written first, a mirror
+                would keep content the primary then REFUSED — the save answers
+                an error, the store still holds the previous document, and the
+                "backup" is the only place the rejected version exists.
+
+   The cost of the order is that the primary's record cannot carry the mirror's
+   new sha before it is written, so the record is patched afterwards, when the
+   mirror returns one (and only while it still holds the version we wrote). A
+   hand-off that never lands therefore leaves a stale mirror sha behind, which
+   costs the NEXT save one conflict-and-retry against the code host — the
+   mirror's own 409 path, already exercised — and never a failed save.
+
    Recovery: to fall back to the GitHub copy for one profile, delete its key in
    the primary store (cents-cloud / doc/<profile>.json — under the KV prefix
    cents:cents-cloud: on Cloudflare); the next read seeds from the mirror again.
+
+   THE GAP CHECK, and why it is measured rather than assumed. Everything above
+   is arranged so a code host can fail without anybody noticing: the mirror is
+   written after the primary, and its failure is logged rather than returned. The
+   cost of that is exactly the thing worth knowing — the two homes can drift
+   apart in silence, with the KV record holding a version the repo does not have,
+   and the first person to find out is whoever restores from the mirror. So every
+   save now ENDS by comparing the two for real: the record's version token
+   against the repository blob's own bytes, read back over the Contents API, and
+   the verdict is written into the record beside the document (and handed back to
+   whoever asked for the save).
+
+   The read-back is one extra Contents API GET per save, and it is deliberate.
+   The mirror write's answer says what the WRITER believed it sent; the question
+   here is what the repository holds NOW, which a second device, a force-push or
+   a hand edit all change without changing the answer the writer got. It runs
+   after the save has been answered — handed to the caller's waitUntil where
+   there is one — so a keystroke never waits on it.
+
+   A verdict always describes ONE version: `recordVersion` is the record's token
+   at the moment of the comparison, so a verdict that arrives after the next save
+   is recognisable as stale rather than as news. A save's own record deliberately
+   carries no verdict until its check returns, so nothing can read a previous
+   save's "in sync" as a statement about this one.
    ============================================================ */
 
 import { createHash } from 'node:crypto';
@@ -79,6 +127,121 @@ export function versionOf(json) {
   return createHash('sha256').update(json).digest('hex').slice(0, 32);
 }
 
+/* ---------- the mirror gap ----------
+ *
+ * The vocabulary of a comparison between the record's version and the repo
+ * blob. Every consumer renders one of these and nothing else — the Data menu
+ * (sync.js's mirrorStatus), the save response and the stored verdict — so the
+ * set is closed on purpose:
+ *
+ *   in_sync       the blob hashes to the record's version; the two agree
+ *   pending       the blob differs and NO save's check has landed for this
+ *                 version yet — a save is still being mirrored, or its check
+ *                 died with the process that owed it. Not a gap: nothing has
+ *                 been claimed about this version, so nothing is being denied
+ *                 either. (A save answers BEFORE its mirror write, so this
+ *                 window is a real, repeatable state rather than a race to
+ *                 paper over: an on-demand check taken a second after a save
+ *                 lands in it.)
+ *   behind        the blob is readable and differs, and the save this check
+ *                 belongs to did not reach it (its mirror write failed)
+ *   diverged      the blob is readable and differs, and this save's write DID
+ *                 report success — so something else owns the mirror's head
+ *   missing       the repo has no file at that path (deleted, REPO_FILE
+ *                 renamed, or a token that can no longer see it)
+ *   unverifiable  the blob could not be read, so nothing can be said of it
+ *   no_document   the primary holds no document, so there is nothing to compare
+ *   unconfigured  no mirror is configured, which is a supported shape, not a gap
+ */
+export const MIRROR_STATES = ['in_sync', 'pending', 'behind', 'diverged', 'missing', 'unverifiable', 'no_document', 'unconfigured'];
+
+/**
+ * Classify one comparison. Pure — no store, no GitHub, no request — so the whole
+ * vocabulary can be exercised without any of them.
+ *
+ * `blobExists` is null when the read itself failed, which is a different answer
+ * from "the file is not there" and must not be reported as one.
+ * `wrote` is null when nothing is known about the write this comparison belongs
+ * to (an on-demand check with no verdict to inherit).
+ */
+export function classifyMirror({ recordExists, blobExists, recordVersion, mirrorVersion, wrote }) {
+  if (!recordExists) return 'no_document';
+  if (blobExists === null) return 'unverifiable';
+  if (!blobExists) return 'missing';
+  if (mirrorVersion === recordVersion) return 'in_sync';
+  // Nothing claimed about this version, so a difference is unexplained rather
+  // than a gap somebody can act on — the save that owes the check may still be
+  // in flight (see the states above).
+  if (wrote === null) return 'pending';
+  // A differing blob is explained by the write: one that failed leaves the
+  // mirror behind, one that succeeded leaves somebody else's version there.
+  return wrote ? 'diverged' : 'behind';
+}
+
+/**
+ * Compare a record's version against the repo blob by reading the blob.
+ *
+ * `recordVersion` is what the record holds (null when there is no record at
+ * all). `wrote` says whether the save this check belongs to reached the mirror:
+ * true, false, or null when nothing is known about a write (an on-demand check
+ * that found no verdict to inherit).
+ *
+ * Returns the verdict — { state, checkedAt, recordVersion, mirrorVersion,
+ * commit, wrote } — and never throws: a comparison that cannot complete is the
+ * `unverifiable` state, which the caller reports as "not checked" rather than as
+ * a mirror that is fine.
+ */
+export async function checkMirror(profileId, config, recordVersion, { wrote = null } = {}) {
+  const checkedAt = new Date().toISOString();
+  const base = { checkedAt, recordVersion: recordVersion || null, mirrorVersion: null, commit: null, wrote };
+  // No token, no coordinates, nothing to compare with — and asking a code host
+  // with no credential is an error, not a read (lib/gh.mjs).
+  if (!mirrorConfigured()) return { ...base, state: 'unconfigured' };
+  // Nothing recorded to compare against. Worth saying, and not worth a read of
+  // the code host to say it: there is no version on this side to compare with.
+  if (recordVersion == null) return { ...base, state: classifyMirror({ recordExists: false }) };
+  let gh = null;
+  try {
+    gh = await readGithubDoc(profileId, config);
+  } catch (e) {
+    console.error('cents cloud: the mirror could not be read for the gap check', e?.message || e);
+  }
+  return {
+    ...base,
+    state: classifyMirror({
+      recordExists: true,
+      blobExists: gh ? !!gh.exists : null,
+      recordVersion,
+      mirrorVersion: gh?.version || null,
+      wrote,
+    }),
+    mirrorVersion: (gh && gh.exists && gh.version) || null,
+    commit: (gh && gh.exists && gh.commitSha) || null,
+  };
+}
+
+/**
+ * The gap as it stands right now, for a caller who asked (sync.mjs's
+ * `?mirror=1`, which the Data menu uses). Reads the record and the blob and
+ * nothing else — no document — so asking on demand costs two small reads rather
+ * than a re-download of the ledger.
+ *
+ * The written-ness of the last save is inherited from the recorded verdict when
+ * that verdict describes the same version, so the on-demand answer cannot
+ * disagree with the one the save recorded (a differing blob would otherwise read
+ * as `behind` here and `diverged` there). Where there is no such verdict this
+ * passes `wrote: null`, which classifies a difference as `pending` — the save
+ * that owes the answer has not given it yet, and reporting that as `behind`
+ * would be an alarm about a write that may be a second away from landing.
+ */
+export async function mirrorGap(profileId, config) {
+  const { store, durable } = await openStore(CLOUD_STORE);
+  const rec = durable ? await readRecord(store, keyFor(profileId)) : null;
+  if (!rec) return checkMirror(profileId, config, null);
+  const recorded = rec.mirror && rec.mirror.recordVersion === rec.version ? rec.mirror : null;
+  return checkMirror(profileId, config, rec.version, { wrote: recorded ? recorded.wrote : null });
+}
+
 /**
  * Read a profile's cloud document: { exists, content, version, updatedAt,
  * commitSha }. Throws CloudError when the only store that could hold it is
@@ -91,7 +254,11 @@ export async function readCloudDoc(profileId, config) {
     const rec = await readRecord(store, keyFor(profileId));
     if (rec) {
       return { exists: true, content: rec.content, version: rec.version,
-        updatedAt: rec.updatedAt, commitSha: rec.ghCommit || null };
+        updatedAt: rec.updatedAt, commitSha: rec.ghCommit || null,
+        // The last save's gap verdict, if it has one yet. Recorded, not
+        // measured: a plain read must not cost a GitHub round trip (that is
+        // what ?mirror=1 is for), and the verdict names the version it judged.
+        mirror: rec.mirror || null };
     }
   }
   const gh = await readGithubDoc(profileId, config);
@@ -113,12 +280,30 @@ export async function readCloudDoc(profileId, config) {
  * null means "I believe no document exists yet" — the same contract GitHub's
  * sha had, so a client that predates this module still recovers through its
  * normal pull-merge-retry path.
- * Returns { ok, version, updatedAt, commitSha, mirrored }
+ *
+ * `defer` is optional and is how a caller says "I can hand background work to
+ * the platform": it is called with a promise to keep alive (a Worker passes
+ * ctx.waitUntil). Only the mirror uses it, and only when the primary is the
+ * commit point — a deployment whose commit point IS the mirror has to wait for
+ * it, so there the hook is ignored.
+ *
+ * Returns { ok, version, updatedAt, commitSha, mirrored, mirror }
  *      | { conflict: true }
  *      | { error: <message> } when the store this deployment commits to did
  *        not take it.
+ * `mirrored: null` means the mirror write was handed off and its outcome is not
+ * known yet; `commitSha` is null in that case, because the code host has not
+ * answered. Nothing that reads this response needs either field — the client
+ * round-trips `version` and nothing else.
+ *
+ * `mirror` is the gap verdict for the version just saved: an object, or null
+ * when the mirror write AND its check were handed to the platform and their
+ * outcome is not known yet — which is the normal case on a real deployment. A
+ * null here is "not measured yet", never "in sync"; the verdict is written into
+ * the record when it lands, so the next read (or an on-demand ?mirror=1 check)
+ * is where a caller learns it.
  */
-export async function writeCloudDoc(profileId, config, { content, expectedVersion = null, message = '', branch = '' } = {}) {
+export async function writeCloudDoc(profileId, config, { content, expectedVersion = null, message = '', branch = '', defer = null } = {}) {
   const { store, durable } = await openStore(CLOUD_STORE);
   const key = keyFor(profileId);
   const json = JSON.stringify(content, null, 2);
@@ -138,29 +323,70 @@ export async function writeCloudDoc(profileId, config, { content, expectedVersio
   const version = versionOf(json);
   const updatedAt = new Date().toISOString();
 
-  // The mirror is written first so the primary's single record can carry the
-  // mirror's new sha, and because it is the one store that is always attempted
-  // — a spare durable copy costs one request and is never what decides whether
-  // the save works.
-  const mirror = await mirrorToGithub(profileId, config, json, { sha: ghSha, message, branch });
-
-  let primaryOk = true;
+  // ---- 1. the primary, and the only thing a save waits on -------------------
+  // The record carries the mirror sha it already knows (the one this save is
+  // about to write WITH) rather than the sha the mirror will answer with; the
+  // patch below replaces it once the code host has spoken.
+  // The previous verdict is deliberately NOT carried into the new record: it
+  // judged a different version, and an "in sync" left over from the last save
+  // would read as a statement about this one. It arrives with the check below.
   if (durable) {
     try {
       await store.setJSON(key, { v: 1, version, updatedAt, content,
-        ghSha: mirror?.sha || ghSha || null, ghCommit: mirror?.commit || rec?.ghCommit || null });
+        ghSha: ghSha || null, ghCommit: rec?.ghCommit || null });
     } catch (e) {
-      primaryOk = false;
       console.error('cents cloud: primary write failed', e?.message || e);
+      // The store this deployment commits to has to have taken it (TWO MODES
+      // above): claiming success over a stale primary would leave every other
+      // device reading the previous document. Returning here also means the
+      // mirror is never touched, so it cannot end up ahead of the primary.
+      return { error: 'Saving to the cloud failed' };
     }
   }
 
-  // The store this deployment commits to has to have taken it (TWO MODES
-  // above): claiming success over a stale primary would leave every other
-  // device reading the previous document.
-  if (durable ? !primaryOk : !mirror) return { error: 'Saving to the cloud failed' };
+  // ---- 2. the mirror, after the document is already safe --------------------
+  const mirrorTask = async () => {
+    const wrote = await mirrorToGithub(profileId, config, json, { sha: ghSha, message, branch });
+    // The gap check, right after the write rather than instead of it: the write
+    // says what we sent, this says what the repo holds now (see THE GAP CHECK
+    // at the top of this file). It runs whether or not the write landed, because
+    // a failed write is the case where the difference matters most.
+    const verdict = await checkMirror(profileId, config, version, { wrote: !!wrote });
+    // Remember the sha the mirror answered with, so the next save updates it
+    // instead of colliding with its own last write — and the verdict, so the
+    // next reader learns whether this save actually reached the code host.
+    // Re-read first: a second device may have committed while this one was
+    // talking to it, and the patch must not resurrect the version it is
+    // patching over. A record that has moved on keeps neither.
+    if (durable) {
+      try {
+        const live = await readRecord(store, key);
+        if (live && live.version === version) {
+          const patch = { mirror: verdict };
+          // A write that failed leaves the sha we already had: it still names
+          // the mirror's head, and clearing it would cost the next save a
+          // sha-less PUT and the 422-then-retry that follows.
+          if (wrote) { patch.ghSha = wrote.sha || null; patch.ghCommit = wrote.commit || null; }
+          await store.setJSON(key, { ...live, ...patch });
+        }
+      } catch (e) {
+        console.error('cents cloud: recording the mirror sha failed', e?.message || e);
+      }
+    }
+    return { wrote, verdict };
+  };
 
-  return { ok: true, version, updatedAt, commitSha: mirror?.commit || null, mirrored: !!mirror };
+  if (durable && typeof defer === 'function') {
+    defer(mirrorTask().catch(() => null));
+    return { ok: true, version, updatedAt, commitSha: null, mirrored: null, mirror: null };
+  }
+
+  const { wrote, verdict } = await mirrorTask();
+  // With no durable primary the mirror IS the commit point, so its failure is
+  // the save's failure rather than a spare copy having a bad day.
+  if (!durable && !wrote) return { error: 'Saving to the cloud failed' };
+
+  return { ok: true, version, updatedAt, commitSha: wrote?.commit || null, mirrored: !!wrote, mirror: verdict };
 }
 
 /** A stored record, or null when absent, unreadable or from an older shape. */

@@ -151,7 +151,7 @@
           : '';
         // Two different messages: one for the file:// case (almost certainly
         // the actual cause), one for the http(s) case (could be stale cache,
-        // a Netlify deploy missing files, etc.).
+        // a deploy missing files, etc.).
         var headline, blurb, steps;
         if (isFileProtocol) {
           headline = 'App can&rsquo;t run from <code>file://</code>.';
@@ -164,12 +164,12 @@
             '</ol>';
         } else {
           headline = 'App didn&rsquo;t start.';
-          blurb = 'The JavaScript module did not finish loading or initializing. Most often this is a stale browser cache or a Netlify deploy that&rsquo;s missing files.';
+          blurb = 'The JavaScript module did not finish loading or initializing. Most often this is a stale browser cache or a deploy that&rsquo;s missing files.';
           steps =
             '<ol>' +
               '<li>Hard refresh - <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd> &nbsp;/&nbsp; macOS: <kbd>&#8984;</kbd>+<kbd>Shift</kbd>+<kbd>R</kbd></li>' +
               '<li>If still blank: DevTools (<kbd>F12</kbd>) &rarr; <strong>Console</strong>. The first red line is the real cause - paste it back if you need help.</li>' +
-              '<li>If you just redeployed: Netlify dashboard &rarr; <strong>Deploys</strong> &rarr; <em>Trigger deploy</em> &rarr; tick <strong>Clear cache and deploy</strong>.</li>' +
+              '<li>If you just deployed: <code>npx wrangler deployments list</code> in the repo shows the newest one, and <code>npx wrangler deploy</code> publishes it again.</li>' +
             '</ol>';
         }
         panel.innerHTML =

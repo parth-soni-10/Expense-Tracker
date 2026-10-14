@@ -683,7 +683,7 @@ export async function syncPeriodicReminder() {
   }
 }
 
-// ---------- closed-app push (Web Push via the Netlify functions) ----------
+// ---------- closed-app push (Web Push via the functions the Worker serves) ----------
 // While the app is open, the scheduler above is enough. When it is closed,
 // delivery needs a real Web Push subscription: the browser hands us an
 // endpoint + keys, the server stores them, and the reminder run fires the push

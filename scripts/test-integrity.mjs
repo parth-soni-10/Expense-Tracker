@@ -41,7 +41,7 @@ const LIVE_KEY = 'cents:p/personal/state';
 
 const { validateState, loadState, saveState, parseBackup, parseEntriesCsv, CSV_REFUSAL, foreignWriteNeeded, readStateText, unreadableBackup, entriesCsv, ENTRIES_CSV_HEADER, MAX_BACKUP_BYTES, MAX_BACKUP_ENTRIES, isValidCheckpointDate } = await import('../storage.js');
 const { csvCell, csvUnquote, csvDocument, csvRows, csvDate, isRealDate, CSV_BOM } = await import('../csv.js');
-const { getPrivacyPin } = await import('../settings.js');
+const { getPrivacyPin, getSyncSettings, isDefaultSyncEndpoint, DEFAULT_SYNC_ENDPOINT, isValidEndpoint } = await import('../settings.js');
 const { mergeStates } = await import('../sync-merge.js');
 const { paidHours, shiftPay, simulateTax, tescoCsv, parseTescoCsv } = await import('../tesco.js');
 const { readFileSync } = await import('node:fs');
@@ -1088,7 +1088,7 @@ check('the relay is probed from a local page, and only from a local page',
   && reachable('192.168.1.9', 'http:') === true,
   String(reachable('localhost', 'https:')));
 check('and a page served from anywhere else never reaches for a device it cannot see',
-  reachable('cents-app.netlify.app', 'https:') === false && reachable('192.168.1.9', 'https:') === false
+  reachable('cents-app.pages.dev', 'https:') === false && reachable('192.168.1.9', 'https:') === false
   && reachable('', 'https:') === false && reachable('example.com:8787', 'https:') === false);
 check('the gate is what stands in front of /status, and a tap is told why', (() => {
   const at = lidlSource.indexOf('if (!relayReachable())');
@@ -1523,6 +1523,42 @@ check('the journal written before the stack still reads',
   /Array\.isArray\(parsed\) \? parsed\s*:\s*\(parsed && \(Array\.isArray\(parsed\.entries\)/.test(undoStorage));
 check('a restore empties the journal of the document it replaced',
   /clearUndoJournal\(\);\s*\n\s*trackAction\(\(\) => \{ state = validateState\(before\)/.test(appSource));
+
+// ---- a stored sync endpoint that cannot work is repaired, not obeyed ------
+// Two shapes sit in people's storage and both fail in ways that look like
+// something else: the pre-rename path (this app's own endpoint under the name
+// of the host the project migrated off) reads as "still Netlify", and a
+// `*.netlify.app` URL points at a site that no longer answers, so every sync
+// reports a network failure over data that is actually intact in KV. The repair
+// happens when the settings are READ (settings.js's migrateEndpoint), which is
+// what these five assertions pin — including the case that must NOT move: a
+// custom endpoint is a deliberate choice, not a stale value.
+const syncKey = 'cents:p/personal/sync';
+const endpointFor = (stored) => {
+  localStorage = new MemoryStorage({ [syncKey]: JSON.stringify(stored) });
+  return getSyncSettings().endpoint;
+};
+
+check('the default endpoint is the path the serving host owns, and it is a usable path',
+  DEFAULT_SYNC_ENDPOINT === '/api/sync' && isValidEndpoint(DEFAULT_SYNC_ENDPOINT));
+check('a device holding the pre-rename spelling is moved to the current default',
+  endpointFor({ enabled: true, endpoint: '/.netlify/functions/sync', password: 'pw-here' }) === DEFAULT_SYNC_ENDPOINT);
+check('a device still pointed at the retired Netlify host is moved to this site',
+  endpointFor({ enabled: true, endpoint: 'https://cents-app.netlify.app/.netlify/functions/sync' }) === DEFAULT_SYNC_ENDPOINT
+  && endpointFor({ enabled: true, endpoint: 'https://cents-app.netlify.app' }) === DEFAULT_SYNC_ENDPOINT);
+check('a custom endpoint is left exactly as the user set it',
+  endpointFor({ enabled: true, endpoint: 'https://sync.example.com/api/sync' }) === 'https://sync.example.com/api/sync'
+  && endpointFor({ enabled: true, endpoint: '/.netlify/functions/some-other-function' }) === '/.netlify/functions/some-other-function');
+check('the repair rewrites the endpoint only, and both spellings read as "this site"',
+  (() => {
+    localStorage = new MemoryStorage({ [syncKey]: JSON.stringify({ enabled: true, endpoint: '/.netlify/functions/sync', password: 'pw-here', lastSyncAt: '2026-01-02T03:04:05.000Z', repoLabel: 'me/cents-data \u00b7 data.json @ main' }) });
+    const s = getSyncSettings();
+    return s.endpoint === DEFAULT_SYNC_ENDPOINT && s.enabled === true && s.password === 'pw-here'
+      && s.lastSyncAt === '2026-01-02T03:04:05.000Z' && s.repoLabel.startsWith('me/cents-data');
+  })()
+  && isDefaultSyncEndpoint(DEFAULT_SYNC_ENDPOINT) && isDefaultSyncEndpoint('/.netlify/functions/sync')
+  && !isDefaultSyncEndpoint('https://sync.example.com/api/sync'));
+localStorage = new MemoryStorage();
 
 // ---------------------------------------------------------------- report
 if (failures.length) {

@@ -3,7 +3,8 @@
 # The app is served from the repository root (the same directory Netlify
 # published), and the five functions under netlify/functions/ are bundled into
 # worker.js rather than copied — see its header for what the Worker wires up
-# (the KV store, the /.netlify/functions/* routes, the environment).
+# (the KV store, the /api/* routes and their /.netlify/functions/* aliases, the
+# environment).
 #
 #   npx wrangler dev            → local test on http://localhost:8787
 #   npx wrangler deploy         → publish to cents-app.<your-subdomain>.workers.dev
@@ -11,7 +12,11 @@
 #   npx wrangler secret bulk .dev.vars   → the secrets (see below)
 #
 # `run_worker_first` is scoped to the function paths only, so ordinary page and
-# asset requests never invoke the Worker.
+# asset requests never invoke the Worker. Both spellings of those paths are
+# named: the assets layer wins every path it is not told to yield, so an
+# unlisted route is answered by a 404 from the assets layer before the Worker
+# ever sees it — the failure mode that would make the app's own default
+# endpoint look like a missing file.
 
 name = "cents-app"
 main = "worker.js"
@@ -33,7 +38,7 @@ compatibility_flags = ["nodejs_compat"]
 [assets]
 directory = "."
 binding = "ASSETS"
-run_worker_first = ["/.netlify/functions/*"]
+run_worker_first = ["/api/*", "/.netlify/functions/*"]
 
 # HTML handling, which this app had written out at length before the move
 # because it is the difference between an app and a blank page.

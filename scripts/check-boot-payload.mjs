@@ -47,23 +47,27 @@ const BOOT_MODULES = [
 // Modules that must NOT be in the boot closure: the ones the lazy paths own.
 const DEFERRED_MODULES = ['/tesco.js', '/insights.js', '/ocr-pixels.js', '/ocr-prep-worker.js'];
 
-// Decoded JS parsed before the first paint, with headroom for growth (~4 %).
-// Measured today: 756 KB — app.js 570 KB + storage.js 58 KB + reminders.js 40 KB
-// + tesco-pay.js 33 KB + sync.js/sync-merge.js/profiles.js 42 KB + csv.js and
-// the small ones. The last
-// addition is the developer pass on the reminder's silent half: the closed-app
-// push can die without anything on screen changing (the sender prunes a record
-// the push service calls gone, or the subscription is bound to a key the server
-// no longer signs with), so the page checks it against the live server on every
-// start and repairs both cases — plus the modal's verdict and its one-tap
-// re-register, and the worker's yield to an armed push (its own file). Every
-// piece of it is shell for the same reason the scheduler is: it has to be
-// installed before any screen exists, and the alternative is a reminder that
-// reports as on and never arrives. The number to watch is not the ceiling, it
-// is the shape: this should stay "the shell and arithmetic", with every screen
-// and every library behind import() — and ~4 % is the whole of the allowance,
-// so a new eager import (240 KB for tesco.js) still fails loudly.
-const BOOT_JS_BUDGET = 810 * 1024;
+// Decoded JS parsed before the first paint. Measured today: 810 KB — app.js
+// 590 KB + storage.js 59 KB + csv.js 8 KB + seed.js 3 KB + settings.js 11 KB +
+// sync.js 22 KB + sync-merge.js 13 KB + profiles.js 13 KB + reminders.js 57 KB +
+// tesco-pay.js 33 KB. The last addition is the GitHub mirror's gap: the Data
+// menu's line, the wording for its eight states, the on-demand check and the
+// notice a gap raises. It is shell by necessity rather than by choice — the menu
+// it reports in IS app.js, and a mirror that fell behind on somebody's phone is
+// not something to fetch on request. (The two guards that read it: test-cloud
+// for the comparison and test-sync for the wording.) The number to watch is not
+// the ceiling, it is the shape: this should stay "the shell and arithmetic",
+// with every screen and every library behind import() — so a new EAGER IMPORT
+// still fails loudly (240 KB for tesco.js, 39 KB for insights.js).
+//
+// The ceiling itself moved here, from 810 KB, and the reason is measured rather
+// than felt: the closure was 794 KB of that 810 KB before this addition and 810
+// after it, so the old number no longer described anything except the last
+// change that happened to fit under it. 826 KB leaves a shell-sized change some
+// room and is still an order of magnitude below one lazy screen, so the thing
+// this guard exists to catch — a new EAGER IMPORT — still fails on the first
+// push rather than months later.
+const BOOT_JS_BUDGET = 826 * 1024;
 
 /** Every static dependency of a module's own text: `import … from 'x'`,
  *  `import 'x'` and `export … from 'x'` (a re-export loads the module just as

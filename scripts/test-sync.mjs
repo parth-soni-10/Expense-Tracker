@@ -57,6 +57,7 @@ globalThis.fetch = async (url, opts = {}) => {
 const stored = () => clouds.get('data.json') || null;
 
 const { default: handler } = await import(REPO + '/netlify/functions/sync.mjs');
+const { MIRROR_STATES } = await import(REPO + '/netlify/functions/lib/cloud.mjs');
 const call = (method, body, password = 'test-password-1234', profile = null) => handler(new Request('https://cents.test/.netlify/functions/sync', {
   method,
   headers: {
@@ -65,6 +66,11 @@ const call = (method, body, password = 'test-password-1234', profile = null) => 
     ...(profile ? { 'x-cents-profile': profile } : {}),
   },
   body: body ? JSON.stringify(body) : undefined,
+}), {});
+// The gap check, as the app's Data menu asks for it.
+const mirrorCall = (password = 'test-password-1234', profile = null) => handler(new Request('https://cents.test/.netlify/functions/sync?mirror=1', {
+  method: 'GET',
+  headers: { 'x-cents-password': password, ...(profile ? { 'x-cents-profile': profile } : {}) },
 }), {});
 
 const tesco = {
@@ -107,6 +113,34 @@ check('missing password rejected (401)', noAuth.status === 401, `got ${noAuth.st
 const huge = await call('PUT', { content: { version: 2, entries: [], settings: {}, pad: 'x'.repeat(6 * 1024 * 1024) } });
 const hugeText = await huge.text();
 check('a body over 6 MB is refused with an actionable message', huge.status === 413 && /audio notes/.test(hugeText), `got ${huge.status} ${hugeText.slice(0, 120)}`);
+
+// ---- the mirror gap, from the endpoint's side ------------------------------
+// A save's answer carries the verdict when the deployment could reach one before
+// answering; the on-demand check answers with the verdict and NOTHING else,
+// because the Data menu asks for it on every open and a reply carrying the
+// document would make that cost a re-download of the ledger.
+const gapBefore = await (await call('GET')).json();
+const gapPut = await (await call('PUT', { content: { ...state, settings: { ...state.settings, monthlyBudget: 901 } }, sha: gapBefore.sha })).json();
+check('a save answers with the mirror verdict it could reach',
+  gapPut.mirror?.state === 'in_sync', JSON.stringify(gapPut.mirror));
+check('and the verdict is one of the vocabulary the app renders',
+  MIRROR_STATES.includes(gapPut.mirror?.state), String(gapPut.mirror?.state));
+
+const checked = await mirrorCall();
+const checkedBody = await checked.json();
+check('the on-demand check answers 200 with a verdict',
+  checked.status === 200 && MIRROR_STATES.includes(checkedBody.mirror?.state), `${checked.status} ${JSON.stringify(checkedBody).slice(0, 160)}`);
+check('and no document rides along with it', checkedBody.content === undefined, JSON.stringify(Object.keys(checkedBody)));
+check('and it names whether this deployment has a mirror at all',
+  checkedBody.mirrorConfigured === true, String(checkedBody.mirrorConfigured));
+// This deployment's store is an in-memory map (not durable), so the mirror IS
+// the commit point and there is no record to compare against. "Nothing to
+// compare" is the honest answer, and it must not be dressed up as "fine".
+check('with no record to compare it says so rather than passing',
+  checkedBody.mirror.state === 'no_document', checkedBody.mirror.state);
+const uncheckedAuth = await mirrorCall('wrong-password');
+check('the check is behind the same credential as the rest of the endpoint',
+  uncheckedAuth.status === 401, `got ${uncheckedAuth.status}`);
 
 // ---- the preflight has to allow what the client actually sends -----------
 // A cross-origin endpoint (the self-hosted sync domain the CSP allows) is
@@ -257,13 +291,15 @@ mem.set('cents:syncSettings', JSON.stringify({
   endpoint: 'https://cents.test/.netlify/functions/sync',
   password: 'test-password-1234',
 }));
-const { syncPull, syncPush } = await import(REPO + '/sync.js');
+const { syncPull, syncPush, syncCheckMirror, mirrorStatus } = await import(REPO + '/sync.js');
 const tiny = { version: 2, entries: [], settings: {} };
 const clientCalls = [];
+const clientUrls = [];
 let clientBody = { error: 'server said no' };
 let clientStatus = 400;
 globalThis.fetch = async (url, opts = {}) => {
   clientCalls.push(opts.method || 'GET');
+  clientUrls.push(String(url));
   return new Response(JSON.stringify(clientBody), { status: clientStatus, headers: { 'content-type': 'application/json' } });
 };
 
@@ -299,6 +335,59 @@ check('an oversize payload is refused before any upload',
   oversized.ok === false && oversized.reason === 'rejected' && clientCalls.length === 0,
   `${oversized.reason}, ${clientCalls.length} request(s) made`);
 check('that refusal names the cause', /audio note/.test(oversized.message || ''), oversized.message);
+
+// ---- the client's half of the mirror gap ---------------------------------
+// The verdict has to reach the screen without being invented on the way: a save
+// and a pull both carry it when the proxy measured it, the on-demand check is
+// its own request, and a reply that is not a verdict is never a pass.
+clientStatus = 200;
+clientBody = { sha: 's1', commit: 'c1', branch: 'main', mirror: { state: 'in_sync', recordVersion: 'r1', mirrorVersion: 'r1', wrote: true } };
+const pushedWithVerdict = await syncPush(tiny);
+check('a save hands on the verdict when the proxy measured one',
+  pushedWithVerdict.ok === true && pushedWithVerdict.mirror?.state === 'in_sync', JSON.stringify(pushedWithVerdict));
+clientBody = { sha: 's1', commit: null, branch: 'main', mirror: null };
+const pushedDeferred = await syncPush(tiny);
+check('and a save whose mirror was handed off carries none, rather than a false pass',
+  pushedDeferred.ok === true && pushedDeferred.mirror === null, JSON.stringify(pushedDeferred));
+clientBody = { content: tiny, sha: 'abc', mirror: { state: 'diverged', recordVersion: 'r1', mirrorVersion: 'm9', wrote: true } };
+const pulledWithVerdict = await syncPull();
+check('a pull carries the verdict the last save recorded',
+  pulledWithVerdict.mirror?.state === 'diverged', JSON.stringify(pulledWithVerdict.mirror));
+
+clientUrls.length = 0;
+clientBody = { mirror: { state: 'behind', checkedAt: new Date().toISOString(), recordVersion: 'r1', mirrorVersion: 'm0', wrote: false }, mirrorConfigured: true };
+const verdict = await syncCheckMirror();
+check('the check asks the configured endpoint with the check on it',
+  clientUrls[0] === 'https://cents.test/.netlify/functions/sync?mirror=1', clientUrls[0]);
+check('and hands the verdict back', verdict.ok === true && verdict.mirror.state === 'behind', JSON.stringify(verdict));
+clientBody = { mirrorConfigured: true };
+const noVerdict = await syncCheckMirror();
+check('a reply that is not a verdict is not a pass',
+  noVerdict.ok === false && /verdict/.test(noVerdict.message || ''), JSON.stringify(noVerdict));
+
+// What the Data menu does with one. `gap` is the only thing that may colour the
+// line, and the two mistakes available here are both silent: crying a gap at a
+// mirror that is fine, and calling an unchecked one fine.
+for (const state of ['behind', 'diverged', 'missing', 'unverifiable']) {
+  check(`"${state}" is reported as a gap`, mirrorStatus({ state }).gap === true, JSON.stringify(mirrorStatus({ state })));
+}
+for (const state of ['in_sync', 'no_document', 'unconfigured', 'pending']) {
+  check(`"${state}" is not reported as a gap`, mirrorStatus({ state }).gap === false, JSON.stringify(mirrorStatus({ state })));
+}
+check('nothing checked yet is not a pass',
+  mirrorStatus(null).known === false && mirrorStatus(null).gap === false, JSON.stringify(mirrorStatus(null)));
+check('and a state from a newer proxy is not a pass either',
+  mirrorStatus({ state: 'from-the-future' }).known === true && mirrorStatus({ state: 'from-the-future' }).gap === false,
+  JSON.stringify(mirrorStatus({ state: 'from-the-future' })));
+// Every state needs BOTH wordings: the row's sentence and the toast's shorter
+// one (which is on screen for a few seconds and has no room for the row's).
+check('every state the client words is one the server can send, with both of its sentences',
+  ['in_sync', 'pending', 'behind', 'diverged', 'missing', 'unverifiable', 'no_document', 'unconfigured']
+    .every(state => MIRROR_STATES.includes(state)
+      && !!mirrorStatus({ state }).detail && !!mirrorStatus({ state }).notice));
+check('a verdict with a timestamp says when it was checked',
+  /Checked /.test(mirrorStatus({ state: 'in_sync', checkedAt: new Date().toISOString() }).detail),
+  mirrorStatus({ state: 'in_sync', checkedAt: new Date().toISOString() }).detail);
 globalThis.fetch = serverFetch;
 
 if (fails.length) {

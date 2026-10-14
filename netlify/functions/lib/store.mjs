@@ -4,11 +4,14 @@
    code came from; the functions themselves are bundled into worker.js
    and served from the same paths).
 
-   Where the host has a durable store it is used: Netlify Blobs resolves
-   the site by itself inside a function, and any other host hands one in
-   (see lib/kv-store.mjs, which puts a KV namespace into the same shape).
-   Where there is neither — local `netlify dev`, unit tests — it falls back
-   to an in-memory map so the functions never hard-fail for want of a store.
+   The durable store is always handed in: worker.js installs
+   lib/kv-store.mjs's module, which puts a KV namespace into this shape.
+   Nothing is auto-detected from the host any more — the runtime that
+   used to provide its own store is gone, and a dynamic import of a
+   package that is not installed is a fallback that can only ever fail.
+   Where no module is installed — the unit tests, a bare local run — it
+   falls back to an in-memory map so the functions never hard-fail for
+   want of a store.
 
    The adapter is intentionally narrow — getJSON / setJSON / an
    atomic consume-once / delete / prefix list — so its callers
@@ -28,50 +31,35 @@
 
 const DEFAULT_STORE = 'cents-security';
 
-let blobsModule = null;
-let blobsLoadAttempted = false;
-const blobStores = new Map();
+let durableModule = null;
+const durableStores = new Map();
 
 /**
  * Install a store module (anything with getStore(name) → store).
  *
- * Two callers, and neither of them is a test: Netlify's runtime provides
- * `@netlify/blobs` by itself, and the Worker calls this with lib/kv-store.mjs's
- * KV-backed module, because a KV namespace is what this deployment's durable
- * store is. Pass null to reset, and note the reset drops cached stores but
- * keeps in-memory data.
+ * The Worker calls this with lib/kv-store.mjs's KV-backed module, because a KV
+ * namespace is what this deployment's durable store is; the cloud tests call it
+ * with a fake to exercise the durable path, which no other test reaches. Pass
+ * null to reset, and note the reset drops cached stores but keeps in-memory
+ * data.
  */
 export function useBlobsModule(mod) {
-  blobsModule = mod && typeof mod.getStore === 'function' ? mod : null;
-  blobsLoadAttempted = true;
-  blobStores.clear();
+  durableModule = mod && typeof mod.getStore === 'function' ? mod : null;
+  durableStores.clear();
 }
 
-async function loadBlobs() {
-  if (blobsLoadAttempted) return blobsModule;
-  blobsLoadAttempted = true;
-  try {
-    const mod = await import('@netlify/blobs');
-    if (mod && typeof mod.getStore === 'function') blobsModule = mod;
-  } catch {
-    blobsModule = null; // not running inside Netlify's runtime
-  }
-  return blobsModule;
-}
-
-async function blobStore(name) {
-  if (blobStores.has(name)) return blobStores.get(name);
-  const mod = await loadBlobs();
+function durableStore(name) {
+  if (durableStores.has(name)) return durableStores.get(name);
   let store = null;
-  if (mod) {
+  if (durableModule) {
     try {
-      const s = mod.getStore(name);
+      const s = durableModule.getStore(name);
       if (s && typeof s.get === 'function') store = s;
     } catch {
-      store = null; // Blobs misconfigured — fall back to in-memory
+      store = null; // the module is misconfigured — fall back to in-memory
     }
   }
-  blobStores.set(name, store);
+  durableStores.set(name, store);
   return store;
 }
 
@@ -115,8 +103,8 @@ function memoryStore(name) {
   };
 }
 
-/** A Blobs store, in the shape the callers expect. */
-function wrapBlobs(blobs) {
+/** A durable store, in the shape the callers expect. */
+function wrapDurable(blobs) {
   return {
     get: (key) => blobs.get(key),
     set: (key, value) => blobs.set(key, value),
@@ -142,9 +130,9 @@ function wrapBlobs(blobs) {
 
 /** The named store, plus whether it survives a cold start. */
 export async function openStore(name = DEFAULT_STORE) {
-  const blobs = await blobStore(name);
+  const blobs = durableStore(name);
   return blobs
-    ? { durable: true, store: wrapBlobs(blobs) }
+    ? { durable: true, store: wrapDurable(blobs) }
     : { durable: false, store: memoryStore(name) };
 }
 

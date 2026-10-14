@@ -107,16 +107,18 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   // Only same-origin STATIC responses are cached. The sync endpoint is
-  // same-origin by default (/.netlify/functions/sync), so an origin check alone
+  // same-origin by default (/api/sync), so an origin check alone
   // would persist the response — the user's whole synced document, every entry,
   // amount and note in it — in Cache Storage, where it survives until the next
   // cache version bump and is readable without the app password. It would also
   // be replayed as the answer to a later offline sync GET, handing the app a
-  // stale cloud copy as if it were fresh. Anything under the functions path,
-  // and anything the app authenticates with a header, is passed straight
+  // stale cloud copy as if it were fresh. Anything under the Worker's API
+  // prefix, anything under the pre-rename functions path a device may still be
+  // using, and anything the app authenticates with a header, is passed straight
   // through and never written to the cache.
   const url = new URL(e.request.url);
   const cacheable = url.origin === self.location.origin
+    && !url.pathname.startsWith('/api/')
     && !url.pathname.startsWith('/.netlify/')
     && !e.request.headers.has('X-Cents-Password');
   // `cache: 'no-store'` stops the browser's own HTTP cache from short-circuiting

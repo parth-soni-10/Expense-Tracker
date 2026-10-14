@@ -9,8 +9,8 @@ import { loadState, saveState, resetToBlank, exportJSON, exportEntriesCsv, valid
 // boot closure — storage.js imports it — so this costs no payload.
 import { csvDocument, CSV_BOM } from './csv.js';
 import { CATEGORIES, METHODS, TABS, HIDEABLE_TABS } from './seed.js';
-import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential } from './settings.js';
-import { syncPull, syncPush, syncTestConnection, syncStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
+import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential, DEFAULT_SYNC_ENDPOINT, isDefaultSyncEndpoint } from './settings.js';
+import { syncPull, syncPush, syncTestConnection, syncStatus, syncCheckMirror, mirrorStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
 import { mergeStates } from './sync-merge.js';
 import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfile, setActiveProfileId, getActiveProfileId, hasSessionChoice, nsKey, profileEnvName, isAdminProfile, setProfileIcon } from './profiles.js';
 import { getReminderSettings, patchReminderSettings, startReminderScheduler, onReminderFired, notificationPermission, requestNotificationPermission, showReminderNotification, pushSupported, subscribeReminderPush, unsubscribeReminderPush, unsubscribePushForProfile, sendTestPush, updateReminderPushTime, setDueBillsProvider, periodicReminderStatus, syncPeriodicReminder, verifyReminderPush, reminderPushStatus, reminderSchedulerStatus, readLastReminderDelivery, triggerServerTick, reminderServerSchedule, reminderSenderAlert } from './reminders.js';
@@ -1453,7 +1453,7 @@ function openAdminPanel(onChanged = null) {
           if (r.error) { toast(r.error); return; }
           toast(r.profile.id === 'personal'
             ? `Profile "${r.profile.name}" created.`
-            : `Profile "${r.profile.name}" created. To sync it, set ${profileEnvName(r.profile.id)} in Netlify env vars.`);
+            : `Profile "${r.profile.name}" created. To sync it, set ${profileEnvName(r.profile.id)} as a secret on the Worker.`);
           draw();
         } }, 'Add profile')),
     );
@@ -1678,7 +1678,7 @@ function openReminderSettings() {
         const r = s.pushSubscribed ? await unsubscribeReminderPush() : await subscribeReminderPush();
         btn.disabled = false;
         if (r.ok) { toast(s.pushSubscribed ? 'Push reminders off.' : 'Push reminders on — works even when the app is closed.'); draw(); return; }
-        const messages = { unsupported: 'Push is not available in this browser.', 'no-sync': 'Set up Cloud sync first.', 'not-configured': 'Push is not switched on for this site yet.', 'bad-key': 'This site is serving an invalid push key - the two VAPID values in Netlify look swapped.', 'permission-denied': 'Notifications were not allowed - tap Enable push again and choose Allow.', 'permission-blocked': 'Notifications are blocked for this site - allow them in the browser\'s site settings, then tap Enable push again.', 'subscribe-failed': 'This browser refused the push subscription.', auth: 'Sync password was rejected - check Sync settings.', network: 'Network error - try again when online.' };
+        const messages = { unsupported: 'Push is not available in this browser.', 'no-sync': 'Set up Cloud sync first.', 'not-configured': 'Push is not switched on for this site yet.', 'bad-key': 'This site is serving an invalid push key - the two VAPID values on the Worker look swapped.', 'permission-denied': 'Notifications were not allowed - tap Enable push again and choose Allow.', 'permission-blocked': 'Notifications are blocked for this site - allow them in the browser\'s site settings, then tap Enable push again.', 'subscribe-failed': 'This browser refused the push subscription.', auth: 'Sync password was rejected - check Sync settings.', network: 'Network error - try again when online.' };
         // The reason's own sentence, plus the detail behind it whenever there is
         // one: "network error" with the underlying failure stripped out is what
         // hid a swapped key pair behind a reachable, 200-answering server.
@@ -2492,6 +2492,99 @@ async function storageFootprint() {
   return `${formatBytes(chars * 2)} \u00b7 ${durable ? 'persistent' : 'best-effort'}`;
 }
 
+// ---------- the GitHub mirror's gap ----------
+// A save commits to the cloud store first and the GitHub copy is written after
+// it, so a save can succeed with the repo still holding an older document — and
+// until now nothing said so: the failure was logged on the server, and the
+// sentence that described it never reached a screen. The proxy now compares the
+// two after every save (the record's version against the repo blob's own bytes)
+// and records the verdict with the document, so the app's half is to say it out
+// loud: a toast the moment a gap appears or clears, and the Data menu's own line,
+// which asks for a fresh comparison whenever that menu is opened.
+function noteMirrorVerdict(verdict) {
+  if (!verdict || typeof verdict.state !== 'string') return;
+  const before = mirrorStatus(getSyncSettings().mirror);
+  const now = mirrorStatus(verdict);
+  patchSyncSettings({ mirror: verdict });
+  // One toast per transition, never per poll: a gap that lasts an hour is one
+  // thing to say once, and from then on the Data menu's line is what carries it.
+  if (now.gap && !before.gap) {
+    // Longer than a plain notice: this one is a fact about where the user's data
+    // is, and it is the only time it is said before the Data menu repeats it.
+    toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;color:color-mix(in srgb, var(--negative) 45%, var(--bg));text-align:left;' },
+      iconSpan('alert'), `GitHub mirror: ${now.label} - ${now.notice}`), null, null, 8000);
+  } else if (!now.gap && before.gap) {
+    toast($('span', { style: 'display:inline-flex;align-items:center;gap:8px;' },
+      iconSpan('sparkle'), 'The GitHub copy of your data is up to date again.'));
+  }
+}
+
+/** The Data menu's mirror line: a label, the verdict, and the sentence that
+ *  explains it. Built once per menu level, then filled in place. */
+function mirrorRowEl() {
+  const value = $('span', { class: 'display-num', style: 'font-size:12px;' }, 'Checking\u2026');
+  const note = $('span', { class: 'menu-info-note' });
+  const row = $('div', { class: 'menu-info mirror-line' },
+    $('span', { class: 'muted', style: 'font-size:11px;letter-spacing:.14em;text-transform:uppercase;font-weight:600;' }, 'GitHub mirror'),
+    value,
+    note,
+  );
+  return { row, value, note };
+}
+
+function paintMirrorRow(parts, status) {
+  parts.value.textContent = status.known ? status.label : 'Checking\u2026';
+  parts.note.textContent = status.known ? status.detail : 'Asking the cloud for the last comparison.';
+  parts.row.classList.toggle('gap', !!status.gap);
+}
+
+/**
+ * Fill the Data menu's mirror line: what the device last saw, then the live
+ * comparison, which is what makes the line describe the state NOW rather than
+ * the state at the last save — a save is answered before its mirror write lands,
+ * so the recorded verdict can be minutes older than what a reader is worried
+ * about.
+ *
+ * A comparison that could not run leaves the last verdict on screen and says it
+ * could not be refreshed. The one thing this must never do is stay quiet in a
+ * way that reads as "fine": 'pending' is not a pass, so a check taken inside the
+ * window where a save is still being mirrored is asked once more rather than
+ * left there as the final word.
+ */
+async function refreshMirrorRow(parts) {
+  const cached = mirrorStatus(getSyncSettings().mirror);
+  paintMirrorRow(parts, cached);
+  const s = getSyncSettings();
+  if (!s.enabled || !s.endpoint || !s.password) {
+    // No cloud copy at all: that is not a mirror that is failing, and saying so
+    // either way would be an alarm about a feature this device never turned on.
+    parts.value.textContent = 'No cloud copy';
+    parts.note.textContent = 'Cloud sync is off on this device, so there is nothing in the cloud to mirror.';
+    parts.row.classList.remove('gap');
+    return;
+  }
+  let r = await syncCheckMirror();
+  if (!r.ok) {
+    if (!parts.row.isConnected) return;
+    const why = r.message || r.reason || 'unreachable';
+    parts.note.textContent = cached.known
+      ? `${cached.detail} (Could not compare just now: ${why}.)`
+      : `Could not compare the two copies just now: ${why}.`;
+    return;
+  }
+  // A save's mirror write is given one more moment: `pending` means the check
+  // that owed this version an answer has not landed yet.
+  if (r.mirror.state === 'pending') {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    if (!parts.row.isConnected) return;
+    const again = await syncCheckMirror();
+    if (again.ok) r = again;
+    if (!parts.row.isConnected) return;
+  }
+  noteMirrorVerdict(r.mirror);
+  paintMirrorRow(parts, mirrorStatus(r.mirror));
+}
+
 // ---------- a second tab is a second copy of the document ----------
 // Every tab holds the whole document in memory and every save writes ALL of it
 // back, so the tab that writes second erases the entry the other one just added
@@ -2622,6 +2715,11 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
     notifySyncChange();
     return 'error';
   }
+  // Every pull carries the gap verdict the last save recorded, so a save made on
+  // another device — or on this one, in a tab that has since been closed — still
+  // reaches a screen here. Nothing is measured on this path: the verdict rode
+  // along with the document the pull already fetched.
+  if (r.mirror) noteMirrorVerdict(r.mirror);
   if (!r.content) {
     // No cloud file yet - first sync. Keep local; a push creates the file.
     markSyncOk({ lastError: null, lastErrorAt: null });
@@ -2678,7 +2776,7 @@ async function applyReconcile(r, { quiet = false, boot = false } = {}) {
 
 // ---------- sync setup links ----------
 // A new device can adopt sync without typing the app password. The link
-// carries a signed, expiring setup TOKEN minted by the Netlify proxy — never
+// carries a signed, expiring setup TOKEN minted by the Worker — never
 // the raw password — so the credential does not land in access logs, browser
 // history, or any intermediary. The handler below only STASHES the parsed
 // link at boot; nothing is applied until the user confirms after unlock, and
@@ -2735,7 +2833,7 @@ function applySetupLinkIfPresent() {
     return;
   }
   let endpoint = parsed.endpoint;
-  if (endpoint === null || endpoint === '') endpoint = current.endpoint || '/.netlify/functions/sync';
+  if (endpoint === null || endpoint === '') endpoint = current.endpoint || DEFAULT_SYNC_ENDPOINT;
   // Whitelist: only this site's own function path, or the endpoint this
   // device already trusts, may be adopted from a link. An arbitrary foreign
   // endpoint in a link is the exfiltration vector and is rejected outright.
@@ -2758,7 +2856,7 @@ async function confirmPendingSetupLink() {
   // The link is now in flight (or consumed): drop the cross-reload stash so
   // it cannot re-apply after a later reload.
   try { sessionStorage.removeItem('cents-pending-setup'); } catch { /* ignore */ }
-  const endpointLabel = pending.endpoint === '/.netlify/functions/sync'
+  const endpointLabel = isDefaultSyncEndpoint(pending.endpoint)
     ? 'this site'
     : pending.endpoint;
   let secret = pending.secret;
@@ -2889,6 +2987,10 @@ async function doPushNow(message) {
     // the profile that is active now.
     if (profile !== (getActiveProfileId() || 'personal')) return;
     if (r.ok) {
+      // Only a deployment that could compare the two before answering hands a
+      // verdict back here (see lib/cloud.mjs); on the real one it arrives with
+      // the next pull, or when the Data menu asks.
+      if (r.mirror) noteMirrorVerdict(r.mirror);
       rejectedRevision = null;
       if (revision !== syncRevision) {
         // A newer local mutation happened while this request was in flight. The
@@ -6274,6 +6376,13 @@ function buildMenuLevel(id) {
     void storageFootprint().then(text => {
       if (storageRow.isConnected) storageRow.lastElementChild.textContent = text;
     });
+    // Sits with the storage lines because it answers the same question — where
+    // the data is — and because this is the one screen a person opens when they
+    // are wondering exactly that. The line re-checks on open (see
+    // refreshMirrorRow), so it cannot be a verdict from days ago.
+    const mirror = mirrorRowEl();
+    list.append(mirror.row);
+    void refreshMirrorRow(mirror);
     list.append(menuRowEl({ icon: 'data', label: 'Export data', onClick: () => { closeAppMenu(); exportJSON(state); toast('Exported.'); } }));
     // The same ledger as a spreadsheet. The labels are resolved by this file's
     // own categoryLabel/methodLabel, so the file a user opens names a category
@@ -9655,8 +9764,8 @@ function openSyncSettings() {
     }
 
     // Endpoint + password form
-    const endpointInput = $('input', { type: 'text', value: s.endpoint, 'aria-label': 'Sync endpoint URL', placeholder: '/.netlify/functions/sync', autocomplete: 'off' });
-    const passwordInput = $('input', { type: 'password', value: s.password || '', 'aria-label': 'App password', placeholder: 'the password you set in Netlify', autocomplete: 'new-password' });
+    const endpointInput = $('input', { type: 'text', value: s.endpoint, 'aria-label': 'Sync endpoint URL', placeholder: DEFAULT_SYNC_ENDPOINT, autocomplete: 'off' });
+    const passwordInput = $('input', { type: 'password', value: s.password || '', 'aria-label': 'App password', placeholder: 'the password you set on the Worker', autocomplete: 'new-password' });
 
     const saveBtnLabel = $('span', null, 'Save & test');
     const saveBtn = $('button', { type: 'button', class: 'btn btn-primary', onClick: async () => {
@@ -9758,7 +9867,7 @@ function openSyncSettings() {
 
       // One-tap onboarding for other devices: a link that configures sync
       // without typing the password. The link carries a signed, expiring
-      // setup token minted on demand by the Netlify proxy — never the raw
+      // setup token minted on demand by the Worker — never the raw
       // password — so nothing secret sits in the address bar or access logs.
       if (s.password) {
         const linkInput = $('input', { type: 'text', readonly: true, value: '', placeholder: 'Tap Copy to generate a link', 'aria-label': 'Sync setup link', style: 'font-size:11px;font-family:"IBM Plex Mono",Menlo,monospace;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius);width:100%;min-width:0;color:var(--muted);background:var(--bg-deep);' });
@@ -9771,7 +9880,7 @@ function openSyncSettings() {
           try {
             const r = await syncIssueSetupToken();
             if (r.ok) {
-              const isDefaultEndpoint = !s.endpoint || s.endpoint === '/.netlify/functions/sync';
+              const isDefaultEndpoint = isDefaultSyncEndpoint(s.endpoint);
               // The token from the proxy already carries its own 't2.' prefix.
               const payload = isDefaultEndpoint ? r.token : `${s.endpoint}|${r.token}`;
               link = `${location.origin}${location.pathname}?centsSync=${encodeURIComponent(payload)}`;
@@ -9990,7 +10099,10 @@ function dashboardPulse(key, expenseSum, runningBalance) {
 // creation time (not looked up when clicked), and the stack is capped so a
 // rapid burst can't pile up forever.
 const MAX_TOASTS = 3;
-function toast(text, undoFn, undoLabel) {
+// durationMs is optional and only for a notice that has to be read rather than
+// glimpsed (see the mirror gap's own toast): everything else keeps the defaults,
+// which is what keeps a toast from becoming a banner nobody dismisses.
+function toast(text, undoFn, undoLabel, durationMs) {
   let host = document.querySelector('.toast-host');
   if (!host) { host = $('div', { class: 'toast-host' }); document.body.appendChild(host); }
   // Snapshot the undo at creation: an explicit undoFn wins, otherwise capture
@@ -10006,7 +10118,7 @@ function toast(text, undoFn, undoLabel) {
   while (host.children.length > MAX_TOASTS) host.firstElementChild.remove();
   // Toasts carrying an Undo button stay long enough to read and act on;
   // plain notifications dismiss quickly.
-  setTimeout(() => t.remove(), runUndo ? 5000 : 2200);
+  setTimeout(() => t.remove(), durationMs || (runUndo ? 5000 : 2200));
 }
 
 // ── Swipe-to-dismiss (Android-style) ─────────────────────────────────────────

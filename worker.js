@@ -24,14 +24,17 @@
  *              the object), so the functions still read process.env.APP_PASSWORD
  *              and the rest exactly as they always did.
  *
- *   routing    The paths the frontend already calls, /.netlify/functions/*, are
- *              served from here. Nothing in the browser changed: the app's
- *              reminder and recovery endpoints are DERIVED from the sync
- *              endpoint it is configured with (reminders.js's tickEndpoint,
- *              sync.js's setup-token), which is still the default
- *              /.netlify/functions/sync. `run_worker_first` in wrangler.toml is
- *              scoped to that one prefix, so ordinary page and asset requests
- *              never invoke this Worker at all.
+ *   routing    Two spellings of each function path are served from here, and
+ *              they are the same handler: /api/* is the name the app defaults
+ *              to (settings.js), and /.netlify/functions/* is the name every
+ *              device set up before the rename still has saved, plus the path
+ *              the functions' directory is named after. Everything the browser
+ *              calls besides sync is DERIVED from the sync endpoint it is
+ *              configured with (reminders.js's pushEndpoint and tickEndpoint,
+ *              sync.js's setup-token), so a device on either spelling reaches
+ *              the same functions. `run_worker_first` in wrangler.toml names
+ *              both prefixes, so ordinary page and asset requests never invoke
+ *              this Worker at all.
  *
  *   scheduler  There is none. The per-minute cron and the scheduled function it
  *              woke (reminders-send.mjs) were removed on 13 Oct 2026: the cron
@@ -55,18 +58,32 @@ import profilesAdminFunction from './netlify/functions/profiles-admin.mjs';
 import { useBlobsModule } from './netlify/functions/lib/store.mjs';
 import { kvBlobsModule } from './netlify/functions/lib/kv-store.mjs';
 
-// The five URL-reachable entry points. The paths are written out rather than
-// built from a prefix because they are a contract with the browser, not a
-// convention: /.netlify/functions/sync is the endpoint settings.js defaults to,
-// and every other one is DERIVED from it at runtime (sync.js's setup-token,
+// The five URL-reachable entry points, each served under two spellings. The
+// paths are written out rather than built from a prefix because they are a
+// contract with the browser, not a convention: /api/sync is the endpoint
+// settings.js defaults to, /.netlify/functions/sync is the name a device that
+// was set up before the rename still has in its settings, and every other path
+// is DERIVED from the sync endpoint at runtime (sync.js's setup-token,
 // reminders.js's push and tick endpoints). check-worker-config.mjs reads the
-// default out of settings.js and requires this table to serve it.
+// default out of settings.js and requires this table to serve it, and requires
+// both spellings to stay complete.
+//
+// Both halves are load-bearing and neither is a leftover: dropping the legacy
+// spelling strands every device whose settings were never re-saved (its
+// requests would fall through to the assets layer and 404), and dropping the
+// /api/ spelling 404s the app's own default on a fresh install.
 //
 // This table is now the whole set: reminders-tick is the only way the reminder
 // job is reached (the second entry point, reminders-send.mjs, was the cron's and
 // went with the cron). check-worker-config.mjs requires every function file to
 // appear here, so an endpoint cannot ship unreachable.
 const ROUTES = {
+  '/api/sync': syncFunction,
+  '/api/setup-token': setupTokenFunction,
+  '/api/reminders-push': remindersPushFunction,
+  '/api/reminders-tick': remindersTickFunction,
+  '/api/profiles-admin': profilesAdminFunction,
+  // The pre-rename spelling of the same five, kept for devices that stored it.
   '/.netlify/functions/sync': syncFunction,
   '/.netlify/functions/setup-token': setupTokenFunction,
   '/.netlify/functions/reminders-push': remindersPushFunction,

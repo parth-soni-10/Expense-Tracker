@@ -1819,10 +1819,31 @@ html.modal-open { overflow: hidden; }
 
 .menu-info {
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  /* wrap lets an info line carry a sentence under its own label (the mirror
+     line) without a second element or a row of its own. */
+  flex-wrap: wrap;
   padding: 10px 12px; margin-bottom: 4px;
   border: 1px dashed var(--line); border-radius: 12px;
   background: var(--bg-deep);
 }
+
+/* The explaining half of an info line: its own line, full width, muted by
+   default — it is what the label and value above it mean. */
+.menu-info-note {
+  flex-basis: 100%;
+  font-size: 11.5px; line-height: 1.5;
+  color: var(--muted);
+}
+
+/* The GitHub mirror's line, when the repo does not hold what the app is
+   serving. It is the only place that state is written down, so it stops being
+   an informational dashed box and takes the negative colour with it. */
+.menu-info.gap {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--negative) 35%, transparent);
+  background: color-mix(in srgb, var(--negative) 8%, transparent);
+}
+.menu-info.gap .display-num { color: var(--negative); }
 
 .menu-trigger:focus-visible,
 .menu-back:focus-visible,

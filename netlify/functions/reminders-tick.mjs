@@ -15,7 +15,7 @@
    and the phone simply never rings. With the cron gone this endpoint IS the
    server's clock, so the same run is reachable here:
 
-       GET|POST https://<site>/.netlify/functions/reminders-tick
+       GET|POST https://<site>/api/reminders-tick
        X-Cents-Password: <this profile's app password>
        X-Cents-Profile:  <optional; defaults to the personal profile>
 

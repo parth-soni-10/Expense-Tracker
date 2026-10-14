@@ -1,7 +1,8 @@
 /* ============================================================
-   Function — setup-token issuance + redemption (served from
-   /.netlify/functions/setup-token by worker.js, and derived from the sync
-   endpoint by the app's own sync.js).
+   Function — setup-token issuance + redemption (served from /api/setup-token
+   by worker.js — plus its pre-rename /.netlify/functions/setup-token spelling,
+   for a device that stored that one — and derived from the sync endpoint by
+   the app's own sync.js).
 
    POST with header  X-Cents-Password: <app password>
      → issues an ENCRYPTED, 30-day setup token for embedding in a

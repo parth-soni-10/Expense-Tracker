@@ -3,25 +3,31 @@
  * Cloud storage contract test — the durable path.
  *
  * `netlify/functions/lib/cloud.mjs` keeps each profile's document in the
- * deployment's durable store (a KV namespace in production; a Blobs-compatible
- * module handed in here) and mirrors it into GitHub when a mirror is
- * configured. On this machine `@netlify/blobs` does not resolve (there is no
- * node_modules — the runtime supplies it), so every other
- * test exercises only the fallback branch, where the GitHub mirror is the
- * commit point. That leaves the code that actually runs in production as the
- * one path no test reaches — which is what `useBlobsModule` in lib/store.mjs
- * exists for: this file hands the store a Blobs-compatible module and drives
- * the REAL sync and profiles-admin handlers against it, with a stubbed GitHub
+ * deployment's durable store (the KV namespace, reached through a module the
+ * Worker hands in) and mirrors it into GitHub when a mirror is configured.
+ * Nothing is auto-detected from the host, so every other test exercises only
+ * the fallback branch, where the GitHub mirror is the commit point. That
+ * leaves the code that actually runs in production as the one path no test
+ * reaches — which is what `useBlobsModule` in lib/store.mjs exists for: this
+ * file hands the store a durable, getStore-compatible module and drives the
+ * REAL sync and profiles-admin handlers against it, with a stubbed GitHub
  * API, no network and nothing written anywhere.
  *
  * What it pins down, all through the handlers the browser talks to:
  *   - a fresh deployment migrates: first read seeds Blobs from the mirror
  *   - after that the mirror is written, not read (a read touches GitHub zero times)
  *   - the primary is genuinely primary (GitHub down, reads still work)
+ *   - a save commits the primary first and hands the mirror off afterwards, so
+ *     the backup can never lead the store that decides whether the save worked
+ *     and a code host is never in the path of a keystroke
  *   - the version token is the document's hash, so an identical re-push is not
  *     a conflict while a stale or absent one is
  *   - losing the mirror is survivable; losing the primary is reported
  *   - the owner's tab policy lands where the account's device will read it
+ *   - THE MIRROR GAP: every save ends by comparing the record's version against
+ *     the repo blob's own bytes and recording the verdict with the document, so
+ *     a mirror that silently fell behind is a fact the next reader sees — and a
+ *     difference nobody has judged yet reads as pending, never as a gap
  *
  * Run: node scripts/test-cloud.mjs
  * Also a step in scripts/run-guards.mjs.
@@ -72,7 +78,7 @@ const storedRecord = (store, key) => {
 };
 
 const { useBlobsModule } = await import(REPO + '/netlify/functions/lib/store.mjs');
-const { versionOf } = await import(REPO + '/netlify/functions/lib/cloud.mjs');
+const { versionOf, classifyMirror, MIRROR_STATES } = await import(REPO + '/netlify/functions/lib/cloud.mjs');
 
 // ---- stub the GitHub Contents API the mirror talks to -----------------------
 // It enforces the two rules the real API does, because the mirror's retry logic
@@ -81,6 +87,14 @@ const { versionOf } = await import(REPO + '/netlify/functions/lib/cloud.mjs');
 const mirrors = new Map(); // file → text
 const shas = new Map();    // file → sha
 let nextSha = 0;
+// When set, every PUT waits on it before it touches the mirror. The hand-off
+// test at the end opens it by hand, which is how "the answer came back while the
+// mirror write was still open" is proven instead of timed.
+let gate = null;
+// When set, a PUT stores this INSTEAD of what it was handed — a second writer
+// winning the race. It is the reason the gap check reads the blob back rather
+// than trusting the write's own answer, which in this case is a cheerful 200.
+let overwrite = null;
 const gh = { calls: [], broken: null };
 // `/repos/<owner>/<repo>/contents/<file>?ref=<branch>` → `<file>`. Anchored on
 // `contents/` (not `repos/`) and cut at the query, so a read and the write that
@@ -105,12 +119,13 @@ globalThis.fetch = async (url, opts = {}) => {
     });
   }
   if (method === 'PUT') {
+    if (gate) await gate;
     const body = JSON.parse(opts.body);
     if (mirrors.has(file)) {
       if (!body.sha) return json({ message: 'sha was not supplied' }, 422);
       if (body.sha !== shas.get(file)) return json({ message: 'does not match' }, 409);
     }
-    mirrors.set(file, Buffer.from(body.content, 'base64').toString('utf8'));
+    mirrors.set(file, overwrite != null ? overwrite : Buffer.from(body.content, 'base64').toString('utf8'));
     const sha = `sha-${++nextSha}`;
     shas.set(file, sha);
     return json({ content: { sha }, commit: { sha: 'commit-' + sha } });
@@ -121,7 +136,7 @@ globalThis.fetch = async (url, opts = {}) => {
 const { default: sync } = await import(REPO + '/netlify/functions/sync.mjs');
 const { default: admin } = await import(REPO + '/netlify/functions/profiles-admin.mjs');
 
-const call = (method, body, password = 'test-password-1234', profile = null) => sync(new Request(
+const call = (method, body, password = 'test-password-1234', profile = null, context = {}) => sync(new Request(
   'https://cents.test/.netlify/functions/sync',
   {
     method,
@@ -131,6 +146,14 @@ const call = (method, body, password = 'test-password-1234', profile = null) => 
       ...(profile ? { 'x-cents-profile': profile } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
+  },
+), context);
+// The on-demand gap check — the request the app's Data menu makes.
+const mirrorCheck = (password = 'test-password-1234', profile = null) => sync(new Request(
+  'https://cents.test/.netlify/functions/sync?mirror=1',
+  {
+    method: 'GET',
+    headers: { 'x-cents-password': password, ...(profile ? { 'x-cents-profile': profile } : {}) },
   },
 ), {});
 const policy = payload => admin(new Request('https://cents.test/.netlify/functions/profiles-admin', {
@@ -195,12 +218,60 @@ check('re-pushing identical content is not a conflict', !againBody.conflict && a
 const after = await (await call('GET')).json();
 check('and the version is unchanged by it', after.sha === pushed.sha, `${after.sha} vs ${pushed.sha}`);
 
+// ---- the save is bounded by the primary; the mirror follows it --------------
+// A save waits on the store that decides whether it worked and on nothing else,
+// and the backup never leads that store. Two things carry the weight here: the
+// record ends up holding the sha the mirror ANSWERED with (so the next save
+// updates the mirror in one call instead of colliding with its own last write),
+// and a caller that can hand work to the platform is answered while the mirror
+// PUT is still open.
+check('the record carries the sha the mirror answered with',
+  storedRecord('cents-cloud', DOC_KEY)?.ghSha === shas.get('data.json'),
+  `${storedRecord('cents-cloud', DOC_KEY)?.ghSha} vs ${shas.get('data.json')}`);
+gh.calls.length = 0;
+const oneCall = await (await call('PUT', { content: { ...edited, settings: { monthlyBudget: 810 } }, sha: after.sha })).json();
+// Exactly one PUT, and it comes FIRST: the sha the last write answered with is
+// on the record, so this save updates the mirror without reading it back to find
+// out what it is holding. (The GET that follows is the gap check, which has to
+// come after the write it judges — see the section on it below.)
+check('a save after a mirror write updates the mirror in one call',
+  (gh.calls[0] || '').startsWith('PUT') && gh.calls.filter(c => c.startsWith('PUT')).length === 1,
+  gh.calls.join(', '));
+check('and still answers with the new token', !oneCall.conflict && !!oneCall.sha, JSON.stringify(oneCall));
+
+let openGate = null;
+gate = new Promise(resolve => { openGate = resolve; });
+const handedOff = [];
+gh.calls.length = 0;
+const quick = await call(
+  'PUT',
+  { content: { ...edited, settings: { monthlyBudget: 830 } }, sha: oneCall.sha },
+  'test-password-1234', null, { waitUntil: promise => handedOff.push(promise) },
+);
+const quickBody = await quick.json();
+check('a save is not gated on the mirror', !quickBody.conflict && !!quickBody.sha, JSON.stringify(quickBody));
+check('and the primary already holds the document', storedRecord('cents-cloud', DOC_KEY)?.content?.settings?.monthlyBudget === 830);
+check('and it says so rather than naming a commit it does not have yet', quickBody.commit === null, String(quickBody.commit));
+check('while the mirror write is still open',
+  handedOff.length === 1 && gh.calls.some(c => c.startsWith('PUT'))
+    && JSON.parse(mirrors.get('data.json')).settings.monthlyBudget === 810,
+  gh.calls.join(', '));
+openGate();
+await handedOff[0];
+check('the handed-off mirror write lands on its own',
+  JSON.parse(mirrors.get('data.json')).settings.monthlyBudget === 830,
+  String(mirrors.get('data.json')).slice(0, 100));
+check('and the record learns that sha once it does',
+  storedRecord('cents-cloud', DOC_KEY)?.ghSha === shas.get('data.json'),
+  `${storedRecord('cents-cloud', DOC_KEY)?.ghSha} vs ${shas.get('data.json')}`);
+gate = null;
+
 // ---- the primary is genuinely primary --------------------------------------
 gh.calls.length = 0;
 gh.broken = 'all';
 const offline = await call('GET');
 const offlineBody = await offline.json();
-check('reads keep working with GitHub entirely down', offline.status === 200 && offlineBody.content?.settings?.monthlyBudget === 800, `got ${offline.status}`);
+check('reads keep working with GitHub entirely down', offline.status === 200 && offlineBody.content?.settings?.monthlyBudget === 830, `got ${offline.status}`);
 check('and never even call it', gh.calls.length === 0, gh.calls.join(', '));
 gh.broken = 'put';
 const noMirror = await call('PUT', { content: { ...edited, settings: { monthlyBudget: 820 } }, sha: offlineBody.sha });
@@ -213,12 +284,24 @@ gh.broken = null;
 // ---- losing the primary is reported, not hidden ----------------------------
 const current = (await (await call('GET')).json()).sha;
 useBlobsModule(fakeBlobs({ failWrite: true }));
+gh.calls.length = 0;
 const brokenPrimary = await call('PUT', { content: { ...edited, settings: { monthlyBudget: 900 } }, sha: current });
 const brokenBody = await brokenPrimary.json();
 check('losing the primary fails the save instead of reporting success', brokenPrimary.status === 502, `got ${brokenPrimary.status}`);
 check('and the refusal explains itself rather than being a bare internal error', /Saving to the cloud failed/.test(brokenBody.error || ''), JSON.stringify(brokenBody));
+check('and a save the primary refused never reached the mirror',
+  !gh.calls.some(c => c.startsWith('PUT')),
+  gh.calls.join(', '));
+check('so the backup still holds only what the store accepted',
+  JSON.parse(mirrors.get('data.json')).settings.monthlyBudget === 830,
+  String(mirrors.get('data.json')).slice(0, 100));
 const duringOutage = await (await call('GET')).json();
-check('and reads still answer from the mirror', duringOutage.content?.settings?.monthlyBudget === 820, JSON.stringify(duringOutage.content?.settings));
+// The mirror holds the NEWER 830 here, so answering 820 is what says this read
+// came from the primary — the same store the refused write could not reach.
+check('and reads still answer from the primary, not the newer backup copy',
+  duringOutage.content?.settings?.monthlyBudget === 820
+    && JSON.parse(mirrors.get('data.json')).settings.monthlyBudget === 830,
+  JSON.stringify(duringOutage.content?.settings));
 
 useBlobsModule(fakeBlobs());
 const recovered = await call('GET');
@@ -257,6 +340,138 @@ const pending = await (await policy({ action: 'policy', profile: 'kate', enabled
 check('a never-synced account reports pending, not failure', pending.pending === true, JSON.stringify(pending));
 check('and no document is invented for it', storedRecord('cents-cloud', 'doc/kate.json') === null);
 delete process.env.APP_PASSWORD_KATE;
+
+// ---- the mirror gap: measured after every save, and written down -----------
+// A save commits to the store and hands the mirror to waitUntil, so the repo can
+// lag the record in SILENCE — the failure is logged, never returned, because a
+// code host must not fail somebody's save. That silence is the whole problem
+// this section covers: every save now ends by reading the blob back and
+// comparing its hash with the record's version, and the verdict is recorded with
+// the document, where the app's Data menu can read it.
+//
+// The vocabulary itself is pure, so it is pinned in one place before any of the
+// plumbing is exercised — every branch the classifier can take, and the fact
+// that each one is a state the consumers know.
+const vocabulary = [
+  classifyMirror({ recordExists: false }),
+  classifyMirror({ recordExists: true, blobExists: null }),
+  classifyMirror({ recordExists: true, blobExists: false }),
+  classifyMirror({ recordExists: true, blobExists: true, recordVersion: 'a', mirrorVersion: 'a' }),
+  classifyMirror({ recordExists: true, blobExists: true, recordVersion: 'a', mirrorVersion: 'b', wrote: null }),
+  classifyMirror({ recordExists: true, blobExists: true, recordVersion: 'a', mirrorVersion: 'b', wrote: true }),
+  classifyMirror({ recordExists: true, blobExists: true, recordVersion: 'a', mirrorVersion: 'b', wrote: false }),
+];
+check('every comparison the classifier can make is a state its consumers know',
+  vocabulary.every(s => MIRROR_STATES.includes(s)), vocabulary.join(', '));
+check('and the seven branches are seven different answers',
+  new Set(vocabulary).size === 7, vocabulary.join(', '));
+
+// A save whose mirror write lands: the two agree, and the record says so.
+const at950 = await (await call('GET')).json();
+const settled = await (await call('PUT', { content: { ...edited, settings: { monthlyBudget: 960 } }, sha: at950.sha })).json();
+let rec = storedRecord('cents-cloud', DOC_KEY);
+check('a save records a mirror verdict with the document',
+  rec.mirror?.state === 'in_sync', JSON.stringify(rec.mirror));
+check('and the verdict names the version it judged rather than just saying "fine"',
+  rec.mirror?.recordVersion === rec.version && rec.mirror.mirrorVersion === rec.version,
+  JSON.stringify({ verdict: rec.mirror, record: rec.version }));
+check('and says whether the write it judged actually landed',
+  rec.mirror?.wrote === true, String(rec.mirror?.wrote));
+check('and the answer to that save carries the same verdict as the record',
+  settled.mirror?.state === 'in_sync', JSON.stringify(settled.mirror));
+
+// A plain read hands the recorded verdict back for free: it rode along with the
+// record the read already fetched, and a read that measured would make every
+// poll cost a GitHub round trip.
+gh.calls.length = 0;
+const verdictRead = await (await call('GET')).json();
+check('a plain read hands back the recorded verdict',
+  verdictRead.mirror?.state === 'in_sync', JSON.stringify(verdictRead.mirror));
+check('without measuring anything to do it', gh.calls.length === 0, gh.calls.join(', '));
+
+// The on-demand check the Data menu asks for: the verdict alone, no document.
+gh.calls.length = 0;
+const live = await (await mirrorCheck()).json();
+check('an on-demand check answers with a verdict and no document',
+  live.mirror?.state === 'in_sync' && live.content === undefined,
+  JSON.stringify(live).slice(0, 200));
+check('and it compares the record against the blob and reads nothing else',
+  gh.calls.join(', ') === 'GET data.json', gh.calls.join(', '));
+
+// The gap itself: a save whose mirror write was refused still commits, and this
+// time the refusal is a fact on the record instead of a line in a log.
+gh.broken = 'put';
+const missedMirrorRes = await call('PUT', { content: { ...edited, settings: { monthlyBudget: 970 } }, sha: settled.sha });
+const missedMirror = await missedMirrorRes.json();
+rec = storedRecord('cents-cloud', DOC_KEY);
+check('a save the mirror refused is recorded as a gap, not as a pass',
+  rec.mirror?.state === 'behind' && rec.mirror.wrote === false, JSON.stringify(rec.mirror));
+check('the verdict names the older blob it found in the repo',
+  rec.mirror.mirrorVersion === versionOf(mirrors.get('data.json')) && rec.mirror.mirrorVersion !== rec.version,
+  JSON.stringify({ mirror: rec.mirror.mirrorVersion, record: rec.version }));
+check('and the answer to that save says the same thing',
+  missedMirror.mirror?.state === 'behind', JSON.stringify(missedMirror.mirror));
+check('while the save itself still succeeded, which is the whole point',
+  missedMirrorRes.status === 200 && !missedMirror.conflict
+    && storedRecord('cents-cloud', DOC_KEY)?.content?.settings?.monthlyBudget === 970,
+  `${missedMirrorRes.status} ${JSON.stringify(missedMirror).slice(0, 120)}`);
+gh.broken = null;
+const stillGap = await (await mirrorCheck()).json();
+check('an on-demand check reports the same gap',
+  stillGap.mirror?.state === 'behind', JSON.stringify(stillGap.mirror));
+
+// A write that reported success is not the same as the repo holding it. This is
+// the case the read-back exists for: the PUT answered 200, and the blob is
+// somebody else's version — which only a comparison can tell you.
+overwrite = JSON.stringify({ ...edited, settings: { monthlyBudget: 1 } });
+const stolen = await (await call('PUT', { content: { ...edited, settings: { monthlyBudget: 980 } }, sha: stillGap.mirror.recordVersion })).json();
+overwrite = null;
+rec = storedRecord('cents-cloud', DOC_KEY);
+check('a mirror that answered success but holds another version reports diverged',
+  rec.mirror?.state === 'diverged' && rec.mirror.wrote === true, JSON.stringify(rec.mirror));
+check('and that verdict is not the one the write believed',
+  stolen.mirror?.state === 'diverged', JSON.stringify(stolen.mirror));
+
+// The file being gone is its own answer, with its own remedy (a path or a
+// credential), and must not be reported as a mirror that is merely old.
+mirrors.delete('data.json');
+const gone = await (await mirrorCheck()).json();
+check('a repo with no file at that path reports missing',
+  gone.mirror?.state === 'missing' && gone.mirror.mirrorVersion === null, JSON.stringify(gone.mirror));
+
+// A difference NOBODY has judged yet is pending, not a gap. This is a real,
+// repeatable state rather than a race to paper over: a save answers before its
+// mirror write, so a check taken a second later lands here.
+mirrors.set('data.json', JSON.stringify({ ...edited, settings: { monthlyBudget: 2 } }));
+shas.set('data.json', 'sha-other');
+rec = storedRecord('cents-cloud', DOC_KEY);
+rec.mirror = null;
+backing.get('cents-cloud').set(DOC_KEY, JSON.stringify(rec));
+const unclaimed = await (await mirrorCheck()).json();
+check('a difference nobody has judged yet is pending, not a gap',
+  unclaimed.mirror?.state === 'pending', JSON.stringify(unclaimed.mirror));
+
+// A code host that cannot be read is "not checked" — which is not a pass: the
+// one answer this may never give is a reassuring one it cannot support.
+gh.broken = 'all';
+const blind = await (await mirrorCheck()).json();
+check('a repo that cannot be read reports unverifiable rather than fine',
+  blind.mirror?.state === 'unverifiable', JSON.stringify(blind.mirror));
+gh.broken = null;
+
+// Nothing saved yet is not a gap either, and neither is a deployment with no
+// mirror at all: each has a remedy of its own, and inventing a failure for them
+// would train the reader to ignore the line.
+backing.get('cents-cloud').delete(DOC_KEY);
+check('with no document there is nothing to compare',
+  (await (await mirrorCheck()).json()).mirror?.state === 'no_document');
+const savedToken = process.env.GITHUB_TOKEN;
+delete process.env.GITHUB_TOKEN;
+gh.calls.length = 0;
+const unmirrored = await (await mirrorCheck()).json();
+check('with no mirror configured the check says so and calls nobody',
+  unmirrored.mirror?.state === 'unconfigured' && gh.calls.length === 0, gh.calls.join(', '));
+process.env.GITHUB_TOKEN = savedToken;
 
 // ---- no mirror configured is a supported shape, not an outage --------------
 // Last, because it empties one profile's document on purpose. A deployment with

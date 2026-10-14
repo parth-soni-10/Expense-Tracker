@@ -59,7 +59,7 @@ export function resolveProfileForAuth(request) {
 /** Operator-facing message for a failed profile resolution. */
 export function profileAuthMessage(profile) {
   if (profile.problem === 'missing') {
-    return `No password configured for profile "${profile.id}" - set ${profile.envName} in Netlify env vars `
+    return `No password configured for profile "${profile.id}" - set ${profile.envName} as a secret on the Worker `
       + `(>= 8 characters). Profiles never share the default password.`;
   }
   if (profile.problem === 'too-short') {

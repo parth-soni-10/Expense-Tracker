@@ -6,7 +6,10 @@
    into a configured GitHub repo. Gated by an admin password sent via
    the X-Cents-Password header; the PAT itself lives only in this
    function's environment, never in the client bundle. lib/cloud.mjs
-   owns the storage model (primary, mirror, version tokens, migration).
+   owns the storage model (primary, mirror, version tokens, migration),
+   including the order of the two writes: the store commits first and the
+   GitHub mirror follows it, handed to this request's waitUntil so a save
+   never waits on a code host that is only keeping a spare copy.
 
    Required env vars:
      GITHUB_TOKEN    fine-grained PAT, repo contents: read+write
@@ -35,13 +38,33 @@
      * CORS reflects the request Origin (with Vary) instead of
        granting every origin — cross-origin clients still work,
        but the blanket '*' is gone.
+
+   The mirror gap. lib/cloud.mjs owns each profile's document in the durable
+   store and mirrors it to GitHub, and it compares the two after every save —
+   the record's version token against the repo blob's own bytes — because a
+   mirror that failed is logged rather than returned (a code host must not fail
+   somebody's save). This function is where that verdict becomes visible:
+
+     GET            answers with the verdict the last save recorded, plus
+                    whether a mirror exists at all (mirrorConfigured). Costs
+                    nothing: it rides along with the record the read already
+                    returned.
+     GET ?mirror=1  measures it now — the record against the blob — and answers
+                    with the verdict ALONE, no document. This is what the
+                    app's Data screen asks for, so opening that screen cannot
+                    cost a re-download of the ledger.
+     PUT            answers with the verdict when this deployment could reach
+                    one before answering (a host with no waitUntil: local runs,
+                    the tests). On a real deployment the mirror write and its
+                    check are handed to waitUntil, so `mirror` is null there —
+                    which means "not measured yet", never "in sync".
    ============================================================ */
 
 import { RECURRING_FREQUENCIES } from '../../seed.js';
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
 import { resolveProfileForAuth, profileAuthMessage, cloudFileFor } from './lib/profiles.mjs';
-import { ghConfig } from './lib/gh.mjs';
-import { readCloudDoc, writeCloudDoc, CloudError } from './lib/cloud.mjs';
+import { ghConfig, mirrorConfigured } from './lib/gh.mjs';
+import { readCloudDoc, writeCloudDoc, mirrorGap, CloudError } from './lib/cloud.mjs';
 
 function corsHeaders(request) {
   const origin = request.headers.get('origin');
@@ -274,7 +297,7 @@ function validIncomingState(content) {
   return true;
 }
 
-export default async (request, _context) => {
+export default async (request, context) => {
   const cors = corsHeaders(request);
   if (request.method === 'OPTIONS') return ok({}, 200, cors);
 
@@ -308,8 +331,15 @@ export default async (request, _context) => {
   try {
     // ---------- READ ----------
     if (request.method === 'GET') {
+      // The on-demand gap check. Answered before the document is even read,
+      // because the caller wants the comparison and not the ledger: the request
+      // carries a credential and a profile and nothing else.
+      if (new URL(request.url).searchParams.get('mirror')) {
+        const gap = await mirrorGap(profile.id, config);
+        return ok({ mirror: gap, mirrorConfigured: mirrorConfigured() }, 200, cors);
+      }
       const doc = await readCloudDoc(profile.id, config);
-      if (!doc.exists) return ok({ content: null, sha: null, branch }, 200, cors);
+      if (!doc.exists) return ok({ content: null, sha: null, branch, mirror: null, mirrorConfigured: mirrorConfigured() }, 200, cors);
       // The same judgement as before: a document that cannot be parsed (its
       // content stays null) or that the client-side validator would refuse is
       // reported, so the client stops instead of merging half a file.
@@ -326,6 +356,11 @@ export default async (request, _context) => {
         // for local-vs-cloud freshness checks.
         lastModifiedAt: doc.updatedAt,
         commitSha: doc.commitSha,
+        // The last save's gap verdict (never measured here — a plain read must
+        // not cost a GitHub round trip), and whether this deployment has a
+        // mirror at all. Both are for the app's Data screen.
+        mirror: doc.mirror || null,
+        mirrorConfigured: mirrorConfigured(),
         path: cloudFileFor(profile.id, config.file),
       }, 200, cors);
     }
@@ -364,6 +399,10 @@ export default async (request, _context) => {
         expectedVersion: sha,
         message: msg,
         branch: branchParam,
+        // Handed to the platform so the mirror runs after the answer, not
+        // before it. Absent on a local run (and in the tests), where the
+        // mirror is awaited as it always was — see lib/cloud.mjs.
+        defer: context?.waitUntil ? promise => context.waitUntil(promise) : null,
       });
       if (result.conflict) return ok({ conflict: true, status: 409 }, 200, cors);
       if (result.error) return err(result.error, 502, cors);
@@ -373,6 +412,12 @@ export default async (request, _context) => {
         commit: result.commitSha,
         branch: branchParam,
         lastModifiedAt: result.updatedAt,
+        // The gap verdict, when this deployment could measure it before
+        // answering. Null on a real deployment, where the mirror write and its
+        // check went to waitUntil: it means "not measured yet", never "in
+        // sync", and the next GET (or a ?mirror=1 check) is where the answer
+        // lands.
+        mirror: result.mirror || null,
       }, 200, cors);
     }
 
