@@ -90,3 +90,11 @@ __pycache__/
 .vscode/
 .env
 .env.*
+# CI files. The deploy workflow's staging output, this repository's Pages
+# mirror control config, and the scripts and workflows that drive them are
+# development files: the assets directory is the repository root, so anything not
+# listed here would be uploaded and served.
+pages/
+.pages-bundle/
+.pages-dist/
+tools/

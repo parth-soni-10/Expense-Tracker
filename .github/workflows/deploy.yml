@@ -1,0 +1,74 @@
+name: Deploy
+
+# A push to main redeploys this site's two homes together: its Worker, and the
+# Pages mirror of it. GitHub Actions rather than a Cloudflare Git integration,
+# deliberately — a Pages project created by direct upload cannot later be given
+# a Git source. Measured against this account, not assumed: PATCHing a source
+# onto one answered 400, error 8000069, "You cannot update the `source` object
+# in a Direct Uploads project." So Pages' own Git integration is not available
+# to these projects at all, and the pushes are wired up here instead.
+#
+# Needs one repository secret, CLOUDFLARE_API_TOKEN (Settings → Secrets and
+# variables → Actions → New repository secret), scoped to the account below with
+# Workers Scripts: Edit and Cloudflare Pages: Edit — plus Workers KV Storage /
+# D1 edit where this site's mirror uses them. The first step fails with a clear
+# message while it is missing, rather than half-deploying.
+#
+# The Worker's own secrets and its crons are not this file's business: secrets
+# persist across deploys, and wrangler re-asserts the cron triggers from the
+# repository's wrangler.toml.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: true
+
+env:
+  CLOUDFLARE_ACCOUNT_ID: aa3d5156a2c1f5099f6c1521a54d6aec
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Require the Cloudflare token
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set on this repository. Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+
+      - name: Deploy the Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx --yes wrangler@4 deploy
+
+      # The mirror is uploaded from a directory this stages, not from the repo:
+      # Pages uploads whatever it is given and serves it, and reads no ignore
+      # file, so the repository's .assetsignore is applied by the script first.
+      - name: Bundle the Worker and stage the Pages upload
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4 deploy --dry-run --outdir .pages-bundle
+          node tools/deploy-pages.mjs --assets . --bundle .pages-bundle --out .pages-dist
+
+      # Run from pages/, whose config names the mirror project and carries its
+      # bindings and vars, and names .pages-dist as the upload to publish.
+      - name: Deploy the Pages mirror
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: cd pages && npx --yes wrangler@4 pages deploy --branch main
