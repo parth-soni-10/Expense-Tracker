@@ -1,10 +1,10 @@
 /* ============================================================
    lib/store.mjs — tiny durable key/value adapter for the functions
    under netlify/functions/ (the directory is named for the host this
-   code came from; the functions themselves are bundled into worker.js
+   code came from; the functions themselves are hosted by functions/_router.js
    and served from the same paths).
 
-   The durable store is always handed in: worker.js installs
+   The durable store is always handed in: functions/_router.js installs
    lib/kv-store.mjs's module, which puts a KV namespace into this shape.
    Nothing is auto-detected from the host any more — the runtime that
    used to provide its own store is gone, and a dynamic import of a

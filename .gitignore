@@ -41,8 +41,13 @@ build/
 # Netlify
 .netlify/
 
-# Local Worker secrets for `wrangler dev` (never committed; .assetsignore too).
+# Local secrets for a local run, `wrangler pages dev` included (never
+# committed; .assetsignore too).
 .dev.vars
 
-# `wrangler dev`'s local state directory (KV and cache under miniflare).
+# Wrangler's local state directory (KV and cache under miniflare).
 .wrangler/
+
+# Deploy staging output, written by tools/deploy-pages.mjs. Build output; also
+# listed in .assetsignore, so it can never be uploaded even by hand.
+.pages-dist/

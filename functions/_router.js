@@ -1,11 +1,13 @@
 /**
- * Cents — Cloudflare Worker.
+ * Cents — the routing half of this app's Pages Function.
  *
  * This file only adapts how the functions under netlify/functions/ are hosted.
- * Wrangler bundles those files into this Worker, so the sync proxy, the cloud
- * document store, the reminder push pipeline, the recovery tokens and the
- * profiles admin keep exactly one implementation — the one the site ran on, and
- * the one the guard suite exercises.
+ * Pages compiles this directory (see `functions/[[path]].js`, the catch-all
+ * route) and it imports those files, so the sync proxy, the cloud document
+ * store, the reminder push pipeline, the recovery tokens and the profiles admin
+ * keep exactly one implementation — the one the site ran on, and the one the
+ * guard suite exercises. The `_` prefix keeps this file out of the routing
+ * table: the only route is the catch-all beside it.
  *
  * What Netlify's runtime used to provide, and what replaces it here:
  *
@@ -19,7 +21,7 @@
  *              GitHub mirror (lib/cloud.mjs) — is still true.
  *
  *   config     Netlify put the project's environment variables and secrets in
- *              process.env; Workers hand them over as bindings. They are copied
+ *              process.env; the runtime hands them over as bindings. They are copied
  *              onto process.env before any handler runs (nodejs_compat supplies
  *              the object), so the functions still read process.env.APP_PASSWORD
  *              and the rest exactly as they always did.
@@ -32,9 +34,10 @@
  *              calls besides sync is DERIVED from the sync endpoint it is
  *              configured with (reminders.js's pushEndpoint and tickEndpoint,
  *              sync.js's setup-token), so a device on either spelling reaches
- *              the same functions. `run_worker_first` in wrangler.toml names
- *              both prefixes, so ordinary page and asset requests never invoke
- *              this Worker at all.
+ *              the same functions. As a Worker this code ran only for those two
+ *              prefixes (`run_worker_first`); as the catch-all Pages Function it
+ *              sees every request, so the asset fall-through below is the
+ *              routing contract rather than a shortcut.
  *
  * These are Netlify v2 functions — `export default (request, context)` — so the
  * Request is passed straight through and their Response is returned as-is.
@@ -42,13 +45,13 @@
  * header and status code below is still the function's own.
  */
 
-import syncFunction from './netlify/functions/sync.mjs';
-import setupTokenFunction from './netlify/functions/setup-token.mjs';
-import remindersPushFunction from './netlify/functions/reminders-push.mjs';
-import remindersTickFunction from './netlify/functions/reminders-tick.mjs';
-import profilesAdminFunction from './netlify/functions/profiles-admin.mjs';
-import { useBlobsModule } from './netlify/functions/lib/store.mjs';
-import { kvBlobsModule } from './netlify/functions/lib/kv-store.mjs';
+import syncFunction from '../netlify/functions/sync.mjs';
+import setupTokenFunction from '../netlify/functions/setup-token.mjs';
+import remindersPushFunction from '../netlify/functions/reminders-push.mjs';
+import remindersTickFunction from '../netlify/functions/reminders-tick.mjs';
+import profilesAdminFunction from '../netlify/functions/profiles-admin.mjs';
+import { useBlobsModule } from '../netlify/functions/lib/store.mjs';
+import { kvBlobsModule } from '../netlify/functions/lib/kv-store.mjs';
 
 // The five URL-reachable entry points, each served under two spellings. The
 // paths are written out rather than built from a prefix because they are a

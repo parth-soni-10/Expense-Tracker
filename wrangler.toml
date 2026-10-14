@@ -1,34 +1,44 @@
-# Bundle input for this site's Pages build — NOT a deployment.
+# The one config this site has: its Cloudflare Pages project.
 #
-# The Cloudflare Pages project runs, as its build command:
+#   npx wrangler pages dev .           → local test on http://localhost:8788
+#   npx wrangler pages deploy          → publish .pages-dist to the project
 #
-#   npx --yes wrangler@4 deploy --dry-run --outdir .pages-bundle
-#   && node tools/deploy-pages.mjs --assets . --bundle .pages-bundle --out .pages-dist
-#   && sed -i … .pages-dist/_worker.js        (bare node builtins → node:…)
+# There is no Worker config and no Worker. The function half of the site — the
+# five endpoints under /api/* and their pre-rename /.netlify/functions/*
+# spelling — is a Pages Function: `functions/[[path]].js` catches every request
+# and hands it to `functions/_router.js`, which routes it to the module under
+# netlify/functions/ that answers it. Pages compiles those files as part of the
+# deploy, so nothing is bundled here, there is no `_worker.js` to stage, and
+# `wrangler deploy` is not a command this repository has any use for.
 #
-# and this file is read for the first half of that only: `--dry-run` bundles
-# `main` below into the worker.js that tools/deploy-pages.mjs stages as the
-# project's `_worker.js`. Nothing is deployed from here, and nothing should be —
-# this site has one host, the Pages project. A `wrangler deploy` run in this
-# directory would publish a second copy of the same code to a workers.dev
-# hostname nobody links to, now against the same production KV.
-#
-# Everything the deployed site needs lives where the deploy reads it:
-# `pages/wrangler.toml` carries the project name, its CENTS_KV binding and its
-# vars; its secrets (the app passwords, the VAPID pair, GITHUB_TOKEN) are set on
-# the project and are not in this repository at all. `_headers` carries the
-# response headers.
-#
-# Not published: `.assetsignore` lists this file, so it is never uploaded.
+# Everything the deployed site needs is in this file or on the project:
+# `pages_build_output_dir` names the upload tools/deploy-pages.mjs stages, the
+# CENTS_KV binding below is the durable store, `[vars]` holds the non-secret
+# coordinates, and the secrets (the app passwords, the VAPID pair, GITHUB_TOKEN)
+# are set on the project and are not in this repository at all. `_headers`
+# carries the response headers.
 
 name = "cents-app"
-main = "worker.js"
+pages_build_output_dir = ".pages-dist"
 compatibility_date = "2026-10-01"
 
 # Everything the functions use from Node: node:crypto (createECDH / createSign /
 # createCipheriv for the VAPID pair, the payload encryption and the recovery
-# tokens), Buffer, and the process.env object the config loop writes into. This
-# is also what tells wrangler to leave a node builtin as a `node:` external while
-# bundling, which is the form the deployed runtime expects — and what the build
-# command's sed step exists to normalise.
+# tokens), Buffer, and the process.env object the config loop writes into. Pages
+# compiles functions/ with this flag, so those builtins are left as `node:`
+# externals in the deployment.
 compatibility_flags = ["nodejs_compat"]
+
+# The KV namespace every profile's cloud document, its sync state and its push
+# subscriptions live in — the only copy.
+[[kv_namespaces]]
+binding = "CENTS_KV"
+id = "b07228078d274906ab86bbb9a7cd07f4"
+
+[vars]
+# The private GitHub repo the cloud document is mirrored into: a spare copy,
+# never the commit point. The token that writes it is a secret.
+REPO_OWNER = "parth-soni-10"
+REPO_NAME = "cents-data"
+REPO_BRANCH = "main"
+REPO_FILE = "data.json"

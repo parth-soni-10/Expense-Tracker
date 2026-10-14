@@ -2,19 +2,21 @@
 /**
  * Stage the directory a `wrangler pages deploy` should upload.
  *
- *   node tools/deploy-pages.mjs --assets <dir> --bundle <dir> --out <dir>
+ *   node tools/deploy-pages.mjs --assets <dir> --out <dir>
  *
  * Why this exists. Cloudflare Pages uploads whatever directory it is handed and
  * serves it, and — unlike the Workers static-assets layer — it reads no ignore
  * file. Measured, not assumed: a probe deployment whose `.assetsignore` listed
- * `secret.txt` still answered 200 for `/secret.txt`. So the repository's own
- * `.assetsignore` is applied here, before the upload, which makes what reaches
- * the host exactly what the repository says is published.
+ * `secret.txt` still answered 200 for `/secret.txt`, `.assetsignore` itself
+ * included. So the repository's own `.assetsignore` is applied here, before the
+ * upload, which makes what reaches the host exactly what the repository says is
+ * published.
  *
- * `--bundle` is the output directory of `wrangler deploy --dry-run --outdir …`.
- * Its single `.js` file becomes the upload's `_worker.js`, the advanced-mode
- * entry, so the Pages mirror runs the same Worker code as the Worker it mirrors.
- * More than one or none is an error rather than a guess.
+ * The function half of the site is deliberately not part of this: it lives in
+ * `functions/`, which Pages compiles from the repository (`functions/[[path]].js`
+ * is the catch-all route). An upload needs no `_worker.js` and no bundle step —
+ * that file was how a Workers module reached a Pages deployment, and there is no
+ * Worker here any more.
  *
  * `_headers` / `_redirects` / `_routes.json` are always kept: the platform
  * consumes those as directives, it does not serve them as files. A `404.html` is
@@ -26,7 +28,7 @@ import { cp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const flags = { assets: null, bundle: null, out: null };
+const flags = { assets: null, out: null };
 const argv = process.argv.slice(2);
 for (let i = 0; i < argv.length; i += 1) {
   const key = argv[i].replace(/^--/, "");
@@ -38,13 +40,12 @@ for (let i = 0; i < argv.length; i += 1) {
   i += 1;
 }
 if (!flags.assets || !flags.out) {
-  console.error("usage: node tools/deploy-pages.mjs --assets <dir> [--bundle <dir>] --out <dir>");
+  console.error("usage: node tools/deploy-pages.mjs --assets <dir> --out <dir>");
   process.exit(2);
 }
 
 const assets = resolve(flags.assets);
 const out = resolve(flags.out);
-const bundle = flags.bundle ? resolve(flags.bundle) : null;
 
 // Directives the platform reads from the upload rather than serving as files.
 const HONOURED_FILES = new Set(["_headers", "_redirects", "_routes.json"]);
@@ -54,7 +55,7 @@ const HONOURED_FILES = new Set(["_headers", "_redirects", "_routes.json"]);
 const ALWAYS_SKIP = new Set([
   ".git", "node_modules", ".freebuff", ".wrangler", ".kilo", ".pytest_cache", "__pycache__",
   ".assetsignore", ".gitignore", ".gitattributes", ".gitmodules",
-  ".netlifyignore", ".dev.vars", ".env", ".env.local", ".pages-bundle", ".pages-dist",
+  ".netlifyignore", ".dev.vars", ".env", ".env.local", ".pages-dist",
 ]);
 
 /** `.assetsignore` rules, reduced to what these repositories use. */
@@ -121,27 +122,6 @@ async function walk(dir, prefix = "") {
 }
 await walk(assets);
 
-let workerFrom = null;
-if (bundle) {
-  if (!existsSync(bundle)) {
-    console.error(`deploy-pages: bundle directory not found: ${bundle}`);
-    process.exit(2);
-  }
-  const entries = (await readdir(bundle, { withFileTypes: true })).filter(
-    (e) => e.isFile() && e.name.endsWith(".js")
-  );
-  if (entries.length !== 1) {
-    console.error(
-      `deploy-pages: expected exactly one bundled .js in ${bundle}, found ${entries.length}` +
-        (entries.length ? `: ${entries.map((e) => e.name).join(", ")}` : "")
-    );
-    process.exit(2);
-  }
-  workerFrom = entries[0].name;
-  await cp(join(bundle, workerFrom), join(out, "_worker.js"));
-  copied.push(`_worker.js (from ${workerFrom})`);
-}
-
 if (!existsSync(join(out, "404.html"))) {
   await writeFile(
     join(out, "404.html"),
@@ -165,6 +145,5 @@ if (!existsSync(join(out, "404.html"))) {
 const indexPresent = existsSync(join(out, "index.html"));
 console.log(`deploy-pages: ${assets} -> ${out}`);
 console.log(`  uploaded ${copied.length} file(s)${indexPresent ? "" : "  ⚠ no index.html"}`);
-if (workerFrom) console.log(`  server:   _worker.js from ${bundle}/${workerFrom}`);
 for (const s of skipped) console.log(`  left out  ${s}`);
 process.exit(indexPresent ? 0 : 1);

@@ -24,14 +24,14 @@
 .netlify/
 node_modules/
 
-# The Worker itself, its config, and the function sources it bundles. The
-# functions are compiled into worker.js by wrangler, so the sources are not
-# needed at the edge — and publishing them would hand out the sync proxy's
-# validation logic and every env var name (what netlify.toml's rules refused).
+# The function sources, the config, and the Pages Function that reaches them.
+# Pages compiles functions/ from the repository at deploy time, so the sources
+# are not needed in the upload — and publishing them would hand out the sync
+# proxy's validation logic and every env var name (what netlify.toml's rules
+# refused).
 netlify/
-worker.js
+functions/
 wrangler.toml
-wrangler.dev.toml
 _headers
 .assetsignore
 
@@ -91,11 +91,8 @@ __pycache__/
 .vscode/
 .env
 .env.*
-# Deploy files. This repository's Pages mirror control config, the scripts that
-# deploy it, and the staging output those scripts write (`.pages-bundle/`,
-# `.pages-dist/`) are development files: the assets directory is the repository
-# root, so anything not listed here would be uploaded and served.
-pages/
-.pages-bundle/
+# Deploy files: the script that stages the upload and the staging output it
+# writes (`.pages-dist/`) are development files. The assets directory is the
+# repository root, so anything not listed here would be uploaded and served.
 .pages-dist/
 tools/

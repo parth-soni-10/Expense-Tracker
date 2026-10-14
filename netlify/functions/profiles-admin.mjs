@@ -1,6 +1,6 @@
 /* ============================================================
    Function — profile administration, for the OWNER only (served from
-   /api/profiles-admin by worker.js, and under its pre-rename
+   /api/profiles-admin by functions/_router.js, and under its pre-rename
    /.netlify/functions/profiles-admin spelling for a device that stored it).
 
    The owner shares one deployed site with friends; each friend signs

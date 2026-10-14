@@ -70,7 +70,7 @@ The setting is stored in *that person's own document*, which means it travels to
 
 ## Self-hosting notes (Cloudflare Pages)
 
-The whole site is one host: the static app, the functions that answer the browser's calls under `/api/*` (the same five also sit under the pre-rename `/.netlify/functions/*` spelling, which is what a device set up before the rename still has saved, and which the app rewrites to `/api/*` the next time it saves its settings), and a KV namespace — all served by the **Cloudflare Pages** project `cents-app`. Its build bundles `worker.js` into the deployment's `_worker.js` and stages the repository through `.assetsignore`, so the upload is exactly what this repo says is published. The reminder job runs when something calls it: the app itself on open, or whatever scheduler you point at `reminders-tick`. A push to `main` publishes it; nothing is deployed from a shell, and local testing is `npx wrangler dev --config wrangler.dev.toml`. Non-secret coordinates live in `pages/wrangler.toml`'s `[vars]`; everything below is a secret and is set on the Pages project (Settings → Variables and Secrets), or in `.dev.vars` for a local run.
+The whole site is one host: the static app, the functions that answer the browser's calls under `/api/*` (the same five also sit under the pre-rename `/.netlify/functions/*` spelling, which is what a device set up before the rename still has saved, and which the app rewrites to `/api/*` the next time it saves its settings), and a KV namespace — all served by the **Cloudflare Pages** project `cents-app`. Pages compiles `functions/` (the catch-all `functions/[[path]].js`, which hands every request to the router in `functions/_router.js`) and the build stages the repository through `.assetsignore`, so the upload is exactly what this repo says is published. The reminder job runs when something calls it: the app itself on open, or whatever scheduler you point at `reminders-tick`. A push to `main` publishes it; nothing is deployed from a shell, and local testing is `npx wrangler pages dev . --kv CENTS_KV` — same config, same function compilation, and the store bound under the name the code reads (`pages dev` takes the KV namespace from that flag rather than from the config, which is why it is spelled out). Non-secret coordinates live in `wrangler.toml`'s `[vars]`; everything below is a secret and is set on the Pages project (Settings → Variables and Secrets), or in `.dev.vars` for a local run.
 
 The optional sync and push features need:
 
@@ -148,7 +148,7 @@ Nineteen pure-Node guardrails run in CI, and they are what you run before a depl
 
 ```
 node scripts/run-guards.mjs            # all nineteen, in order
-node scripts/check-worker-config.mjs   # wrangler.toml + worker.js: the entry point, the route table the browser calls, the KV binding, the reminder job's single home, that no secret sits in a committed file, the CI wiring, and the docs below
+node scripts/check-worker-config.mjs   # wrangler.toml + functions/_router.js: the Pages project, the route table the browser calls, the KV binding, the reminder job's single home, that no secret sits in a committed file, the CI wiring, and the docs below
 node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
 node scripts/check-image-hygiene.mjs   # the roster photo can never be persisted
 node scripts/check-csp-hashes.mjs      # every inline boot script is hashed in the CSP

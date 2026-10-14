@@ -38,7 +38,7 @@ export const DEFAULT_SYNC_ENDPOINT = '/api/sync';
  * The path this app called its sync endpoint before the rename, and what every
  * device that was set up before it still has in storage.
  *
- * Kept as a name it RECOGNISES rather than one it writes: worker.js still
+ * Kept as a name it RECOGNISES rather than one it writes: functions/_router.js still
  * routes it, so a device that never re-saves its settings keeps working
  * unchanged, and the two values below are what let the app treat the old name
  * as "the default" (isDefaultSyncEndpoint) instead of as somebody's custom

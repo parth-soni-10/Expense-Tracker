@@ -1,6 +1,6 @@
 /* ============================================================
    Function — setup-token issuance + redemption (served from /api/setup-token
-   by worker.js — plus its pre-rename /.netlify/functions/setup-token spelling,
+   by functions/_router.js — plus its pre-rename /.netlify/functions/setup-token spelling,
    for a device that stored that one — and derived from the sync endpoint by
    the app's own sync.js).
 
