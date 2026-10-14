@@ -88,8 +88,9 @@ const WAKE_MIN_INTERVAL_MS = 12 * 60 * 60 * 1000;
  * never); nothing ever heard → trust, so a device that has not probed yet (or
  * is on an older deploy) keeps the on-time path it already had.
  */
-// With no cron left (13 Oct 2026) "alive" can only mean "heard from recently":
-// the callers are the app itself, on open and on refocus, plus any scheduler the
+// With nothing running the job on a clock of its own, "alive" can only mean
+// "heard from recently": the callers are the app itself, on open and on refocus,
+// plus any scheduler the
 // user points at reminders-tick.mjs. A heartbeat inside the hour and a half is
 // therefore proof of a live sender — and older than that is NOT proof of death,
 // only the absence of proof of life, so the wake quietly takes the day back.
@@ -521,9 +522,9 @@ function fire(catchUp = false) {
   const payload = showReminderNotification(profileName, { catchUp });
   for (const fn of listeners) { try { fn(payload); } catch { /* listener error never breaks the loop */ } }
   // Any open copy of the app is a trigger for the copies that are closed: the
-  // same idempotent tick, fired at the hour the user chose. With the cron gone
-  // this is one of the few clocks the sender has left, so it carries more than
-  // it used to. Best effort and never awaited — a device with no sync has
+  // same idempotent tick, fired at the hour the user chose. This is the only
+  // clock the sender has from inside the app, so it carries more than it used to.
+  // Best effort and never awaited — a device with no sync has
   // nothing to fire it with, and its own banner has already been raised.
   triggerServerTick().catch(() => {});
 }
@@ -687,7 +688,8 @@ export async function syncPeriodicReminder() {
 // While the app is open, the scheduler above is enough. When it is closed,
 // delivery needs a real Web Push subscription: the browser hands us an
 // endpoint + keys, the server stores them, and the reminder run fires the push
-// at the chosen local time — now reached over HTTP, since the cron is gone. Subscribing requires the app password
+// at the chosen local time — reached over HTTP. Subscribing requires the app
+// password
 // (same credential as cloud sync) so random sites cannot seed reminders
 // into someone's store.
 

@@ -2,28 +2,18 @@
    reminders-tick.mjs — run the daily-reminder sender NOW, over HTTP.
 
    WHY THIS EXISTS. The reminder sender is the on-time path for a closed app, and
-   it is the one piece of this feature that runs on somebody else's clock. The
-   per-minute cron that used to drive it was scrapped on 13 Oct 2026, and the
-   reason is worth keeping: on this account it was the unreliable half, not the
-   code — the trigger was accepted and re-deployed, the bundle carried the
-   `scheduled` handler, and 30 minutes later no invocation had ever reached the
-   Worker, while Cloudflare's own local trigger endpoint ran the same handler and
-   logged its run. Before that, on Netlify, every scheduled function on the site
-   went silent the same way: correct countdowns in the dashboard, no error and no
-   log line, the remedy a support ticket. Either way nothing is wrong with any
-   subscription — the devices are all stored, the app still says "Push is on",
-   and the phone simply never rings. With the cron gone this endpoint IS the
-   server's clock, so the same run is reachable here:
+   this endpoint is the server's clock: nothing in this repo fires the job on a
+   schedule of its own, so the run is reachable here —
 
        GET|POST https://<site>/api/reminders-tick
        X-Cents-Password: <this profile's app password>
        X-Cents-Profile:  <optional; defaults to the personal profile>
 
-   Point any scheduler at that URL when the platform's own cannot be trusted —
-   a free cron service, a home server, a GitHub Actions schedule — and the
-   reminder keeps arriving at the hour. `?password=` / `?profile=` exist for a
-   service that can only reach a URL and cannot set a header; the header is the
-   one to prefer, because a query string lands in request logs.
+   Point any scheduler at that URL — a free cron service, a home server, a
+   GitHub Actions schedule — and the reminder keeps arriving at the hour.
+   `?password=` / `?profile=` exist for a service that can only reach a URL and
+   cannot set a header; the header is the one to prefer, because a query string
+   lands in request logs.
 
    It is the same idempotent job a scheduler runs: a record already delivered today
    is not delivered again, so a trigger that fires twice changes nothing, and a

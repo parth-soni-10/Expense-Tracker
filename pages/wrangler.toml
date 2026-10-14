@@ -5,9 +5,6 @@
 # project name, its bindings and its vars from here, and `pages_build_output_dir`
 # names the upload that tools/deploy-pages.mjs stages.
 #
-# No [triggers] here, and that is not an omission: Pages has no cron triggers, so
-# the reminder ticks stay on the Workers deployment.
-#
 # The mirror's secrets (the VAPID keys, the profile passwords, GITHUB_TOKEN) are
 # not in this file and cannot be: they are set out of band with
 # Misc/pages-secrets.py, and a deploy does not clear them.

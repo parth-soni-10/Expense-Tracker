@@ -36,14 +36,6 @@
  *              both prefixes, so ordinary page and asset requests never invoke
  *              this Worker at all.
  *
- *   scheduler  There is none. The per-minute cron and the scheduled function it
- *              woke (reminders-send.mjs) were removed on 13 Oct 2026: the cron
- *              never dispatched on this Worker, and the reminder no longer
- *              depends on a platform clock. The job survives unchanged in
- *              lib/reminder-run.mjs and is reached over HTTP by
- *              reminders-tick.mjs, which the app calls when it opens (see
- *              wrangler.toml for how to put an external schedule back).
- *
  * These are Netlify v2 functions — `export default (request, context)` — so the
  * Request is passed straight through and their Response is returned as-is.
  * That also means no response shaping happens here: every CORS header, cache
@@ -73,10 +65,8 @@ import { kvBlobsModule } from './netlify/functions/lib/kv-store.mjs';
 // requests would fall through to the assets layer and 404), and dropping the
 // /api/ spelling 404s the app's own default on a fresh install.
 //
-// This table is now the whole set: reminders-tick is the only way the reminder
-// job is reached (the second entry point, reminders-send.mjs, was the cron's and
-// went with the cron). check-worker-config.mjs requires every function file to
-// appear here, so an endpoint cannot ship unreachable.
+// This table is the whole set, and check-worker-config.mjs requires every
+// function file to appear here, so an endpoint cannot ship unreachable.
 const ROUTES = {
   '/api/sync': syncFunction,
   '/api/setup-token': setupTokenFunction,

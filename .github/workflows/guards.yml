@@ -10,9 +10,8 @@
 # the build step is gone — so CI and a deploy cannot drift apart. That includes
 # scripts/check-worker-config.mjs, which validates wrangler.toml and worker.js
 # statically: the entry point, the assets config, the KV binding, the routes, the
-# reminder job's single home and the ABSENCE of a per-minute cron (that trigger
-# was removed on 13 Oct 2026), and that no secret has been pasted into a
-# committed file. No wrangler install is needed for any of it, which keeps this job
+# reminder job's single home, and that no secret has been pasted into a committed
+# file. No wrangler install is needed for any of it, which keeps this job
 # dependency-free like the rest of the repo.
 name: guards
 

@@ -33,8 +33,7 @@
  *   19-21. the bills hint the sender appends, the read path behind it, and the
  *         probe that answers "is my reminder still deliverable?"
  *   22. the run's own heartbeat, and the HTTP trigger (reminders-tick) that is
- *         now the ONLY entry point to the job — the per-minute cron and its
- *         scheduled function were removed on 13 Oct 2026
+ *         the ONLY entry point to the job
  *
  *   node scripts/test-reminder-push.mjs
  *
@@ -53,7 +52,7 @@
  */
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 
 // ---------- verifying the VAPID JWT, the way a push service does ----------
 // The harness used to record the Authorization header and assert the `k` inside
@@ -227,12 +226,11 @@ const tickHandler = tickModule.default;
 const runModule = await import('../netlify/functions/lib/reminder-run.mjs');
 const { getStore, openStore } = await import('../netlify/functions/lib/store.mjs');
 
-// Nothing runs the reminder job on its own clock any more: the per-minute cron
-// and the scheduled function it woke (reminders-send.mjs) were removed on
-// 13 Oct 2026, and the job is reached over HTTP (reminders-tick) instead. This is
-// that same run — literally the call the deleted function made, store and all —
-// so every delivery, pruning, clock, hint and heartbeat check below still drives
-// the shipped code rather than a copy of it kept alive for the harness.
+// Nothing runs the reminder job on its own clock: the job is reached over HTTP
+// (reminders-tick), and this is that same run — the shipped entry point's call,
+// store and all — so every delivery, pruning, clock, hint and heartbeat check
+// below still drives the shipped code rather than a copy of it kept alive for
+// the harness.
 const sendHandler = async () => runModule.runReminderTick({ store: await getStore() });
 
 function call(handler, method, body, extraHeaders = {}) {
@@ -294,8 +292,8 @@ check('rfc8291-test-vector', vectorBody ===
 // generateVapidKeys() used to hand out a 42-character seed that the signing
 // code in the same module refused with "bad VAPID private key length". Nothing
 // in the environment was involved, which is exactly why it looked like a
-// deploy-only failure: the build drew such a key and died inside a scheduled
-// run. Both halves are pinned here — a seed in that short shape still signs,
+// deploy-only failure: the build drew such a key and died inside a run. Both
+// halves are pinned here — a seed in that short shape still signs,
 // and the generator never emits one.
 // A REAL pair whose scalar begins with a zero byte, so the short form is a key
 // rather than a made-up string: the signing path pads the seed back to 32
@@ -544,11 +542,9 @@ const refusedTest = await call(pushHandler, 'PUT', { endpoint: subscription.endp
 const refusedBody = await text(refusedTest);
 check('a refused test push names the status the push service gave',
   refusedTest.status === 502 && refusedBody.includes('(HTTP 503)'), `${refusedTest.status} ${refusedBody}`);
-// The deleted scheduled sender used to print its one-line summary
-// (`sent=… rejected=…`) and these checks scraped that text. The counts live in
-// the run's return value — the same object reminders-tick hands the app — so
-// they are read from there now: the same numbers, with nothing that only the
-// removed file could produce.
+// The counts live in the run's return value — the same object reminders-tick
+// hands the app — so the checks read them from there: the numbers the sender
+// acts on, not a log line that has to be scraped and parsed.
 const captureRun = async () => await sendHandler();
 const refusedRun = await captureRun();
 check('the run counts a service that refused',
@@ -2180,8 +2176,8 @@ delete process.env.GITHUB_TOKEN;
     /schedulerAt: scheduler\.ranAt, schedulerOk: scheduler\.ok === true/.test(remindersSource)
       && /if \(s\.schedulerOk === false\) return false;/.test(remindersSource));
   // A device that is OPEN at the hour also fires the server's own run, so the
-  // devices that are closed still get their push on a platform whose cron has
-  // gone quiet — any copy of the app that is running is a trigger for the rest.
+  // closed ones still get their push — any copy of the app that is running is a
+  // trigger for the rest.
   const fireAt = remindersSource.indexOf('function fire(');
   const fireBody = remindersSource.slice(fireAt, remindersSource.indexOf('function tick(', fireAt));
   check('a device that fires its own reminder also fires the server\'s run — any open app is a trigger for the closed ones',
@@ -2276,17 +2272,13 @@ delete process.env.GITHUB_TOKEN;
   })());
 
   // ---- the read path: one store, one key, the record's own date ----
-  // The job lives in ONE place. It used to be reached twice — by the platform's
-  // scheduled function and by the HTTP trigger — and the cron half was removed on
-  // 13 Oct 2026, so what matters now is that the remaining entry point runs THAT
-  // job rather than keeping a copy: a second copy of the loop would be a second
-  // answer to "was this device already sent to today".
+  // The job lives in ONE place: the entry point runs THAT job rather than keeping
+  // a copy, because a second copy of the loop would be a second answer to "was
+  // this device already sent to today".
   const tickSource = readFileSync(new URL('../netlify/functions/reminders-tick.mjs', import.meta.url), 'utf8');
   const runSource = readFileSync(new URL('../netlify/functions/lib/reminder-run.mjs', import.meta.url), 'utf8');
   check('the trigger runs the shared job rather than keeping a copy of it',
     /await runReminderTick\(\{ store \}\)/.test(tickSource) && !/for \(const key of keys\)/.test(tickSource));
-  check('and no scheduled copy of it came back',
-    !existsSync(new URL('../netlify/functions/reminders-send.mjs', import.meta.url)));
   check('the run reads the document through cloud.mjs, not a copy',
     /import \{ CLOUD_STORE, keyFor \} from '\.\/cloud\.mjs'/.test(runSource)
       && !/openStore\('cents-cloud'\)/.test(runSource));
@@ -2386,9 +2378,9 @@ delete process.env.GITHUB_TOKEN;
 // from a phone, exactly like a subscription that died: no notification, and an
 // app that still reads "Push is on". So every run leaves a heartbeat the device
 // can read (which is what lets its background wake stop deferring — section 18),
-// and the run is reachable over HTTP — the only entry point since the per-minute
-// cron was removed on 13 Oct 2026, so the heartbeat is now written by the app's
-// own call and by whoever points a schedule at the endpoint.
+// and the run is reachable over HTTP — the only entry point — so the heartbeat
+// is written by the app's own call and by whoever points a schedule at the
+// endpoint.
 {
   const dueRecord = (over = {}) => ({
     time: hhmm('UTC'), zone: 'UTC', lastFiredDate: '1999-01-01',

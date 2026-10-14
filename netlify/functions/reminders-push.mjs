@@ -23,8 +23,7 @@
            (lib/reminder-run.mjs's heartbeat). "Your device is stored" and
            "somebody is being sent to" are two different promises, and the
            second one is the one that breaks when nothing calls the sender any
-           more (the per-minute cron that used to guarantee a run went on
-           13 Oct 2026).
+           more.
 
    Why the app password gates this: a subscription endpoint URL is
    a capability — anyone who has it can push to that browser. We

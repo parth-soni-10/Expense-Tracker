@@ -1,9 +1,8 @@
 /* ============================================================
    lib/reminder-run.mjs — ONE run of the daily-reminder sender.
 
-   The HTTP trigger (reminders-tick.mjs) is now the ONLY entry point to this job —
-   the scheduled function that used to be the other one went with the per-minute
-   cron on 13 Oct 2026 — so the job is written once, here: walk
+   The HTTP trigger (reminders-tick.mjs) is the ONLY entry point to this job, so
+   the job is written once, here: walk
    every stored push subscription, work out whether the record's own local clock
    has reached the time its user chose (inside the look-back window below), send
    the reminder, and prune a subscription the push service calls gone.
@@ -33,7 +32,7 @@ export const PUSH_PREFIX = 'push:';
 // field sitting inside it is a shape the loop would have to keep skipping.
 export const SCHEDULER_KEY = 'meta:reminder-send';
 
-// HOW BIG THE LOOK-BACK IS, now that no cron decides the cadence. A run fires
+// HOW BIG THE LOOK-BACK IS, with no clock of its own deciding the cadence. A run fires
 // whenever something calls it — the app on open and on refocus
 // (triggerServerTick), or whatever scheduler the user points at
 // reminders-tick.mjs — so the window is what keeps the CALLER from deciding the
