@@ -1576,8 +1576,7 @@ body .flatpickr-calendar .flatpickr-next-month svg { fill: var(--muted); }
 body .flatpickr-calendar .flatpickr-prev-month:hover svg,
 body .flatpickr-calendar .flatpickr-next-month:hover svg { fill: var(--ink); }
 body .flatpickr-day { color: var(--ink); border-radius: 9px; }
-/* Out-of-month days wear prevMonthDay/nextMonthDay (the muted rule below), so
-   these :not() clauses name those, not the flatpickr-prevmonth they used to. */
+/* Out-of-month days wear prevMonthDay/nextMonthDay, not flatpickr-prevmonth. */
 body .flatpickr-day:not(.flatpickr-disabled):not(.nextMonthDay):not(.prevMonthDay):hover { background: var(--accent-soft); }
 body .flatpickr-day.selected,
 body .flatpickr-day.selected:hover,
