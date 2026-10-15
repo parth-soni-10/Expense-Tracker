@@ -75,7 +75,7 @@ export default async (request, _context) => {
   // touches, but administration is the owner's business no matter which
   // account their browser happens to have open.
   const ownerPassword = process.env.APP_PASSWORD;
-  if (!ownerPassword) return err(`No password configured for the owner profile - set ${passwordEnvName(DEFAULT_PROFILE)} in Netlify env vars (>= 8 characters)`, 500, cors);
+  if (!ownerPassword) return err(`No password configured for the owner profile - set ${passwordEnvName(DEFAULT_PROFILE)} as a secret on the Worker (>= 8 characters)`, 500, cors);
   if (ownerPassword.length < 8) return err('APP_PASSWORD must be at least 8 characters', 500, cors);
 
   const throttle = failureThrottle.check(request);
