@@ -38,7 +38,7 @@ process.env.REPO_FILE = 'data.json';
 // One entry per FILE, so a request for another profile's document cannot be
 // mistaken for this one's: the whole point of the profile tests below.
 const clouds = new Map();
-const fileOf = url => (/\/contents\/([^?]+)/.exec(String(url)) || [, '?'])[1].split('/').map(decodeURIComponent).join('/');
+const fileOf = url => (/\/contents\/([^?]+)/.exec(String(url)) || [undefined, '?'])[1].split('/').map(decodeURIComponent).join('/');
 globalThis.fetch = async (url, opts = {}) => {
   const method = opts.method || 'GET';
   const json = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });

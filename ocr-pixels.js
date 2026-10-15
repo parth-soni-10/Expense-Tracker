@@ -157,7 +157,6 @@ export function ocrBoxWalk(grey, w, h, r, visit) {
     }
     let sa = 0, sb = 0;
     for (let dx = -r; dx <= r; dx++) { const i = colAt(dx); sa += colA[i]; sb += colB[i]; }
-    const row = y * w;
     for (let x = 0; x < w; x++) {
       if (x > 0) {
         const ai = colAt(x + r), di = colAt(x - r - 1);

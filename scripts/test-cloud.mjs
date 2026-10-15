@@ -99,7 +99,7 @@ const gh = { calls: [], broken: null };
 // `/repos/<owner>/<repo>/contents/<file>?ref=<branch>` → `<file>`. Anchored on
 // `contents/` (not `repos/`) and cut at the query, so a read and the write that
 // follows it land on the same key.
-const fileOf = url => (/\/contents\/([^?]+)/.exec(String(url)) || [, '?'])[1].split('/').map(decodeURIComponent).join('/');
+const fileOf = url => (/\/contents\/([^?]+)/.exec(String(url)) || [undefined, '?'])[1].split('/').map(decodeURIComponent).join('/');
 globalThis.fetch = async (url, opts = {}) => {
   const method = opts.method || 'GET';
   const file = fileOf(url);

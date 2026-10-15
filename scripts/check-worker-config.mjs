@@ -165,7 +165,6 @@ for (const [i, raw] of toml.split('\n').entries()) {
   }
 }
 
-const get = (path, key) => keys.find(k => k.path === path && k.key === key);
 const topLevel = key => keys.find(k => k.path === null && k.key === key);
 
 /**

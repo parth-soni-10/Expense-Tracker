@@ -3,11 +3,6 @@
    Hash routing: #dashboard (default) | #add | #history | #balances | #insights
    ============================================================ */
 import { loadState, saveState, resetToBlank, exportJSON, exportEntriesCsv, validateState, uid, updateAllowedCategories, updateAllowedMethods, isValidCheckpointDate, BALANCE_METHOD_IDS, saveUndoJournal, loadUndoJournal, clearUndoJournal, popUndoJournal, dropUndoJournal, UNDO_STACK_MAX, takeStorageNotice, loadStateFor, patchProfileSettings, parseBackup, parseEntriesCsv, CSV_REFUSAL, foreignWriteNeeded, readStateText, unreadableBackup, MAX_BACKUP_BYTES, downloadText } from './storage.js';
-// csv.js's own rules for the one file the Insights screen writes itself:
-// csvDocument (the row joiner storage uses for the ledger export) and the BOM
-// that puts a euro sign right in Excel on Windows. csv.js is already in the
-// boot closure — storage.js imports it — so this costs no payload.
-import { csvDocument, CSV_BOM } from './csv.js';
 import { CATEGORIES, METHODS, TABS, HIDEABLE_TABS } from './seed.js';
 import { getSyncSettings, patchSyncSettings, clearSyncSettings, getPrivacyPin, setPrivacyPin, clearPrivacyPin, getBiometricCredential, setBiometricCredential, clearBiometricCredential, DEFAULT_SYNC_ENDPOINT, isDefaultSyncEndpoint } from './settings.js';
 import { syncPull, syncPush, syncTestConnection, syncStatus, syncCheckMirror, mirrorStatus, relativeTime, notifySyncChange, subscribeSync, syncIssueSetupToken, syncExchangeSetupToken, syncIssueProfileInvite, syncPushProfilePolicy } from './sync.js';
@@ -5601,7 +5596,7 @@ const QUICK_PREPS = new Set([
 const QUICK_BRAND_START = new Set(['the', 'a', 'an', 'in', 'on']);
 // Connectors that join two words of a name ("Fish & Chips", "Bar and Grill").
 const QUICK_CONNECTORS = new Set(['&', 'and']);
-const QUICK_EDGE_PUNCT = /^[,.;:!?()\[\]"'\-—-]+|[,.;:!?()\[\]"'\-—-]+$/g;
+const QUICK_EDGE_PUNCT = /^[,.;:!?()[\]"'\-—-]+|[,.;:!?()[\]"'\-—-]+$/g;
 // Prepositions and connectors stay lowercase mid-description ("Pint of Guinness").
 const QUICK_LOWERCASE = new Set([...QUICK_PREPS, 'and']);
 function isContentToken(t) {
@@ -5621,7 +5616,7 @@ function cleanQuickDescription(raw, amountText) {
     .replace(/\b(?:x|×|@)\s*\d+(?:[.,]\d{1,2})?\b/ig, ' ')                    // "x2"
     .replace(/\b\d+(?:[.,]\d{1,2})?\s*[x×@]\b/ig, ' ')                        // "2x"
     .replace(/\b(aib|revolut(?: savings)?|\brs\b|bank|current account|cash|notes|wallet|pocket)\b/ig, ' ') // payment channels
-    .replace(/[()\[\]"']+/g, ' ');                                             // brackets/quotes
+    .replace(/[()[]"']+/g, ' ');                                             // brackets/quotes
 
   const tokens = s.split(/\s+/).filter(Boolean);
   const kept = [];
@@ -6151,8 +6146,7 @@ function $(tag, attrs = {}, ...children) {
     // thing this key is for; anything else is a miss and means "no content".
     else if (k === 'innerHTML') { if (typeof v === 'string') el.innerHTML = v; }
     else if (v === true) el.setAttribute(k, '');
-    else if (v === false || v == null) {}
-    else el.setAttribute(k, v);
+    else if (v !== false && v != null) el.setAttribute(k, v);
   }
   for (const c of children) {
     if (c == null || c === false) continue;
@@ -6218,7 +6212,6 @@ function renderHeader() {
       ),
     ),
   );
-  queueMicrotask(renderSyncIndicator);
 }
 
 function titleFor(r) {
@@ -9044,14 +9037,12 @@ function screenHistory() {
       splitGroups.get(key).push(e);
     }
 
-    let previousVisibleDate = null;
     for (const item of display) {
       const isGroup = item.type === 'g';
       const legs = isGroup ? splitGroups.get(item.id) : [item.e];
       const e = legs[0];
       const isNote = e.type === 'note';
       const isCredit = e.type === 'credit';
-      const isTransfer = !!e.transferId;
       const totalAmount = isGroup ? Math.round(legs.reduce((sum, l) => sum + l.amount, 0) * 100) / 100 : e.amount;
       const rowBalance = balanceForEntry(legs[0]);
       const rowType = isNote ? 'note-row' : isCredit ? 'income-row' : 'expense-row';
@@ -10408,6 +10399,9 @@ function _render() {
   if (locked) return;
   main.removeAttribute('inert');
   main.appendChild(renderHeader());
+  // The header carries the sync indicator, so repaint it once its node is in
+  // the document — a route change would otherwise blank it until the next event.
+  renderSyncIndicator();
 
   const route = currentRoute();
   // The History table gets the full window width on desktop (>=1024px) so all

@@ -1415,7 +1415,7 @@ ok('and it takes the undo step of its own, since nothing called it has one',
 const seedSource = readFileSync(new URL('../seed.js', import.meta.url), 'utf8');
 ok('a recorded Tesco pay lands on a method the app defines',
   new RegExp(`\\{ id: '${TESCO_PAY_METHOD}'`).test(seedSource), true);
-const giftCardIds = (appSource.match(/const GIFT_CARD_IDS = \[([^\]]+)\]/) || [, ''])[1];
+const giftCardIds = (appSource.match(/const GIFT_CARD_IDS = \[([^\]]+)\]/) || [undefined, ''])[1];
 ok('and it is not a gift-card method, where a credit would read as a card load',
   giftCardIds.includes(`'${TESCO_PAY_METHOD}'`), false);
 const payWrites = appSource.split('\n').filter(l => l.includes("details: 'Tesco pay'") && l.includes('method:'));

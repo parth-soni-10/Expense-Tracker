@@ -22,9 +22,9 @@ import { csvDocument, CSV_BOM } from './csv.js';
 // reading the current document across a reload or a cloud merge.
 import {
   $, state, today, fmt, friendlyDate, monthKey, monthLabel, offsetDateKey,
-  persist, toast, iconSpan, isTopModal, methodLabel, methodShort, categoryLabel,
+  toast, iconSpan, isTopModal, methodLabel, methodShort, categoryLabel,
   entriesForMonth, catTotalsForEntries, emptyIcon, emptyStateCard,
-  heatColor, heatDigitInk, stat, accountBalanceHistory, computeDataHealth,
+  heatColor, heatDigitInk, accountBalanceHistory, computeDataHealth,
   duplicateGroups, removeDuplicateEntry, reviewForMonth, wireChartTips,
   wireFlatpickr, isSpendingEntry, isIncomeEntry, isBudgetSpendingEntry,
   isBudgetIncomeEntry,
@@ -158,7 +158,6 @@ export function screenInsights() {
 
   // Calendar heatmap - follows the selected range's end month, so it never
   // contradicts the date range the rest of the screen honours.
-  const now = new Date();
   const heatKey = monthKey(toDate);
   const heatEntries = entriesForMonth(heatKey).filter(isSpendingEntry);
   const heatByDay = {};

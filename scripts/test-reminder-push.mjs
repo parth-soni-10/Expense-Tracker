@@ -2011,10 +2011,6 @@ delete process.env.GITHUB_TOKEN;
   const modalAt = appSource.indexOf('function openReminderSettings');
   const modalBody = appSource.slice(modalAt, appSource.indexOf('\nfunction isTopModal', modalAt));
   const modalWakes = (modalBody.match(/syncPeriodicReminder\(\)/g) || []).length;
-  // The dashboard's own slice, for the notice that has to be visible WITHOUT
-  // opening that sheet — the reason it exists at all.
-  const dashAt = appSource.indexOf('function screenDashboard');
-  const dashSource = appSource.slice(dashAt, appSource.indexOf('\nfunction ', dashAt + 10));
   // Each call site by its OWN shape — a count would pass with any one of the
   // three gone, and each is a different promise: the toggle withdraws tonight,
   // the Allow click re-arms right after the prompt, the open probe corrects a

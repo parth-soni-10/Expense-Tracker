@@ -931,7 +931,7 @@ check('a transfer row reads back as the transfer it was',
 check('and an unpaired leg validates as visible spending, not a phantom pair',
   validateState({ entries: transferRow.entries }).entries[0]?.type === 'expense');
 check('a hostile file cannot throw the import',
-  noThrow('parseEntriesCsv(junk)', () => parseEntriesCsv('"unclosed\r\n\u0000\u0001,\uFEFF,,,\"', csvImportLabels, [null, 42, 'x'])) !== undefined);
+  noThrow('parseEntriesCsv(junk)', () => parseEntriesCsv('"unclosed\r\n\u0000\u0001,\uFEFF,,,"', csvImportLabels, [null, 42, 'x'])) !== undefined);
 
 // The wiring in app.js: a Node guard cannot open a picker or a dialog, so the
 // import path is pinned as source text — the way section 12 pins the method
@@ -1127,7 +1127,6 @@ check('that write is one undoable step for its own method',
 // Lidl pull), and it has no ids of its own: everything it can get wrong is
 // about money, dates, or writing the same file twice.
 const { parseBankCsv, suggestBankMapping, buildBankEntries, bankAmount, bankDate, BANK_REFUSAL, bankImportSummary } = await import('../bank-import.js');
-const bankAppSource = appSource;
 
 check('every refusal is a sentence a user can act on, not a code',
   Object.values(BANK_REFUSAL).every(v => typeof v === 'string' && /[a-z]/.test(v))

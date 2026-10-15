@@ -45,7 +45,7 @@ export { ocrAutoContrast, ocrSauvola, ocrStretchData } from './ocr-pixels.js';
 // boot. Every name is re-exported below so the harnesses and the screen, which
 // have always imported them from here, keep resolving them.
 import {
-  TESCO_RATE_DEFAULTS, PAY_LAG_DAYS, WEEK_START_DOW,
+  TESCO_RATE_DEFAULTS, PAY_LAG_DAYS,
   r2, pad2, isoLocal, todayIso, parseHM, fmtHM, isoToUtcMidnight, dateOk,
   paidHours, isOvernight, isSunday, statedHours, shiftPay, simulateTax,
   weekStartOf, payDateOf, weekNumberOf, payslipWeekNumberOf, isoWeekNumber,
@@ -539,7 +539,7 @@ const WEEKDAY_RE = /\b(last|next)?\s*(sunday|monday|tuesday|wednesday|thursday|f
 const NAMED_DAY_RE = /\b(today|tonight|yesterday|yday)\b/i;
 const SPELLED_DAY_FIRST = /\b(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3,9})\b/i;
 const SPELLED_MONTH_FIRST = /\b([a-z]{3,9})\s+(\d{1,2})(?:st|nd|rd|th)?\b/i;
-const SHORT_DATE_RE = /\b(\d{1,2})[\/.]\s?(\d{1,2})\b/;
+const SHORT_DATE_RE = /\b(\d{1,2})[/.]\s?(\d{1,2})\b/;
 
 function isoFromParts(year, month, day) {
   if (!(year >= 2000 && year <= 2100) || !(month >= 1 && month <= 12) || !(day >= 1 && day <= 31)) return null;
@@ -566,7 +566,7 @@ function dayMonth(first, second) {
 function readDatedYear(text, today) {
   const iso = /(\d{4})-(\d{1,2})-(\d{1,2})/.exec(text);
   if (iso) return { matched: iso[0], iso: isoFromParts(+iso[1], +iso[2], +iso[3]), token: iso[0] };
-  const full = /(\d{1,2})[.\/\-](\d{1,2})[.\/\-](\d{4})/.exec(text);
+  const full = /(\d{1,2})[./-](\d{1,2})[./-](\d{4})/.exec(text);
   if (full) {
     const { day, month } = dayMonth(+full[1], +full[2]);
     return { matched: full[0], iso: isoFromParts(+full[3], month, day), token: full[0] };
@@ -582,7 +582,7 @@ function readShiftDate(text, today) {
   const year = /\b(20\d{2})\b/.exec(text);
   const dated = readDatedYear(text, today);
   if (dated) return dated;
-  const dashed = /(\d{1,2})[.\-](\d{1,2})[.\-](\d{2,4})/.exec(text);
+  const dashed = /(\d{1,2})[.-](\d{1,2})[.-](\d{2,4})/.exec(text);
   if (dashed) {
     const { day, month } = dayMonth(+dashed[1], +dashed[2]);
     const yy = +dashed[3];
@@ -2294,7 +2294,6 @@ export function ocrRulingLines(binary, w, h, opts = {}) {
 function ocrLineCentres(binary, w, h, vertical, minRun, mergeWithin) {
   const outer = vertical ? w : h;
   const inner = vertical ? h : w;
-  const step = vertical ? 1 : w;
   const at = (o, i) => (vertical ? binary[i * w + o] : binary[o * w + i]);
   const hits = [];
   for (let o = 0; o < outer; o++) {
@@ -4306,7 +4305,6 @@ export function screenTesco(ctx) {
 
   function weekBlock(w) {
     const sim = w.gross > 0 ? simulateTax(w.gross, rates) : null;
-    const actual = w.payslips.length ? w.paid : null;
     const box = $('div', { class: 'tesco-week' });
     // The week number is the sheet's own column, so it is editable: the sheet
     // counts 1..52/53 from where its pay year starts and restarts at 1, which
