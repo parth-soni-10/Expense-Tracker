@@ -3,7 +3,7 @@
 
    A shared device can hold several isolated spaces: each profile
    has its own entries, balances, settings, PIN, biometric
-   credential, sync credentials, cloud file and reminder. The
+   credential, sync credentials and cloud file. The
    registry itself is a DEVICE concept — it lives in localStorage
    and never syncs.
 
@@ -29,7 +29,6 @@
      cents:p/<id>/sync        sync settings (was cents:syncSettings)
      cents:p/<id>/undo        persisted undo journal
      cents:p/<id>/alerts      dismissed dashboard alerts
-     cents:p/<id>/reminder    daily reminder settings
    The legacy global keys are migrated into the first profile
    ("personal") the first time this module runs, then removed.
 
@@ -50,7 +49,7 @@ const ID_RE = /^[a-z0-9][a-z0-9-]{0,23}$/;
 // Logical storage bases. Every one is namespaced per profile, and every
 // one is removed when a profile is deleted — a base missing from this
 // list is a key that survives a delete and leaks into the next profile.
-const BASES = ['state', 'quarantine', 'privacy', 'bio', 'sync', 'undo', 'alerts', 'reminder'];
+const BASES = ['state', 'quarantine', 'privacy', 'bio', 'sync', 'undo', 'alerts'];
 const LEGACY_KEYS = {
   state: 'expense-tracker:v1',
   quarantine: 'expense-tracker:unreadable',
@@ -59,7 +58,6 @@ const LEGACY_KEYS = {
   sync: 'cents:syncSettings',
   undo: 'cents-undo-journal',
   alerts: 'cents-dismissed-alerts',
-  reminder: 'cents:reminder',
 };
 
 function validRegistry(value) {

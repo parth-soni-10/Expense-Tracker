@@ -4,10 +4,10 @@
  * This file only adapts how the functions under netlify/functions/ are hosted.
  * Pages compiles this directory (see `functions/[[path]].js`, the catch-all
  * route) and it imports those files, so the sync proxy, the cloud document
- * store, the reminder push pipeline, the recovery tokens and the profiles admin
- * keep exactly one implementation — the one the site ran on, and the one the
- * guard suite exercises. The `_` prefix keeps this file out of the routing
- * table: the only route is the catch-all beside it.
+ * store, the recovery tokens and the profiles admin keep exactly one
+ * implementation — the one the site ran on, and the one the guard suite
+ * exercises. The `_` prefix keeps this file out of the routing table: the only
+ * route is the catch-all beside it.
  *
  * What Netlify's runtime used to provide, and what replaces it here:
  *
@@ -32,12 +32,12 @@
  *              device set up before the rename still has saved, plus the path
  *              the functions' directory is named after. Everything the browser
  *              calls besides sync is DERIVED from the sync endpoint it is
- *              configured with (reminders.js's pushEndpoint and tickEndpoint,
- *              sync.js's setup-token), so a device on either spelling reaches
- *              the same functions. As a Worker this code ran only for those two
- *              prefixes (`run_worker_first`); as the catch-all Pages Function it
- *              sees every request, so the asset fall-through below is the
- *              routing contract rather than a shortcut.
+ *              configured with (sync.js's setup-token), so a device on either
+ *              spelling reaches the same functions. As a Worker this code ran
+ *              only for those two prefixes (`run_worker_first`); as the
+ *              catch-all Pages Function it sees every request, so the asset
+ *              fall-through below is the routing contract rather than a
+ *              shortcut.
  *
  * These are Netlify v2 functions — `export default (request, context)` — so the
  * Request is passed straight through and their Response is returned as-is.
@@ -47,21 +47,18 @@
 
 import syncFunction from '../netlify/functions/sync.mjs';
 import setupTokenFunction from '../netlify/functions/setup-token.mjs';
-import remindersPushFunction from '../netlify/functions/reminders-push.mjs';
-import remindersTickFunction from '../netlify/functions/reminders-tick.mjs';
 import profilesAdminFunction from '../netlify/functions/profiles-admin.mjs';
 import { useBlobsModule } from '../netlify/functions/lib/store.mjs';
 import { kvBlobsModule } from '../netlify/functions/lib/kv-store.mjs';
 
-// The five URL-reachable entry points, each served under two spellings. The
+// The three URL-reachable entry points, each served under two spellings. The
 // paths are written out rather than built from a prefix because they are a
 // contract with the browser, not a convention: /api/sync is the endpoint
 // settings.js defaults to, /.netlify/functions/sync is the name a device that
 // was set up before the rename still has in its settings, and every other path
-// is DERIVED from the sync endpoint at runtime (sync.js's setup-token,
-// reminders.js's push and tick endpoints). check-worker-config.mjs reads the
-// default out of settings.js and requires this table to serve it, and requires
-// both spellings to stay complete.
+// is DERIVED from the sync endpoint at runtime (sync.js's setup-token).
+// check-worker-config.mjs reads the default out of settings.js and requires this
+// table to serve it, and requires both spellings to stay complete.
 //
 // Both halves are load-bearing and neither is a leftover: dropping the legacy
 // spelling strands every device whose settings were never re-saved (its
@@ -73,14 +70,10 @@ import { kvBlobsModule } from '../netlify/functions/lib/kv-store.mjs';
 const ROUTES = {
   '/api/sync': syncFunction,
   '/api/setup-token': setupTokenFunction,
-  '/api/reminders-push': remindersPushFunction,
-  '/api/reminders-tick': remindersTickFunction,
   '/api/profiles-admin': profilesAdminFunction,
-  // The pre-rename spelling of the same five, kept for devices that stored it.
+  // The pre-rename spelling of the same three, kept for devices that stored it.
   '/.netlify/functions/sync': syncFunction,
   '/.netlify/functions/setup-token': setupTokenFunction,
-  '/.netlify/functions/reminders-push': remindersPushFunction,
-  '/.netlify/functions/reminders-tick': remindersTickFunction,
   '/.netlify/functions/profiles-admin': profilesAdminFunction,
 };
 

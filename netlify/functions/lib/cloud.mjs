@@ -12,7 +12,7 @@
    records a commit per save, and refuses the save the moment the sha
    has moved — with the document itself never queryable, just one JSON
    blob in a repo. Blobs is the runtime this deployment already runs on
-   (the reminder push store uses it), so a save stops being a commit.
+   (the security-token store uses it), so a save stops being a commit.
    GitHub stays as the mirror: a second, human-readable copy in history,
    and the recovery path if a site's Blobs data is ever lost.
 
@@ -106,10 +106,10 @@ import { openStore } from './store.mjs';
 import { ghFetch, decodeBase64, encodeBase64, contentsPath, mirrorConfigured } from './gh.mjs';
 import { cloudFileFor } from './profiles.mjs';
 
-// Exported for the reminder run (lib/reminder-run.mjs, reached over HTTP), which
-// reads a profile's document from the same store to count due bills — a second
-// copy of either the store name or the key format is a doc the two halves stop
-// agreeing about (an empty store looks exactly like "nothing due").
+// The store name and the key format in one place each: every reader and writer
+// of a profile's document goes through these, so a second copy of either would
+// be the thing two halves stop agreeing about (an empty store looks exactly
+// like "nothing here").
 export const CLOUD_STORE = 'cents-cloud';
 export const keyFor = profileId => `doc/${profileId}.json`;
 

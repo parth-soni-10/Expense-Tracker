@@ -14,7 +14,7 @@
 # Everything the deployed site needs is in this file or on the project:
 # `pages_build_output_dir` names the upload tools/deploy-pages.mjs stages, the
 # CENTS_KV binding below is the durable store, `[vars]` holds the non-secret
-# coordinates, and the secrets (the app passwords, the VAPID pair, GITHUB_TOKEN)
+# coordinates, and the secrets (the app passwords, CENTS_SECRET, GITHUB_TOKEN)
 # are set on the project and are not in this repository at all. `_headers`
 # carries the response headers.
 
@@ -22,9 +22,9 @@ name = "cents-app"
 pages_build_output_dir = ".pages-dist"
 compatibility_date = "2026-10-01"
 
-# Everything the functions use from Node: node:crypto (createECDH / createSign /
-# createCipheriv for the VAPID pair, the payload encryption and the recovery
-# tokens), Buffer, and the process.env object the config loop writes into. Pages
+# Everything the functions use from Node: node:crypto (createSign and
+# createCipheriv for the recovery tokens), Buffer, and the process.env object the
+# config loop writes into. Pages
 # compiles functions/ with this flag, so those builtins are left as `node:`
 # externals in the deployment.
 compatibility_flags = ["nodejs_compat"]

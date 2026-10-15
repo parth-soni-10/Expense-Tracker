@@ -410,7 +410,7 @@ check('a verdict with a timestamp says when it was checked',
 // A password saved with a trailing space — a paste, a phone keyboard that adds
 // one — is refused by a byte-for-byte comparison and cannot be seen in a
 // password field, so it is normalized on the way out AND repaired in storage:
-// otherwise every reader (the sync call, the reminder push, the invite flow)
+// otherwise every reader (the sync call, the invite flow)
 // keeps sending it and the modal keeps redrawing it as if it were fine.
 mem.set('cents:p/personal/sync', JSON.stringify({
   enabled: true,

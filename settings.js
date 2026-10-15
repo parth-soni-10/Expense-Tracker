@@ -26,11 +26,9 @@ const BIOMETRIC_KEY = () => nsKey('bio');
  * to do it. It is named for the host that serves it — Cloudflare — rather than
  * for the host this project migrated off; see LEGACY_SYNC_ENDPOINT below for
  * the old name, which is still recognised and still routed. Everything
- * else the app calls (setup-token, reminders-push, reminders-tick,
- * profiles-admin) is DERIVED from this at runtime by replacing the last path
- * segment — sync.js's setupTokenEndpoint, reminders.js's pushEndpoint and
- * tickEndpoint — so a device pointed at a custom deployment moves all of it
- * together.
+ * else the app calls (setup-token, profiles-admin) is DERIVED from this at
+ * runtime by replacing the last path segment — sync.js's setupTokenEndpoint —
+ * so a device pointed at a custom deployment moves it too.
  */
 export const DEFAULT_SYNC_ENDPOINT = '/api/sync';
 
@@ -170,7 +168,7 @@ export function getSyncSettings() {
     const settings = normalizeSyncSettings(stored);
     // Repair the one thing normalization changes in place. Reading a padded
     // password out and sending the trimmed one is not enough: the value stays
-    // in storage for the next reader (the reminder push, the invite flow), and
+    // in storage for the next reader (the invite flow), and
     // the modal redraws it from there — so the repair is written back, once,
     // the first time any of them looks.
     if (stored && typeof stored.password === 'string' && stored.password !== settings.password) {

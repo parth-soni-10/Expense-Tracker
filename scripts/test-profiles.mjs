@@ -48,7 +48,6 @@ localStorage = new MemoryStorage({
   'expense-tracker:v1': legacyState,
   'cents:privacySettings': '{"pinHash":"deadbeef"}',
   'cents:syncSettings': '{"enabled":true}',
-  'cents:reminder': '{"time":"19:00"}',
   'expense-tracker:unreadable': '{"entries":[',
 });
 const first = await import('../profiles.js?first-run');
@@ -59,8 +58,8 @@ check('the legacy document moves into the profile',
   localStorage.getItem('cents:p/personal/state') === legacyState);
 check('the legacy key is removed, not duplicated', localStorage.getItem('expense-tracker:v1') === null);
 check('every legacy base is migrated',
-  ['quarantine', 'privacy', 'sync', 'reminder'].every(base => localStorage.getItem(`cents:p/personal/${base}`) != null
-    && localStorage.getItem({ quarantine: 'expense-tracker:unreadable', privacy: 'cents:privacySettings', sync: 'cents:syncSettings', reminder: 'cents:reminder' }[base]) === null));
+  ['quarantine', 'privacy', 'sync'].every(base => localStorage.getItem(`cents:p/personal/${base}`) != null
+    && localStorage.getItem({ quarantine: 'expense-tracker:unreadable', privacy: 'cents:privacySettings', sync: 'cents:syncSettings' }[base]) === null));
 check('the registry is written',
   JSON.parse(localStorage.getItem('cents:profiles')).profiles.length === 1);
 
@@ -72,7 +71,7 @@ check('the default profile keeps the original env var', first.profileEnvName('pe
 check('a second profile names its own env var', first.profileEnvName('sam-p') === 'APP_PASSWORD_SAM_P',
   first.profileEnvName('sam-p'));
 check('base names never collide across profiles',
-  ['state', 'quarantine', 'privacy', 'bio', 'sync', 'undo', 'alerts', 'reminder']
+  ['state', 'quarantine', 'privacy', 'bio', 'sync', 'undo', 'alerts']
     .every(base => first.nsKey(base, 'sam') !== first.nsKey(base, 'personal')));
 
 // ------------------------------------------------ 3. session choice + order
@@ -138,7 +137,7 @@ check('deleting an unknown profile is refused', !!capped.deleteProfile('ghost').
 localStorage = reg([{ id: 'personal', name: 'Personal' }, { id: 'sam', name: 'Sam' }]);
 sessionStorage = new MemoryStorage();
 const deleting = await import('../profiles.js?delete');
-const BASES = ['state', 'quarantine', 'privacy', 'bio', 'sync', 'undo', 'alerts', 'reminder'];
+const BASES = ['state', 'quarantine', 'privacy', 'bio', 'sync', 'undo', 'alerts'];
 for (const base of BASES) {
   localStorage.setItem(deleting.nsKey(base, 'sam'), 'sam-secret');
   localStorage.setItem(deleting.nsKey(base, 'personal'), 'personal-secret');

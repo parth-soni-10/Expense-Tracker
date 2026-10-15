@@ -15,8 +15,8 @@
 
    The adapter is intentionally narrow — getJSON / setJSON / an
    atomic consume-once / delete / prefix list — so its callers
-   (single-use setup tokens, the reminder push store, the cloud
-   document store) stay readable and testable.
+   (single-use setup tokens, the cloud document store) stay
+   readable and testable.
 
    Stores are named, and each name gets its own backend and its own
    in-memory map: security tokens and someone's expense document have

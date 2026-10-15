@@ -12,8 +12,8 @@
 # wrangler.toml is the Pages project itself (its output directory, its KV
 # binding, its vars), so a cron trigger, a workers_dev switch, an assets block or
 # a `main` entry point in it would be a Worker waiting to be deployed beside the
-# site — plus functions/_router.js and the routes, the reminder job's single home,
-# and that no secret has been pasted into a committed file. No wrangler install is
+# site — plus functions/_router.js and the routes, that the removed daily reminder
+# has stayed removed, and that no secret has been pasted into a committed file. No wrangler install is
 # needed for any of it, which keeps this job dependency-free like the rest of the
 # repo.
 name: guards

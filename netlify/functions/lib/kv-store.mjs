@@ -15,7 +15,7 @@
    GitHub commit.
 
    Storage namespaces are prefixed, not shared. store.mjs's stores are named
-   (`cents-cloud`, the reminder push store, `cents-security`), and each name
+   (`cents-cloud`, `cents-security`), and each name
    gets its own prefix here for the same reason it got its own Blobs store:
    security tokens and somebody's expense document have nothing to do with each
    other and must not share a keyspace.

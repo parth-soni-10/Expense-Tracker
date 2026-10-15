@@ -47,7 +47,6 @@ const GUARDS = [
   'test-sync.mjs',             // the sync contract still round-trips the state
   'test-cloud.mjs',            // the document store migrates, mirrors, conflicts
   'test-failure-throttle.mjs', // the failed-auth damper sees the caller on this host
-  'test-reminder-push.mjs',    // the push payload still matches the RFC vector
   'test-motion.mjs',           // a headline figure only counts when it changed
   'test-ui-libs.mjs',          // the vendored UI libraries still behave
 ];

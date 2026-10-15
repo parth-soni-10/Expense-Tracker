@@ -12,7 +12,6 @@
   "theme_color": "#101210",
   "categories": ["finance", "productivity", "utilities"],
   "launch_handler": { "client_mode": "navigate-existing" },
-  "gcm_sender_id": "103953800507",
   "dir": "ltr",
   "lang": "en",
   "prefer_related_applications": false,

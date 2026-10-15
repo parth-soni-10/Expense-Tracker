@@ -41,24 +41,23 @@ const BOOT_MODULES = [
   '/sync.js',
   '/sync-merge.js',
   '/profiles.js',
-  '/reminders.js',
   '/tesco-pay.js',
 ];
 // Modules that must NOT be in the boot closure: the ones the lazy paths own.
 const DEFERRED_MODULES = ['/tesco.js', '/insights.js', '/ocr-pixels.js', '/ocr-prep-worker.js'];
 
-// Decoded JS parsed before the first paint. Measured today: 810 KB — app.js
-// 590 KB + storage.js 59 KB + csv.js 8 KB + seed.js 3 KB + settings.js 11 KB +
-// sync.js 22 KB + sync-merge.js 13 KB + profiles.js 13 KB + reminders.js 57 KB +
-// tesco-pay.js 33 KB. The last addition is the GitHub mirror's gap: the Data
-// menu's line, the wording for its eight states, the on-demand check and the
-// notice a gap raises. It is shell by necessity rather than by choice — the menu
-// it reports in IS app.js, and a mirror that fell behind on somebody's phone is
-// not something to fetch on request. (The two guards that read it: test-cloud
-// for the comparison and test-sync for the wording.) The number to watch is not
-// the ceiling, it is the shape: this should stay "the shell and arithmetic",
-// with every screen and every library behind import() — so a new EAGER IMPORT
-// still fails loudly (240 KB for tesco.js, 39 KB for insights.js).
+// Decoded JS parsed before the first paint. The per-file arithmetic that used to
+// be written out here is what this guard prints on every run, so the figure to
+// trust is its own line; what matters is the shape. app.js + storage.js + csv.js +
+// seed.js + settings.js + sync.js + sync-merge.js + profiles.js + tesco-pay.js is
+// "the shell and arithmetic": the GitHub mirror's gap is in here by necessity
+// rather than by choice, because the menu it reports in IS app.js, and a mirror
+// that fell behind on somebody's phone is not something to fetch on request.
+// (The two guards that read it: test-cloud for the comparison and test-sync for
+// the wording.) The number to watch is not the ceiling, it is the shape: this
+// should stay "the shell and arithmetic", with every screen and every library
+// behind import() — so a new EAGER IMPORT still fails loudly (240 KB for tesco.js,
+// 39 KB for insights.js).
 //
 // The ceiling itself moved here, from 810 KB, and the reason is measured rather
 // than felt: the closure was 794 KB of that 810 KB before this addition and 810

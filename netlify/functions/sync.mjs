@@ -72,7 +72,7 @@ function corsHeaders(request) {
     // X-Cents-Profile belongs here: the client sends it on every call, and a
     // cross-origin endpoint (a self-hosted sync domain) is preflighted, which
     // same-origin requests never are — so omitting it made sync work only when
-    // the endpoint was on this origin. Same list as setup-token and reminders-push.
+    // the endpoint was on this origin. Same list as setup-token and profiles-admin.
     'Access-Control-Allow-Headers': 'Content-Type, X-Cents-Password, X-Cents-Setup-Token, X-Cents-Profile',
     'Access-Control-Allow-Methods': 'GET, PUT, POST, OPTIONS',
     'Access-Control-Max-Age': '86400',

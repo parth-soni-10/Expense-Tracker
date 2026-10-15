@@ -288,7 +288,7 @@ async function go(route) {
        mean "this device could not reach it", not "this device never has it". */
 const MODAL_OPENERS = [
   'openAdminPanel', 'openRecurringManager', 'openMethodManager', 'openAvatarPicker',
-  'openReminderSettings', 'openPinSettings', 'openSyncSettings', 'openBankImport',
+  'openPinSettings', 'openSyncSettings', 'openBankImport',
 ];
 
 /* The surfaces: every route, then every place a screen opens something. */
@@ -352,7 +352,6 @@ const STEPS = [
     } },
   { name: 'modal · recurring & bills', open: async () => { await openByText('', '.menu-trigger'); return openByText('Recurring', '.menu-row'); } },
   { name: 'modal · payment methods', open: async () => { await openByText('', '.menu-trigger'); return openByText('Payment methods', '.menu-row'); } },
-  { name: 'modal · daily reminder', open: async () => { await openByText('', '.menu-trigger'); return openByText('Daily reminder', '.menu-row'); } },
   { name: 'modal · profile picture', open: async () => { await openByText('', '.menu-trigger'); return openByText('Profile picture', '.menu-row'); } },
   { name: 'modal · admin panel', needs: 'the admin profile active on this device', open: async () => {
       // The header chip (.admin-trigger) only renders with more than one profile

@@ -236,7 +236,7 @@ check('a second profile never replaces the active document',
   (activeLoad?.settings?.monthlyBudget) === 1100, `budget became ${activeLoad?.settings?.monthlyBudget}`);
 check('the second profile is left untouched', localStorage.getItem('cents:p/sam/state') === otherProfile);
 check('every namespaced base is distinct per profile',
-  ['state', 'sync', 'privacy', 'bio', 'undo', 'alerts', 'reminder', 'quarantine']
+  ['state', 'sync', 'privacy', 'bio', 'undo', 'alerts', 'quarantine']
     .every(base => nsKey(base, 'sam') !== nsKey(base, 'personal') && nsKey(base, 'sam').startsWith('cents:p/sam/')));
 
 // ------------------------------------------------- 6. merge never loses data
@@ -985,13 +985,6 @@ check('the gate sends the whole batch through one confirm',
   /const hit = entries\.map\(e => \[e, findPotentialDuplicate\(e\)\]\)\.find\(\(\[, dup\]\) => dup\);\s*if \(hit\) openDuplicateConfirm\(hit\[0\], hit\[1\], commit\);\s*else commit\(\);/.test(appSource));
 check('and the caller\u2019s toast and navigation wait for the commit',
   /if \(onDone\) onDone\(\);/.test(fnBody('const commitAdded = (entries, label, onDone)', 3000)));
-// The reminder modal offers the install the background wake needs — an
-// uninstalled tab can never run a periodic sync, so the row sits beside the
-// sentence that explains why rather than three menu levels away.
-check('the reminder modal offers the install the wake needs',
-  /const installRow = canInstallApp\(\) \?/.test(appSource)
-  && /await promptInstall\(\)/.test(fnBody('const installRow = canInstallApp()', 900)));
-
 // ------------------------------ 15. the Lidl pull: an automatic ledger writer
 // lidl.js imports clean in Node (its top level is pure for exactly this), so
 // these are behavioural rather than source-text; app.js's wiring half is
@@ -1310,9 +1303,6 @@ check('the budget toggle moved off the row and into the edit sheet',
   && /\.\.\.\(data\.budgetExcluded \? \{ budgetExcluded: true \} : \{\}\)/.test(appSource));
 check('the row\u2019s one action is named for what it does',
   /'aria-label': \(isGroup \? `Edit or delete split \$\{rowLabel\}` : `Edit or delete \$\{rowLabel\}`\)[\s\S]{0,80}'Edit'/.test(appSource));
-check('the reminder says what is due, on the local path too',
-  /setDueBillsProvider\(\(\) => billsDueHintFor\(state\.settings\.recurring, today\(\)\)\)/.test(appSource)
-  && /export function setDueBillsProvider/.test(readFileSync(new URL('../reminders.js', import.meta.url), 'utf8')));
 check('a pattern in the ledger is offered once, and can be refused',
   /function recurringSuggestion\(\)/.test(appSource)
   && /setAlertDismissed\(dismissedKey, true\)/.test(appSource)

@@ -6,8 +6,8 @@
  * Ported from check-netlify-config.mjs, which guarded netlify.toml for exactly
  * this reason: the config is read by the platform before any code runs, so a
  * mistake in it is neither a failing test nor a runtime error — it is a deploy
- * that looks green and an app that is quietly missing an endpoint, a header, a
- * store or the daily reminder. The originals are worth keeping in mind:
+ * that looks green and an app that is quietly missing an endpoint, a header or a
+ * store. The originals are worth keeping in mind:
  *
  *   * the `[[functions]]` array form sat in netlify.toml for seven commits, and
  *     every deploy after it died while Netlify parsed the file, with no gate
@@ -28,10 +28,11 @@
  *
  *   1. The deployment's identity: name, a Pages output directory, and a pinned
  *      compatibility date (a date in the future is rejected at deploy time).
- *   2. `nodejs_compat` — the functions use node:crypto (createECDH for the VAPID
- *      pair, createSign, createCipheriv), Buffer, and the process.env object the
- *      binding loop writes into. Without the flag those are not there, and the
- *      failure is a 500 on push and sync at runtime.
+ *   2. `nodejs_compat` — the functions use node:crypto (createSign and
+ *      createCipheriv for the recovery tokens), Buffer, and the process.env
+ *      object the binding loop writes into. Without the flag those are not
+ *      there, and the failure is a 500 on sync, setup links and the profiles
+ *      admin at runtime.
  *   3. It is a Pages config and nothing else: no cron triggers, no workers_dev
  *      or preview URLs, no routes, no assets block, and no `main` entry point —
  *      every one of those is Workers-only, and any of them in this file is a
@@ -53,10 +54,8 @@
  *      published to anyone who can read the repo AND served as a plain string
  *      binding — so the declared variable names are held to an allowlist of
  *      non-secret coordinates, and their values are shape-checked.
- *   7. The reminder job's single home: the job is written once in
- *      lib/reminder-run.mjs, the HTTP trigger runs THAT rather than a copy of
- *      it, and the run's look-back window is wide enough that a late run still
- *      catches its target (see the block below).
+ *   7. The daily reminder stays removed: its files, its routes and the service
+ *      worker's push machinery must not come back (see the block below).
  *   8. Routing completeness: every route in functions/_router.js maps to a file that
  *      exists, every function file IS routed, and the route the browser defaults
  *      to is served.
@@ -94,7 +93,7 @@ const MIN_NODE = 22;
 
 // Variables that are configuration, not credentials: they name a private repo
 // whose contents only a token can read. Everything else the functions need — the
-// root secret, the app password, the VAPID pair, the PAT — is a secret.
+// root secret, the app password, the PAT — is a secret.
 const VAR_ALLOWLIST = new Set(['REPO_OWNER', 'REPO_NAME', 'REPO_BRANCH', 'REPO_FILE']);
 
 const problems = [];
@@ -235,7 +234,7 @@ if (!compatDate) {
 // ---- 2. the Node compatibility the functions need --------------------------
 const flags = topLevel('compatibility_flags')?.items || [];
 if (!flags.includes('nodejs_compat')) {
-  fail('compatibility_flags does not include "nodejs_compat" — the functions use node:crypto (the VAPID pair, the payload encryption, the recovery tokens), Buffer and process.env, so push and sync would 500 at runtime.');
+  fail('compatibility_flags does not include "nodejs_compat" — the functions use node:crypto (the recovery tokens), Buffer and process.env, so sync, setup links and the profiles admin would 500 at runtime.');
 }
 
 // ---- 3. it is a Pages config, not a Worker one ------------------------------
@@ -340,7 +339,7 @@ if (!deployId || !/^[0-9a-f]{32}$/.test(deployId.value || '')) {
 
 // ---- 5. no secret in a committed file --------------------------------------
 // The config is committed, so it is held to the rule: Cents' secrets (the root
-// secret, the app passwords, the VAPID pair, the GitHub token) are set on the
+// secret, the app passwords, the GitHub token) are set on the
 // Pages project out of band and appear in no file here.
 const varsBlock = [
   ...keys.filter(k => k.path === 'vars').map(k => ({ ...k, file: 'wrangler.toml', problem: add })),
@@ -373,19 +372,32 @@ for (const entry of varsBlock) {
   }
 }
 
-// ---- 6. the reminder job's single home --------------------------------------
-// The job is reached over HTTP by the app's own call (reminders-tick.mjs), so
-// what has to stay true is that it is written once and that a run landing late
-// still catches its target: one copy of the loop, one answer to "was this device
-// already sent to today".
-const runSrc = read('netlify/functions/lib/reminder-run.mjs');
-const tickSrc = read('netlify/functions/reminders-tick.mjs');
-if (!/runReminderTick/.test(tickSrc)) {
-  fail('reminders-tick.mjs does not run lib/reminder-run.mjs — it is the ONLY entry point to the reminder job, so no reminder would ever be sent at all.');
+// ---- 6. the daily reminder stays removed ------------------------------------
+// The feature was removed rather than re-scheduled, and a half-restored copy is
+// worse than one that never existed: the app would offer a reminder sheet for a
+// job nothing runs, and the service worker would hold a push handler waiting for
+// a payload no deployment can send. So the removal is pinned from this side too —
+// the files, the routes and the worker's reminder machinery all have to stay
+// absent, in the same spirit as §11 and for the same reason.
+const REMOVED_WITH_THE_REMINDER = [
+  'reminders.js',
+  'netlify/functions/reminders-push.mjs',
+  'netlify/functions/reminders-tick.mjs',
+  'netlify/functions/lib/reminder-run.mjs',
+  'netlify/functions/lib/webpush.mjs',
+  'scripts/test-reminder-push.mjs',
+];
+for (const gone of REMOVED_WITH_THE_REMINDER) {
+  if (existsSync(new URL(gone, root))) {
+    fail(`${gone} is back. The daily reminder was removed outright (its scheduler, its Web Push sender and the trigger behind it), so a resurrected file is a second, unreachable copy of a feature the app no longer offers.`);
+  }
 }
-const windowMinutes = Number(/const WINDOW_MINUTES = (\d+)/.exec(runSrc)?.[1]);
-if (!Number.isFinite(windowMinutes) || windowMinutes < 1) {
-  fail(`lib/reminder-run.mjs's WINDOW_MINUTES reads ${windowMinutes} — the run's look-back window must be at least a minute wide, or a run that lands a few seconds late finds nothing due and skips the day's reminder.`);
+if (/reminders-(push|tick)/.test(router)) {
+  fail('functions/_router.js routes a reminder endpoint again — nothing in the app calls one, so the route would answer a request that no longer exists.');
+}
+const swSrc = read('sw.js');
+if (/addEventListener\('(push|periodicsync)'/.test(swSrc)) {
+  fail("sw.js registers a 'push' or 'periodicsync' listener again — no server sends a payload now, and a wake with no schedule behind it can only raise a notification the app has no setting for.");
 }
 
 // ---- 7. routing completeness ------------------------------------------------
