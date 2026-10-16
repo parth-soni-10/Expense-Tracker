@@ -114,7 +114,7 @@ export default async (request, _context) => {
   try {
     if (action === 'invite') {
       return ok({
-        token: issueSetupToken(secret, targetPassword, target, Date.now(), tabs),
+        token: await issueSetupToken(secret, targetPassword, target, Date.now(), tabs),
         profile: target,
         expiresInDays: Math.round(SETUP_TOKEN_TTL_MS / (24 * 60 * 60 * 1000)),
         tabs: tabs || null,

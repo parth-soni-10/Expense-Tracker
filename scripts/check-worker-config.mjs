@@ -28,11 +28,17 @@
  *
  *   1. The deployment's identity: name, a Pages output directory, and a pinned
  *      compatibility date (a date in the future is rejected at deploy time).
- *   2. `nodejs_compat` — the functions use node:crypto (createSign and
- *      createCipheriv for the recovery tokens), Buffer, and the process.env
- *      object the binding loop writes into. Without the flag those are not
- *      there, and the failure is a 500 on sync, setup links and the profiles
- *      admin at runtime.
+ *   2. `nodejs_compat` — the functions use node:crypto's createHash and
+ *      timingSafeEqual, and the process.env object the binding loop writes
+ *      into. Without the flag those are not there, and the failure is a 500 on
+ *      sync, setup links and the profiles admin at runtime.
+ *      The setup-token path deliberately does NOT come through here: it is
+ *      WebCrypto (lib/tokens.mjs), because node:crypto's CIPHER half is the one
+ *      piece of the polyfill that arrived late enough to still be a throwing
+ *      mock in a deployed bundle. That is what made every Copy tap in Cloud
+ *      sync answer "Unexpected server error" on 16 Oct 2026 while sync, auth
+ *      and the profiles admin — none of which encrypt — kept working, and it is
+ *      why assertion 2b below pins the token module to crypto.subtle.
  *   3. It is a Pages config and nothing else: no cron triggers, no workers_dev
  *      or preview URLs, no routes, no assets block, and no `main` entry point —
  *      every one of those is Workers-only, and any of them in this file is a
@@ -234,7 +240,44 @@ if (!compatDate) {
 // ---- 2. the Node compatibility the functions need --------------------------
 const flags = topLevel('compatibility_flags')?.items || [];
 if (!flags.includes('nodejs_compat')) {
-  fail('compatibility_flags does not include "nodejs_compat" — the functions use node:crypto (the recovery tokens), Buffer and process.env, so sync, setup links and the profiles admin would 500 at runtime.');
+  fail('compatibility_flags does not include "nodejs_compat" — the functions use node:crypto\'s createHash/timingSafeEqual and process.env, so sync, setup links and the profiles admin would 500 at runtime.');
+}
+
+// ---- 2b. the token path encrypts with WebCrypto, not node:crypto -----------
+// A mocked cipher is the one failure this config cannot show and no runtime test
+// can catch: workerd implemented createCipheriv/createDecipheriv on 12 Mar 2025
+// and Wrangler only stopped substituting its unenv mock on 22 Mar 2025 (4.4.0),
+// so a bundle built against anything older throws
+// `[unenv] crypto.createCipheriv is not implemented yet!` at the moment a link
+// is MINTED — not at import, not at boot, and nowhere any of the other guards
+// look. That is the class of failure behind every Copy tap on this deployment
+// answering "Unexpected server error" on 16 Oct 2026 while sync, auth and the
+// profiles admin kept working: those three import node:crypto too, but only
+// createHash, timingSafeEqual and randomBytes, which the older polyfill always
+// had — measured, not assumed: a wrong password on the token route answers 401
+// `Bad app password`, so the throw was inside the mint, after the compare.
+// It is pinned here rather than reproduced because a current wrangler no longer
+// mocks the cipher, and the older-runtime replay that was tried failed for an
+// unrelated reason (no `process` global). WebCrypto has no such history —
+// crypto.subtle and crypto.getRandomValues are native in every runtime this app
+// targets, and no bundler preset can substitute a mock for them. Buffer is
+// called out beside the cipher for the same reason: Node's base64url codec is
+// on that mint path, is just as node-only, and the fix removed it too.
+const tokenModule = read('netlify/functions/lib/tokens.mjs');
+// Comments are stripped because this file's header explains the bug BY NAME,
+// which is the whole reason the assertions below can be about code alone.
+const tokenCode = tokenModule
+  .replace(/\/\*[\s\S]*?\*\//g, '')
+  .replace(/^\s*\/\/[^\n]*$/gm, '');
+if (/from\s+'node:crypto'|require\('node:crypto'\)/.test(tokenCode)) {
+  fail('netlify/functions/lib/tokens.mjs imports node:crypto — its ciphers are the newest part of the polyfill and were mocked on this deployment, so every setup link 500ed. Use crypto.subtle (WebCrypto).');
+}
+if (/\bcreateCipheriv\b|\bcreateDecipheriv\b|\bgetAuthTag\b|\bBuffer\b/.test(tokenCode)) {
+  fail('netlify/functions/lib/tokens.mjs reaches for a node:crypto cipher or Buffer — the token path must encrypt with WebCrypto (crypto.subtle.encrypt/decrypt and crypto.getRandomValues), which no runtime call can turn into "not implemented".');
+}
+if (!/crypto\.subtle\.encrypt/.test(tokenCode) || !/crypto\.subtle\.decrypt/.test(tokenCode)
+  || !/crypto\.subtle\.importKey/.test(tokenCode) || !/crypto\.getRandomValues/.test(tokenCode)) {
+  fail('netlify/functions/lib/tokens.mjs no longer encrypts with crypto.subtle.encrypt/decrypt + importKey, or no longer draws its nonce from crypto.getRandomValues — setup links are AES-256-GCM tokens and both halves are load-bearing (a reused or weak nonce breaks GCM outright).');
 }
 
 // ---- 3. it is a Pages config, not a Worker one ------------------------------

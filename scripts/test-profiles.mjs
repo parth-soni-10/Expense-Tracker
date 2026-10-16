@@ -17,7 +17,7 @@
  * Run: node scripts/test-profiles.mjs
  * Also a step in scripts/run-guards.mjs.
  */
-import { createCipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 
 class MemoryStorage {
   constructor(seed = {}) { this.map = new Map(Object.entries(seed)); }
@@ -294,28 +294,56 @@ check('a file without an extension still gets a distinct name',
   srv.cloudFileFor('sam', 'ledger') === 'ledger-sam', srv.cloudFileFor('sam', 'ledger'));
 
 // =========================================== 8. setup tokens carry the id
+// Minting and redeeming are WebCrypto now (lib/tokens.mjs's header says why: a
+// node:crypto CIPHER call threw on the deployed runtime, which turned every
+// setup link into a 500 while sync and the password compare — createHash and
+// timingSafeEqual — kept working). These checks pin the round trip, and the
+// half that protects a deploy: the two implementations are byte-compatible,
+// because one build mints a link and the next one redeems it.
 const { issueSetupToken, redeemSetupToken } = await import('../netlify/functions/lib/tokens.mjs');
 const SECRET = 'stub-github-token';
-const forSam = issueSetupToken(SECRET, 'sam-password-123456', 'sam-p');
-const back = redeemSetupToken(SECRET, forSam);
+const forSam = await issueSetupToken(SECRET, 'sam-password-123456', 'sam-p');
+const back = await redeemSetupToken(SECRET, forSam);
 check('a token round-trips its password', back.ok && back.password === 'sam-password-123456');
 check('a token round-trips the profile it belongs to', back.profileId === 'sam-p', back.profileId);
 check('a token minted with no profile is the default one',
-  redeemSetupToken(SECRET, issueSetupToken(SECRET, 'default-password-1234')).profileId === 'personal');
+  (await redeemSetupToken(SECRET, await issueSetupToken(SECRET, 'default-password-1234'))).profileId === 'personal');
 check('a hostile profile id cannot be smuggled into a token',
-  redeemSetupToken(SECRET, issueSetupToken(SECRET, 'default-password-1234', '../../etc')).profileId === 'personal');
+  (await redeemSetupToken(SECRET, await issueSetupToken(SECRET, 'default-password-1234', '../../etc'))).profileId === 'personal');
+
+// The OLD implementation, kept here as the reference the new one has to agree
+// with: node:crypto's AES-256-GCM with the same SHA-256(secret) key. A token it
+// mints must redeem above (that is a link minted before the deploy, or by a
+// rollback), and a token minted above must open under it. If either direction
+// fails, a real link breaks in the window of a deploy — which is exactly what
+// this module's format is frozen for.
+const key = createHash('sha256').update(SECRET).digest();
+const oldMint = (plain) => {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  return `t2.${iv.toString('base64url')}.${ct.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}`;
+};
+const oldRedeem = (token) => {
+  const [ivB64, ctB64, tagB64] = token.slice(3).split('.');
+  const d = createDecipheriv('aes-256-gcm', key, Buffer.from(ivB64, 'base64url'));
+  d.setAuthTag(Buffer.from(tagB64, 'base64url'));
+  return d.update(Buffer.from(ctB64, 'base64url')).toString('utf8') + d.final().toString('utf8');
+};
 
 // A link minted before this field existed must still redeem — as the default.
-const key = createHash('sha256').update(SECRET).digest();
-const iv = randomBytes(12);
-const legacyCipher = createCipheriv('aes-256-gcm', key, iv);
-const legacyPlain = JSON.stringify({ p: 'default-password-1234', e: Date.now() + 86400000 });
-const legacyToken = `t2.${iv.toString('base64url')}.${Buffer.concat([legacyCipher.update(legacyPlain, 'utf8'), legacyCipher.final()]).toString('base64url')}.${legacyCipher.getAuthTag().toString('base64url')}`;
-const legacyBack = redeemSetupToken(SECRET, legacyToken);
+const legacyToken = oldMint(JSON.stringify({ p: 'default-password-1234', e: Date.now() + 86400000 }));
+const legacyBack = await redeemSetupToken(SECRET, legacyToken);
 check('a pre-profiles token still redeems', legacyBack.ok && legacyBack.password === 'default-password-1234');
 check('a pre-profiles token belongs to the default profile', legacyBack.profileId === 'personal');
+check('a token minted by the old node:crypto build still redeems through WebCrypto',
+  (await redeemSetupToken(SECRET, oldMint(JSON.stringify({ p: 'x-password-123456', e: Date.now() + 60000 })))).ok === true);
+check('and a token minted through WebCrypto opens under the old node:crypto build',
+  JSON.parse(oldRedeem(forSam)).p === 'sam-password-123456');
+check('an expired token says so instead of looking invalid',
+  (await redeemSetupToken(SECRET, await issueSetupToken(SECRET, 'x-password-123456', 'personal', Date.now() - 31 * 24 * 60 * 60 * 1000))).expired === true);
 check('a tampered token is rejected',
-  redeemSetupToken(SECRET, legacyToken.slice(0, -2) + (legacyToken.endsWith('AA') ? 'BB' : 'AA')).ok === false);
+  (await redeemSetupToken(SECRET, legacyToken.slice(0, -2) + (legacyToken.endsWith('AA') ? 'BB' : 'AA'))).ok === false);
 
 // ---------------------------------------------------------------- report
 if (failures.length) {

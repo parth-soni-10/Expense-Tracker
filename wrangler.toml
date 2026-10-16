@@ -22,11 +22,20 @@ name = "cents-app"
 pages_build_output_dir = ".pages-dist"
 compatibility_date = "2026-10-01"
 
-# Everything the functions use from Node: node:crypto (createSign and
-# createCipheriv for the recovery tokens), Buffer, and the process.env object the
-# config loop writes into. Pages
-# compiles functions/ with this flag, so those builtins are left as `node:`
-# externals in the deployment.
+# Everything the functions use from Node: node:crypto's createHash and
+# timingSafeEqual (the password compare and the cloud version token), and the
+# process.env object the binding loop writes into. Pages compiles functions/
+# with this flag, so those builtins are left as `node:` externals in the
+# deployment.
+#
+# The setup-token path is deliberately NOT on that list: lib/tokens.mjs encrypts
+# with WebCrypto (crypto.subtle) and carries its own base64url, because
+# node:crypto's CIPHER half and Node's Buffer are the newest part of the
+# polyfill and a deployed bundle built before they landed throws
+# `[unenv] crypto.createCipheriv is not implemented yet!` at the moment a link is
+# minted — which is how every tap of Copy in Cloud sync came to answer
+# "Unexpected server error" while sync and auth stayed fine. check-worker-config
+# asserts the module stays free of both.
 compatibility_flags = ["nodejs_compat"]
 
 # The KV namespace every profile's cloud document, its sync state and its push

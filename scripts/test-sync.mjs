@@ -206,7 +206,7 @@ const admin = (payload, password = 'test-password-1234') => adminHandler(new Req
 const invited = await admin({ action: 'invite', profile: 'sam', enabledTabs: ['dashboard', 'add', 'insights'] });
 check('the owner can mint an invite for another account', invited.status === 200, `got ${invited.status} ${(await invited.text()).slice(0, 160)}`);
 const inviteBody = await (await admin({ action: 'invite', profile: 'sam', enabledTabs: ['dashboard', 'add', 'insights'] })).json();
-const redeemedInvite = redeemSetupToken(ROOT_SECRET, inviteBody.token);
+const redeemedInvite = await redeemSetupToken(ROOT_SECRET, inviteBody.token);
 check('the invite carries that account\u2019s own password',
   redeemedInvite.ok && redeemedInvite.password === 'sam-password-123456', JSON.stringify(redeemedInvite && { ok: redeemedInvite.ok }));
 check('and names the account it belongs to', redeemedInvite.profileId === 'sam', redeemedInvite.profileId);

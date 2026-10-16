@@ -102,7 +102,7 @@ export default async (request, _context) => {
           },
         });
     }
-    const redeemed = redeemSetupToken(secret, token);
+    const redeemed = await redeemSetupToken(secret, token);
     if (!redeemed.ok) {
       // Tokens can't be forged without the root secret, so a failure here
       // means junk or an expired/unknown link. Throttle + sleep to absorb the
@@ -159,7 +159,7 @@ export default async (request, _context) => {
       return err('Bad app password', 401, cors);
     }
     return ok({
-      token: issueSetupToken(secret, expected, profile.id),
+      token: await issueSetupToken(secret, expected, profile.id),
       expiresInDays: Math.round(SETUP_TOKEN_TTL_MS / (24 * 60 * 60 * 1000)),
     }, 200, cors);
   }
