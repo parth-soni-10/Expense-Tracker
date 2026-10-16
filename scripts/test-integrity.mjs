@@ -44,7 +44,7 @@ const { csvCell, csvUnquote, csvDocument, csvRows, csvDate, isRealDate, CSV_BOM 
 const { getPrivacyPin, getSyncSettings, isDefaultSyncEndpoint, DEFAULT_SYNC_ENDPOINT, isValidEndpoint } = await import('../settings.js');
 const { mergeStates } = await import('../sync-merge.js');
 const { paidHours, shiftPay, simulateTax, tescoCsv, parseTescoCsv } = await import('../tesco.js');
-const { readFileSync } = await import('node:fs');
+const { readFileSync, existsSync } = await import('node:fs');
 
 let pass = 0;
 const failures = [];
@@ -985,165 +985,32 @@ check('the gate sends the whole batch through one confirm',
   /const hit = entries\.map\(e => \[e, findPotentialDuplicate\(e\)\]\)\.find\(\(\[, dup\]\) => dup\);\s*if \(hit\) openDuplicateConfirm\(hit\[0\], hit\[1\], commit\);\s*else commit\(\);/.test(appSource));
 check('and the caller\u2019s toast and navigation wait for the commit',
   /if \(onDone\) onDone\(\);/.test(fnBody('const commitAdded = (entries, label, onDone)', 3000)));
-// ------------------------------ 15. the Lidl pull: an automatic ledger writer
-// lidl.js imports clean in Node (its top level is pure for exactly this), so
-// these are behavioural rather than source-text; app.js's wiring half is
-// pinned as source at the end, the way section 14 pins its own. Every rule
-// here is a way an AUTOMATIC writer could corrupt the ledger or the gift card.
-const { receiptToEntry, ticketsToEntries, windowStart, amountOk, LIDL_METHOD, LIDL_CATEGORY, LIDL_WINDOW_DAYS } = await import('../lidl.js');
-const { METHODS } = await import('../seed.js');
-
-check('the pull writes to the gift card the balance math treats as a card',
-  LIDL_METHOD === 'LG' && METHODS.some(m => m.id === LIDL_METHOD));
-check('an expense on that card leaves the card (the figure the pull moves)',
-  /if \(GIFT_CARD_IDS\.includes\(methodId\)\)/.test(fnBody('function balanceDelta(', 300))
-  && /return -entry\.amount;/.test(fnBody('function balanceDelta(', 300)));
-check('the catch-up window is bounded and stated',
-  Number.isFinite(LIDL_WINDOW_DAYS) && LIDL_WINDOW_DAYS > 0 && LIDL_WINDOW_DAYS <= 90);
-
-const TODAY = '2026-10-04';
-check('the window reaches exactly N days back', windowStart(TODAY) === '2026-08-30', windowStart(TODAY));
-const mkReceipt = (over = {}) => ({ id: 't1', date: '2026-10-02', total: 42.17, store: 'Dun Laoghaire', parsed: true, ...over });
-const shaped = receiptToEntry(mkReceipt(), TODAY);
-check('a receipt becomes one gift-card grocery expense',
-  shaped && shaped.type === 'expense' && shaped.method === LIDL_METHOD
-  && shaped.category === LIDL_CATEGORY && shaped.amount === 42.17
-  && shaped.details.includes('Lidl') && shaped.details.includes('Dun Laoghaire'));
-check('amounts must already be exact to 2dp — never rounded',
-  amountOk(12.4) && !amountOk(12.405) && receiptToEntry(mkReceipt({ total: 12.405 }), TODAY) === null);
-check('a receipt outside the window is never created',
-  receiptToEntry(mkReceipt({ date: '2026-08-29' }), TODAY) === null
-  && receiptToEntry(mkReceipt({ date: '2026-10-05' }), TODAY) === null);
-
-const run = (tickets, existing = [], imported = {}) =>
-  ticketsToEntries(tickets, { today: TODAY, existing, imported });
-const pulled = run([mkReceipt()]);
-check('a new receipt is committed with a stable id and survives the next load',
-  pulled.entries.length === 1 && pulled.entries[0].id === 'lidl-t1'
-  && validEntry(pulled.entries[0])
-  && (() => { const v = validateState({ entries: pulled.entries, settings: {} });
-    return looksLikeState(v) && v.entries.length === 1; })());
-check('rule 1: an old receipt stays out — bounded catch-up, never all history',
-  run([mkReceipt({ id: 'old', date: '2026-08-15' })]).entries.length === 0);
-check('rule 2a: an imported ticket whose entry is present is skipped', (() => {
-  const o = run([mkReceipt()], [{ id: 'lidl-t1' }], { t1: { entryId: 'lidl-t1' } });
-  return o.entries.length === 0 && o.skipped.imported === 1;
+// ---------------------- 15. the Lidl receipt pull: REMOVED, and the absence is
+// the pin that matters. It was the app's other automatic writer: a local relay
+// (`python lidl-spike.py serve`) held the Lidl Plus session on the machine and
+// handed the page normalized receipts, one `expense` on the `LG` gift card per
+// ticket. Removing it has to be complete — the module, the relay it read, the
+// Data-menu row, the pull that ran on every open, the `sw.js` SHELL entry, and
+// the ignore rules that existed only for the spike's output folder. A
+// half-restored copy is worse than one that never existed: a row that opens a
+// module nobody ships is a feature that reports itself as working, and a boot
+// hook that pulls receipts no screen mentions is that same failure with no UI at
+// all. So the checks below read the sources rather than trusting the prose, and
+// they name the module, the row and the hook instead of the word — `lidl` is
+// still a legitimate token in app.js's gift-card keyword tables, which is a
+// payment method and not this feature.
+check('no Lidl receipt pull survives in app.js', (() => {
+  const code = readFileSync(new URL('../app.js', import.meta.url), 'utf8');
+  return !/lidl\.js|Pull Lidl receipts|pullLidl|autoPullLidl|LIDL_RELAY|relayReachable|cents:lidl-imported/.test(code);
 })());
-check('rule 2b: a line the user deleted is never rewritten', (() => {
-  const o = run([mkReceipt()], [], { t1: { entryId: 'lidl-t1' } });
-  return o.entries.length === 0 && o.skipped.deleted === 1;
-})());
-check('rule 2c: the user\u2019s own identical line wins, one ticket per line', (() => {
-  const mine = [{ id: 'mine', date: '2026-10-02', type: 'expense', amount: 42.17, method: 'LG', category: 'gro', details: 'Lidl', note: '' }];
-  const o = run([mkReceipt(), mkReceipt({ id: 't2' })], mine, {});
-  return o.entries.length === 1 && o.skipped.blocked === 1;
-})());
-check('rule 3: a bad amount is dropped, not rounded', (() => {
-  const o = run([mkReceipt({ total: 12.405 })]);
-  return o.entries.length === 0 && o.skipped.amount === 1;
-})());
-check('an unparsed receipt is skipped, not guessed at',
-  run([mkReceipt({ parsed: false })]).skipped.shape === 1);
-
-// app.js's half — the wiring, pinned as source because app.js touches the DOM
-// on evaluation. (The gate itself is pinned in the screening block above.)
-check('commitAdded lives at module scope, so the boot pull can reach it',
-  (appSource.match(/const commitAdded = \(entries, label, onDone\)/g) || []).length === 1
-  && /^const commitAdded = \(entries, label, onDone\)/m.test(appSource));
-check('the pull reaches the ONE duplicate gate, not a second one',
-  /label: 'Pull Lidl receipts'[\s\S]{0,400}commit: commitAdded/.test(appSource));
-check('the pull fires once per open, only once the app is accessible',
-  /autoPullLidl\(\{ state, commit: commitAdded, notify: toast \}\)/.test(appSource)
-  && /if \(hasPinLock\(\) && !pinUnlocked\) \{ setTimeout\(pullOnOpen, 500\); return; \}/.test(appSource));
-check('lidl.js is reached only through import() — the boot payload does not grow',
-  !/from '\.\/lidl\.js'/.test(appSource)
-  && (appSource.match(/import\('\.\/lidl\.js'\)/g) || []).length >= 2);
-// The relay probe is asked only where it can be ANSWERED, and the gate is the
-// one thing this module cannot answer in Node (it is private, and it asks about
-// a `location` this process does not have), so it is lifted out of the source
-// and run with one — the shape test-ui-libs uses for paintFigure. What it
-// replaces: a fetch to 127.0.0.1:8787 on every page load, which is a console
-// error per open on a served app (measured), a request Chrome's Local Network
-// Access rules gate on a public page, and on a phone a question about the
-// PHONE's loopback. A tap still gets its sentence; the automatic path is silent.
-const lidlSource = readFileSync(new URL('../lidl.js', import.meta.url), 'utf8');
-// Built per call: the lifted function closes over the `location` its scope was
-// given (passing one to relayReachable() itself does nothing — it takes none).
-const reachable = (hostname, protocol) => {
-  const at = lidlSource.indexOf('function relayReachable(');
-  if (at < 0) return undefined;
-  const body = lidlSource.slice(at, lidlSource.indexOf('\n}', at) + 2);
-  try { return new Function('location', `${body}\nreturn relayReachable;`)({ hostname, protocol })(); } catch { return undefined; }
-};
-check('the relay is probed from a local page, and only from a local page',
-  reachable('localhost', 'https:') === true && reachable('127.0.0.1', 'https:') === true
-  && reachable('[::1]', 'http:') === true && reachable('mac.local', 'http:') === true
-  && reachable('192.168.1.9', 'http:') === true,
-  String(reachable('localhost', 'https:')));
-check('and a page served from anywhere else never reaches for a device it cannot see',
-  reachable('cents-app.pages.dev', 'https:') === false && reachable('192.168.1.9', 'https:') === false
-  && reachable('', 'https:') === false && reachable('example.com:8787', 'https:') === false);
-check('the gate is what stands in front of /status, and a tap is told why', (() => {
-  const at = lidlSource.indexOf('if (!relayReachable())');
-  return at > 0 && at < lidlSource.indexOf("relayJson('/status')")
-    && /say\('The Lidl relay runs on the machine/.test(lidlSource.slice(at, at + 400))
-    && /say\('Lidl relay is not running/.test(lidlSource);      // the manual wording is untouched
-})());
-// WHERE the relay is addressed is part of the contract, and it failed two ways
-// on 16 Oct 2026 — both measured on a page served from 127.0.0.1, which the
-// gate above explicitly accepts:
-//
-//   1. the CSP allowed only `http://localhost:*`, so the literal was refused by
-//      the app's own policy — `Refused to connect to
-//      'http://127.0.0.1:8787/status' because it violates ... connect-src
-//      'self' https: http://localhost:*` — one console error per open;
-//   2. with the CSP widened, the request STILL failed (`net::ERR_FAILED`,
-//      `TypeError: Failed to fetch`) because Chrome's Local Network Access
-//      gates IP-literal loopback addresses behind a permission prompt, while
-//      the hostname `localhost` is treated as local and goes through. Probed
-//      side by side from that page: 127.0.0.1:8787 and an unrelated local
-//      server on another port both failed; localhost:8787 answered opaque, and
-//      the relay's `Access-Control-Allow-Origin: *` makes it readable.
-//
-// So the module addresses the relay by NAME, and the policy has to allow that
-// name. Both halves are derived from the source rather than restated here: a
-// future move of the relay — to another port, or back to a literal — has to
-// keep the CSP true, and the literal is refused for the reason above.
-check('the relay is addressed by hostname, not by the IP literal Chrome gates', (() => {
-  const relay = /const LIDL_RELAY = '([^']+)'/.exec(lidlSource);
-  if (!relay) return false;
-  const origin = new URL(relay[1]);
-  return origin.hostname === 'localhost' && !/^\d+(?:\.\d+){3}$/.test(origin.hostname);
-})());
-check('and the CSP allows the origin the module addresses it at', (() => {
-  const relay = /const LIDL_RELAY = '([^']+)'/.exec(lidlSource);
-  if (!relay) return false;
-  const origin = new URL(relay[1]);
-  const csp = (readFileSync(new URL('../_headers', import.meta.url), 'utf8')
-    .match(/Content-Security-Policy:[^\n]*/) || [''])[0];
-  const connect = (/connect-src([^;]*);/.exec(csp) || ['', ''])[1];
-  // Any port: the relay's default port is its own business, the host is not.
-  return connect.includes(`${origin.protocol}//${origin.hostname}:*`);
-})());
-// And the third side of the same contract: the relay this repo ships is the one
-// the module addresses — same host SPELLING, same port, and a socket that
-// answers that spelling. A hostname is not a synonym for the literal when the
-// resolver is involved: `localhost` can resolve to ::1 first, and an IPv4-only
-// relay then loses to whatever else holds that port (measured here: another
-// process on ::1:8787 answered the name while the relay sat on 127.0.0.1:8787,
-// so the pull failed on the wrong server's absent CORS headers).
-check('the relay the app pulls from is the relay this repo ships', (() => {
-  const relay = /const LIDL_RELAY = '([^']+)'/.exec(lidlSource);
-  if (!relay) return false;
-  const origin = new URL(relay[1]);
-  const spike = readFileSync(new URL('../lidl-spike.py', import.meta.url), 'utf8');
-  const defaultPort = /^\s{4}port = (\d+)/m.exec(spike);
-  const banner = /print\(f'Lidl relay listening on ([^']+)'\)/.exec(spike);
-  return !!defaultPort && Number(defaultPort[1]) === Number(origin.port)
-    && !!banner && banner[1].startsWith(`http://${origin.hostname}:`)
-    && /address_family = socket\.AF_INET6/.test(spike)
-    && /socket\.IPV6_V6ONLY, 0/.test(spike);
-})());
+check('and neither the module nor the relay it read is in the repo',
+  !existsSync(new URL('../lidl.js', import.meta.url))
+  && !existsSync(new URL('../lidl-spike.py', import.meta.url)));
+check('the service worker no longer precaches a module that does not exist',
+  !/lidl/i.test(readFileSync(new URL('../sw.js', import.meta.url), 'utf8')));
+check('and the ignore files keep nothing alive for it',
+  !/lidl/i.test(readFileSync(new URL('../.gitignore', import.meta.url), 'utf8'))
+  && !/lidl/i.test(readFileSync(new URL('../.assetsignore', import.meta.url), 'utf8')));
 
 // ----------------- 16. balance checkpoints: the Reconcile editor's rules
 // The Tesco gift-card balance feature was REMOVED outright. It went through
@@ -1170,10 +1037,11 @@ check('that write is one undoable step for its own method',
 // ------------------------------ 17. the bank statement import (a second writer)
 // bank-import.js imports clean in Node — its top level is pure for exactly
 // this — so the rules below are behavioural rather than source-text, with the
-// wiring half pinned as source at the end like section 15's. It is the second
-// thing in the app that writes entries it did not choose itself (after the
-// Lidl pull), and it has no ids of its own: everything it can get wrong is
-// about money, dates, or writing the same file twice.
+// wiring half pinned as source at the end like section 16's. It is the app's
+// one remaining writer of entries the user did not type (the Lidl pull that
+// held that place is gone, section 15), and it has no ids of its own:
+// everything it can get wrong is about money, dates, or writing the same file
+// twice.
 const { parseBankCsv, suggestBankMapping, buildBankEntries, bankAmount, bankDate, BANK_REFUSAL, bankImportSummary } = await import('../bank-import.js');
 
 check('every refusal is a sentence a user can act on, not a code',

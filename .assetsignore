@@ -52,11 +52,9 @@ CLAUDE.md
 package.json
 package-lock.json
 
-# The local dev server, the Lidl receipt spike, the Tesco gift-card spike and
-# the roster OCR harness: all run on a laptop, none has any business being
-# downloadable.
+# The local dev server and the roster OCR harness: both run on a laptop and
+# neither has any business being downloadable.
 serve.sh
-lidl-spike.py
 ocr-harness.html
 
 # The accessibility harness: it drives the real app in an iframe, so it is a
@@ -69,17 +67,6 @@ a11y-harness.html
 *.csv
 *.xlsx
 data*.json
-
-# The Lidl spike's output folder holds real credentials, a refresh token and
-# pulled receipts. It sits in the repo (so the .env template and otp.txt have
-# one obvious home) but must never reach the edge — this would otherwise serve
-# lidl.env at a predictable URL. Gitignored too, so it cannot be committed;
-# excluded here as the second, independent half.
-lidl-spike-out/
-
-# Python bytecode caches from the local scripts.
-__pycache__/
-*.pyc
 
 # Standard noise
 .DS_Store

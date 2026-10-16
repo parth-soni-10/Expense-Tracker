@@ -6016,13 +6016,6 @@ function buildMenuLevel(id) {
     // mapper is one screen that makes a file SHAPE readable, and it lives in
     // its own module so a boot never parses it (the menu is the only door).
     list.append(menuRowEl({ icon: 'download', label: 'Import bank statement', note: 'Date, description and amount — mapped once', onClick: () => { closeAppMenu(); openBankImport(); } }));
-    // The Lidl Plus pull: one expense entry per receipt, on the Lidl gift card
-    // (LG), so the ledger and the card balance move together. Manual twin of
-    // the pull that runs on every open (see the boot hook in DOMContentLoaded).
-    list.append(menuRowEl({ icon: 'download', label: 'Pull Lidl receipts', note: 'From Lidl Plus onto the ledger', onClick: () => {
-      closeAppMenu();
-      void import('./lidl.js').then(m => m.pullLidl({ state, commit: commitAdded, notify: toast, manual: true })).catch(() => {});
-    } }));
     list.append(menuRowEl({ icon: 'download', label: 'Restore from backup', note: 'Merges a .json export back in', onClick: () => { closeAppMenu(); openRestorePicker(); } }));
     // Only offered when there IS one: a document loadState could not parse is
     // parked under a quarantine key, and until now nothing could reach it.
@@ -7954,8 +7947,9 @@ function openVoucherEditor() {
 }
 
 // Every entry that leaves the Add screen goes through here, and so does every
-// receipt the Lidl pull (lidl.js) writes — an automatic writer gets exactly
-// the duplicate gate, undo slot and tombstones a hand entry gets. The slot
+// line the bank statement import writes — a writer that did not choose its own
+// entries gets exactly the duplicate gate, undo slot and tombstones a hand
+// entry gets. The slot
 // removes exactly the legs that were created and tombstones them, so a later
 // cloud merge can't restore them. cashAutoFollow may re-anchor the cash base
 // while adding, so its previous values ride along. No journal: undoing an
@@ -7979,7 +7973,7 @@ const commitAdded = (entries, label, onDone) => {
     if (onDone) onDone();
   };
   // ONE check for every way onto the ledger — quick entry, split legs,
-  // transfers, the structured form, and now the Lidl pull — so a duplicate
+  // transfers, the structured form, and the bank import — so a duplicate
   // cannot slip in simply because a different button created it. Cancel leaves
   // nothing written (the commit has not started), and the confirm runs before
   // the caller's toast/navigation through onDone.
@@ -10181,18 +10175,6 @@ window.addEventListener('DOMContentLoaded', () => {
   // silent when the browser has no such API): the ledger is the whole of the
   // app's data, so "best-effort" storage is the one thing worth asking for.
   void requestDurableStorage();
-  // The Lidl pull runs once per page open, the moment the app is accessible:
-  // immediately with no lock, after the PIN/biometric otherwise. Polling one
-  // boolean is deliberately dumber than wiring every unlock path (PIN match,
-  // biometric, profile re-entry) — and the module's own once-flag keeps
-  // repeated fires honest. It is reached only through import(), so this stays
-  // out of the boot payload.
-  (function pullOnOpen() {
-    if (hasPinLock() && !pinUnlocked) { setTimeout(pullOnOpen, 500); return; }
-    void import('./lidl.js')
-      .then(m => m.autoPullLidl({ state, commit: commitAdded, notify: toast }))
-      .catch(() => {});
-  })();
   // ── OTA update flow ──────────────────────────────────────────────
   // A redeploy swaps the served index.html; the service worker notices the
   // changed document and asks open, controlled tabs to reload so they leave
