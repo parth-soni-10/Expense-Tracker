@@ -38,6 +38,7 @@ running serve as machine-local, not a URL to share.)
 import json
 import os
 import re
+import socket
 import sys
 import time
 from pathlib import Path
@@ -396,9 +397,33 @@ def cmd_serve(argv):
         def log_message(self, *args):  # keep the console readable
             pass
 
-    srv = ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    # Bound on BOTH loopback families, because the app addresses this relay as
+    # `localhost` — Chrome's Local Network Access refuses the IP literal from a
+    # page (measured 16 Oct 2026 on one server, both spellings, side by side:
+    # 127.0.0.1 answered `net::ERR_FAILED`, localhost answered) — and on Windows
+    # `localhost` resolves to ::1 FIRST. An IPv4-only socket therefore leaves
+    # the app talking to whatever else happens to hold ::1:port: measured here,
+    # with another process on ::1:8787, the name reached THAT server and the
+    # pull failed on its (absent) CORS headers while the relay was up and
+    # answering on 127.0.0.1. Dual-stack '::' with IPV6_V6ONLY off answers both.
+    class _DualStackServer(ThreadingHTTPServer):
+        address_family = socket.AF_INET6
+
+        def server_bind(self):
+            try:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except OSError:
+                pass  # a stack without the knob still binds the IPv6 side
+            ThreadingHTTPServer.server_bind(self)
+
+    try:
+        srv = _DualStackServer(('::', port), Handler)
+    except OSError:
+        # No IPv6 on this machine: the IPv4 socket is still the relay, and
+        # `localhost` reaching it is the browser's job (Chrome falls back).
+        srv = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     mode = 'MOCK - canned receipts, no login' if mock else 'REAL - Lidl Plus (IE)'
-    print(f'Lidl relay listening on http://127.0.0.1:{port}  [{mode}]')
+    print(f'Lidl relay listening on http://localhost:{port}  [{mode}]')
     print('Ctrl+C to stop. The token (real mode) never leaves this machine.')
     try:
         srv.serve_forever()

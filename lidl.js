@@ -26,7 +26,21 @@
  * DOM or storage, so Node can import this file for tests directly.
  */
 
-const LIDL_RELAY = 'http://127.0.0.1:8787';
+// Addressed as `localhost`, never as `127.0.0.1` — measured in Chrome on
+// 16 Oct 2026, on a page served from 127.0.0.1 itself: a cross-port fetch to
+// the IP literal fails at the network layer (`net::ERR_FAILED`,
+// `TypeError: Failed to fetch`) EVEN for a local server that answers curl on
+// the same port and with CORS wide open, because Chrome's Local Network Access
+// gates IP-literal loopback addresses behind a permission prompt; the hostname
+// `localhost` is treated as local and goes through (probed side by side:
+// 127.0.0.1:8787 and an unrelated local server on another port both failed,
+// localhost:8787 answered). It also has to be the spelling the CSP names:
+// connect-src allows `http://localhost:*`, so the literal was refused outright
+// there too (`Refused to connect to 'http://127.0.0.1:8787/status' because it
+// violates ... connect-src 'self' https: http://localhost:*`) — a console error
+// per open and a Pull Lidl receipts row that could never reach its relay.
+// The relay binds 127.0.0.1 and this reaches it: same socket, name not number.
+const LIDL_RELAY = 'http://localhost:8787';
 export const LIDL_WINDOW_DAYS = 35;
 export const LIDL_METHOD = 'LG';
 export const LIDL_CATEGORY = 'gro';

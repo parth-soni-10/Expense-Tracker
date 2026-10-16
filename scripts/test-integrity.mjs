@@ -1089,6 +1089,61 @@ check('the gate is what stands in front of /status, and a tap is told why', (() 
     && /say\('The Lidl relay runs on the machine/.test(lidlSource.slice(at, at + 400))
     && /say\('Lidl relay is not running/.test(lidlSource);      // the manual wording is untouched
 })());
+// WHERE the relay is addressed is part of the contract, and it failed two ways
+// on 16 Oct 2026 — both measured on a page served from 127.0.0.1, which the
+// gate above explicitly accepts:
+//
+//   1. the CSP allowed only `http://localhost:*`, so the literal was refused by
+//      the app's own policy — `Refused to connect to
+//      'http://127.0.0.1:8787/status' because it violates ... connect-src
+//      'self' https: http://localhost:*` — one console error per open;
+//   2. with the CSP widened, the request STILL failed (`net::ERR_FAILED`,
+//      `TypeError: Failed to fetch`) because Chrome's Local Network Access
+//      gates IP-literal loopback addresses behind a permission prompt, while
+//      the hostname `localhost` is treated as local and goes through. Probed
+//      side by side from that page: 127.0.0.1:8787 and an unrelated local
+//      server on another port both failed; localhost:8787 answered opaque, and
+//      the relay's `Access-Control-Allow-Origin: *` makes it readable.
+//
+// So the module addresses the relay by NAME, and the policy has to allow that
+// name. Both halves are derived from the source rather than restated here: a
+// future move of the relay — to another port, or back to a literal — has to
+// keep the CSP true, and the literal is refused for the reason above.
+check('the relay is addressed by hostname, not by the IP literal Chrome gates', (() => {
+  const relay = /const LIDL_RELAY = '([^']+)'/.exec(lidlSource);
+  if (!relay) return false;
+  const origin = new URL(relay[1]);
+  return origin.hostname === 'localhost' && !/^\d+(?:\.\d+){3}$/.test(origin.hostname);
+})());
+check('and the CSP allows the origin the module addresses it at', (() => {
+  const relay = /const LIDL_RELAY = '([^']+)'/.exec(lidlSource);
+  if (!relay) return false;
+  const origin = new URL(relay[1]);
+  const csp = (readFileSync(new URL('../_headers', import.meta.url), 'utf8')
+    .match(/Content-Security-Policy:[^\n]*/) || [''])[0];
+  const connect = (/connect-src([^;]*);/.exec(csp) || ['', ''])[1];
+  // Any port: the relay's default port is its own business, the host is not.
+  return connect.includes(`${origin.protocol}//${origin.hostname}:*`);
+})());
+// And the third side of the same contract: the relay this repo ships is the one
+// the module addresses — same host SPELLING, same port, and a socket that
+// answers that spelling. A hostname is not a synonym for the literal when the
+// resolver is involved: `localhost` can resolve to ::1 first, and an IPv4-only
+// relay then loses to whatever else holds that port (measured here: another
+// process on ::1:8787 answered the name while the relay sat on 127.0.0.1:8787,
+// so the pull failed on the wrong server's absent CORS headers).
+check('the relay the app pulls from is the relay this repo ships', (() => {
+  const relay = /const LIDL_RELAY = '([^']+)'/.exec(lidlSource);
+  if (!relay) return false;
+  const origin = new URL(relay[1]);
+  const spike = readFileSync(new URL('../lidl-spike.py', import.meta.url), 'utf8');
+  const defaultPort = /^\s{4}port = (\d+)/m.exec(spike);
+  const banner = /print\(f'Lidl relay listening on ([^']+)'\)/.exec(spike);
+  return !!defaultPort && Number(defaultPort[1]) === Number(origin.port)
+    && !!banner && banner[1].startsWith(`http://${origin.hostname}:`)
+    && /address_family = socket\.AF_INET6/.test(spike)
+    && /socket\.IPV6_V6ONLY, 0/.test(spike);
+})());
 
 // ----------------- 16. balance checkpoints: the Reconcile editor's rules
 // The Tesco gift-card balance feature was REMOVED outright. It went through
