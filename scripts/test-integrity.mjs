@@ -1451,21 +1451,33 @@ check('the Balances rows carry the projection and a title that explains it',
   && /balanceAt\(methodId, offsetDateKey\(today\(\), horizonDays\)\)/.test(appSource));
 
 // ---- the lock taking itself back -------------------------------------------
-// Idle, background and the app switcher are one door with three ways to close
-// it, and all three live in app.js's text (a Node guard cannot idle for five
-// minutes), so they are pinned as source — including the two details that make
-// them true rather than decorative: the background check is made ON RETURN
-// (a hidden tab's timers are throttled, so an in-place timer is the one that
-// would not fire), and the cover is opaque (nothing may re-sample the page).
+// Idle and the app switcher are one door with two ways to close it, and both
+// live in app.js's text (a Node guard cannot idle for five minutes), so they are
+// pinned as source — including the detail that makes the cover true rather than
+// decorative: it is opaque (nothing here may re-sample the page behind it).
+//
+// The third way — hidden for HIDDEN_LOCK_MS (30s), locked on the way back — was
+// removed on 16 Oct 2026 because it charged the PIN for every glance at another
+// tab, and a tab switch is not an absence. The check below pins the REMOVAL as
+// hard as it pins the behaviour: no HIDDEN_LOCK_MS anywhere, and no lockApp()
+// anywhere in the visibilitychange handler, so a later "fix" cannot quietly
+// reintroduce it while still satisfying a check that only asked for the cover.
 check('the lock re-takes itself when the app is left alone',
   /const IDLE_LOCK_MS = 5 \* 60 \* 1000;/.test(appSource)
   && /idleTimer = setTimeout\(\(\) => \{[\s\S]{0,80}lockApp\(\);/.test(appSource)
   && /if \(!pinUnlocked\) return;\s*\n\s*idleTimer = setTimeout/.test(appSource));
-check('the lock re-takes itself after the app leaves the screen',
-  /const HIDDEN_LOCK_MS = 30 \* 1000;/.test(appSource)
-  && /document\.addEventListener\('visibilitychange', \(\) => \{\s*\n\s*if \(document\.hidden\) \{[\s\S]{0,200}showPrivacyCover\(\);/.test(appSource)
-  // measured on the way BACK, not by a timer while hidden
-  && /const hiddenFor = Date\.now\(\) - hiddenAt;[\s\S]{0,120}hiddenFor >= HIDDEN_LOCK_MS\) lockApp\(\)/.test(appSource));
+const lockVisHandler = (appSource.match(/document\.addEventListener\('visibilitychange',[\s\S]*?\n\}\);/) || [''])[0]
+  // Comments are stripped so the assertions below read CODE: a comment that
+  // names lockApp() must not fail this, and a comment saying "no lock here"
+  // while the code locks must not pass it.
+  .replace(/\/\/[^\n]*/g, '');
+check('a hidden window is covered, never locked — switching tabs must not ask for the PIN',
+  // The declaration is gone, not merely unused, and nothing measures time-in-
+  // background: hiddenAt/hiddenFor were the 30-second rule's whole apparatus.
+  !/const HIDDEN_LOCK_MS/.test(appSource) && !/hiddenFor\s*=/.test(appSource)
+  && lockVisHandler !== '' && !/lockApp\s*\(/.test(lockVisHandler)
+  && /if \(document\.hidden\) \{\s*\n[\s\S]{0,60}showPrivacyCover\(\);/.test(lockVisHandler)
+  && /hidePrivacyCover\(\);\s*\n\s*resetIdleLock\(\);/.test(lockVisHandler));
 check('the app-switcher cover paints rather than samples what is behind it',
   /id: 'privacy-cover'/.test(appSource)
   && /background:var\(--bg, #101210\)[^']*pointer-events:none;'/

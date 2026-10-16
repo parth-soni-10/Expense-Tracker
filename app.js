@@ -647,9 +647,15 @@ function showPinLock() {
     pinArea.style.display = 'none';
     attemptBio(false);
   };
-  const overlay = $('div', { class: 'modal-bg pin-lock-bg', style: 'z-index:10000;background:rgba(0,0,0,.82);' },
+  // The locked view is the whole page while it is up: `_render()` empties #app
+  // and returns before it mounts anything, so the landmark and the heading have
+  // to come from here. Measured on 15 Oct 2026 as the one view with no `main`
+  // and no `h1` in the accessibility tree — the dialog's own aria-label is not a
+  // heading, and a reader that navigates by landmark had nothing to land on.
+  // <main> for the view, and the wordmark promoted from a div to the <h1>.
+  const overlay = $('main', { class: 'modal-bg pin-lock-bg', style: 'z-index:10000;background:rgba(0,0,0,.82);' },
     $('div', { class: 'modal pin-lock', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Unlock cents', style: 'max-width:360px;text-align:center;' },
-      $('div', { class: 'serif', style: 'font-size:32px;margin-bottom:4px;' }, 'cents.'),
+      $('h1', { class: 'serif', style: 'font-size:32px;font-weight:400;margin:0 0 4px;' }, 'cents.'),
       $('p', { class: 'eyebrow', style: 'margin:0;' }, 'Privacy lock'),
       $('p', { class: 'serif', style: 'font-size:18px;margin:20px 0 4px;' }, 'Welcome back.'),
       message,
@@ -873,27 +879,33 @@ function lockApp() {
   showPinLock();
 }
 
-// ---------- re-locking: idle, background, and the app switcher ----------
+// ---------- re-locking: idle and the app switcher ----------
 // The lock is the whole of this app's access control — localStorage has no
 // session and no server to challenge a request — so "unlocked" has to be a
-// state the app can take back by itself: a phone set down mid-screen, a tab
-// switched away from, an app-switcher swipe. Three rules, in one place because
-// they share one door:
+// state the app can take back by itself: a phone set down mid-screen, an
+// app-switcher swipe, a tab left behind for the afternoon. Two rules, in one
+// place because they share one door:
 //
-//  1. Untouched for IDLE_LOCK_MS → locked again.
+//  1. Untouched for IDLE_LOCK_MS → locked again. This is the ONLY time-based
+//     lock, and it is about absence rather than about where the window is:
+//     five minutes without a keystroke or a tap locks the app whether that
+//     five minutes was spent in front of you or in a background tab.
 //  2. The moment the document hides, an opaque cover goes over it. The
 //     app-switcher snapshot is taken WHILE hidden, so a cover that waited for
 //     the return would be one screenshot too late; it also cannot be a blur
 //     (nothing here may re-sample the page behind it, see styles.css), so it
 //     paints the app's own surface instead.
-//  3. Hidden for HIDDEN_LOCK_MS → locked on the way back. Measured on RETURN
-//     rather than by a timer while hidden: a background tab's timers are
-//     throttled to a minute or worse, so an in-place timer is exactly the one
-//     that would not fire.
+//
+// There used to be a third: hidden for HIDDEN_LOCK_MS (30s) → locked on the way
+// back, measured on RETURN because a hidden tab's timers are throttled past any
+// useful resolution. It was removed on 16 Oct 2026 because it charged the PIN
+// for every glance at another tab, and a tab switch is not an absence. Nothing
+// about the exposure it was covering went away: the cover is still painted the
+// instant the window hides, and a real absence still ends in the lock screen via
+// rule 1, which runs while hidden too (the timer is armed on the last genuine
+// interaction and fires on its own).
 const IDLE_LOCK_MS = 5 * 60 * 1000;
-const HIDDEN_LOCK_MS = 30 * 1000;
 let idleTimer = null;
-let hiddenAt = 0;
 
 /** Restart the idle clock. Called on every interaction while unlocked; a call
  *  while locked arms nothing, so the lock screen cannot keep itself awake. */
@@ -932,14 +944,14 @@ for (const ev of ['pointerdown', 'keydown', 'touchstart', 'wheel']) {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
-    hiddenAt = Date.now();
     if (pinUnlocked) showPrivacyCover();
     return;
   }
-  const hiddenFor = Date.now() - hiddenAt;
+  // Coming back is what an unlock is: the cover comes off and the idle clock
+  // restarts. Deliberately no lockApp() here — the tab you just left is the
+  // same unlocked session you come back to, and only rule 1 ends one.
   hidePrivacyCover();
-  if (pinUnlocked && hiddenAt && hiddenFor >= HIDDEN_LOCK_MS) lockApp();
-  else resetIdleLock();
+  resetIdleLock();
 });
 
 // ================= Profiles (Netflix-style) =================
