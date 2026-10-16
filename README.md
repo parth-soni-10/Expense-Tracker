@@ -76,12 +76,14 @@ The optional sync feature needs:
 | `APP_PASSWORD` | The password you type under **☰ → Cloud sync** (at least 8 characters). It gates sync, for the default **Personal** profile. |
 | `APP_PASSWORD_<NAME>` | Optional — one per person you share with (**☰ → Admin → Add profile**). `Sam` becomes `APP_PASSWORD_SAM`; the app names the exact variable in the Admin panel. An account with no variable stays local: it is never granted the default password, so the accounts stay isolated from each other. |
 | `GITHUB_TOKEN` | **Optional** — a fine-grained GitHub token with **contents: read and write**, for the data repo only. It never leaves the function. Without it there is no GitHub mirror (every document still lives in KV) and no way to read a copy an earlier deployment left in the repo. |
-| `REPO_OWNER` | Owner of the data repo — your GitHub username or org. |
-| `REPO_NAME` | The **private** repo each account's copy is mirrored into. |
+| `REPO_OWNER` | **Optional** — owner of the data repo (your GitHub username or org). One of the mirror's coordinates. |
+| `REPO_NAME` | **Optional** — the **private** repo each account's copy is mirrored into. |
 | `REPO_BRANCH` | Optional — branch the data file lives on. Default `main`. |
 | `REPO_FILE` | Optional — path of the mirrored data file in that repo. Default `data.json`. |
 
 Secrets are set on the Pages project, not in a file: the app passwords, `CENTS_SECRET` and `GITHUB_TOKEN` live under Settings → Variables and Secrets, and nowhere in this repository.
+
+A deployment with no `GITHUB_TOKEN`, or without the repo coordinates, has **no mirror** rather than a broken one: every document still lives in KV, the Data menu says the mirror is *Off*, and no read or save fails for want of it. A local run is always that deployment — `wrangler pages dev` reads `.dev.vars` but does **not** apply `wrangler.toml`'s `[vars]`, so its repo coordinates are absent unless they are passed on the command line (`--binding REPO_OWNER=…`).
 
 The guard suite needs **Node 22 or newer** (CI pins it): the guard scripts import the app's browser modules as ES modules, and older Node parses them as CommonJS and dies.
 

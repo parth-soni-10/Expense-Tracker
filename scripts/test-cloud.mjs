@@ -480,8 +480,17 @@ process.env.GITHUB_TOKEN = savedToken;
 // document must read as absent, and a save must still commit. Reporting either
 // one as a code host that failed would make a deployment that never had a token
 // look permanently broken.
-const savedMirrorToken = process.env.GITHUB_TOKEN;
-delete process.env.GITHUB_TOKEN;
+//
+// The same is true of the shape every LOCAL run has: `wrangler pages dev` reads
+// a repo's `.dev.vars` but NOT wrangler.toml's `[vars]`, so a local deployment
+// has no repo coordinates at all while its KV is bound and its password is
+// right. Refusing the request for that (the `REPO_OWNER / REPO_NAME env vars not
+// set on the function` 500 the Sync screen used to show) failed a deployment
+// whose cloud copy was working, so both halves of the mirror's configuration go
+// away here, not just the token.
+const savedMirrorEnv = ['GITHUB_TOKEN', 'REPO_OWNER', 'REPO_NAME', 'REPO_BRANCH', 'REPO_FILE']
+  .map(name => [name, process.env[name]]);
+for (const [name] of savedMirrorEnv) delete process.env[name];
 gh.calls.length = 0;
 gh.broken = 'all';
 backing.get('cents-cloud').delete(DOC_KEY);
@@ -491,11 +500,16 @@ check('with no mirror configured, a missing document reads as absent, not as an 
   noMirrorRead.status === 200 && noMirrorReadBody.content === null && noMirrorReadBody.sha === null,
   `${noMirrorRead.status} ${JSON.stringify(noMirrorReadBody)}`);
 check('and it never calls a code host it has no credential for', gh.calls.length === 0, gh.calls.join(', '));
+check('and it names the missing mirror instead of refusing the read',
+  noMirrorReadBody.mirrorConfigured === false, String(noMirrorReadBody.mirrorConfigured));
 const noMirrorSave = await call('PUT', { content: { version: 2, entries: [], settings: { monthlyBudget: 1234 } }, sha: null });
 check('and the store still commits the save',
   noMirrorSave.status === 200 && storedRecord('cents-cloud', DOC_KEY)?.content?.settings?.monthlyBudget === 1234,
   `got ${noMirrorSave.status}`);
-process.env.GITHUB_TOKEN = savedMirrorToken;
+const noMirrorCheck = await (await mirrorCheck()).json();
+check('and the on-demand mirror check answers unconfigured, not an error',
+  noMirrorCheck.mirror?.state === 'unconfigured', JSON.stringify(noMirrorCheck.mirror));
+for (const [name, value] of savedMirrorEnv) if (value === undefined) delete process.env[name]; else process.env[name] = value;
 gh.broken = null;
 
 if (fails.length) {

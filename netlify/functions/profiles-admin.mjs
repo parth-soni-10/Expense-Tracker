@@ -30,12 +30,14 @@
    constant-time compare, failure sleep and per-IP throttle as the
    other functions.
 
-   Env vars: CENTS_SECRET (or GITHUB_TOKEN), plus REPO_OWNER/REPO_NAME/
-   REPO_BRANCH/REPO_FILE and APP_PASSWORD, plus APP_PASSWORD_<ID> for
-   each account being invited (the refusal names the exact variable to
-   set). The root secret is what encrypts the invite links, so it is the
-   only one of these that has to stay the same from one deploy to the
-   next — see lib/secret.mjs.
+   Env vars: CENTS_SECRET (or GITHUB_TOKEN), APP_PASSWORD, and
+   APP_PASSWORD_<ID> for each account being invited (the refusal names the
+   exact variable to set). The root secret is what encrypts the invite links,
+   so it is the only one of these that has to stay the same from one deploy to
+   the next — see lib/secret.mjs. REPO_OWNER/REPO_NAME/REPO_BRANCH/REPO_FILE
+   belong to the optional GitHub mirror instead (lib/gh.mjs's
+   mirrorConfigured): without them a policy write goes to the store alone,
+   exactly like every other save, rather than failing the request.
    ============================================================ */
 
 import { safeEqual, createFailureThrottle } from './lib/auth.mjs';
@@ -140,8 +142,11 @@ export default async (request, _context) => {
  *  else. Retries once on a version conflict, since a conflict here just means
  *  the account pushed in between. */
 async function applyPolicy({ target, tabs, cors }) {
+  // No repo-coordinate refusal here either: the coordinates configure the
+  // optional mirror (see the env vars note at the top), so a deployment that
+  // has none still writes the policy through the store — lib/cloud.mjs decides
+  // whether that store could take it.
   const config = ghConfig();
-  if (!config.owner || !config.repo) return err('REPO_OWNER / REPO_NAME env vars not set on the function', 500, cors);
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const doc = await readCloudDoc(target, config);

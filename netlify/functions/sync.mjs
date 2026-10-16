@@ -11,14 +11,22 @@
    GitHub mirror follows it, handed to this request's waitUntil so a save
    never waits on a code host that is only keeping a spare copy.
 
-   Required env vars:
+   Required env var:
+     APP_PASSWORD    any string the client sends in X-Cents-Password
+                     (must be at least 8 characters)
+
+   The GitHub mirror is optional, and these five are what configure it. It is
+   off unless a token AND both repo coordinates are present (lib/gh.mjs's
+   mirrorConfigured), and a deployment that sets none of them has no mirror
+   rather than a broken one: the document still lives in KV, and every answer
+   names the mirror's own state (`mirrorConfigured: false`, verdict
+   `unconfigured`) so the Data menu can say so. Nothing here refuses a read or
+   a save for want of a mirror:
      GITHUB_TOKEN    fine-grained PAT, repo contents: read+write
      REPO_OWNER      e.g. "yourname"
      REPO_NAME       e.g. "cents-data"
      REPO_BRANCH     default "main"
      REPO_FILE       default "data.json"
-     APP_PASSWORD    any string the client sends in X-Cents-Password
-                     (must be at least 8 characters)
 
    Profiles: the client sends X-Cents-Profile (<profile-id>, a short
    slug). The password is resolved per profile — APP_PASSWORD for the
@@ -324,9 +332,19 @@ export default async (request, context) => {
     return err('Bad app password', 401, cors);
   }
 
+  // No "REPO_OWNER / REPO_NAME must be set" refusal here, deliberately. The
+  // mirror is optional (lib/gh.mjs's mirrorConfigured) and every call to it
+  // below is already gated on that, so coordinates that are simply absent are
+  // the supported "no mirror" shape: the KV record is the only home and the
+  // answers say `mirrorConfigured: false` / verdict `unconfigured`. Refusing
+  // the whole request instead failed every read and every save of a deployment
+  // whose cloud copy was working — and a local run is always that deployment,
+  // because `wrangler pages dev` reads .dev.vars but NOT wrangler.toml's
+  // [vars], which is how the app's Sync screen came to report
+  // "REPO_OWNER / REPO_NAME env vars not set on the function" against a local
+  // run that had its KV bound and its password right.
   const config = ghConfig();
-  const { owner, repo, branch } = config;
-  if (!owner || !repo) return err('REPO_OWNER / REPO_NAME env vars not set on the function', 500, cors);
+  const { branch } = config;
 
   try {
     // ---------- READ ----------
