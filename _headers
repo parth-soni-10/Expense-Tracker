@@ -24,21 +24,30 @@
 # to restate text/javascript and text/css for a Latin-1 fallback that Cloudflare
 # does not have.
 
+# Preview deployments add a hostname label before the project name. Keep those
+# URLs out of search without matching the production cents-app.pages.dev host.
+https://:version.:project.pages.dev/*
+  X-Robots-Tag: noindex
+
 /*.js
   Cache-Control: no-cache, must-revalidate
-  X-Content-Type-Options: nosniff
 
 /*.css
   Cache-Control: no-cache, must-revalidate
-  X-Content-Type-Options: nosniff
 
 /
   Cache-Control: no-cache, must-revalidate
-  X-Content-Type-Options: nosniff
 
 /index.html
   Cache-Control: no-cache, must-revalidate
-  X-Content-Type-Options: nosniff
+
+# The 404 page, on the same footing as the two rules above: it is a page of the
+# site, so it revalidates rather than waiting out the platform's own week. It
+# exists (rather than being left to Cloudflare's generic error page, which was
+# the response an unknown path used to get) because Pages answers `200` with
+# index.html for every unmatched path when the upload carries no 404.html.
+/404.html
+  Cache-Control: no-cache, must-revalidate
 
 # Self-hosted fonts (see @font-face in styles.css). Covered explicitly rather
 # than left to the platform default: this is the class of file a browser will
@@ -46,7 +55,6 @@
 # invisible until it is the wrong glyph.
 /fonts/*
   Cache-Control: no-cache, must-revalidate
-  X-Content-Type-Options: nosniff
 
 # The roster-OCR language model: an explicit type for the same reason as the
 # wasm rule below, and no-cache so a model swap is never masked — the 2.9 MB
@@ -54,7 +62,6 @@
 /vendor/tesseract/*.gz
   Content-Type: application/gzip
   Cache-Control: no-cache, must-revalidate
-  X-Content-Type-Options: nosniff
 
 # WebAssembly core for the roster OCR. `Content-Type: application/wasm` is not
 # cosmetic: the browser's streaming compiler refuses a mislabelled response
@@ -62,21 +69,18 @@
 /vendor/tesseract/*.wasm
   Content-Type: application/wasm
   Cache-Control: no-cache, must-revalidate
-  X-Content-Type-Options: nosniff
 
 # Web App Manifest — Chrome expects a JSON MIME type before it treats the site
 # as installable, so it is explicit rather than left to the extension table.
 /manifest.json
   Content-Type: application/manifest+json; charset=utf-8
   Cache-Control: no-cache, must-revalidate
-  X-Content-Type-Options: nosniff
 
 # PWA install icons — same no-cache model as the other assets, so a regenerated
 # icon is never masked by a stale cached copy.
 /icons/*
   Content-Type: image/png
   Cache-Control: no-cache, must-revalidate
-  X-Content-Type-Options: nosniff
 
 # /.well-known/ is the one dot-directory a CDN does serve, and it is the only
 # place a Digital Asset Links file can live. The content type is not optional
@@ -86,10 +90,17 @@
 /.well-known/*
   Content-Type: application/json; charset=utf-8
   Cache-Control: no-cache, must-revalidate
-  X-Content-Type-Options: nosniff
 
 # Catch-all: the security headers, and no Cache-Control — each specific rule
 # above owns that for the paths it covers.
+#
+# X-Content-Type-Options is stated once, here, and deliberately not repeated in
+# the path rules above. Cloudflare joins the headers of every rule a request
+# matches rather than letting the most specific one win, so a `nosniff` in a path
+# rule and in this catch-all arrive as `nosniff, nosniff` — measured on 15 Oct
+# 2026 on the deployed site and reproduced through `wrangler pages dev` locally
+# on `/`, `/app.js` and `/icons/icon-192.png` alike. The header was doing its job
+# in both places; one statement is the whole of it.
 #
 #   * frame-ancestors 'none' + X-Frame-Options: DENY — the app must never be
 #     iframed (clickjacking the lock screen or a destructive action). The portal

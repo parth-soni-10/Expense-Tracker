@@ -1,0 +1,65 @@
+/* 404.css — the styling for 404.html, and nothing else uses it.
+ *
+ * Why a stylesheet of its own rather than a <style> block in the page: five of
+ * this fleet's sites send `style-src 'self'` with no 'unsafe-inline', so an
+ * inline block is a style the browser is told to drop — the 404 would render as
+ * bare markup exactly where it is most likely to be seen by someone who is
+ * already lost. A linked sheet under the same origin is allowed by every one of
+ * those policies without a hash to keep in step.
+ *
+ * Why the palette is local instead of the site's own variables: this page cannot
+ * assume the app's stylesheet has loaded, and it must not depend on the app's
+ * markup classes to look like anything. It states what it needs, in
+ * `prefers-color-scheme`, with a system font stack and no web font to fetch —
+ * a 404 that waits on a font or a bundle before it can say "nothing here" is a
+ * worse 404. Identical bytes in every repository that carries one, so the
+ * fleet's dead ends look the same.
+ */
+:root {
+  color-scheme: light dark;
+  --ink: #16171a;
+  --muted: #5d626b;
+  --bg: #f6f7f9;
+  --card: #ffffff;
+  --line: #e2e5ea;
+  --accent: #1f6b47;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e9ecf1;
+    --muted: #9aa2ae;
+    --bg: #0d0f13;
+    --card: #151a20;
+    --line: #252b33;
+    --accent: #6cc79a;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 2rem 1.25rem;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+main {
+  width: 100%;
+  max-width: 34rem;
+  padding: 2.25rem 1.75rem;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  text-align: center;
+}
+.code {
+  font: 700 3.25rem/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+h1 { margin: 0.5rem 0 0; font-size: 1.375rem; letter-spacing: -0.01em; }
+p { margin: 0.75rem 0 0; color: var(--muted); }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

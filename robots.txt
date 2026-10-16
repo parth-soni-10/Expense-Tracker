@@ -1,9 +1,5 @@
-# The app is a private, password-gated tool: nothing here is for crawlers to
-# index, and the pages behind the password are not reachable by one anyway.
-#
-# No Sitemap line, on purpose — there is one page and it is behind that
-# password, so a sitemap would only be a list of URLs to hand out. Without this
-# file the platform answers /robots.txt with its own injected boilerplate, which
-# reads as this site's policy while saying nothing about it.
+# Let crawlers fetch the app shell so they can read its noindex directive.
+# robots.txt is not access control; private data is protected by the app itself.
+# There is no sitemap because this is a single-page, noindex app.
 User-agent: *
-Disallow: /
+Allow: /

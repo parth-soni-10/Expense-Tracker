@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Page not found | cents.</title>
+<meta name="robots" content="noindex" />
+<!--
+  Why this file exists rather than being left to the platform: with no 404.html in
+  the upload, Pages answers `200` with index.html for every unmatched path, so a
+  path that serves nothing looks like a page that does. Until this file, an
+  unknown path got Cloudflare's generic 509-byte error instead of cents' own page
+  — the only host in this fleet whose response had nothing of the site in it.
+
+  No inline style and no script: the app's own index.html pins its inline boot
+  scripts by hash, and this page has no reason to widen that. The sheet below is
+  same-origin. The 404 is deliberately outside the app shell: it must not boot the
+  ledger, and it must never show a locked or unlocked screen's contents.
+-->
+<link rel="stylesheet" href="/404.css" />
+</head>
+<body>
+<main>
+  <div class="code">404</div>
+  <h1>Nothing at this address</h1>
+  <p>That page is not part of cents. <a href="/">Back to cents.</a></p>
+</main>
+</body>
+</html>
