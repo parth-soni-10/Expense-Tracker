@@ -28,6 +28,9 @@
  *     the repo blob's own bytes and recording the verdict with the document, so
  *     a mirror that silently fell behind is a fact the next reader sees — and a
  *     difference nobody has judged yet reads as pending, never as a gap
+ *   - FEEDBACK: the one public write lands as `fb:cents:<uuid>` in the same
+ *     namespace with a 90-day TTL, refuses oversize/empty/non-POST, and answers
+ *     the honeypot without keeping anything
  *
  * Run: node scripts/test-cloud.mjs
  * Also a step in scripts/run-guards.mjs.
@@ -512,9 +515,70 @@ check('and the on-demand mirror check answers unconfigured, not an error',
 for (const [name, value] of savedMirrorEnv) if (value === undefined) delete process.env[name]; else process.env[name] = value;
 gh.broken = null;
 
+// ---- feedback: the one route that writes a raw, expiring key -----------------
+// It is the app's only public write and its only key that is SUPPOSED to
+// vanish, so both halves are pinned: what lands in KV (prefix, shape, TTL) and
+// what the route refuses (non-POST, oversize, empty, honeypot). It reaches the
+// namespace directly rather than through the Blobs-shaped store, because that
+// wrapper cannot carry `expirationTtl` — which is why this test injects the raw
+// namespace instead of reusing `fakeBlobs`.
+const { useFeedbackKv } = await import(REPO + '/netlify/functions/lib/feedback-kv.mjs');
+const { default: feedback, FEEDBACK_TTL } = await import(REPO + '/netlify/functions/feedback.mjs');
+
+const feedbackPuts = [];
+const fakeFeedbackKv = {
+  async get() { return null; },
+  async put(key, value, options) { feedbackPuts.push({ key, value, options }); },
+};
+useFeedbackKv(fakeFeedbackKv);
+
+const fb = (method, body) => feedback(new Request('https://cents.test/api/feedback', {
+  method,
+  headers: { 'content-type': 'application/json' },
+  ...(method === 'GET' ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }),
+}), {});
+
+const accepted = await fb('POST', { message: '  the calendar is a day out  ' });
+const acceptedBody = await accepted.json();
+const written = feedbackPuts[0];
+let storedNote = null;
+try { storedNote = JSON.parse(written.value); } catch { /* failed below */ }
+check('feedback accepts a message and answers 201',
+  accepted.status === 201 && acceptedBody.ok === true, `${accepted.status} ${JSON.stringify(acceptedBody)}`);
+check("it stores under fb:cents:<id>, under no other site's prefix",
+  /^fb:cents:[0-9a-f-]{36}$/.test(written?.key || ''), String(written?.key));
+check('the stored note is the trimmed message, its source and an ISO timestamp',
+  storedNote?.message === 'the calendar is a day out' && storedNote?.source === 'cents'
+    && /^\d{4}-\d{2}-\d{2}T/.test(storedNote?.createdAt || ''), JSON.stringify(storedNote));
+check('the key expires in 90 days — the TTL is part of the contract, not a default',
+  written?.options?.expirationTtl === FEEDBACK_TTL && FEEDBACK_TTL === 60 * 60 * 24 * 90,
+  String(written?.options?.expirationTtl));
+check('and the answer is uncacheable JSON',
+  accepted.headers.get('cache-control') === 'no-store'
+    && (accepted.headers.get('content-type') || '').startsWith('application/json'),
+  `${accepted.headers.get('cache-control')} / ${accepted.headers.get('content-type')}`);
+
+const writesBeforeSpam = feedbackPuts.length;
+const honeypot = await fb('POST', { message: 'buy my thing', website: 'https://spam.example' });
+check('the honeypot answers like a success and writes nothing',
+  honeypot.status === 202 && (await honeypot.json()).ok === true && feedbackPuts.length === writesBeforeSpam,
+  `${honeypot.status} / writes ${feedbackPuts.length - writesBeforeSpam}`);
+
+check('an empty message is refused', (await fb('POST', { message: '   ' })).status === 400);
+check('a 2001-character message is refused', (await fb('POST', { message: 'x'.repeat(2001) })).status === 400);
+check('a body over 4 KB is refused', (await fb('POST', { message: 'x'.repeat(5000) })).status === 413);
+check('malformed JSON is a 400, not a 500', (await fb('POST', '{not json')).status === 400);
+check('GET is not a write path', (await fb('GET')).status === 405);
+
+useFeedbackKv(null);
+const unbound = await fb('POST', { message: 'hello' });
+check('with no KV bound it says so instead of throwing',
+  unbound.status === 503 && (await unbound.json()).error === 'Feedback is not configured', String(unbound.status));
+useFeedbackKv(fakeFeedbackKv);
+
 if (fails.length) {
   console.error(`test-cloud: ${fails.length} FAILED, ${pass} passed\n`);
   for (const f of fails) console.error('  ✗ ' + f);
   process.exit(1);
 }
-console.log(`test-cloud: OK — ${pass} checks passed (the store is the primary, GitHub the mirror when one is configured, and the version token decides conflicts)`);
+console.log(`test-cloud: OK — ${pass} checks passed (the store is the primary, GitHub the mirror when one is configured, the version token decides conflicts, and feedback writes one expiring key)`);

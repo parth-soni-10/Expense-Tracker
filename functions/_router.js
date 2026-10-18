@@ -48,10 +48,12 @@
 import syncFunction from '../netlify/functions/sync.mjs';
 import setupTokenFunction from '../netlify/functions/setup-token.mjs';
 import profilesAdminFunction from '../netlify/functions/profiles-admin.mjs';
+import feedbackFunction from '../netlify/functions/feedback.mjs';
 import { useBlobsModule } from '../netlify/functions/lib/store.mjs';
 import { kvBlobsModule } from '../netlify/functions/lib/kv-store.mjs';
+import { useFeedbackKv } from '../netlify/functions/lib/feedback-kv.mjs';
 
-// The three URL-reachable entry points, each served under two spellings. The
+// The four URL-reachable entry points, each served under two spellings. The
 // paths are written out rather than built from a prefix because they are a
 // contract with the browser, not a convention: /api/sync is the endpoint
 // settings.js defaults to, /.netlify/functions/sync is the name a device that
@@ -71,10 +73,15 @@ const ROUTES = {
   '/api/sync': syncFunction,
   '/api/setup-token': setupTokenFunction,
   '/api/profiles-admin': profilesAdminFunction,
-  // The pre-rename spelling of the same three, kept for devices that stored it.
+  // Feedback is the one route no existing device has saved, so the legacy
+  // spelling is symmetry rather than a stranded client; check-worker-config
+  // requires the pair to stay whole either way.
+  '/api/feedback': feedbackFunction,
+  // The pre-rename spelling of the same four, kept for devices that stored it.
   '/.netlify/functions/sync': syncFunction,
   '/.netlify/functions/setup-token': setupTokenFunction,
   '/.netlify/functions/profiles-admin': profilesAdminFunction,
+  '/.netlify/functions/feedback': feedbackFunction,
 };
 
 /**
@@ -93,6 +100,10 @@ function wireBindings(env) {
     }
   }
   if (env.CENTS_KV) useBlobsModule(kvBlobsModule(env.CENTS_KV));
+  // Feedback needs the namespace itself, not the Blobs-shaped wrapper, because
+  // its keys carry a 90-day TTL (lib/feedback-kv.mjs). Same binding, same
+  // keyspace, no new resource.
+  useFeedbackKv(env.CENTS_KV);
 }
 
 /** A thrown handler is reported, not described — the same call sync.mjs makes. */
