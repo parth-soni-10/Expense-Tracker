@@ -2467,3 +2467,25 @@ p, li, .muted { text-wrap: pretty; }
 [data-ui="analytics-chart"] { position: relative; }
 [data-ui="analytics-chart"] > .ui-chart-expand { position: absolute; top: 14px; right: 14px; }
 [data-ui="analytics-chart"].is-expanded { position: fixed; inset: 16px; z-index: 60; margin: 0; overflow: auto; background: var(--card); box-shadow: var(--shadow-xl); }
+
+/* ============================================================
+   Touch targets
+   One shared class plus one coarse-pointer rule, the contract every site uses.
+   Inline links inside a sentence opt out so line rhythm is unchanged.
+   ============================================================ */
+.touch-target { min-height: 44px; min-width: 44px; }
+@media (pointer: coarse) {
+  button, [role="button"], [role="tab"], [role="switch"], [role="radio"], [role="menuitem"],
+  input:not([type="checkbox"]):not([type="radio"]), select, textarea, summary,
+  .btn, .pill, .nav-link, .bottom-tab, .history-action-btn, .footer-action, .dark-toggle, .menu-trigger {
+    min-height: 44px;
+  }
+  .history-menu button { min-height: 44px; }
+  p a, li a, .muted a, .prose a { min-height: 0; }
+}
+
+/* The update bar: shown once a new worker has taken control (the worker calls
+   skipWaiting on install), never on a first install. */
+.cents-update-bar { position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 80; display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 520px; margin: 0 auto; padding: 12px 14px; background: var(--card); border: 1px solid var(--accent); border-radius: var(--radius-lg); box-shadow: var(--shadow-xl); font-size: 13px; }
+.cents-update-bar[hidden] { display: none; }
+.cents-update-bar button { font: inherit; font-size: 12px; font-weight: 600; padding: 7px 14px; border: 0; border-radius: 999px; background: var(--accent); color: var(--card); cursor: pointer; }

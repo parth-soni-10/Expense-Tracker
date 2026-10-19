@@ -64,3 +64,41 @@ function upgrade() {
 window.addEventListener('cents:rendered', upgrade);
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', upgrade);
 else upgrade();
+
+/* -------------------------------------------------------------------------
+ * Update prompt
+ *
+ * `sw.js` already calls `skipWaiting()` on install, so there is no waiting
+ * worker to park: by the time this fires the new worker owns the page and the
+ * only honest action is a reload. The bar is shown only when a controller
+ * existed before this load, which is what distinguishes an update from a first
+ * install.
+ * ---------------------------------------------------------------------- */
+function installUpdateBar() {
+  if (!('serviceWorker' in navigator)) return;
+  const hadController = !!navigator.serviceWorker.controller;
+  let shown = false;
+  const show = () => {
+    if (shown || !hadController) return;
+    shown = true;
+    if (document.querySelector('.cents-update-bar')) return;
+    const bar = document.createElement('div');
+    bar.className = 'cents-update-bar';
+    bar.setAttribute('role', 'status');
+    bar.setAttribute('aria-live', 'polite');
+    const label = document.createElement('span');
+    label.textContent = 'A new version of cents. is ready.';
+    const reload = document.createElement('button');
+    reload.type = 'button';
+    reload.textContent = 'Reload';
+    reload.addEventListener('click', () => location.reload());
+    bar.append(label, reload);
+    document.body.append(bar);
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', show);
+  navigator.serviceWorker.getRegistration?.().then((registration) => {
+    if (registration?.waiting && hadController) show();
+  }).catch(() => {});
+}
+
+installUpdateBar();
