@@ -417,6 +417,17 @@
        the download itself fails), so the boot critical path is just
        styles.css + app.js and the module's tiny static imports. All
        integrations degrade gracefully. -->
+  <!-- Hairline: the engine, its mount adapter (a registry, because three
+       figures share this page), the three figures and their coordinator. All
+       same-origin and deferred before the module, so the first dashboard render
+       already has a mount to call; the palette lives in styles.css, never
+       injected. -->
+  <script src="hairline/kernel.js" defer></script>
+  <script src="hairline/mount.js" defer></script>
+  <script src="hairline/balance-tide.js" defer></script>
+  <script src="hairline/envelope-garden.js" defer></script>
+  <script src="hairline/receipt-constellation.js" defer></script>
+  <script src="hairline/figures.js" defer></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

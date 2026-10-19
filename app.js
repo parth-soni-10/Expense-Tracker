@@ -6938,6 +6938,34 @@ function screenDashboard() {
     ));
   }
 
+  // Hairline figures — the ledger drawn: the balance tide, the month's budget
+  // envelopes and the newest receipts. Each is fed from numbers this render
+  // already computed (computeBalance's points, catTotals, the same entry sort
+  // the Recent list uses), so a figure cannot disagree with the card beside it.
+  const tidePoints = points.slice(-13).map(p => ({ date: p.date, balance: p.balance }));
+  const tideLast = tidePoints[tidePoints.length - 1];
+  if (!tideLast || tideLast.date < today()) tidePoints.push({ date: today(), balance: runningBalance });
+  const envelopes = Object.entries(state.settings.categoryBudgets || {})
+    .filter(([, limit]) => +limit > 0)
+    .slice(0, 6)
+    .map(([id, limit]) => ({ label: categoryLabel(id), spent: catTotals[id] || 0, limit: +limit }));
+  const receipts = [...state.entries]
+    .filter(entry => entry.type !== 'note')
+    .sort((a, b) => b.date.localeCompare(a.date) || (a.id < b.id ? 1 : -1))
+    .slice(0, 9)
+    .map(entry => ({ title: entry.details || 'Entry', amount: entry.amount, date: entry.date }));
+  const figureCard = (id, label) => $('figure', { class: 'hairline-card' },
+    $('figcaption', { class: 'eyebrow' }, label),
+    $('div', { class: 'hairline-figure', id }),
+    $('p', { class: 'hairline-read', 'data-hairline-read': '', 'aria-live': 'polite' }, 'rest'));
+  screen.appendChild($('div', { class: 'figures-card', 'aria-label': 'The ledger drawn' },
+    figureCard('cents-balance-tide', 'Balance tide'),
+    figureCard('cents-envelope-garden', 'Envelope garden'),
+    figureCard('cents-receipt-constellation', 'Receipt constellation')));
+  if (window.mountCentsFigures) {
+    window.mountCentsFigures({ balances: tidePoints, envelopes, receipts });
+  }
+
   // Tesco Pay - the pay-month snapshot from the #tesco tab, one tap away.
   // Only rendered once there are shifts, so it never clutters the dashboard
   // for anyone who isn't on a Tesco rota.
