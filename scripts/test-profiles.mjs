@@ -50,7 +50,7 @@ localStorage = new MemoryStorage({
   'cents:syncSettings': '{"enabled":true}',
   'expense-tracker:unreadable': '{"entries":[',
 });
-const first = await import('../profiles.js?first-run');
+const first = await import('../app/lib/profiles.ts?first-run');
 check('a first run creates exactly the personal profile',
   JSON.stringify(first.listProfiles().map(p => p.id)) === '["personal"]', JSON.stringify(first.listProfiles()));
 check('the personal profile is active', first.getActiveProfileId() === 'personal');
@@ -84,7 +84,7 @@ localStorage = new MemoryStorage({
     lastUsedId: 'personal',
   }),
 });
-const choosing = await import('../profiles.js?session-order');
+const choosing = await import('../app/lib/profiles.ts?session-order');
 check('the session choice beats lastUsedId', choosing.getActiveProfileId() === 'kate', choosing.getActiveProfileId());
 check('a chosen tab reports that it has chosen', choosing.hasSessionChoice() === true);
 check('the registry remembers the choice for the next fresh tab',
@@ -96,7 +96,7 @@ check('setActiveProfileId accepts a known id and follows it', choosing.setActive
 // A session id that no longer exists must not strand the app outside every
 // profile — the registry is the source of truth.
 sessionStorage = new MemoryStorage({ 'cents:activeProfile': 'deleted-long-ago' });
-const stale = await import('../profiles.js?stale-session');
+const stale = await import('../app/lib/profiles.ts?stale-session');
 check('a stale session id falls back to the registry', stale.getActiveProfileId() === 'personal', stale.getActiveProfileId());
 
 // ------------------------------------------- 4. registry mutations (rules)
@@ -105,7 +105,7 @@ const reg = (profiles, lastUsedId = profiles[0].id) => new MemoryStorage({
 });
 localStorage = reg([{ id: 'personal', name: 'Personal' }]);
 sessionStorage = new MemoryStorage();
-const m = await import('../profiles.js?mutations');
+const m = await import('../app/lib/profiles.ts?mutations');
 check('an empty name is refused', !!m.createProfile('   ').error);
 check('an over-long name is refused', !!m.createProfile('x'.repeat(25)).error);
 check('a name with no usable characters is refused', !!m.createProfile('!!!').error);
@@ -123,7 +123,7 @@ check('a rename of an unknown profile is refused', !!m.renameProfile('nobody', '
 
 // The cap: six profiles, and the last one can never be deleted.
 localStorage = reg([{ id: 'personal', name: 'Personal' }]);
-const capped = await import('../profiles.js?cap');
+const capped = await import('../app/lib/profiles.ts?cap');
 for (const name of ['A', 'B', 'C', 'D', 'E']) check(`profile "${name}" is created`, !capped.createProfile(name).error);
 const over = capped.createProfile('F');
 check('a seventh profile is refused with a clear reason', !!over.error && /6 profiles/.test(over.error), over.error);
@@ -136,7 +136,7 @@ check('deleting an unknown profile is refused', !!capped.deleteProfile('ghost').
 // --------------------------------- 5. a delete removes every key it owned
 localStorage = reg([{ id: 'personal', name: 'Personal' }, { id: 'sam', name: 'Sam' }]);
 sessionStorage = new MemoryStorage();
-const deleting = await import('../profiles.js?delete');
+const deleting = await import('../app/lib/profiles.ts?delete');
 const BASES = ['state', 'quarantine', 'privacy', 'bio', 'sync', 'undo', 'alerts'];
 for (const base of BASES) {
   localStorage.setItem(deleting.nsKey(base, 'sam'), 'sam-secret');
@@ -154,7 +154,7 @@ check('the undo journal of another profile survives the delete',
 
 // ------------------------------------- 6. adopting a profile from a link
 localStorage = reg([{ id: 'personal', name: 'Personal' }]);
-const adopting = await import('../profiles.js?adopt');
+const adopting = await import('../app/lib/profiles.ts?adopt');
 const adopted = adopting.createProfile('Sam', { id: 'sam' });
 check('an explicit id is honoured', adopted.profile?.id === 'sam', JSON.stringify(adopted));
 check('adopting an existing id is idempotent, not a duplicate',
@@ -174,14 +174,14 @@ check('an uppercase id is refused (ids are slugs)', !!adopting.createProfile('Ev
 // must not be deletable — that would leave nobody able to open the panel.
 localStorage = reg([{ id: 'personal', name: 'Personal' }, { id: 'sam', name: 'Sam' }]);
 sessionStorage = new MemoryStorage();
-const admin = await import('../profiles.js?admin');
+const admin = await import('../app/lib/profiles.ts?admin');
 check('the owner profile is the admin', admin.isAdminProfile('personal') === true);
 check('another profile is not', admin.isAdminProfile('sam') === false);
 check('the owner profile cannot be deleted', !!admin.deleteProfile('personal').error, JSON.stringify(admin.deleteProfile('personal')));
 check('the admin survives that refusal', admin.listProfiles().length === 2);
 // A registry from before that rule existed, with no "personal" profile.
 localStorage = reg([{ id: 'kate', name: 'Kate' }, { id: 'sam', name: 'Sam' }]);
-const legacyAdmin = await import('../profiles.js?admin-legacy');
+const legacyAdmin = await import('../app/lib/profiles.ts?admin-legacy');
 check('without a personal profile the first one is the admin',
   legacyAdmin.isAdminProfile('kate') === true && legacyAdmin.isAdminProfile('sam') === false);
 
@@ -194,7 +194,7 @@ localStorage.setItem('cents:p/sam/state', JSON.stringify({
   settings: { monthlyBudget: 321, onboarded: true },
   lastLocalChangeAt: now,
 }));
-const storage = await import('../storage.js?admin-write');
+const storage = await import('../app/lib/storage.ts?admin-write');
 const before = storage.loadStateFor('sam');
 check('another profile\u2019s document can be read', before.entries.length === 1 && before.settings.monthlyBudget === 321);
 check('and defaults to every tab', before.settings.enabledTabs.length === 6, JSON.stringify(before.settings.enabledTabs));
@@ -220,7 +220,7 @@ check('and the document is unchanged after that failure',
 // ================================ 6c. profile pictures (device-local icons)
 localStorage = reg([{ id: 'personal', name: 'Personal' }, { id: 'sam', name: 'Sam' }]);
 sessionStorage = new MemoryStorage();
-const pics = await import('../profiles.js?pictures');
+const pics = await import('../app/lib/profiles.ts?pictures');
 check('a fresh profile has no picture', pics.listProfiles().find(p => p.id === 'sam').icon === undefined);
 const painted = pics.setProfileIcon('sam', 'robot');
 check('a picture can be chosen', painted.ok === true && painted.profile.icon === 'robot');
@@ -238,14 +238,14 @@ check('choosing a picture does not disturb the name or the id',
 // field, and must still be accepted. Rejecting it would rebuild the registry
 // and strand every profile's data.
 localStorage = reg([{ id: 'personal', name: 'Personal' }, { id: 'sam', name: 'Sam' }]);
-const older = await import('../profiles.js?pre-pictures');
+const older = await import('../app/lib/profiles.ts?pre-pictures');
 check('a registry from before pictures still loads', older.listProfiles().length === 2, JSON.stringify(older.listProfiles()));
 // And a corrupt picture is dropped, not treated as a corrupt registry.
 localStorage = reg([
   { id: 'personal', name: 'Personal', icon: { evil: true } },
   { id: 'sam', name: 'Sam', icon: 'z'.repeat(200) },
 ]);
-const salvage = await import('../profiles.js?bad-pictures');
+const salvage = await import('../app/lib/profiles.ts?bad-pictures');
 check('a malformed picture does not invalidate the registry', salvage.listProfiles().length === 2, JSON.stringify(salvage.listProfiles()));
 check('the malformed picture is dropped', salvage.listProfiles().every(p => p.icon === undefined));
 check('the rest of the profile survives it',

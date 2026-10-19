@@ -43,7 +43,7 @@ const manifest = JSON.parse(read('manifest.json'));
 const appSource = read('app.js');
 const css = read('styles.css');
 const headers = read('_headers');
-const { TABS } = await import('../seed.js');
+const { TABS } = await import('../app/lib/seed.ts');
 
 // ---------------------------------------------------------------- 1. identity
 // An installed app's identity is `id` + `scope` + `start_url`. Without `id` a

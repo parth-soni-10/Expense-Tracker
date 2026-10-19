@@ -39,10 +39,10 @@ globalThis.sessionStorage = new MemoryStorage();
 // (profiles.js), which resolves to "personal" on a device with no registry.
 const LIVE_KEY = 'cents:p/personal/state';
 
-const { validateState, loadState, saveState, parseBackup, parseEntriesCsv, CSV_REFUSAL, foreignWriteNeeded, readStateText, unreadableBackup, entriesCsv, ENTRIES_CSV_HEADER, MAX_BACKUP_BYTES, MAX_BACKUP_ENTRIES, isValidCheckpointDate } = await import('../storage.js');
-const { csvCell, csvUnquote, csvDocument, csvRows, csvDate, isRealDate, CSV_BOM } = await import('../csv.js');
-const { getPrivacyPin, getSyncSettings, isDefaultSyncEndpoint, DEFAULT_SYNC_ENDPOINT, isValidEndpoint } = await import('../settings.js');
-const { mergeStates } = await import('../sync-merge.js');
+const { validateState, loadState, saveState, parseBackup, parseEntriesCsv, CSV_REFUSAL, foreignWriteNeeded, readStateText, unreadableBackup, entriesCsv, ENTRIES_CSV_HEADER, MAX_BACKUP_BYTES, MAX_BACKUP_ENTRIES, isValidCheckpointDate } = await import('../app/lib/storage.ts');
+const { csvCell, csvUnquote, csvDocument, csvRows, csvDate, isRealDate, CSV_BOM } = await import('../app/lib/csv.ts');
+const { getPrivacyPin, getSyncSettings, isDefaultSyncEndpoint, DEFAULT_SYNC_ENDPOINT, isValidEndpoint } = await import('../app/lib/settings.ts');
+const { mergeStates } = await import('../app/lib/sync-merge.ts');
 const { paidHours, shiftPay, simulateTax, tescoCsv, parseTescoCsv } = await import('../tesco.js');
 const { readFileSync, existsSync } = await import('node:fs');
 
@@ -223,7 +223,7 @@ check('saveState reports failure when storage rejects the write', failedWrite ==
 // Namespacing is the whole isolation story, so assert it here rather than in
 // prose: another profile's document is never the active one's, and an unknown
 // profile's keys are left exactly where they are.
-const { nsKey, getActiveProfileId } = await import('../profiles.js');
+const { nsKey, getActiveProfileId } = await import('../app/lib/profiles.ts');
 const liveEntry = { id: 'live', date: '2026-09-20', type: 'expense', method: 'AIB', category: 'gro', amount: 1, details: '', note: '', createdAt: '2026-09-20T10:00:00.000Z' };
 const liveState = JSON.stringify({ entries: [liveEntry], settings: { monthlyBudget: 1100 } });
 const otherProfile = JSON.stringify({ entries: [], settings: { monthlyBudget: 999 } });

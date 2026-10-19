@@ -68,6 +68,12 @@ a11y-harness.html
 *.xlsx
 data*.json
 
+# The new Cents app: the cutover target. Its source, typed logic core and
+# tsconfig are development files while the old root app serves, so none of it
+# may be downloadable. The cutover commit removes this line together with the
+# flip to app/ as the assets directory — the two must move as one.
+app/
+
 # Standard noise
 .DS_Store
 *.log

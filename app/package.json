@@ -1,0 +1,14 @@
+{
+  "name": "cents-app",
+  "private": true,
+  "type": "module",
+  "description": "The Cents application shell and its typed logic core. The old root app keeps serving until the cutover.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "esbuild src/main.ts --bundle --format=esm --target=es2022 --outfile=dist/app.js"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.0"
+  }
+}

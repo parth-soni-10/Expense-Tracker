@@ -468,7 +468,7 @@ for (const route of routes) {
 // a device actually gets cannot drift apart. A hardcoded literal in the object
 // would leave the constant decorative: shown in the Sync screen, ignored by
 // every request.
-const settingsSrc = read('settings.js');
+const settingsSrc = read('app/lib/settings.ts');
 const defaultEndpoint = /export const DEFAULT_SYNC_ENDPOINT = '([^']+)'/.exec(settingsSrc)?.[1];
 if (!defaultEndpoint) {
   fail('settings.js declares no DEFAULT_SYNC_ENDPOINT — this guard cannot tell which route the app calls, and neither can a reader.');

@@ -31,7 +31,7 @@ import {
   createOcrPool, ocrPoolSize, OCR_POOL_MAX,
   ocrStripBox, ocrPageBox, ocrPrepSize, OCR_PREP_MAX, createOcrPrepWorker, ocrStretchData,
 } from '../tesco.js';
-import { validateState } from '../storage.js';
+import { validateState } from '../app/lib/storage.ts';
 
 let pass = 0;
 const fails = [];
@@ -1412,7 +1412,7 @@ ok('and it takes the undo step of its own, since nothing called it has one',
 // Tesco card's balance — and into its "recorded loads" — while the account the
 // payslip pays into stayed short by the whole week. The method is therefore one
 // exported constant in the engine, read by every writer.
-const seedSource = readFileSync(new URL('../seed.js', import.meta.url), 'utf8');
+const seedSource = readFileSync(new URL('../app/lib/seed.ts', import.meta.url), 'utf8');
 ok('a recorded Tesco pay lands on a method the app defines',
   new RegExp(`\\{ id: '${TESCO_PAY_METHOD}'`).test(seedSource), true);
 const giftCardIds = (appSource.match(/const GIFT_CARD_IDS = \[([^\]]+)\]/) || [undefined, ''])[1];

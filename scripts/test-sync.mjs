@@ -151,7 +151,7 @@ check('the check is behind the same credential as the rest of the endpoint',
 // sync.js so this cannot drift from the client, and anything the client sends
 // that the list omits fails the build.
 const clientHeaders = [...new Set([
-  ...[...readFileSync(new URL('../sync.js', import.meta.url), 'utf8').matchAll(/X-Cents-[A-Za-z-]+/g)].map(m => m[0]),
+  ...[...readFileSync(new URL('../app/lib/sync.ts', import.meta.url), 'utf8').matchAll(/X-Cents-[A-Za-z-]+/g)].map(m => m[0]),
   'Content-Type',
 ])];
 const preflight = await handler(new Request('https://cents.test/.netlify/functions/sync', {
@@ -291,8 +291,8 @@ mem.set('cents:syncSettings', JSON.stringify({
   endpoint: 'https://cents.test/.netlify/functions/sync',
   password: 'test-password-1234',
 }));
-const { syncPull, syncPush, syncCheckMirror, mirrorStatus } = await import(REPO + '/sync.js');
-const { getSyncSettings } = await import(REPO + '/settings.js');
+const { syncPull, syncPush, syncCheckMirror, mirrorStatus } = await import(REPO + '/app/lib/sync.ts');
+const { getSyncSettings } = await import(REPO + '/app/lib/settings.ts');
 const tiny = { version: 2, entries: [], settings: {} };
 const clientCalls = [];
 const clientUrls = [];
