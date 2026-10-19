@@ -11,7 +11,7 @@
  * Network-first: every request tries the network and only falls back to a
  * cached copy when offline. It never serves stale content while online.
  */
-const CACHE = 'cents-v26';
+const CACHE = 'cents-v27';
 // The build this device was last served on a navigation, so a redeploy can be
 // told apart from a first visit. Its OWN cache, and `activate` deliberately does
 // not sweep it: the shell cache above is versioned and a bump has to delete it,
@@ -45,11 +45,6 @@ const SHELL = [
   // Tesco screen: fetched on the first visit to #insights, so a cold offline
   // open of that tab needs it warm.
   '/insights.js',
-  // tesco.js imports this the moment it loads, so the first offline visit to
-  // #tesco needs it warm for the same reason. The OCR engine it feeds is NOT
-  // here: 6 MB of wasm + traineddata, fetched on the first scan — a cold offline
-  // scan cannot work regardless, so precaching it would cost every user.
-  '/ocr-pixels.js',
   // The bank statement mapper, reached only from the Data menu — deferred for
   // the same reason every screen is, and warm so an offline import still works.
   '/bank-import.js',

@@ -44,7 +44,7 @@ const BOOT_MODULES = [
   '/tesco-pay.js',
 ];
 // Modules that must NOT be in the boot closure: the ones the lazy paths own.
-const DEFERRED_MODULES = ['/tesco.js', '/insights.js', '/ocr-pixels.js', '/ocr-prep-worker.js'];
+const DEFERRED_MODULES = ['/tesco.js', '/insights.js'];
 
 // Decoded JS parsed before the first paint. The per-file arithmetic that used to
 // be written out here is what this guard prints on every run, so the figure to

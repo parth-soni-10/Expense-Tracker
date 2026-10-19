@@ -14,22 +14,17 @@
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import {
-  scanSlotForProfile,
   paidHours, parseHM, fmtHM, shiftPay, simulateTax, r2,
   weekStartOf, payDateOf, dateOk, buildPayWeeks, monthSummary, lifetimeTotals,
-  payslipTotal, parseTimeCell, parseRosterWords, isSunday, nameMatches, ocrStripRanges, ocrFlatField,
+  payslipTotal, parseTimeCell, parseRosterWords, isSunday, nameMatches,
   TESCO_RATE_DEFAULTS,
   tescoCsv, parseTescoCsv, TESCO_CSV_HEADER, TESCO_CSV_PAYSLIP_HEADER, isoWeekNumber, weekNumberOf, payslipWeekNumberOf,
   parseShiftText, shiftPreviewLine,
   storedShift, storedPayslip, applyShiftEdit, weekOffShift, weekBankWrite, weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites, tescoPayWriteWindow,
   TESCO_PAY_METHOD,
   rosterColumnBounds, parseCellTokens,
+  pageSkew, columnAnchors, resolveColumnDates, parseDateToken, columnDatingAgreement,
   sheetRowsToCsv, workbookToCsv,
-  pageSkew, dedupeWords, columnAnchors, resolveColumnDates, parseDateToken, columnDatingAgreement,
-  ocrEstimateTilt, ocrAutoContrast,
-  ocrSauvola, ocrLocalMarks, ocrIllumination, ocrRulingLines, rosterColumnsFromRules, rosterReadQuality,
-  createOcrPool, ocrPoolSize, OCR_POOL_MAX,
-  ocrStripBox, ocrPageBox, ocrPrepSize, OCR_PREP_MAX, createOcrPrepWorker, ocrStretchData,
 } from '../tesco.js';
 import { validateState } from '../app/lib/storage.ts';
 
@@ -596,7 +591,7 @@ ok('notes are trimmed', excel.shifts[0].note, 'new 15 minute break');
 ok('a file with no times column is rejected with a reason', parseTescoCsv('Name,Amount\r\nCoffee,3.50').error, 'That file needs Date, Start Time and End Time columns.');
 ok('an empty file is rejected too', !!parseTescoCsv('').error, true);
 
-// ---------- OCR text parsing (pure — no engine needed) ----------
+// ---------- text parsing (pure — no engine needed) ----------
 ok('14-22 parses', parseTimeCell('14-22'), { startMin: 840, endMin: 1320 });
 ok('trailing period tolerated', parseTimeCell('7-15.'), { startMin: 420, endMin: 900 });
 ok('letter-for-digit noise fixed (I5-2O → 15-20)', parseTimeCell('I5-2O'), { startMin: 900, endMin: 1200 });
@@ -660,15 +655,6 @@ ok('a surname-only read still matches a full typed name', nameMatches('Sharma', 
 ok('a different name does not match', nameMatches('Padraig', 'Parth'), false);
 ok('a two-letter token is not a match', nameMatches('Pa', 'Parth'), false);
 ok('an empty name never matches', nameMatches('Parth', ''), false);
-
-// The strips the photo is read in: half-height, overlapping by half, covering
-// the whole sheet — so no row is cut by a boundary and none is skipped.
-const strips = ocrStripRanges();
-ok('three strips', strips.length, 3);
-ok('the first starts at the top', strips[0][0], 0);
-ok('the last ends at the bottom', strips[strips.length - 1][1], 1);
-ok('each strips is half the height', strips.every(([a, b]) => r2(b - a) <= 0.5), true);
-ok('they overlap by half', [r2(strips[1][0]), r2(strips[2][0])], [0.25, 0.5]);
 
 // A tilted photo, as the strips arrive stitched together: the header drifted a
 // pixel per column and each row sits a little lower than the last, so rows have
@@ -750,7 +736,7 @@ ok('an empty cell is not a shift', cellOf([]), null);
 ok('a cell of pure punctuation is not a shift', cellOf(toks(['|', 10, 20], ['=', 40, 50])), null);
 
 // ---------- a real engine read of a real page ----------
-// The words below are tesseract.js 5.1.1's own output for a roster page (see the
+// The words below are engine output for a roster page (see the
 // fixture's `note`): a clean render, so everything in this list is the engine's
 // or the grid's doing — the rules as "|"/"=" on the boundaries, the middle rows
 // read twice by two overlapping strips, a cell read as " 10:00-16:00" with 8%
@@ -773,39 +759,6 @@ ok('a day is never read onto two columns at once',
 ok('every row keeps its own name',
   read.rows.map(r => r.name).includes('Sean Murphy'), true);
 
-// ---------- the flat-field view of a cell ----------
-// A photo's glare is a brightness gradient across the sheet, and a cell read
-// against a threshold fitted to the whole crop loses the glyphs on its bright
-// side. Flat-fielding compares each pixel with the paper around it instead, so
-// a stroke is dark on both sides of the gradient.
-{
-  const w = 96, h = 24;
-  // The paper is brightest at the left edge and falls away to the right, the way
-  // a phone's reflection does across a sheet.
-  const paper = (x) => 210 - Math.round((x / (w - 1)) * 90);
-  const cell = (stroke) => {
-    const px = new Uint8ClampedArray(w * h * 4);
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const i = (y * w + x) * 4;
-        const v = stroke && y > 3 && y < h - 4 && (x === 20 || x === 70) ? paper(x) - 50 : paper(x);
-        px[i] = px[i + 1] = px[i + 2] = v;
-        px[i + 3] = 255;
-      }
-    }
-    ocrFlatField(px, w, h);
-    return px;
-  };
-  const written = cell(true);
-  const at = (px, x, y) => px[(y * w + x) * 4];
-  ok('a stroke stays dark on the bright side of the glare', at(written, 20, 12) < at(written, 20, 1) - 80, true);
-  ok('a stroke stays dark on the dark side of the glare', at(written, 70, 12) < at(written, 70, 1) - 80, true);
-  ok('paper stays light wherever the glare falls', at(written, 20, 1) > 180 && at(written, 70, 1) > 180, true);
-  const blank = cell(false);
-  let darkest = 255;
-  for (let i = 0; i < blank.length; i += 4) darkest = Math.min(darkest, blank[i]);
-  ok('a cell with no writing in it is not turned into ink', darkest > 150, true);
-}
 
 // ---------- cell-pass reads own the row they belong to ----------
 const readCells = [{ date: '2026-09-20', weekday: 0, startMin: 0, endMin: 300, raw: 'x', confidence: 92, dupe: false }];
@@ -829,14 +782,6 @@ ok('a row too garbled to parse still gets its cells',
 // A scan of someone's sheet holds their name and their shift times. The slot
 // holding it is module-level, so a profile switch must not carry it across; the
 // same rule as app.js's staleResponse() for cloud answers.
-const slot = (profileId) => ({ profileId, parsed: { rows: [{ name: 'parth' }] } });
-ok('a scan taken by this profile is restored',
-  scanSlotForProfile(slot('sam'), 'sam')?.parsed.rows.length, 1);
-ok('a scan taken by another profile is dropped',
-  scanSlotForProfile(slot('personal'), 'sam'), null);
-ok('a scan with no owner (an older build) is dropped rather than shown',
-  scanSlotForProfile({ parsed: { rows: [{ name: 'parth' }] } }, 'sam'), null);
-ok('an empty slot stays empty', scanSlotForProfile(null, 'sam'), null);
 
 // ---------- quick entry: a shift typed as a sentence ----------
 // The grammar the Tesco tab's quick entry promises. Today is pinned to Thursday
@@ -1458,17 +1403,6 @@ near('pageSkew reads a 3° line', pageSkew(lineOf(Math.tan(3 * Math.PI / 180)), 
 ok('one word on the wrong line does not move the page',
   Math.abs(pageSkew([...lineOf(0.05), { text: 'junk', x0: 1600, x1: 1700, y0: 120, y1: 150 }], 30) - 0.05) < 0.02, true);
 
-// The same word twice: the two overlapping strips both read the row it sits on.
-const dupes = dedupeWords([
-  { text: '07:00-15:00', x0: 100, x1: 240, y0: 500, y1: 530, confidence: 70 },
-  { text: '07:00-15:00', x0: 104, x1: 243, y0: 502, y1: 532, confidence: 92 },
-  { text: '07:00-15:00', x0: 100, x1: 240, y0: 740, y1: 770, confidence: 90 },
-]);
-ok('a double read collapses to one word', dupes.length, 2);
-ok('and the copy kept is the confident one', dupes[0].confidence, 92);
-ok('the same text on the next row is a different word', dupes[1].y0, 740);
-ok('punctuation is not merged across a row either',
-  dedupeWords([{ text: '|', x0: 10, x1: 12, y0: 100, y1: 140 }, { text: '|', x0: 500, x1: 502, y0: 100, y1: 140 }]).length, 2);
 
 // The header: which columns a page describes, and which of its numbers are
 // furniture. A title's date range must never become a day of the week.
@@ -1606,409 +1540,7 @@ function stripedPage(w, h, deg) {
   }
   return grey;
 }
-for (const deg of [0, 1, -2.5, 4]) {
-  const w = 320, h = 460;
-  near(`ocrEstimateTilt finds a ${deg}° page`, ocrEstimateTilt(stripedPage(w, h, deg), w, h) * 180 / Math.PI, deg, 0.3);
-}
-// A photo that is already exposed is left alone: stretching it would only
-// amplify the JPEG's ringing around every thin stroke.
-const white = new Uint8Array(4 * 400).fill(250);
-for (let i = 0; i < 40; i++) { white[i * 4] = white[i * 4 + 1] = white[i * 4 + 2] = 20; }
-const whiteCopy = Uint8Array.from(white);
-ocrAutoContrast(white);
-ok('a white-paper photo is not stretched', [...white.slice(0, 40)], [...whiteCopy.slice(0, 40)]);
-// A sheet shot in shadow: its paper is grey, and the stretch is what gives the
-// engine the contrast its binariser needs.
-const shadowed = new Uint8Array(4 * 400).fill(170);
-for (let i = 0; i < 40; i++) { shadowed[i * 4] = shadowed[i * 4 + 1] = shadowed[i * 4 + 2] = 90; }
-ocrAutoContrast(shadowed);
-ok('a shadowed photo is stretched to full range',
-  [shadowed[200 * 4], shadowed[10 * 4]], [255, 0]);
 
-// ---------- the page as ink and paper ----------
-// A sheet lit from one side: paper at 235 grey on the left edge sliding to 110
-// on the right, with a line of "glyphs" printed right across it — 6px of ink,
-// 6px of gap, inked 90 grey below whatever the paper is on that part of the
-// page. This is the shot no single threshold can read: cut at the middle of the
-// range and the shadowed third comes back as one black slab, cut at the dark end
-// and the lit third comes back blank.
-const litW = 240, litH = 60;
-const litPage = (() => {
-  const g = new Uint8Array(litW * litH);
-  for (let y = 0; y < litH; y++) {
-    for (let x = 0; x < litW; x++) {
-      const paper = Math.round(235 - (125 * x) / (litW - 1));
-      g[y * litW + x] = (x % 12 < 6 && y > 10 && y < 40) ? Math.max(0, paper - 90) : paper;
-    }
-  }
-  return g;
-})();
-// The same print under flat light, as the control.
-const flatPage = (() => {
-  const g = new Uint8Array(litW * litH).fill(235);
-  for (let y = 11; y < 40; y++) for (let x = 0; x < litW; x++) if (x % 12 < 6) g[y * litW + x] = 145;
-  return g;
-})();
-ok('a page lit from one side is read as unevenly lit', ocrIllumination(litPage, litW, litH).uneven, true);
-ok('a page under flat light is not', ocrIllumination(flatPage, litW, litH).uneven, false);
-ok('the light down one side is what the spread measures',
-  ocrIllumination(litPage, litW, litH).spread > 100, true);
-const litBin = ocrSauvola(litPage, litW, litH, { radius: 18 });
-// The three answers that matter, at the two ends of the gradient and between two
-// glyphs: local thresholding is only worth its cost if it gets the ink in the
-// SHADOW as well as the ink in the light.
-// x%12 < 6 is the ink, so x = 3 and x = 231 are glyphs and x = 9 and x = 237 are
-// the gap between two of them.
-ok('the lit end reads its glyphs as ink', litBin[25 * litW + 3], 0);
-ok('the shadowed end reads its glyphs as ink too', litBin[25 * litW + 231], 0);
-ok('the gap between two glyphs is still paper in the light', litBin[25 * litW + 9], 255);
-ok('and still paper in the shadow', litBin[25 * litW + 237], 255);
-ok('the page above the print is paper at both ends',
-  [litBin[2 * litW + 3], litBin[2 * litW + litW - 3]], [255, 255]);
-// A page whose paper is already one flat wash must not gain speckle from the
-// local rule: that is the common case, and it is the one the LSTM's own grey is
-// better for.
-const flatBin = ocrSauvola(flatPage, litW, litH, { radius: 18 });
-let flatInk = 0;
-for (const v of flatBin) if (v === 0) flatInk++;
-ok('a flat page keeps exactly its printed ink', flatInk, 29 * 120);
-
-// The marks a RULE is read from, as opposed to a glyph (ocrLocalMarks): a
-// hairline table rule is a 20-grey dip, which is far too faint for the glyph
-// threshold above and exactly what a fixed margin is for.
-const ruledPage = (() => {
-  const w = 300, h = 80;
-  const g = new Uint8Array(w * h).fill(240);
-  for (let y = 18; y < 22; y++) for (let x = 10; x < 290; x++) g[y * w + x] = 205;   // a faint rule
-  for (let x = 0; x < w; x++) for (let y = 0; y < h; y++) g[y * w + x] -= Math.round(60 * y / h); // lit from the top
-  return { g, w, h };
-})();
-const ruledMarks = ocrLocalMarks(ruledPage.g, ruledPage.w, ruledPage.h, { drop: 26, radius: 12 });
-ok('a faint rule survives the local mark threshold', ruledMarks[20 * ruledPage.w + 150], 0);
-ok('and the paper either side of it does not', ruledMarks[40 * ruledPage.w + 150], 255);
-const ruledByGlyphs = ocrSauvola(ruledPage.g, ruledPage.w, ruledPage.h, { radius: 12 });
-ok('the same rule is what the glyph threshold throws away', ruledByGlyphs[20 * ruledPage.w + 150], 255);
-
-// The sheet's ruled grid: long contiguous runs, not counts of ink. A column of
-// text has ink in nearly every row and is still not a rule — the text leaves gaps.
-const gridW = 400, gridH = 300;
-const gridBin = (() => {
-  const b = new Uint8Array(gridW * gridH).fill(255);
-  const vAt = [40, 100, 160, 220, 280, 340], hAt = [60, 120, 180, 240];
-  for (const x of vAt) for (let dx = 0; dx < 3; dx++) for (let y = 20; y < 280; y++) b[y * gridW + x + dx] = 0;
-  for (const y of hAt) for (let dy = 0; dy < 2; dy++) for (let x = 20; x < 380; x++) b[(y + dy) * gridW + x] = 0;
-  // A dense column of "text" — ink in most rows, never in a long run.
-  for (let y = 30; y < 270; y += 7) for (let x = 60; x < 68; x++) b[y * gridW + x] = 0;
-  return b;
-})();
-const gridLines = ocrRulingLines(gridBin, gridW, gridH);
-ok('six vertical rules are found, and the column of text is not one', gridLines.v, [41, 101, 161, 221, 281, 341]);
-ok('four horizontal rules are found', gridLines.h, [60.5, 120.5, 180.5, 240.5]);
-
-// The day grid the sheet's own rules draw, accepted only when every column the
-// words found falls inside the span claiming it.
-const sevenCols = Array.from({ length: 7 }, (_, i) => ({ cx: 140 + i * 40 }));
-const eightLines = Array.from({ length: 8 }, (_, i) => 120 + i * 40);
-const snug = rosterColumnsFromRules(eightLines, sevenCols, {});
-ok('the rules give seven day columns', snug.bounds.length, 7);
-ok('and each one starts where the sheet drew it', snug.bounds.map(b => b[0]), [120, 160, 200, 240, 280, 320, 360]);
-ok('the name column ends at the rule the sheet drew', snug.nameEdge, 120);
-ok('a grid whose rules do not frame the words is refused',
-  rosterColumnsFromRules(eightLines.map(x => x + 30), sevenCols, {}), null);
-ok('a page with no even pitch is refused',
-  rosterColumnsFromRules([120, 121, 400, 401, 700, 701], sevenCols, {}), null);
-ok('too few rules to be a week are refused',
-  rosterColumnsFromRules([120, 160, 200], sevenCols, {}), null);
-
-// ---------- which reading of a photo to believe ----------
-// The reader takes several readings of one photo and keeps the best, so the score
-// is what decides which week gets paid. A reading that merely mentions the typed
-// name is not good enough: it has to have produced the week's columns and a dated
-// shift on the row that name is on.
-const wkWord = (text, x0, x1, y) => ({ text, x0, x1, y0: y, y1: y + 30, confidence: 90 });
-const weekNames = ['Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Mon'];
-const weekDates = ['22-Sep', '23-Sep', '24-Sep', '25-Sep', '26-Sep', '27-Sep', '28-Sep'];
-const weekHeader = [
-  ...weekNames.map((t, i) => wkWord(t, 400 + i * 180, 460 + i * 180, 350)),
-  ...weekDates.map((t, i) => wkWord(t, 400 + i * 180, 500 + i * 180, 400)),
-];
-const ownerRowWords = [
-  wkWord('Parth', 60, 200, 500), wkWord('Sharma', 210, 330, 500),
-  ...['07:00-15:00', 'OFF', '12:00-20:00', 'OFF', '09:00-17:00', '10:00-16:00', 'OFF']
-    .map((t, i) => wkWord(t, 400 + i * 180, 540 + i * 180, 500)),
-];
-const wholeWeek = rosterReadQuality([...weekHeader, ...ownerRowWords], 'Parth', today);
-ok('a reading of the whole week is accepted', wholeWeek.complete, true);
-ok('it found the seven columns', wholeWeek.columns, 7);
-ok('and the four shifts that week holds', wholeWeek.cells, 4);
-ok('and the row that carries the typed name', wholeWeek.found, true);
-// The same shot read as a strip that stopped before the header: the name and the
-// shifts are there, the week's columns are not, and the old reader would have
-// taken it — which is how a week lands in the wrong days.
-const noHeader = rosterReadQuality(ownerRowWords, 'Parth', today);
-ok('a reading with no header is not accepted', noHeader.complete, false);
-ok('and it scores below the whole week', noHeader.score < wholeWeek.score, true);
-// The header alone is worth its columns and the corroboration behind its dating,
-// and nothing for a row: there is no owner row to pay for.
-const headerOnly = rosterReadQuality(weekHeader, 'Parth', today);
-ok('the header alone is worth its columns, its dating and no row',
-  headerOnly.score, headerOnly.columns + headerOnly.agree * 2);
-ok('its seven day names all agree with the dates it gave them', headerOnly.agree, 7);
-// The reading a score could not judge before: a header whose names describe no
-// week at all. Read in the dark side of a photo the day names come back in an
-// order no week has, so at most a couple of them can agree with any dating — and
-// at most a couple is not a header the sheet can be dated from. It used to be
-// called whole, on the strength of having seven of them.
-const SCRAMBLED = ['Sun', 'Wed', 'Fri', 'Mon', 'Sat', 'Tue', 'Thu'];
-const weekOf = (names, title) => [
-  ...names.map((t, i) => wkWord(t, 400 + i * 180, 460 + i * 180, 350)),
-  wkWord(title, 60, 900, 290),
-  ...ownerRowWords,
-];
-const garbled = rosterReadQuality(weekOf(SCRAMBLED, 'Week 39 22/09/2026 - 28/09/2026'), 'Parth', today);
-const sound = rosterReadQuality(weekOf(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], 'Week 39 22/09/2026 - 28/09/2026'), 'Parth', today);
-ok('a header whose names describe no week is not accepted', garbled.complete, false);
-ok('even though it found the row and its four shifts', [garbled.found, garbled.cells, garbled.columns], [true, 4, 7]);
-ok('only two of its seven names agree with the dates they were given', garbled.agree, 2);
-ok('the header that does describe a week is accepted', sound.complete, true);
-ok('with every one of its names agreeing', sound.agree, 7);
-ok('and the reading that agrees with itself outscores the one that does not', sound.score > garbled.score, true);
-// Same seven names, same title, same photo — the only difference is whether the
-// names describe a week. That pair is the whole rule: it is AGREEMENT that lets a
-// reading be believed, not the mere presence of a header.
-ok('the two readings differ only in their names',
-  [garbled.columns, sound.columns, garbled.named, sound.named], [7, 7, 7, 7]);
-ok('a reading without the typed name cannot be accepted', rosterReadQuality([...weekHeader, wkWord('Aoife', 60, 200, 500)], 'Parth', today).complete, false);
-ok('nothing read is worth less than anything', rosterReadQuality([], 'Parth', today).score, -1);
-// The same filter the parse applies, so what is judged good is what the parse uses.
-const faint = rosterReadQuality(ownerRowWords.map(w => ({ ...w, confidence: 10 })), 'Parth', today);
-ok('words the parse would throw away cannot make a reading', faint.words.length, 0);
-ok('and a box that is not a number is not a word',
-  rosterReadQuality([...weekHeader, ...ownerRowWords, { text: 'X', x0: 0, y0: 0, x1: 1, y1: 1, confidence: 90 }], 'Parth', today).words.length, wholeWeek.words.length + 1);
-
-// ---------- the pool the ladder's readings run on ----------
-// A scan gives one photo several independent readings — three strips, then the
-// plain page and the thresholded one — and they run together on a small pool of
-// engines (createOcrPool). Two things have to hold whatever the machine is: a
-// read never shares a worker with another read (tesseract's whitelist and page
-// mode are worker state, so two passes on one worker would read each other's
-// settings), and every worker a scan built is gone once the scan ends, however
-// it ended.
-ok('a machine with cores to spare gets three workers', ocrPoolSize(16), OCR_POOL_MAX);
-ok('and never more than three', ocrPoolSize(64), 3);
-ok('a four-core machine keeps a core for the UI', ocrPoolSize(4), 3);
-ok('a two-core machine still gets two', ocrPoolSize(2), 2);
-ok('one core does not mean the one-after-another scan', ocrPoolSize(1), 2);
-ok('an unknown core count assumes a phone, not a desktop', ocrPoolSize(undefined), 3);
-
-function fakePool(size, { failAfter = Infinity } = {}) {
-  const made = [], killed = [];
-  const pool = createOcrPool({
-    size,
-    create: async () => {
-      if (made.length >= failAfter) throw new Error('the engine would not start');
-      const worker = { id: made.length + 1, terminate: async () => { killed.push(worker.id); } };
-      made.push(worker);
-      return worker;
-    },
-  });
-  return { pool, made, killed };
-}
-
-// One read per worker, no more read in flight than the ceiling, and reads that
-// arrive with every worker busy are served first-come-first-served — the ladder
-// asks in its own order, so the batch is answered in it.
-{
-  const { pool, made, killed } = fakePool(3);
-  const held = new Set();
-  let shared = 0, running = 0, peak = 0;
-  const used = await Promise.all([0, 1, 2, 3, 4, 5].map(i => pool.run(async worker => {
-    if (held.has(worker.id)) shared++;
-    held.add(worker.id);
-    running++; peak = Math.max(peak, running);
-    await new Promise(r => setTimeout(r, 4 + (i % 3) * 4));
-    running--; held.delete(worker.id);
-    return worker.id;
-  })));
-  ok('six reads on a pool of three never share a worker', shared, 0);
-  ok('three of them read at once, and no more', peak, 3);
-  ok('the pool built three workers for six reads', made.length, 3);
-  ok('and reuses them rather than starting one per read', new Set(used).size, 3);
-  ok('every read came back with its own answer', used.length, 6);
-
-  const order = [];
-  const waiting = [
-    pool.run(async w => { order.push('a'); await new Promise(r => setTimeout(r, 25)); return w.id; }),
-    pool.run(async w => { order.push('b'); await new Promise(r => setTimeout(r, 25)); return w.id; }),
-    pool.run(async w => { order.push('c'); return w.id; }),
-    pool.run(async w => { order.push('d'); return w.id; }),
-  ];
-  await Promise.all(waiting);
-  ok('the reads that fit start before the ones that have to wait',
-    order.indexOf('a') < order.indexOf('c') && order.indexOf('b') < order.indexOf('c'), true);
-  ok('and the reads that waited are served in the order they arrived',
-    order.indexOf('c') < order.indexOf('d'), true);
-
-  await pool.dispose();
-  ok('dispose terminates every worker the pool built', killed.sort().join(), '1,2,3');
-  const afterClose = await pool.run(async () => 'ran').then(v => v, e => e.message);
-  ok('a read asked for after the scan is closed fails rather than hanging', afterClose, 'The OCR pool is closed.');
-}
-
-// An engine that will not start cannot serve the reads parked behind it either:
-// they fail with the engine's own reason, so a scan ends with something the user
-// can read instead of a spinner that never stops.
-{
-  const { pool } = fakePool(3, { failAfter: 1 });
-  const outcomes = await Promise.allSettled([
-    pool.run(async w => w.id),
-    pool.run(async w => w.id),
-    pool.run(async w => w.id),
-  ]);
-  ok('the read that got a worker still finishes', outcomes[0].status, 'fulfilled');
-  ok('the reads behind the failure fail instead of hanging',
-    outcomes.slice(1).map(o => o.status).join(), 'rejected,rejected');
-  ok('and they carry the engine\u2019s own reason',
-    String(outcomes[1].reason && outcomes[1].reason.message), 'the engine would not start');
-  await pool.dispose();
-}
-
-// ---------- the prep workers a read's pixels are prepared on ----------
-// Preparing one read — draw the region at the engine's size, binarise it, encode
-// the PNG — is seconds of work on a 12 MP photo, and it used to be seconds the
-// reader's own thread spent unable to start the next reading, collect the last
-// one, or repaint the bar. It runs on a pool of its own now (ocr-prep-worker.js),
-// sized so the engine keeps its cores and the app keeps one, and the region the
-// read looks at is cut on the reader's thread and transferred.
-ok('a machine with cores to spare gives prep three workers', ocrPrepSize(16), OCR_PREP_MAX);
-ok('and never more than three', ocrPrepSize(64), 3);
-ok('a six-core machine gives the engine its three and prep two', ocrPrepSize(6), 2);
-ok('a four-core machine, where the engine already has three, gives prep one', ocrPrepSize(4), 1);
-ok('an eight-core machine gives prep three', ocrPrepSize(8), 3);
-ok('prep never drops to none, however tight the machine', ocrPrepSize(2), 1);
-ok('an unknown core count assumes a phone, not a desktop', ocrPrepSize(undefined), 1);
-ok('engine and prep together still leave a desktop the app a core',
-  ocrPoolSize(12) + ocrPrepSize(12) <= 11, true);
-
-// The box is decided in one place because every word the engine reports is mapped
-// back through it: get the working size wrong and every coordinate on the sheet
-// slides by the difference. These are the values the reader has always used (the
-// 12 MP working budget), so a drift here is a drift in what the engine is shown.
-const stripMid = ocrStripBox(4000, 3000, [0, 0.5]);
-ok('a 12 MP photo read as a half-height strip', stripMid,
-  { sx: 0, sy: 0, sw: 4000, sh: 1500, w: 5657, h: 2121, scale: Math.SQRT2, radius: 74 });
-ok('the strip below it is the same working image, one strip lower',
-  [ocrStripBox(4000, 3000, [0.5, 1]).sy, ocrStripBox(4000, 3000, [0.5, 1]).sh, ocrStripBox(4000, 3000, [0.5, 1]).w],
-  [1500, 1500, 5657]);
-ok('and so is the middle overlap, so the three strips share one resolution',
-  ocrStripBox(4000, 3000, [0.25, 0.75]).w, stripMid.w);
-ok('a small photo is upscaled to the 3\u00d7 ceiling, not past it',
-  { w: ocrStripBox(800, 600, [0, 0.5]).w, h: ocrStripBox(800, 600, [0, 0.5]).h, scale: ocrStripBox(800, 600, [0, 0.5]).scale, radius: ocrStripBox(800, 600, [0, 0.5]).radius },
-  { w: 2400, h: 900, scale: 3, radius: 32 });
-ok('a strip the geometry cut short still gets a glyph window',
-  [ocrStripBox(4000, 3000, [0.98, 1]).sh, ocrStripBox(4000, 3000, [0.98, 1]).radius], [60, 10]);
-ok('a portrait sheet is scaled to the same budget',
-  [ocrStripBox(3000, 6000, [0, 0.5]).w, ocrStripBox(3000, 6000, [0, 0.5]).h, ocrStripBox(3000, 6000, [0, 0.5]).radius],
-  [3464, 3464, 121]);
-ok('a 12 MP page is read at its own size', ocrPageBox(4000, 3000),
-  { sx: 0, sy: 0, sw: 4000, sh: 3000, w: 4000, h: 3000, scale: 1, radius: 80 });
-ok('a small page is upscaled to the ceiling',
-  [ocrPageBox(800, 600).w, ocrPageBox(800, 600).h, ocrPageBox(800, 600).radius], [2400, 1800, 48]);
-ok('a page past the budget is downscaled, never past half size',
-  [ocrPageBox(6000, 4000).w, ocrPageBox(6000, 4000).h, ocrPageBox(6000, 4000).radius], [4243, 2828, 85]);
-ok('the reader and its worker mean the same thing by a job',
-  /'binarise'/.test(readFileSync(new URL('../ocr-prep-worker.js', import.meta.url), 'utf8')), true);
-
-// The two views on a plain buffer — no canvas, which is the point of the worker
-// shape: the threshold and the encode are the half of a read that left the
-// reader's thread, and this is the function both halves call.
-const imageData = (w, h, fill) => {
-  const d = new Uint8ClampedArray(w * h * 4);
-  for (let i = 0; i < w * h; i++) {
-    const v = fill(i % w, Math.floor(i / w));
-    d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = v;
-    d[i * 4 + 3] = 255;
-  }
-  return { data: d, width: w, height: h };
-};
-{
-  // A photo shot in shade: paper at 200, ink at 64, and the stretch is what makes
-  // it readable — its own percentiles decide, not a fixed level.
-  const img = imageData(8, 32, (x, y) => (y % 2 ? 200 : 64));
-  ok('a low-contrast image is stretched', ocrStretchData(img, 'stretch'), 'stretch');
-  ok('its ink reaches full black', img.data[(0 * 8 + 0) * 4], 0);
-  ok('and its paper full white', img.data[(1 * 8 + 0) * 4], 255);
-  // Paper already white: stretching would only amplify the JPEG's ringing around
-  // every stroke, which a thin-stroke page has to survive.
-  const exposed = imageData(8, 8, () => 240);
-  ok('a photo that is already exposed is left alone', ocrStretchData(exposed, 'stretch'), 'stretch');
-  ok('and none of its pixels move', exposed.data[0], 240);
-  ok('nothing to read is not a crash', ocrStretchData({ data: new Uint8ClampedArray(0), width: 0, height: 0 }, 'ink'), 'stretch');
-  // The local threshold: paper and ink only, whatever the paper level was.
-  const cell = imageData(64, 48, x => (x % 8 < 2 ? 40 : 190));
-  ok('the local threshold binarises what it is given', ocrStretchData(cell, 'ink', 20), 'ink');
-  ok('a thresholded read is ink and paper and nothing between',
-    [...new Set([...cell.data.filter((_, i) => i % 4 === 0)])].sort((a, b) => a - b).join(), '0,255');
-  ok('a stroke reads as ink', cell.data[(20 * 64 + 32) * 4], 0);
-  ok('and the bare paper beside it reads as paper', cell.data[(20 * 64 + 4) * 4], 255);
-}
-
-// The round trip to a prep worker: one reply per job, matched by id (a batch asks
-// for three strips at once, and they do not come back in the order they went out),
-// a job-level failure that is that job's, and no read ever left waiting on a worker
-// that has died — a scan that hangs is worse than one that fails with a reason.
-function fakePrep() {
-  const worker = { onmessage: null, onerror: null, posted: [], stopped: false, terminate() { worker.stopped = true; } };
-  worker.postMessage = (message, transfer) => worker.posted.push({ message, transfer });
-  return {
-    worker,
-    reply: data => worker.onmessage({ data }),
-    die: message => worker.onerror({ message }),
-  };
-}
-const prepFailed = e => String(e && e.message);
-{
-  const fake = fakePrep();
-  const prep = createOcrPrepWorker(() => fake.worker);
-  const blob = { size: 4096 };
-  const readA = prep.post({ type: 'binarise', view: 'stretch' }, ['a-transfer']);
-  const readB = prep.post({ type: 'binarise', w: 400 });
-  ok('a posted job carries its own id', fake.worker.posted.map(p => p.message.id).join(), '1,2');
-  ok('and the pixels are handed over, not copied', fake.worker.posted[0].transfer, ['a-transfer']);
-  ok('both jobs are still waiting for an answer', fake.worker.posted.length, 2);
-  // Answered out of order, on purpose: the second job's blob must not land in the
-  // first read's hands.
-  fake.reply({ id: 2, ok: true, blob: { size: 2 } });
-  fake.reply({ id: 1, ok: true, blob });
-  ok('a read gets its own answer when the batch comes back out of order',
-    [(await readA).blob, (await readB).blob], [blob, { size: 2 }]);
-  fake.reply({ id: 99, ok: true, blob });  // a reply nobody is waiting for
-  const bad = prep.post({ type: 'binarise' });
-  fake.reply({ id: 3, ok: false, error: 'a crop the worker could not draw' });
-  ok('a job the worker could not do fails with its reason', await bad.then(() => 'resolved', prepFailed),
-    'a crop the worker could not draw');
-  const stillWorks = prep.post({ type: 'binarise' });
-  fake.reply({ id: 4, ok: true, blob });
-  ok('a job that failed is that job\u2019s failure, not the worker\u2019s', (await stillWorks).ok, true);
-
-  const parked = prep.post({ type: 'binarise' });
-  fake.die('the worker\u2019s script did not load');
-  ok('a worker that dies fails the read waiting on it', await parked.then(() => 'resolved', prepFailed),
-    'the worker\u2019s script did not load');
-  ok('and the next read is not parked behind a dead worker',
-    await prep.post({ type: 'binarise' }).then(() => 'resolved', prepFailed), 'the worker\u2019s script did not load');
-}
-{
-  const fake = fakePrep();
-  const prep = createOcrPrepWorker(() => fake.worker);
-  const parked = prep.post({ type: 'binarise' });
-  prep.terminate();
-  ok('closing the pool fails the reads still waiting on it',
-    await parked.then(() => 'resolved', prepFailed), 'The prep worker was closed.');
-  ok('and the worker is actually terminated', fake.worker.stopped, true);
-  ok('a read asked for after the scan is closed fails rather than hanging',
-    await prep.post({ type: 'binarise' }).then(() => 'resolved', prepFailed), 'The prep worker was closed.');
-}
 
 // ---------- report ----------
 if (fails.length) {

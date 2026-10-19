@@ -52,11 +52,9 @@ CLAUDE.md
 package.json
 package-lock.json
 
-# The local dev server and the roster OCR harness: both run on a laptop and
+# The local dev server: both run on a laptop and
 # neither has any business being downloadable.
 serve.sh
-ocr-harness.html
-
 # The accessibility harness: it drives the real app in an iframe, so it is a
 # laptop tool like the roster harness above and never part of the deploy.
 a11y-harness.html

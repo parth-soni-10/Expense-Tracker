@@ -123,10 +123,10 @@ Headline figures **count when they change**: the month total, the running balanc
 
 ## Checks
 
-Nineteen pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all nineteen in order and **stops at the first failure**. That single command is also what CI calls:
+Twenty-one pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all twenty-one in order and **stops at the first failure**. That single command is also what CI calls:
 
 ```
-node scripts/run-guards.mjs            # all nineteen, in order
+node scripts/run-guards.mjs            # all twenty-one, in order
 node scripts/check-worker-config.mjs   # wrangler.toml + functions/_router.js: the Pages project, the route table the browser calls, the KV binding, that the removed daily reminder has stayed removed, that no secret sits in a committed file, the CI wiring, and the docs below
 node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
 node scripts/check-image-hygiene.mjs   # the roster photo can never be persisted
@@ -141,6 +141,7 @@ node scripts/check-css-tokens.mjs      # the stylesheet is a closed system: ever
 
 node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or resurrect data (including the payment methods you own, the one date rule, and the document's own shape)
 node scripts/test-load-existing.mjs    # a document the shipping app wrote loads in the ported core and round-trips unchanged (the frozen fixture is built by scripts/make-cents-fixture.mjs)
+node scripts/check-pin-screens.mjs     # the browser leg below still loads that fixture, in a fresh context, behind the test PIN under the production CSP — and stays a hand-run leg rather than a CI dependency
 node scripts/test-profiles.mjs         # profiles stay isolated, and their cloud credentials never fall back
 node scripts/test-tesco.mjs            # the pay/tax engine still matches the workbook's figures
 node scripts/test-sync.mjs             # the sync contract still round-trips all state
@@ -151,6 +152,14 @@ node scripts/test-ui-libs.mjs          # the vendored UI libraries do what the a
 ```
 
 The roster reader's pixel half cannot be a Node guard (it needs a canvas), so it ships a browser harness: open `ocr-harness.html` on the served app and it draws rosters, photographs them (tilt, glare, shadow, one-sided lamplight, blur, keystone, ±90°, JPEG noise, tiny and huge pages) and runs the real `ocrRosterRow` + `parseRosterWords` over each, printing PASS/FAIL. Each line also reports what the reader read it with and what each reading of the photo scored (`readings: strips:7c/4s/7n7d* page-ink:…`, the named/dated columns and a `*` for a reading it accepted as whole), whether the sheet's own ruled grid was used, and how uneven its light measured — and the readings of a rung run together on the reader's pool of engines with each reading's image prepared on a prep worker of its own, so `reads=` counts the readings the answer rests on, not the ones the pools happened to have in flight. It is a dev tool — listed in `.assetsignore`, so it is never even uploaded.
+
+Gate C's other half has the same problem and a different answer, because it is an assertion rather than an audit a person reads. `scripts/pin-screens.browser.mjs` is a **Playwright** leg: it starts a loopback server over this checkout under the production CSP, opens a fresh browser context (empty storage, asserted), writes the frozen document under `cents:p/personal/state`, unlocks the rendered app with the test PIN `100901`, and checks every screen against the document — net worth, budget, income and net, the three Hairline read-outs, the eight ledger rows (with the split pair grouped and the tombstone gone), the balance checkpoint and per-account movements, the insights totals, the Tesco shift, and the custom category and method — then confirms it wrote nothing but the default profile and left the document deep-equal. The clock is pinned a day after the fixture's newest entry, because the fixture is frozen in one month and the dashboard is keyed on "this month".
+
+```
+node scripts/pin-screens.browser.mjs    # by hand, before the cutover
+```
+
+Playwright is not a dependency of this repo, and adding it would put a browser download in front of every deploy, so the leg is deliberately outside `run-guards.mjs` and CI. It resolves Playwright from `$CENTS_PLAYWRIGHT`, this repo, or the shared tooling project's install (`../design-system`) in this workspace, and it **fails** rather than skips when it cannot find it. `check-pin-screens.mjs` is what keeps a hand-run leg honest: it pins the fixture, the real key, the test PIN, the fresh context, the frozen clock, the production CSP, the loopback-only origin and the synthetic-ledger rule, and it fails if the leg is dropped from README/CLAUDE.md or quietly moved into the dependency-free suite.
 
 Accessibility is audited the same way, because a Node script cannot read a rendered DOM: open `a11y-harness.html` on the served app and it drives the real thing in an iframe through every route and every surface that *opens* (the menu and its drill-downs, and the modals they reach — never a click inside an open modal, so the ledger it audits is untouched), reporting per surface the four defects a rebuild quietly reintroduces: a control with no accessible name, two controls in one scope sharing an `aria-label` (an addressed identity here, not a label), a form field with no label, and an `<img>` with no `alt`. Keep its tab in the foreground: the app defers its render to an animation frame and a background tab is throttled, so a hidden harness audits nothing. `check-a11y.mjs` is what stops the harness from quietly ceasing to cover the app: it asserts the surfaces against `seed.js`'s tabs, against every menu level the app can drill into and against every modal the menu opens, and it fails if the harness's verdict stops counting any of the four defects.
 
