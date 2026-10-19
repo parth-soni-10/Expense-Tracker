@@ -74,6 +74,25 @@ function el(tag, className, content) {
   return node;
 }
 
+/* One outside-click listener for every disclosure menu on the page. A listener
+   per row would accumulate on every re-render of a long table: the detached
+   rows keep their handlers alive on `document`, and every later click walks
+   them all. */
+let menuOutsideBound = false;
+function bindMenuOutside() {
+  if (menuOutsideBound) return;
+  menuOutsideBound = true;
+  document.addEventListener('click', (event) => {
+    for (const panel of document.querySelectorAll('[data-ui-menu-panel]')) {
+      if (panel.hidden) continue;
+      const scope = panel.closest('[data-ui]');
+      if (scope?.contains(event.target)) continue;
+      panel.hidden = true;
+      scope?.querySelector('[data-ui-menu]')?.setAttribute('aria-expanded', 'false');
+    }
+  });
+}
+
 /* ── The installers ────────────────────────────────────────────────────────
    Each takes the element carrying `data-ui` and returns nothing. Keys are the
    component ids; `install()` looks the key up. */
@@ -430,12 +449,7 @@ const installers = {
       panel.hidden = !panel.hidden;
       trigger.setAttribute('aria-expanded', String(!panel.hidden));
     });
-    document.addEventListener('click', (event) => {
-      if (!row.contains(event.target)) {
-        panel.hidden = true;
-        trigger.setAttribute('aria-expanded', 'false');
-      }
-    });
+    bindMenuOutside();
     row.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return;
       panel.hidden = true;
