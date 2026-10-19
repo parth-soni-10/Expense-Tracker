@@ -140,6 +140,7 @@ node scripts/check-mobile-layout.mjs   # a stat value reaches its card formatted
 node scripts/check-css-tokens.mjs      # the stylesheet is a closed system: every custom property read is defined, every @keyframes is animated by something, and the braces balance
 
 node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or resurrect data (including the payment methods you own, the one date rule, and the document's own shape)
+node scripts/test-load-existing.mjs    # a document the shipping app wrote loads in the ported core and round-trips unchanged (the frozen fixture is built by scripts/make-cents-fixture.mjs)
 node scripts/test-profiles.mjs         # profiles stay isolated, and their cloud credentials never fall back
 node scripts/test-tesco.mjs            # the pay/tax engine still matches the workbook's figures
 node scripts/test-sync.mjs             # the sync contract still round-trips all state

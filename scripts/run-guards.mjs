@@ -42,6 +42,7 @@ const GUARDS = [
   'check-mobile-layout.mjs',   // a figure cannot leave the box it is drawn in
   'check-css-tokens.mjs',      // the stylesheets' tokens stay in step
   'test-integrity.mjs',        // storage/merge cannot lose or corrupt data
+  'test-load-existing.mjs',    // a document written by the old app loads in the port
   'test-profiles.mjs',         // profiles stay isolated
   'test-tesco.mjs',            // the pay/tax engine still matches the workbook
   'test-sync.mjs',             // the sync contract still round-trips the state

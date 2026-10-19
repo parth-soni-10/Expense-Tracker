@@ -1,0 +1,175 @@
+{
+  "schemaVersion": 2,
+  "entries": [
+    {
+      "id": "0727cb50-11f8-4a1a-9559-f16d0cb45ec5",
+      "date": "2026-10-12",
+      "type": "expense",
+      "category": "gro",
+      "details": "Lidl groceries",
+      "amount": 4.47,
+      "method": "Revolut",
+      "note": "fixture",
+      "createdAt": "2026-10-12T09:30:00.000Z"
+    },
+    {
+      "id": "31ab705e-e0a4-42ad-b5a6-7cd1039b0012",
+      "date": "2026-10-11",
+      "type": "credit",
+      "category": "misc",
+      "details": "Pay",
+      "amount": 250,
+      "method": "AIB",
+      "note": "",
+      "createdAt": "2026-10-12T09:30:00.000Z"
+    },
+    {
+      "id": "d8852cd9-e4fc-4136-97e1-50b6147b3050",
+      "date": "2026-10-10",
+      "type": "expense",
+      "category": "misc",
+      "details": "To savings",
+      "amount": 50,
+      "method": "AIB",
+      "note": "",
+      "createdAt": "2026-10-12T09:30:00.000Z",
+      "transferId": "dc781d32-d9d0-48ad-8912-13b4462c6639"
+    },
+    {
+      "id": "b6ff762a-9639-4d62-86aa-18db83e62d68",
+      "date": "2026-10-10",
+      "type": "credit",
+      "category": "misc",
+      "details": "To savings",
+      "amount": 50,
+      "method": "RS",
+      "note": "",
+      "createdAt": "2026-10-12T09:30:00.000Z",
+      "transferId": "dc781d32-d9d0-48ad-8912-13b4462c6639"
+    },
+    {
+      "id": "844f6c5c-1a10-48dd-b486-b7f48bf1b635",
+      "date": "2026-10-09",
+      "type": "expense",
+      "category": "misc",
+      "details": "Dinner split (mine)",
+      "amount": 12.5,
+      "method": "AIB",
+      "note": "",
+      "createdAt": "2026-10-12T09:30:00.000Z",
+      "splitId": "1369dd15-b5e5-4d0d-81b7-4a2c79e72b75"
+    },
+    {
+      "id": "f623fb19-01c1-4a1c-8c58-c8593382bfde",
+      "date": "2026-10-08",
+      "type": "expense",
+      "category": "misc",
+      "details": "Dinner split (theirs)",
+      "amount": 12.5,
+      "method": "AIB",
+      "note": "",
+      "createdAt": "2026-10-12T09:30:00.000Z",
+      "splitId": "1369dd15-b5e5-4d0d-81b7-4a2c79e72b75"
+    },
+    {
+      "id": "9ce4cb4f-10f2-49c4-918b-a4e344568789",
+      "date": "2026-10-01",
+      "type": "note",
+      "category": "misc",
+      "details": "Top-up",
+      "amount": 0,
+      "method": "AIB",
+      "note": "",
+      "createdAt": "2026-10-12T09:30:00.000Z",
+      "budgetExcluded": true
+    },
+    {
+      "id": "268bc9c0-c9c1-4012-bb71-a4621826e703",
+      "date": "2026-10-07",
+      "type": "credit",
+      "category": "misc",
+      "details": "Tesco shift pay",
+      "amount": 312.4,
+      "method": "AIB",
+      "note": "",
+      "createdAt": "2026-10-12T09:30:00.000Z"
+    }
+  ],
+  "settings": {
+    "monthlyBudget": 900,
+    "currency": "€",
+    "enabledTabs": [
+      "dashboard",
+      "add",
+      "history",
+      "balances",
+      "tesco",
+      "insights"
+    ],
+    "tescoVouchers": 15,
+    "cashBase": 0,
+    "coinsManual": true,
+    "categoryBudgets": {
+      "gro": 240
+    },
+    "balanceCheckpoints": {
+      "AIB": [
+        {
+          "date": "2026-10-01",
+          "balance": 1200,
+          "at": "2026-10-12T09:30:00.000Z"
+        }
+      ],
+      "Revolut": [],
+      "RS": [],
+      "TG": [],
+      "LG": [],
+      "AG": []
+    },
+    "customCategories": [
+      {
+        "id": "fixcat",
+        "label": "Fixture category"
+      }
+    ],
+    "customMethods": [
+      {
+        "id": "FXM",
+        "label": "Fixture method"
+      }
+    ],
+    "methodHidden": {},
+    "recurring": [],
+    "coins": {},
+    "deletedEntryIds": [
+      "fce3f693-d029-4627-bfc0-0d2b53a038b7"
+    ],
+    "tescoRates": {},
+    "tescoWeekNos": {
+      "2026-10-05": 41
+    },
+    "tescoPayLedger": {
+      "2026-10-07": {
+        "id": "cc3d2ab0-dd61-4073-b9af-8d2bd0a92ea5",
+        "amount": 312.4,
+        "by": "fill"
+      }
+    }
+  },
+  "tesco": {
+    "shifts": [
+      {
+        "id": "0b4b604e-8d55-4d24-93d6-2359807458ae",
+        "date": "2026-10-07",
+        "start": "09:00",
+        "end": "17:00",
+        "note": "fixture",
+        "special": false
+      }
+    ],
+    "payslips": [],
+    "deletedShiftIds": [],
+    "deletedPayslipIds": []
+  },
+  "lastLocalChangeAt": "2026-10-12T09:30:00.000Z"
+}
