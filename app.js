@@ -5780,7 +5780,7 @@ function renderHeader() {
       $('div', { class: 'mark' }, $('span', { class: 'mark-icon', 'aria-hidden': 'true', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 6.5A7 7 0 1 0 17 17.5"/><line x1="2.5" y1="8" x2="12" y2="8"/><line x1="2.5" y1="16" x2="12" y2="16"/></svg>' })),
       $('a', { href: '#dashboard', class: 'logo-wordmark', style: 'font-family:"Space Grotesk",sans-serif;font-size:30px;letter-spacing:-0.03em;' }, 'cents.'),
     ),
-    $('nav', { class: 'nav', 'aria-label': 'Primary', style: locked ? 'display:none;' : '' },
+    $('nav', { class: 'nav', 'aria-label': 'Primary', 'data-ui': 'gooey-nav', style: locked ? 'display:none;' : '' },
       ...ROUTES.filter(tabVisible).map(r => $('a', { href: `#${r}`, class: 'nav-link', 'aria-current': r === route ? 'page' : null },
         $('span', { class: 'nav-link-icon', 'aria-hidden': 'true', innerHTML: MENU_ICONS[{ dashboard: 'home', add: 'plus', history: 'clock', balances: 'wallet', tesco: 'briefcase', insights: 'chart' }[r]] || MENU_ICONS.home }),
         titleFor(r))),
@@ -5806,7 +5806,7 @@ function renderHeader() {
         // Wide enough screens get the word, so the button doesn't read as a
         // second profile chip sitting next to the real one.
         $('span', { class: 'admin-trigger-label', 'aria-hidden': 'true' }, 'Admin')) : null,
-      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
+      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'data-ui': 'switch-mode warm-tooltip', 'data-ui-tip': 'Light / dark', 'data-ui-mode-attr': 'theme', 'data-ui-mode-key': 'cents-theme', 'aria-checked': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
          const wasDark = document.documentElement.dataset.theme === 'dark';
          toggleDarkMode();
          event.currentTarget.setAttribute('aria-pressed', String(!wasDark));
@@ -5816,7 +5816,7 @@ function renderHeader() {
         $('span', { class: 'icon-sun', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>' }),
         $('span', { class: 'icon-moon', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>' }),
       ),
-      $('button', { type: 'button', class: 'menu-trigger', title: 'Menu', 'aria-label': 'Open menu', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', onClick: toggleAppMenu },
+      $('button', { type: 'button', class: 'menu-trigger', title: 'Menu', 'aria-label': 'Open menu', 'data-ui': 'warm-tooltip', 'data-ui-tip': 'Menu', 'aria-haspopup': 'dialog', 'aria-expanded': 'false', onClick: toggleAppMenu },
         $('span', { class: 'menu-trigger-icon icon-burger', 'aria-hidden': 'true', innerHTML: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>' }),
         $('span', { class: 'menu-trigger-icon icon-close', 'aria-hidden': 'true', innerHTML: '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>' }),
       ),
@@ -6170,23 +6170,23 @@ function menuRefreshLevel(id) {
 
 
 // ---------- shared form ----------
-function formView({ initial = null, onSubmit, onCancel }) {
+function formView({ initial = null, initialType = null, onTypeChange = null, onSubmit, onCancel }) {
   const isEdit = !!initial;
   const data = initial ? { ...initial } : {
-    type: 'expense', date: today(), details: '', amount: '',
+    type: initialType || 'expense', date: today(), details: '', amount: '',
     method: 'AIB', category: 'gro', note: '',
   };
   if (typeof data.amount === 'number') data.amount = String(data.amount);
 
   // Type tabs - use role-based selectors, not firstChild/lastChild
-  const tabs = $('div', { class: 'row', role: 'tablist', 'aria-label': 'Transaction type', style: `gap:${isNarrow() ? '10px' : '24px'};padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:32px;flex-wrap:wrap;` });
+  const tabs = $('div', { class: 'row', role: 'tablist', 'aria-label': 'Transaction type', 'data-ui': 'fluid-tabs', style: `gap:${isNarrow() ? '10px' : '24px'};padding-bottom:24px;border-bottom:1px solid var(--line);margin-bottom:32px;flex-wrap:wrap;` });
   const expenseTab = pillTab('Expense', 'expense', data.type === 'expense');
   const creditTab  = pillTab('Income', 'credit', data.type === 'credit');
   const transferTab = pillTab('Transfer', 'transfer', data.type === 'transfer');
   const noteTab = pillTab('Note', 'note', data.type === 'note');
   tabs.append(expenseTab, creditTab, transferTab, noteTab);
   function pillTab(label, type, active) {
-    const btn = $('button', { type: 'button', class: 'pill', role: 'tab', 'data-id': label.toLowerCase(), 'aria-selected': active ? 'true' : 'false',          style: `height:28px;padding:0 12px;font-size:13px;line-height:16px;font-weight:500;border-radius:6px;cursor:pointer;background:${active ? 'var(--accent-soft)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};border-color:${active ? 'transparent' : 'var(--line)'};`, onClick: () => {
+    const btn = $('button', { type: 'button', class: 'pill', role: 'tab', 'data-ui-tab': '', 'data-id': label.toLowerCase(), 'aria-selected': active ? 'true' : 'false',          style: `height:28px;padding:0 12px;font-size:13px;line-height:16px;font-weight:500;border-radius:6px;cursor:pointer;background:${active ? 'var(--accent-soft)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};border-color:${active ? 'transparent' : 'var(--line)'};`, onClick: () => {
       data.type = type;
       if (isTransfer()) {
         data.transferFrom = data.transferFrom || 'AIB';
@@ -6211,7 +6211,8 @@ function formView({ initial = null, onSubmit, onCancel }) {
       noteFieldSection.style.display = noteMode ? 'none' : '';
       detailsLabel.textContent = noteMode ? 'Note' : 'Description';
       detailsInput.setAttribute('aria-label', noteMode ? 'Note text' : 'Transaction details');
-    } }, label);
+    }    }, label);
+    if (onTypeChange) btn.addEventListener('click', () => onTypeChange(type));
     return btn;
   }
 
@@ -6231,7 +6232,7 @@ function formView({ initial = null, onSubmit, onCancel }) {
   // Named methodLabelEl so it doesn't shadow the global methodLabel(id) helper.
   const methodLabelEl = $('label', { class: 'eyebrow', for: 'f-method' }, 'Method');
   const methodOpts = () => (isCredit() ? creditMethods : allMethods());
-  const methodSel = $('select', { 'aria-label': 'Payment method', id: 'f-method', onChange: (e) => data.method = e.target.value });
+  const methodSel = $('select', { 'aria-label': 'Payment method', id: 'f-method', 'data-ui': data.type === 'credit' ? 'glide-select jelly-radio' : 'glide-select', onChange: (e) => data.method = e.target.value });
   const methodSection = $('div');
   function rebuildMethodOpts() {
     methodLabelEl.textContent = isCredit() ? 'Income sent to' : 'Method';
@@ -6823,10 +6824,13 @@ function screenDashboard() {
     ),
     $('div', { class: 'dashboard-actions' },
       $('label', { class: 'eyebrow', for: 'budget-input' }, 'Budget'),
-      $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '-', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
-        e.target.style.borderColor = 'var(--line)';
-        if (!commitBudget(e.target.value)) { e.target.value = String(budget || ''); toast('Enter a non-negative number.'); }
-      }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
+      // The same field, upgraded twice: a real stepper around it and the numeric
+      // range rule on it. The 250 ms commit and the blur toast are unchanged.
+      $('div', { class: 'budget-field', 'data-ui': 'stepper', 'data-ui-min': '0' },
+        $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '-', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', 'data-ui': 'skiper68', 'data-ui-min': '0', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
+          e.target.style.borderColor = 'var(--line)';
+          if (!commitBudget(e.target.value)) { e.target.value = String(budget || ''); toast('Enter a non-negative number.'); }
+        }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } })),
       tabVisible('add') ? $('a', { href: '#add', class: 'btn btn-primary' },
         $('span', { class: 'btn-new-icon', style: 'margin-right:6px;', innerHTML: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true"><line class="icon-plus-h" x1="5" y1="12" x2="19" y2="12"/><line class="icon-plus-v" x1="12" y1="5" x2="12" y2="19"/></svg>' }),
         'New entry',
@@ -6920,12 +6924,13 @@ function screenDashboard() {
 
   // Budget bar card
   if (budget > 0) {
-    screen.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:${isNarrow() ? '22px' : '32px'};` },
+    screen.appendChild($('div', { class: 'card', 'data-ui': 'budget-card', 'data-ui-percent': String(pct), 'data-ui-label': 'Spent of budget', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:${isNarrow() ? '22px' : '32px'};` },
       $('div', { class: 'row between' },
         $('span', { class: 'eyebrow' }, 'Spent of budget'),
+        $('a', { href: '#insights', class: 'btn-link', style: 'font-size:11px;' }, 'Where it went →'),
         $('span', { class: 'serif', style: 'font-size:22px;' }, `${pct.toFixed(1)}%`),
       ),
-      $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 20px;' },
+      $('div', { style: 'height:3px;background:var(--line);border-radius:99px;overflow:hidden;margin:14px 0 20px;', 'data-ui-bar': '' },
         $('div', { class: 'budget-bar-fill', style: `height:100%;width:${pct}%;background:${pct > 90 ? 'var(--negative)' : 'var(--accent)'};transition:width .5s cubic-bezier(0.2,0.8,0.2,1);border-radius:99px;` }),
       ),
       // The Pulse block already carries Spent/Projected/Remaining/Avg-day/Burn;
@@ -7030,15 +7035,24 @@ function screenDashboard() {
           const isOverdue = r.nextDate <= today();
           const daysAway = daysUntil(r.nextDate);
           const isDueSoon = !isOverdue && daysAway >= 0 && daysAway <= 7;
+          // Captured before the removal: the undo bar restores this row, and the
+          // reload-safe journal is still written by trackAction, so a reload in
+          // the six-second window loses nothing.
+          const removedRec = state.settings.recurring.filter(x => x.id === r.id);
+          const removeBtn = $('button', { type: 'button', 'data-ui': 'time-undo-action', 'data-ui-message': `Removed recurring "${r.details}".`, style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0;flex-shrink:0;', onClick: () => {
+            const removed = state.settings.recurring.filter(x => x.id === r.id);
+            state.settings.recurring = state.settings.recurring.filter(x => x.id !== r.id);
+            trackAction(() => { state.settings.recurring.push(...removed); persist(); }, `Removed recurring "${r.details}"`);
+            persist(); toast(`Removed recurring "${r.details}".`); render();
+          }, title: 'Remove recurring' }, '×');
+          removeBtn.addEventListener('ui:undo', () => {
+            state.settings.recurring.push(...removedRec);
+            persist(); toast(`Restored recurring "${r.details}".`); render();
+          });
           return $('div', { 'data-rec-id': r.id, class: 'rec-row', style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;' },
             $('div', { style: 'display:flex;align-items:center;gap:10px;flex:1;min-width:0;' },
               $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:13px;line-height:1;padding:0;flex-shrink:0;display:inline-flex;align-items:center;justify-content:center;', onClick: () => openNewRecurring(r), title: 'Edit recurring', 'aria-label': `Edit ${r.details}` }, iconSpan('pencil', 'sm')),
-              $('button', { type: 'button', style: 'width:20px;height:20px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;padding:0;flex-shrink:0;', onClick: () => {
-                const removed = state.settings.recurring.filter(x => x.id === r.id);
-                state.settings.recurring = state.settings.recurring.filter(x => x.id !== r.id);
-                trackAction(() => { state.settings.recurring.push(...removed); persist(); }, `Removed recurring "${r.details}"`);
-                persist(); toast(`Removed recurring "${r.details}".`); render();
-              }, title: 'Remove recurring' }, '×'),
+              removeBtn,
               $('span', { style: `display:inline-block;width:7px;height:7px;border-radius:50%;background:${isOverdue ? 'var(--negative)' : isDueSoon ? 'var(--accent)' : 'var(--muted)'};flex-shrink:0;box-shadow:${isDueSoon ? '0 0 0 3px var(--accent-fade)' : 'none'};` }),
               $('span', { style: 'font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' }, r.details),
               $('span', { class: 'pill', style: 'border-color:transparent;font-size:10px;flex-shrink:0;' }, methodShort(r.method)),
@@ -7324,6 +7338,23 @@ function screenDashboard() {
   );
   if (payTracker.shown && tabVisible('tesco')) screen.appendChild(payCard);
 
+  // Feedback is a footer, not a menu row: it is the one thing on the app that
+  // leaves the device, and the route behind it (`POST /api/feedback`) already
+  // exists. The honeypot field is the same one the server validates.
+  screen.appendChild($('div', { class: 'card feedback-card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
+    $('div', { class: 'eyebrow', style: 'margin-bottom:4px;' }, 'Feedback'),
+    $('div', { class: 'muted', style: 'font-size:12px;margin-bottom:12px;' }, 'A bug, a missing account, or a sentence that reads wrong? It comes straight to me.'),
+    $('form', { 'data-ui': 'feedback', 'data-ui-endpoint': '/api/feedback', style: 'display:flex;flex-direction:column;gap:8px;max-width:540px;' },
+      $('label', { class: 'eyebrow', for: 'feedback-message' }, 'Message'),
+      $('textarea', { id: 'feedback-message', name: 'message', rows: '3', required: '', maxlength: '2000', placeholder: 'What happened?', style: 'width:100%;resize:vertical;font:inherit;font-size:13px;background:transparent;color:inherit;border:1px solid var(--line);border-radius:8px;padding:9px 11px;' }),
+      $('input', { type: 'text', name: 'website', class: 'sr-only', tabindex: '-1', autocomplete: 'off', 'aria-hidden': 'true' }),
+      $('div', { style: 'display:flex;justify-content:flex-end;' },
+        $('button', { type: 'submit', class: 'btn btn-primary', style: 'font-size:12px;padding:7px 16px;' }, 'Send feedback'),
+      ),
+      $('div', { 'data-ui-status': '', role: 'status', 'aria-live': 'polite', class: 'muted', style: 'font-size:12px;min-height:16px;' }),
+    ),
+  ));
+
   // The four numbers, LAST on purpose: they are the card that closes the final
   // row, so the pairings above resolve first and this one fills what is left —
   // with a partner on a full ledger, full width when it would otherwise sit
@@ -7371,7 +7402,11 @@ function emptyStateCard({ icon = 'receipt', title, blurb, actionLabel = null, ac
   );
 }
 
-function stat(label, value, color, hint) {
+function stat(label, value, color, hint, href) {
+  // A figure with somewhere to go is an anchor as well as a counter. The number
+  // itself is the target the counter paints, so the final text is exact even
+  // when the count-up is interrupted.
+  const figure = $('span', { 'data-ui-value': '' }, value);
   return $('div', null,
     $('div', { class: 'eyebrow', title: hint || null, style: hint ? 'cursor:help;' : null },
       label,
@@ -7379,7 +7414,11 @@ function stat(label, value, color, hint) {
       // reader hears the term and not "info circle".
       hint ? $('span', { 'aria-hidden': 'true', style: 'margin-left:4px;opacity:.65;' }, '\u24d8') : null,
     ),
-    $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '18px' : '22px'};margin-top:4px;${color ? `color:${color};` : ''}` }, value),
+    $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '18px' : '22px'};margin-top:4px;${color ? `color:${color};` : ''}` },
+      href
+        ? $('a', { href, class: 'pulse-figure', 'data-ui': 'animated-counter', 'aria-label': `${label} details` }, figure)
+        : figure,
+    ),
   );
 }
 
@@ -8034,6 +8073,19 @@ async function openBankImport() {
 
 // ---------- screens: add ----------
 function screenAdd() {
+  // Two linkable states the folded structured form always had but never exposed:
+  // `more=1` opens it, and `type=credit` picks the Income tab. Both are real
+  // entry points (a bookmark, a shared link) and the only cold way to reach the
+  // structured form's method select and type tablist.
+  const addParams = () => new URLSearchParams((location.hash.split('?')[1]) || '');
+  const startOpen = addParams().get('more') === '1';
+  const startType = addParams().get('type') === 'credit' ? 'credit' : null;
+  const writeAddParams = (mutate) => {
+    const next = addParams();
+    mutate(next);
+    const qs = next.toString();
+    try { history.replaceState(null, '', location.pathname + location.search + '#add' + (qs ? `?${qs}` : '')); } catch { /* history unavailable */ }
+  };
   const c = $('section', { class: 'page-section add-flow', 'aria-label': 'New entry' });
   c.appendChild($('div', { class: 'page-title-row add-flow-heading' },
     $('div', null,
@@ -8185,7 +8237,7 @@ function screenAdd() {
     quickInput,
     detectRow,
     quickPreview,
-    $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' }, voiceInputBtn, $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', onClick: addQuick }, 'Add entry')),
+    $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;' }, voiceInputBtn, $('button', { type: 'button', class: 'btn btn-primary', style: 'font-size:12px;', 'data-ui': 'dynamic-button', 'data-ui-async': '1', 'data-ui-working': 'Saving…', 'data-ui-done': 'Saved', onClick: addQuick }, 'Add entry')),
   );
   // The screen the route focuses while the structured form is folded away.
   quickCard.dataset.routeInitialFocus = 'true';
@@ -8193,6 +8245,11 @@ function screenAdd() {
   c.appendChild(quickCard);
 
   const form = formView({
+    initialType: startType,
+    onTypeChange: (type) => writeAddParams((next) => {
+      if (type === 'credit') next.set('type', 'credit');
+      else next.delete('type');
+    }),
     onSubmit: (entryOrEntries) => {
       const entries = Array.isArray(entryOrEntries) ? entryOrEntries : [entryOrEntries];
       const label = entries.length > 1 ? `${entries.length} entries` : (entries[0].details || 'entry');
@@ -8206,22 +8263,26 @@ function screenAdd() {
   // surface; the structured form is the same component, one tap down, folded
   // out of the tab order and out of the audit until it is asked for. Nothing
   // is discarded on the way - the fold only hides it.
-  const structured = $('div', { id: 'add-structured', style: 'display:none;' }, form);
+  const structured = $('div', { id: 'add-structured', style: startOpen ? '' : 'display:none;' }, form);
   const moreBtn = $('button', {
     type: 'button', class: 'btn btn-ghost',
     style: 'display:block;max-width:540px;width:100%;margin:0 auto 20px;font-size:12px;',
-    'aria-expanded': 'false', 'aria-controls': 'add-structured',
+    'aria-expanded': startOpen ? 'true' : 'false', 'aria-controls': 'add-structured',
     onClick: () => {
       const open = structured.style.display !== 'none';
       structured.style.display = open ? 'none' : '';
       moreBtn.setAttribute('aria-expanded', open ? 'false' : 'true');
       moreBtn.textContent = open ? 'More options' : 'Fewer options';
+      writeAddParams((next) => {
+        if (open) next.delete('more');
+        else next.set('more', '1');
+      });
       if (!open) {
         const first = form.querySelector(`#${form.dataset.firstFocus || 'f-amount'}`);
         if (first) first.focus({ preventScroll: true });
       }
     },
-  }, 'More options');
+  }, startOpen ? 'Fewer options' : 'More options');
   c.appendChild(moreBtn);
   c.appendChild(structured);
   return c;
@@ -8357,8 +8418,21 @@ function screenHistory() {
   // A query has an order of its own — closest match first — so the toggle
   // stands aside there rather than pretending to sort the ranking.
   if (!searchQuery) navRight.appendChild(monthNav(orderAsc ? 'Oldest first' : 'Newest first', () => update({ order: orderAsc ? 'desc' : 'asc' }), false));
+  // A month index built from the ledger's own months: the chevrons step one
+  // month, this strip jumps. `ui:month` carries the visible label, so the label
+  // map is the same array that filled the strip.
+  const monthLabels = months.map(monthLabel);
+  const monthKeyByLabel = new Map(months.map((m, i) => [monthLabels[i], m]));
+  const monthIndex = $('div', { 'data-ui': 'skiper74', 'data-ui-months': monthLabels.join(','), 'data-ui-active': monthLabel(activeMonth), 'data-ui-label': 'Months' });
+  monthIndex.addEventListener('ui:month', (ev) => {
+    const key = monthKeyByLabel.get(ev.detail.month);
+    if (key && key !== activeMonth) update({ month: key });
+  });
   c.appendChild($('div', { class: 'page-title-row' },
-    $('h1', { class: 'page-title' }, inRange ? `${friendlyDate(rangeFrom)} – ${friendlyDate(rangeTo)}` : monthLabel(activeMonth)),
+    $('div', { class: 'history-title-block' },
+      $('h1', { class: 'page-title' }, inRange ? `${friendlyDate(rangeFrom)} – ${friendlyDate(rangeTo)}` : monthLabel(activeMonth)),
+      inRange ? null : monthIndex,
+    ),
     navRight,
   ));
 
@@ -8397,13 +8471,17 @@ function screenHistory() {
   for (const e of frameEntries) catCounts[e.category] = (catCounts[e.category] || 0) + 1;
   catCounts.all = frameEntries.length;
 
-  const filterRow = $('div', { class: 'no-print', style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 12px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
+  // One filter bar, one disclosure. The three pill rows are the filter; on a
+  // phone they fold behind a count of the active choices (aria-pressed), and
+  // the disclosure's own count reads the same truth.
+  const filterBar = $('div', { class: 'history-filters', 'data-ui': 'filter-disclosure', 'data-ui-label': 'Filters' });
+  const filterRow = $('div', { class: 'no-print', 'data-ui': 'rubber-segment', style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 12px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
   filterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;' }, 'Category'));
-  filterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': 'all', 'data-active': activeCat === 'all' ? 'true' : 'false', 'aria-pressed': activeCat === 'all' ? 'true' : 'false', onClick: () => update({ cat: 'all' }) }, `All · ${catCounts.all || 0}`));
+  filterRow.appendChild($('button', { type: 'button', class: `pill pill-cat${activeCat === 'all' ? ' is-on' : ''}`, 'data-ui-option': 'all', 'data-id': 'all', 'data-active': activeCat === 'all' ? 'true' : 'false', 'aria-pressed': activeCat === 'all' ? 'true' : 'false', onClick: () => update({ cat: 'all' }) }, `All · ${catCounts.all || 0}`));
   for (const c2 of allCategories()) {
     const count = catCounts[c2.id] || 0;
     if (count === 0 && activeCat !== c2.id) continue;
-    filterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': c2.id, 'data-active': activeCat === c2.id ? 'true' : 'false', 'aria-pressed': activeCat === c2.id ? 'true' : 'false', onClick: () => update({ cat: c2.id }) }, `${c2.label} · ${count}`));
+    filterRow.appendChild($('button', { type: 'button', class: `pill pill-cat${activeCat === c2.id ? ' is-on' : ''}`, 'data-ui-option': c2.id, 'data-id': c2.id, 'data-active': activeCat === c2.id ? 'true' : 'false', 'aria-pressed': activeCat === c2.id ? 'true' : 'false', onClick: () => update({ cat: c2.id }) }, `${c2.label} · ${count}`));
   }
   const methodCounts = {};
   for (const e of frameEntries) methodCounts[e.method] = (methodCounts[e.method] || 0) + 1;
@@ -8421,8 +8499,8 @@ function screenHistory() {
     if (count === 0 && activeMethod !== method.id) continue;
     methodFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': method.id, 'data-active': activeMethod === method.id ? 'true' : 'false', 'aria-pressed': activeMethod === method.id ? 'true' : 'false', onClick: () => update({ method: method.id }) }, `${methodShort(method.id)} · ${count}`));
   }
-  c.appendChild(filterRow);
-  c.appendChild(methodFilterRow);
+  filterBar.appendChild(filterRow);
+  filterBar.appendChild(methodFilterRow);
 
   // Type: the filter the function always had and the screen never asked for.
   // Counts read the frame (month or range) like every other pill row, and the
@@ -8438,7 +8516,8 @@ function screenHistory() {
     if (count === 0 && activeType !== value) continue;
     typeFilterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': value, 'data-active': activeType === value ? 'true' : 'false', 'aria-pressed': activeType === value ? 'true' : 'false', onClick: () => update({ type: value }) }, `${label} · ${count}`));
   }
-  c.appendChild(typeFilterRow);
+  filterBar.appendChild(typeFilterRow);
+  c.appendChild(filterBar);
 
   // The view's own actions. "Export view" writes exactly what is on screen —
   // in the order it is on screen, ranking included — while the full-ledger
@@ -8601,7 +8680,7 @@ function screenHistory() {
     queueMicrotask(() => modal.focus());
   }
 
-  const tableWrap = $('div', { class: 'card', style: 'overflow-x:auto;padding:0;' });
+  const tableWrap = $('div', { class: 'card', 'data-ui': 'inline-table-control', style: 'overflow-x:auto;padding:0;' });
   if (visible.length === 0) {
     tableWrap.appendChild($('div', { class: 'empty' }, emptyIcon('receipt'), searchQuery ? ' No results for this search.' : activeDay ? ` No entries on ${friendlyDate(activeDay)}.` : ' Nothing here for this filter.'));
   } else {
@@ -8656,7 +8735,32 @@ function screenHistory() {
       // method are what the two legs of a transfer differ by, so they carry the
       // distinction (and the sign: the money left one account and reached the other).
       const rowLabel = `${e.details || (isNote ? 'note' : 'entry')} \u00b7 ${friendlyDate(e.date)} \u00b7 ${isGroup ? 'split' : methodShort(e.method)} \u00b7 ${(isCredit ? '+' : '') + fmt(totalAmount)}`;
-      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${rowLabel}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
+      // The row's one action was Edit. The kebab adds Duplicate / Exclude /
+      // Delete without a second screen, and touch gets the same Delete by
+      // swiping. Both go through the existing tombstone + undo paths.
+      const duplicateRow = () => {
+        if (isGroup || e.transferId) { openRow(); return; }
+        const copy = { ...e, id: uid(), createdAt: nowIso() };
+        delete copy.history;
+        commitAdded([copy], `${e.details || 'entry'} copy`, () => toast('Duplicated.'));
+      };
+      const toggleBudget = () => {
+        if (isGroup) { openRow(); return; }
+        const wasExcluded = e.budgetExcluded === true;
+        if (wasExcluded) delete e.budgetExcluded; else e.budgetExcluded = true;
+        persist();
+        trackAction(() => {
+          if (wasExcluded) e.budgetExcluded = true; else delete e.budgetExcluded;
+          persist();
+        }, `${wasExcluded ? 'Included' : 'Excluded'} "${e.details || 'entry'}" ${wasExcluded ? 'in' : 'from'} the budget`);
+        toast(wasExcluded ? 'Back in the budget.' : 'Excluded from the budget.');
+        render();
+      };
+      const deleteRow = () => {
+        if (isGroup) { openRow(); return; }
+        deleteEntryOrTransfer(e.id);
+      };
+      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-ui': 'swipe-row transaction-list inline-disclosure-menu', 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${rowLabel}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]') || ev.target.closest('[data-ui-field]') || ev.target.closest('[data-ui-menu]') || ev.target.closest('[data-ui-menu-panel]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input') || ev.target.closest('[data-ui-menu]')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
         $('span', { role: 'cell', class: 'history-cell-check' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selectAll.every(id => selected.has(id)) ? true : null, 'aria-label': `Select ${rowLabel}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
           for (const id of selectAll) { if (ev.target.checked) selected.add(id); else selected.delete(id); }
           syncBulkBar();
@@ -8664,7 +8768,7 @@ function screenHistory() {
         $('span', { class: 'muted history-date' }, friendlyDate(e.date)),          $('div', { class: 'history-details-wrap' },
             $('div', { class: 'history-details' }, e.details || '-',            e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, class: 'history-audio' }) : null,
           ),
-          $('div', { class: 'history-category' }, categoryLabel(e.category)),
+          $('div', { class: 'history-category', 'data-ui-field': 'Category', 'data-category': e.category }, categoryLabel(e.category)),
         ),
         $('span', { class: `display-num history-amount${isCredit ? ' is-credit' : ''}` }, isNote ? 'Note' : (isCredit ? '+' : '') + fmt(totalAmount)),
         $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, isNote ? '-' : fmt(rowBalance)),
@@ -8673,12 +8777,44 @@ function screenHistory() {
           : [$('span', { class: 'pill history-method' }, methodShort(e.method))])),
         $('span', { class: 'history-actions' },
           $('button', { type: 'button', class: 'history-action-btn', title: isGroup ? 'Edit or delete split payment' : 'Edit or delete entry', 'aria-label': (isGroup ? `Edit or delete split ${rowLabel}` : `Edit or delete ${rowLabel}`), onClick: ev => { ev.stopPropagation(); openRow(); } }, 'Edit'),
+          $('button', { type: 'button', class: 'history-action-btn history-swipe-delete', 'data-ui-swipe-action': '', 'aria-label': `Delete ${rowLabel}`, onClick: ev => { ev.stopPropagation(); deleteRow(); } }, 'Delete'),
+          $('span', { class: 'history-menu-wrap' },
+            $('button', { type: 'button', class: 'history-action-btn history-kebab', 'data-ui-menu': '', 'aria-haspopup': 'menu', 'aria-label': `More actions for ${rowLabel}`, onClick: ev => ev.stopPropagation(), onKeydown: ev => ev.stopPropagation() }, '⋯'),
+            $('span', { class: 'history-menu', 'data-ui-menu-panel': '', role: 'menu' },
+              $('button', { type: 'button', role: 'menuitem', onClick: ev => { ev.stopPropagation(); openRow(); } }, 'Edit'),
+              $('button', { type: 'button', role: 'menuitem', onClick: ev => { ev.stopPropagation(); duplicateRow(); } }, 'Duplicate'),
+              $('button', { type: 'button', role: 'menuitem', onClick: ev => { ev.stopPropagation(); toggleBudget(); } }, isBudgetExcluded(e) ? 'Include in budget' : 'Exclude from budget'),
+              $('button', { type: 'button', role: 'menuitem', class: 'is-danger', onClick: ev => { ev.stopPropagation(); deleteRow(); } }, 'Delete'),
+            ),
+          ),
         ),
       );
 
       tableWrap.appendChild(row);
     }
   }
+  // Inline category editing: the kit writes the new label into the cell and
+  // fires `ui:cell`; the ledger owns the id, the undo step and the repaint.
+  tableWrap.addEventListener('ui:cell', (ev) => {
+    const cell = ev.target.closest('[data-ui-field]');
+    if (!cell || cell.dataset.uiField !== 'Category') return;
+    const rowEl = cell.closest('.history-row');
+    const id = rowEl?.dataset.id;
+    if (!id) return;
+    const entry = state.entries.find(x => x.id === id);
+    if (!entry) return;
+    const wanted = String(ev.detail.value || '').trim().toLowerCase();
+    const cat = allCategories().find(c => c.label.toLowerCase() === wanted || c.id.toLowerCase() === wanted);
+    if (!cat) { toast(`No category called "${ev.detail.value}".`); render(); return; }
+    if (cat.id === entry.category) return;
+    const before = entry.category;
+    entry.category = cat.id;
+    persist();
+    trackAction(() => { entry.category = before; persist(); }, `Categorised "${entry.details || 'entry'}" as ${cat.label}`);
+    toast(cat.label + '.');
+    render();
+  });
+
   c.appendChild(tableWrap);
 
   const histSumEl = $('span', { class: 'display-num', style: 'font-size:30px;' }, fmt(expenseSum));
@@ -8765,6 +8901,25 @@ function screenBalances() {
       tabVisible('history') ? $('a', { href: '#history', class: 'btn btn-ghost', style: 'padding:8px 14px;font-size:12px;' }, 'Transaction history') : null,
       $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:8px 14px;font-size:12px;', onClick: reconcileAll }, 'Reconcile all'),
     ),
+  ));
+
+  // One card that reads the profile policy back: name, visible tabs, sync state
+  // and the ledger's own size. It adds no data and no setting; the facts are
+  // the same ones the header and the menu act on, in one place.
+  const profile = activeProfile();
+  c.appendChild($('button', { type: 'button', class: 'card profile-card', 'data-ui': 'expandable-profile-card', 'data-ui-title': profile.name, 'data-ui-facts': [
+    `Name: ${profile.name}`,
+    `Tabs: ${enabledTabs().map(titleFor).join(', ')}`,
+    `Entries: ${state.entries.length}`,
+    `Cloud sync: ${getSyncSettings().enabled ? 'on' : 'off — stored on this device'}`,
+  ].join('|'), style: `width:100%;text-align:left;display:flex;align-items:center;gap:14px;padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;cursor:pointer;` },
+    profileAvatar(profile, 30),
+    $('span', { style: 'flex:1;min-width:0;' },
+      $('span', { class: 'eyebrow', style: 'display:block;' }, 'This profile'),
+      $('span', { style: 'display:block;font-weight:600;font-size:14px;' }, profile.name),
+      $('span', { class: 'muted', style: 'display:block;font-size:11px;margin-top:2px;' }, `${state.entries.length} entr${state.entries.length === 1 ? 'y' : 'ies'} · ${getSyncSettings().enabled ? 'cloud-synced' : 'stored locally'}`),
+    ),
+    $('span', { class: 'muted', style: 'font-size:11px;flex-shrink:0;' }, 'Details →'),
   ));
 
   c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
@@ -9678,10 +9833,10 @@ function dashboardPulse(key, expenseSum, runningBalance) {
       $('span', { class: 'pulse-status', style: `color:${tone};border-color:${tone};` }, status),
     ),
     $('div', { class: 'pulse-grid' },
-      stat('Runway', runway.dailyAvg > 0 && runway.daysToZero !== null ? `${runway.daysToZero} days` : '-', null, 'Days until today\u2019s balance runs out at your current daily pace. Fixed charges like rent are spent, not repeated.'),
-      stat('Spent', fmt(forecast.spent), 'var(--negative)', 'Everything this month that counts against your budget.'),
-      stat('Projected', forecast.projected === null ? '\u00b7' : fmt(forecast.projected), 'var(--negative)', 'Where the month lands at your current pace. Shown once there is a week of entries to read.'),
-      forecast.budget && forecast.projectedReady ? stat('Remaining', fmt(forecast.remaining)) : stat('Balance', fmt(runningBalance)),
+      stat('Runway', runway.dailyAvg > 0 && runway.daysToZero !== null ? `${runway.daysToZero} days` : '-', null, 'Days until today\u2019s balance runs out at your current daily pace. Fixed charges like rent are spent, not repeated.', '#balances'),
+      stat('Spent', fmt(forecast.spent), 'var(--negative)', 'Everything this month that counts against your budget.', '#history'),
+      stat('Projected', forecast.projected === null ? '\u00b7' : fmt(forecast.projected), 'var(--negative)', 'Where the month lands at your current pace. Shown once there is a week of entries to read.', '#insights'),
+      forecast.budget && forecast.projectedReady ? stat('Remaining', fmt(forecast.remaining), null, null, '#balances') : stat('Balance', fmt(runningBalance), null, null, '#balances'),
       monthBudget ? stat('Safe today', fmt(safeToday), remainingBudget <= 0 ? 'var(--negative)' : '', 'What is left of this month\u2019s budget, shared over the days left in it.') : null,
       stat('Avg / day', fmt(forecast.dailyAverage), 'var(--negative)', 'This month\u2019s variable spending divided by the days elapsed \u2014 fixed bills left out.'),
       monthBudget && expenseSum > 0 && forecast.projectedReady ? stat('Burn rate', (() => {
@@ -10052,6 +10207,14 @@ function _render() {
   }
   main.appendChild(screen);
 
+  // A client-side route change moves a reader who cannot see the page (and a
+  // screen reader) to the new heading. Add overrides this below with its first
+  // field, which is the better landing target on a form.
+  if (routeChanged) {
+    const heading = screen.querySelector('h1');
+    if (heading) { heading.setAttribute('tabindex', '-1'); heading.focus({ preventScroll: true }); }
+  }
+
   // Bottom tab bar on mobile
   const route2 = currentRoute();
   const tabIconSVG = (id) => {
@@ -10149,6 +10312,10 @@ function _render() {
   }
   // Refresh the cached element - the header is rebuilt on every render.
   window.__stickyHdr = document.querySelector('.app-header');
+
+  // One signal after every screen: the component kit scans on it, so an upgrade
+  // that needs the rendered markup never races the render.
+  window.dispatchEvent(new CustomEvent('cents:rendered', { detail: { route } }));
 }
 
 // ---- PWA install prompt ----

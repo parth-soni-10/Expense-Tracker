@@ -71,6 +71,11 @@
 
   <!-- Fonts are self-hosted in /fonts (see the @font-face rules in styles.css)
        so the app makes no third-party connection on load. -->
+  <!-- The first-party component kit: class-only, CSP-safe, no build. It loads
+       BEFORE styles.css so Cents' own rules win on shared elements; its module
+       loads AFTER app.js so the boot-payload guard still treats app.js as the
+       entry, and it scans on every `cents:rendered` signal. -->
+  <link rel="stylesheet" href="ui.css">
   <link rel="stylesheet" href="styles.css">
 
   <!-- Critical-path preloads: kick off the big module download and the main
@@ -429,5 +434,7 @@
   <script src="hairline/receipt-constellation.js" defer></script>
   <script src="hairline/figures.js" defer></script>
   <script type="module" src="app.js"></script>
+  <script type="module" src="ui.js"></script>
+  <script type="module" src="components.js"></script>
 </body>
 </html>
