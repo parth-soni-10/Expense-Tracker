@@ -8,9 +8,10 @@
  * files that could hold its pixels (the reader, the prep worker, the shared pixel
  * layer) for a persistence call or a missing release step. Commit `97fb40f`
  * removed the whole pipeline — engine pool, tesseract, camera modal, file input,
- * prep workers, `ocr-pixels.js`, `ocr-harness.html`, `vendor/tesseract/` — and kept
- * the pure text side (`parseRosterWords`, `columnAnchors`, `resolveColumnDates`,
- * `rosterColumnBounds`, pinned in `scripts/test-tesco.mjs`). A lint that still
+ * prep workers, `ocr-pixels.js`, `ocr-harness.html`, `vendor/tesseract/`. The pure
+ * text side outlived it for a sprint (`parseRosterWords` and the grid helpers) with
+ * no caller at all, and batch 34 deleted that too — a parser for a page that can no
+ * longer be photographed is the same decision read backwards. A lint that still
  * named those files would fail on their absence and, worse, would pass a
  * re-introduced camera: it only ever looked at the reader.
  *

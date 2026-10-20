@@ -2010,7 +2010,7 @@ p, li, .muted { text-wrap: pretty; }
 
 
 /* ============================================================
-   Tesco Pay tab — shift ledger, pay weeks, payslips, roster scan
+   Tesco Pay tab — shift ledger, pay weeks, payslips, import
    ============================================================ */
 .tesco-section .card { margin-bottom: 20px; }
 .tesco-card-title {
@@ -2061,11 +2061,6 @@ p, li, .muted { text-wrap: pretty; }
 .tesco-in-date { width: 148px; }
 .tesco-file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .tesco-filelabel { position: relative; overflow: hidden; cursor: pointer; }
-.tesco-scan-wrap {
-  position: relative; margin-top: 10px; border: 1px solid var(--line);
-  border-radius: var(--radius); overflow: hidden;
-}
-.tesco-scan-preview { display: block; width: 100%; height: auto; }
 .tesco-progress {
   height: 3px; background: var(--line); border-radius: 99px;
   overflow: hidden; margin: 10px 0 0;
