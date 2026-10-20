@@ -1057,3 +1057,69 @@
 
 .tesco-fill-row:last-child { border-bottom: none; }
 .tesco-fill-row .btn { min-height: 30px; padding: 0 10px; font-size: 12px; }
+
+/* -- profiles and the admin panel ------------------------------------------- */
+
+.profile-list { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 12px; }
+
+.profile-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.profile-row:last-child { border-bottom: none; }
+.profile-row-main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.profile-row-name { font-size: 14px; font-weight: 500; }
+.profile-row-note { font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; }
+.profile-row-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+.profile-row-actions .btn { min-height: 30px; padding: 0 10px; font-size: 12px; }
+
+.profile-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--card);
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.admin-cards { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.admin-card { margin-bottom: 0; }
+.admin-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+
+.admin-tab {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  min-height: 28px;
+}
+
+.admin-tab.on { border-color: var(--accent); color: var(--ink); }
+.admin-tabs-label { font-size: 11px; color: var(--muted); margin-top: 10px; }
+
+.avatar-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+.avatar-tile {
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  min-height: 32px;
+}

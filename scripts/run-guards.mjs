@@ -51,6 +51,7 @@ const GUARDS = [
   'test-methods.mjs',           // a method survives its own removal; a schedule lands on the day it says
   'test-tesco-sheet.mjs',       // the ported sheet answers exactly like the shipping source
   'test-lock.mjs',              // the lock: PBKDF2 on the device, the idle clock, the cover
+  'test-profile-surface.mjs',   // a link may not redirect the device; the admin's door is the owner's
   'test-metrics.mjs',          // the ported ledger arithmetic agrees with the frozen document
   'test-data-portability.mjs', // the Data sheet's size, counts, planned merge and cash re-anchor
   'test-history-edit.mjs',     // the History edit path: fields, history, grouped rows, storage and checkpoints

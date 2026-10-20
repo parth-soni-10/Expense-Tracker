@@ -17,11 +17,14 @@ import { getActiveProfileId, hasSessionChoice, listProfiles, setActiveProfileId 
 import { readRoute, subscribe, routeHash, type Route, type RouteId } from './router.ts';
 import { showPinLock, showProfilePicker } from './lock.ts';
 import { byId, clear, el } from './dom.ts';
+import { toast } from './toast.ts';
 import { currentTheme, onThemeChange, toggleTheme } from './theme.ts';
 import { startIdleLock, stopIdleLock, wireIdleLock } from './idle-lock.ts';
 import { renderAdd } from './screens/add.ts';
 import { openDataSheet } from './screens/data.ts';
 import { openSettings } from './screens/settings.ts';
+import { applySetupLinkIfPresent } from './screens/profiles.ts';
+import { offerPendingSetupLink } from './screens/sync-panel.ts';
 import { renderBalances } from './screens/balances.ts';
 import { renderDashboard } from './screens/dashboard.ts';
 import { renderHistory } from './screens/history.ts';
@@ -43,11 +46,12 @@ const LABELS: Record<RouteId, string> = {
   insights: 'Insights',
 };
 
-const state = loadState();
+/** The document. Reassigned when the profile changes, so every later read
+ *  belongs to the profile the app is now showing. */
+let state = loadState();
 const app = byId('app');
 const screen = byId('screen');
 const nav = byId('app-nav');
-
 /** Tabs this profile may open. A document written before the setting existed
  *  simply shows every tab, and the dashboard is never hidden. */
 function enabledTabs(): string[] {
@@ -92,7 +96,7 @@ function buildNav(active: RouteId): void {
       params: new URLSearchParams(),
       save: () => saveState(state),
       refresh: () => render(readRoute(), { moveFocus: false }),
-    }, { onLock: lockNow }),
+    }, { onLock: lockNow, onSwitch: switchProfile }),
   }, 'Settings'));
 }
 
@@ -160,6 +164,17 @@ function reveal(): void {
   if (app) app.hidden = false;
   startIdleLock(lockNow);
   render(readRoute());
+  // A setup or invite link is taken out of the address bar the moment the app
+  // boots — a credential must never sit in a URL — and it is OFFERED once the
+  // app is unlocked, because a link can arrive before the user is logged in on
+  // a shared device, and because a link is something the user may not have
+  // meant to open.
+  offerPendingSetupLink({
+    state,
+    params: new URLSearchParams(),
+    save: () => saveState(state),
+    refresh: () => render(readRoute(), { moveFocus: false }),
+  });
 }
 
 /** Take the lock back. The idle clock calls this, and so does the Settings
@@ -185,12 +200,11 @@ function showGate(): void {
       profiles: profiles.map((p) => ({ id: p.id, name: p.name })),
       activeId: getActiveProfileId(),
       onPick: (id) => {
-        // Always write the choice: that is what records this session's answer and
-        // stops the picker from being the gate on the next boot. A different
-        // profile is a different document and a different PIN, so the simplest
-        // correct load is a reload; the session choice sends it to the lock.
-        if (!setActiveProfileId(id)) return;
-        location.reload();
+        // Always write the choice: that is what records this session's answer
+        // and stops the picker from being the gate on the next boot. A
+        // different profile is a different document and a different PIN, so
+        // the pick lands on THAT profile's lock.
+        switchProfile(id);
       },
     });
     return;
@@ -224,6 +238,27 @@ function buildThemeToggle(): void {
   onThemeChange(paint);
   paint();
   header.append(button);
+}
+
+/** Switch to another profile, IN PLACE.
+ *
+ *  The shipping app switches without a reload: the profile is named first —
+ *  "Who's tracking?" — and the pick lands on THAT profile's lock, so a PIN
+ *  typed at a screen that does not say whose it is cannot go into the wrong
+ *  ledger. The switch re-resolves the document rather than reloading the
+ *  page, so nothing is lost and the tab you were on is still the tab you are
+ *  on.
+ *
+ *  Every storage key is namespaced per profile and the namespace is resolved
+ *  when the key is asked for, so re-reading the document after the switch is
+ *  what picks up the other profile's ledger, balances and PIN. */
+function switchProfile(id: string): void {
+  if (!setActiveProfileId(id)) {
+    toast('Could not switch to that profile on this device.');
+    return;
+  }
+  state = loadState();
+  render(readRoute());
 }
 
 /* ── the update prompt ────────────────────────────────────────────────────── */
@@ -274,6 +309,10 @@ function bootServiceWorker(): void {
 
 function boot(): void {
   window.__cents = { route: readRoute, shell: '2026-10-20' };
+  // The link is read and taken out of the address bar BEFORE anything else:
+  // a credential must never sit in a URL a user can copy or a screenshot can
+  // catch.
+  applySetupLinkIfPresent();
   buildNav(readRoute().id);
   buildThemeToggle();
   wireIdleLock(lockNow);

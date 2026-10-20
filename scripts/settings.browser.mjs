@@ -296,6 +296,36 @@ try {
   await page.waitForTimeout(200);
   check('and the cover comes down on the way back', await page.locator('#privacy-cover').count() === 0);
   check('and the app was never locked by hiding it', await page.locator('input[aria-label="PIN"]').count() === 0);
+  /* -- the profiles ------------------------------------------------------- */
+
+  await closeSheets();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('dialog#settings-sheet').waitFor({ timeout: 5000 });
+  await page.getByLabel('New profile name').fill('Sam');
+  await page.getByRole('button', { name: 'Add profile' }).click();
+  await page.waitForTimeout(300);
+  const registry = await page.evaluate(() => JSON.parse(localStorage.getItem('cents:profiles')));
+  check('a profile can be created', registry.profiles.some((p) => p.name === 'Sam'),
+    JSON.stringify(registry.profiles));
+  check('and it has its own id', registry.profiles.some((p) => p.id === 'sam'),
+    JSON.stringify(registry.profiles.map((p) => p.id)));
+
+  // The admin's door: the owner may manage people, and the tab chips write
+  // into the TARGET's document.
+  await page.getByRole('button', { name: 'Manage people' }).click();
+  const admin = page.locator('dialog#admin-panel');
+  await admin.waitFor({ timeout: 5000 });
+  check('the admin panel lists the people', (await admin.innerText()).includes('Sam'),
+    (await admin.innerText()).slice(0, 200));
+  const chip = admin.getByRole('button', { name: /Tesco Pay for Sam: (shown|hidden)/ });
+  await chip.waitFor({ timeout: 5000 });
+  const wasOn = /shown/.test(await chip.getAttribute('aria-label'));
+  await chip.click();
+  await page.waitForTimeout(400);
+  const samsDoc = await page.evaluate(() => JSON.parse(localStorage.getItem('cents:p/sam/state') || 'null'));
+  const tabs = samsDoc?.settings?.enabledTabs || [];
+  check('a tab change is written to THAT profile\'s document',
+    wasOn ? !tabs.includes('tesco') : tabs.includes('tesco'), JSON.stringify(tabs));
   /* ── the shell is still clean ──────────────────────────────────────────── */
 
   const styled = await page.evaluate(() => [...document.querySelectorAll('#screen [style], dialog [style]')]
@@ -305,7 +335,7 @@ try {
   check('no CSP refusals', cspRefusals.length === 0, cspRefusals.slice(0, 3).join(' | '));
 
   const keys = await page.evaluate(() => Object.keys(localStorage));
-  check('only the expected keys were written', keys.every((k) => k === 'cents:p/personal/state' || k === 'cents:profiles' || k === 'cents-theme' || k.startsWith('cents:p/personal/')),
+  check('only the expected keys were written', keys.every((k) => k === 'cents:p/personal/state' || k === 'cents:profiles' || k === 'cents-theme' || k.startsWith('cents:p/personal/') || k.startsWith('cents:p/sam/')),
     keys.join(', '));
 } finally {
   await browser.close();

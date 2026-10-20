@@ -29,6 +29,8 @@ import { hasCustomPin, hashPin, registerBiometric, biometricSupported, biometric
 import { setPrivacyPin, clearPrivacyPin } from '../../lib/settings.ts';
 import { openMethodManager } from './methods.ts';
 import { openRecurringManager } from './recurring.ts';
+import { buildProfilesCard } from './profiles.ts';
+import { buildSyncCard } from './sync-panel.ts';
 import type { ScreenContext } from './context.ts';
 
 /** A fresh salt, as a hex string. The PIN's salt is device-local and is
@@ -54,9 +56,11 @@ export interface SettingsOptions {
   /** Take the lock back — the same door the idle clock uses, so the two can
    *  never drift. */
   onLock: () => void;
+  /** Switch to another profile, in place. */
+  onSwitch: (id: string) => void;
 }
 
-export function openSettings(ctx: ScreenContext, { onLock }: SettingsOptions): void {
+export function openSettings(ctx: ScreenContext, { onLock, onSwitch }: SettingsOptions): void {
   const dialog = el('dialog', { class: 'history-dialog', id: 'settings-sheet' }) as HTMLDialogElement;
   const card = el('div', { class: 'history-dialog-card settings-sheet' });
 
@@ -173,6 +177,8 @@ export function openSettings(ctx: ScreenContext, { onLock }: SettingsOptions): v
         onClick: () => openRecurringManager(ctx),
       }, 'Manage')),
     ),
+    buildProfilesCard(ctx, onSwitch),
+    buildSyncCard(ctx),
     securityCard,
   );
 
