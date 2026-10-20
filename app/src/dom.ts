@@ -11,7 +11,9 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   ...children: Child[]
 ): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(props)) {
+  // `null` is the natural way to say "no attributes" at a call site, so it is
+  // accepted here rather than making every caller write `{}`.
+  for (const [key, value] of Object.entries(props ?? {})) {
     if (value == null || value === false) continue;
     if (key === 'class') node.className = String(value);
     else if (key === 'text') node.textContent = String(value);

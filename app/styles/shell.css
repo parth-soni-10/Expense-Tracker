@@ -68,6 +68,11 @@
   min-height: 40vh;
 }
 
+/* The screen heading takes focus on every route change so a screen reader
+   announces it. It is `tabindex="-1"`, so it is not in the tab order and the
+   ring would only ever appear for a focus the user did not ask for. */
+.app-title:focus { outline: none; }
+
 .app-title {
   font-size: 26px;
   font-weight: 600;
@@ -75,7 +80,12 @@
   margin: 0 0 12px;
 }
 
-.app-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+/* No ring on that focus. Chromium counts a programmatic focus on every load as
+   `:focus-visible`, so a ring here painted a green box around the page title
+   before the user had touched anything. The shipping app has the same rule for
+   its focused screen container (`.screen:focus`), and nothing is lost: the
+   heading is not interactive and not in the tab order. */
+.app-title:focus-visible { outline: none; }
 
 .app-notice {
   margin: 0 0 14px;
@@ -107,6 +117,12 @@
   padding: 24px;
   background: var(--bg);
 }
+
+/* The gate covers the whole document, so the unlocked app has to be able to take
+   it out of the flow: `display: flex` above is an author rule and would beat the
+   UA's `[hidden] { display: none }`, leaving the lock painted over a perfectly
+   good dashboard. */
+.gate[hidden] { display: none; }
 
 .gate-bg { display: contents; }
 

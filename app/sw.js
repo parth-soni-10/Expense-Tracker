@@ -9,7 +9,7 @@
  * built entry, its stylesheets and the external boot scripts — rather than the
  * root app's module graph.
  */
-const CACHE = 'cents-app-v1';
+const CACHE = 'cents-app-v2';
 // The build this device was last served on a navigation, so a redeploy can be
 // told apart from a first visit. Its own cache: `activate` sweeps every other
 // cache but deliberately not this one, because it has to outlive the deploy it
@@ -25,6 +25,7 @@ const SHELL = [
   '/styles.css',
   '/ui.css',
   '/styles/shell.css',
+  '/styles/dashboard.css',
   '/theme-init.js',
   '/boot-watch.js',
   '/manifest.json',

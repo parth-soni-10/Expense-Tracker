@@ -45,6 +45,7 @@ const GUARDS = [
   'test-integrity.mjs',        // storage/merge cannot lose or corrupt data
   'test-parity-money.mjs',     // quick entry, cents-only precision and split/transfer pairs, run against app.js itself
   'test-load-existing.mjs',    // a document written by the old app loads in the port
+  'test-metrics.mjs',          // the ported ledger arithmetic agrees with the frozen document
   'check-pin-screens.mjs',     // the browser leg that loads it behind the PIN stays honest (it needs Playwright, so it runs by hand)
   'test-profiles.mjs',         // profiles stay isolated
   'test-tesco.mjs',            // the pay/tax engine still matches the workbook
