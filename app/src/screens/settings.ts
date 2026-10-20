@@ -50,7 +50,13 @@ function row(label: string, note: string, control: HTMLElement): HTMLElement {
   );
 }
 
-export function openSettings(ctx: ScreenContext): void {
+export interface SettingsOptions {
+  /** Take the lock back — the same door the idle clock uses, so the two can
+   *  never drift. */
+  onLock: () => void;
+}
+
+export function openSettings(ctx: ScreenContext, { onLock }: SettingsOptions): void {
   const dialog = el('dialog', { class: 'history-dialog', id: 'settings-sheet' }) as HTMLDialogElement;
   const card = el('div', { class: 'history-dialog-card settings-sheet' });
 
@@ -136,6 +142,13 @@ export function openSettings(ctx: ScreenContext): void {
     )),
     pinStatus,
     row('Unlock with a fingerprint or Face ID', 'Stored on this device only, and never synced.', bioButton),
+    row('Lock now', 'The app also locks itself after five minutes without a keystroke or a tap.', el('button', {
+      type: 'button', class: 'btn btn-ghost',
+      onClick: () => {
+        close();
+        onLock();
+      },
+    }, 'Lock now')),
   );
 
   /* ── the sheet ──────────────────────────────────────────────────────────── */

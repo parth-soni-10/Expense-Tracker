@@ -285,3 +285,25 @@
 }
 
 .app-theme-toggle:hover { border-color: var(--muted); }
+
+/* The privacy cover: painted the moment the document hides, because the
+ * app-switcher snapshot is taken WHILE hidden. It paints the app's own
+ * surface rather than a blur — nothing here may re-sample the page behind it.
+ * A hidden window is COVERED, never locked: the lock is the idle clock's
+ * business, and it runs either way. */
+.privacy-cover {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg, #101210);
+  pointer-events: none;
+}
+
+.privacy-cover-mark {
+  font-size: 20px;
+  letter-spacing: -0.02em;
+  color: var(--muted, #8C928A);
+}

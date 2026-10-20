@@ -248,6 +248,54 @@ try {
   eq('undo takes the entry back', afterUndo.entries.length, before);
   eq('and puts the schedule back', afterUndo.settings.recurring[0].nextDate, nextDate);
 
+  /* -- the lock ------------------------------------------------------------ */
+
+  await closeSheets();
+
+  // Setting a PIN: the credential lives on the DEVICE, outside the document,
+  // so it is never synced and never travels with a backup.
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('dialog#settings-sheet').waitFor({ timeout: 5000 });
+  await page.getByLabel('New PIN').fill('4321');
+  await page.getByRole('button', { name: 'Set PIN', exact: true }).click();
+  await page.waitForTimeout(300);
+  const deviceKeys = await page.evaluate(() => Object.keys(localStorage));
+  check('the PIN is written to the device, not into the document',
+    deviceKeys.some((k) => k.startsWith('cents:p/personal/privacy')), deviceKeys.join(', '));
+  const documentHasPin = await page.evaluate(
+    () => 'pinHash' in (JSON.parse(localStorage.getItem('cents:p/personal/state')).settings || {}));
+  check('and the document carries no PIN', documentHasPin === false);
+
+  // Locking now: the same door the idle clock uses.
+  await page.getByRole('button', { name: 'Lock now' }).click();
+  await page.locator('input[aria-label="PIN"]').waitFor({ timeout: 5000 });
+  check('the app is hidden behind the lock', await page.evaluate(() => document.getElementById('app').hidden === true));
+
+  // The new PIN is the one that opens it; the built-in one is not.
+  await page.locator('input[aria-label="PIN"]').fill('100901');
+  await page.getByRole('button', { name: 'Unlock' }).click();
+  await page.waitForTimeout(400);
+  check('the built-in PIN no longer opens it', await page.locator('input[aria-label="PIN"]').count() > 0);
+  await page.locator('input[aria-label="PIN"]').fill('4321');
+  await page.getByRole('button', { name: 'Unlock' }).click();
+  await page.waitForTimeout(600);
+  check('the PIN of your own does', await page.locator('input[aria-label="PIN"]').count() === 0);
+
+  // A hidden window is COVERED, never locked: the app-switcher snapshot is
+  // taken while hidden, and a tab switch is not an absence.
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForTimeout(200);
+  check('a hidden window is covered', await page.locator('#privacy-cover').count() === 1);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForTimeout(200);
+  check('and the cover comes down on the way back', await page.locator('#privacy-cover').count() === 0);
+  check('and the app was never locked by hiding it', await page.locator('input[aria-label="PIN"]').count() === 0);
   /* ── the shell is still clean ──────────────────────────────────────────── */
 
   const styled = await page.evaluate(() => [...document.querySelectorAll('#screen [style], dialog [style]')]

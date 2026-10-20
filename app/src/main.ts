@@ -18,6 +18,7 @@ import { readRoute, subscribe, routeHash, type Route, type RouteId } from './rou
 import { showPinLock, showProfilePicker } from './lock.ts';
 import { byId, clear, el } from './dom.ts';
 import { currentTheme, onThemeChange, toggleTheme } from './theme.ts';
+import { startIdleLock, stopIdleLock, wireIdleLock } from './idle-lock.ts';
 import { renderAdd } from './screens/add.ts';
 import { openDataSheet } from './screens/data.ts';
 import { openSettings } from './screens/settings.ts';
@@ -91,7 +92,7 @@ function buildNav(active: RouteId): void {
       params: new URLSearchParams(),
       save: () => saveState(state),
       refresh: () => render(readRoute(), { moveFocus: false }),
-    }),
+    }, { onLock: lockNow }),
   }, 'Settings'));
 }
 
@@ -148,16 +149,31 @@ function render(route: Route, { moveFocus = true } = {}): void {
 }
 
 function reveal(): void {
-  // The lock is a fixed, full-document overlay: unlocking has to remove it, not
-  // just stop listening to it. Without this the gate stayed painted over the
-  // app and a correct dashboard was invisible underneath.
+  // The lock is the whole of this app's access control, so "unlocked" has to
+  // be a state the app can take back by itself: five minutes without a
+  // keystroke or a tap, and an opaque cover the moment the window is hidden.
   const gate = byId('gate');
   if (gate) {
     clear(gate);
     gate.hidden = true;
   }
   if (app) app.hidden = false;
+  startIdleLock(lockNow);
   render(readRoute());
+}
+
+/** Take the lock back. The idle clock calls this, and so does the Settings
+ *  sheet's "Lock now" — one door, so the two can never drift. */
+function lockNow(): void {
+  stopIdleLock();
+  const appEl = byId('app');
+  if (appEl) appEl.hidden = true;
+  // The gate has to be SHOWN, not just filled: unlocking hides it, so a lock
+  // that only wrote the lock screen into it would leave a blank page where the
+  // app used to be.
+  const gate = byId('gate');
+  if (gate) gate.hidden = false;
+  showPinLock({ state, onUnlock: reveal });
 }
 
 /* ── the gate: profile choice first, then the lock ────────────────────────── */
@@ -260,6 +276,7 @@ function boot(): void {
   window.__cents = { route: readRoute, shell: '2026-10-20' };
   buildNav(readRoute().id);
   buildThemeToggle();
+  wireIdleLock(lockNow);
   subscribe((route) => render(route));
   bootServiceWorker();
 
