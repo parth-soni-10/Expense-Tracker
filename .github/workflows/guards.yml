@@ -25,6 +25,23 @@ on:
 
 jobs:
   guards:
+    # The suite runs on two runtimes, not one, because "the guards pass" is only
+    # a claim about the Node that ran them. 22 is the floor the app shell builds
+    # on and the version this repo has always been tested with; 24 is what a
+    # current setup-node hands a fresh machine. A guard that depends on V8 or
+    # module-resolution behaviour that moved between them (native TypeScript
+    # stripping, for one) has to fail here rather than at a cutover, and the
+    # only way to know which side of that line a line of a guard sits on is to
+    # run it on both.
+    #
+    # `fail-fast: false` on purpose: if one runtime breaks, the other's result is
+    # still worth having — it says whether the change is version-sensitive or
+    # simply broken everywhere, and that distinction is the whole point of the
+    # second leg.
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,13 +50,18 @@ jobs:
       # plain .js modules (seed.js, tesco.js) and the repo has no package.json,
       # so ESM-vs-CommonJS is decided by syntax detection — on by default from
       # 22.7. Older Node parses them as CommonJS and dies with "Cannot use import
-      # statement outside a module", which looks like a broken guard.
+      # statement outside a module", which looks like a broken guard. The second
+      # leg is the newer runtime, for the same class of surprise in the other
+      # direction.
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node }}
+
+      - name: Node version
+        run: node --version
 
       # No install step: the repo has no dependencies by design.
-      - name: Run the guard suite
+      - name: Run the guard suite (Node ${{ matrix.node }})
         run: node scripts/run-guards.mjs
 
   # `app/` is the one directory here with dependencies of its own — esbuild and

@@ -94,7 +94,8 @@ const functionsDir = new URL('netlify/functions/', root);
 const scriptsDir = new URL('scripts/', root);
 
 // The Node the suite itself needs (ESM-by-syntax-detection for this repo's plain
-// .js modules). CI must pin at least this, and README.md says so.
+// .js modules), and the floor CI must run one of its legs on: README.md says so,
+// and app/package.json's `engines` is where the shell gets it from.
 const MIN_NODE = 22;
 
 // Variables that are configuration, not credentials: they name a private repo
@@ -511,7 +512,7 @@ for (const name of declared) {
   }
 }
 
-// ---- 9. CI runs the same suite, on the same runtime -------------------------
+// ---- 9. CI runs the same suite, on more than one runtime ---------------------
 const workflow = new URL('.github/workflows/guards.yml', root);
 if (!existsSync(workflow)) {
   fail('.github/workflows/guards.yml is gone — without it a config mistake is only discovered by a failed deploy, which is how seven commits went unshipped.');
@@ -524,10 +525,55 @@ if (!existsSync(workflow)) {
     fail('.github/workflows/guards.yml does not run scripts/run-guards.mjs — CI would check something other than what the guards declare'
       + (runs.length ? ` (it runs: ${runs.join('; ')})` : ' (no run step at all).'));
   }
-  const node = /node-version:\s*['"]?(\d+)/.exec(yml)?.[1];
-  if (!node) fail(`.github/workflows/guards.yml pins no node-version — the suite needs Node ${MIN_NODE}+ for ESM-by-syntax-detection on this repo's plain .js modules.`);
-  else if (Number(node) < MIN_NODE) {
-    fail(`.github/workflows/guards.yml pins node-version ${node}; the suite needs ${MIN_NODE}+ or it dies parsing seed.js and tesco.js as CommonJS.`);
+
+  /* The runtime, and how many of them. A single pin makes "the guards pass" a
+     claim about one Node: a guard that leans on module-resolution or type-
+     stripping behaviour that moved between releases looks green until something
+     runs it elsewhere. So the suite runs on at least two legs, one of which is
+     MIN_NODE — the floor app/package.json's `engines` and the app-shell job
+     build against, and the version this repo was developed on.
+
+     Both the matrix and the setup-node step are read from the `guards` job
+     alone. A matrix found anywhere in the file could be another job's, and the
+     whole point is that THIS job runs the suite on both runtimes. */
+  const guardsJob = yml.split(/^(?= {2}[\w-]+:[ \t]*$)/m).find((job) => /^ {2}guards:[ \t]*\r?\n/.test(job)) || '';
+  const pinned = /node-version:\s*['"]?(\d+)/.exec(guardsJob)?.[1];
+  const matrix = /node:\s*\[([^\]]*)\]/.exec(guardsJob)?.[1];
+  const versions = matrix
+    ? matrix.split(',').map(v => Number(v.trim().replace(/^['"]|['"]$/g, ''))).filter(Number.isFinite)
+    : [];
+  if (!versions.length) {
+    fail(`.github/workflows/guards.yml runs the suite on ${pinned ? `one runtime (node-version ${pinned})` : 'no declared runtime'}`
+      + ` — at least two legs are required, and ${MIN_NODE} must be one of them: one pin cannot tell a version-sensitive`
+      + ' guard from a guard that is simply broken.');
+  } else {
+    if (versions.length < 2) {
+      fail(`.github/workflows/guards.yml lists ${versions.length} runtime(s) (${versions.join(', ')}) — the matrix needs at least`
+        + ' two, or a Node-version-sensitive guard has nothing to disagree with.');
+    }
+    const below = versions.filter(v => v < MIN_NODE);
+    if (below.length) {
+      fail(`.github/workflows/guards.yml runs the suite on Node ${below.join(', ')}; the floor is ${MIN_NODE}, and older Node`
+        + ' parses seed.js and tesco.js as CommonJS and dies.');
+    }
+    if (!versions.includes(MIN_NODE)) {
+      fail(`.github/workflows/guards.yml never runs the suite on Node ${MIN_NODE} — that is the version the app shell builds on`
+        + ' (`engines`), so the floor itself would ship untested while a newer runtime goes green.');
+    }
+    /* The version has to reach setup-node, not merely be declared, and not
+       merely appear somewhere in the job: an earlier draft of this check looked
+       for `matrix.node` anywhere, which the step's NAME satisfied while
+       `node-version:` had been hard-coded back to a single value. So the
+       assertion is against the setup-node step's own `with:` block. */
+    const setupStep = guardsJob.split(/\n\s*-\s*/).find((step) => /uses:\s*actions\/setup-node@/.test(step)) || '';
+    if (!/node-version:\s*\$\{\{\s*matrix\.node\s*\}\}/.test(setupStep)) {
+      fail('.github/workflows/guards.yml does not feed `${{ matrix.node }}` to setup-node — every leg would run whatever'
+        + ' version the runner happens to have, while the job reads as if it were a matrix.');
+    }
+    if (!/fail-fast:\s*false/.test(guardsJob)) {
+      fail('.github/workflows/guards.yml does not set `fail-fast: false` — one failing leg would cancel the other, and the'
+        + ' pair exists to say whether a change is version-sensitive or broken everywhere.');
+    }
   }
 }
 
