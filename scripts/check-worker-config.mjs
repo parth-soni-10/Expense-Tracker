@@ -603,15 +603,20 @@ if (!existsSync(components)) {
   }
 }
 
-// ---- 10. the README is the install guide ------------------------------------
-const readme = read('README.md');
-const undocumentedEnv = [...readEnv].filter(name => !readme.includes(name));
+// ---- 10. every variable and guard is written down somewhere ------------------
+// The README became a product page — what the app does, who it is for — and the
+// install guide (variables, the guard suite) moved to CLAUDE.md, the doc a
+// deployment is actually configured from. Both are read, so a name documented
+// in either file counts, and a variable or guard documented in neither still
+// fails: the check is that the information exists, not which cover it sits on.
+const docs = read('README.md') + '\n' + read('CLAUDE.md');
+const undocumentedEnv = [...readEnv].filter(name => !docs.includes(name));
 if (undocumentedEnv.length) {
-  fail(`README.md documents no such variable: ${undocumentedEnv.join(', ')} — the functions read it, so a hand-configured deployment fails at runtime instead.`);
+  fail(`neither README.md nor CLAUDE.md documents ${undocumentedEnv.join(', ')} — the functions read it, so a hand-configured deployment fails at runtime instead.`);
 }
-const unlistedGuards = declared.filter(name => !readme.includes(name));
+const unlistedGuards = declared.filter(name => !docs.includes(name));
 if (unlistedGuards.length) {
-  fail(`README.md never lists ${unlistedGuards.join(', ')} — the suite runs them, so the reader cannot know they exist or run them by hand.`);
+  fail(`neither README.md nor CLAUDE.md lists ${unlistedGuards.join(', ')} — the suite runs them, so the reader cannot know they exist or run them by hand.`);
 }
 
 // ---- 11. the old config must not come back ----------------------------------
