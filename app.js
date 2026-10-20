@@ -1834,7 +1834,11 @@ function tescoScreen() {
   if (!_tescoLoading) {
     _tescoLoading = true;
     import('./tesco.js')
-      .then(mod => { _tescoModule = mod; render(); })
+      // Re-render only when the reader is actually on Tesco. A warm-up from
+      // pointing at (or tabbing to) the nav link happens on every screen, and an
+      // unconditional render there rebuilds the page under the reader's focus
+      // and throws the focused node away.
+      .then(mod => { _tescoModule = mod; if (currentRoute() === 'tesco') render(); })
       .catch(err => {
         _tescoLoading = false;
         console.warn('cents: the Tesco Pay screen could not be loaded', err);
@@ -5806,10 +5810,11 @@ function renderHeader() {
         // Wide enough screens get the word, so the button doesn't read as a
         // second profile chip sitting next to the real one.
         $('span', { class: 'admin-trigger-label', 'aria-hidden': 'true' }, 'Admin')) : null,
-      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'data-ui': 'switch-mode warm-tooltip', 'data-ui-tip': 'Light / dark', 'data-ui-mode-attr': 'theme', 'data-ui-mode-key': 'cents-theme', 'aria-checked': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
+      // The kit upgrades this into a role="switch" and keeps `aria-checked`; a
+      // second `aria-pressed` would be an attribute that role does not allow.
+      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'data-ui': 'switch-mode warm-tooltip', 'data-ui-tip': 'Light / dark', 'data-ui-mode-attr': 'theme', 'data-ui-mode-key': 'cents-theme', 'aria-checked': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
          const wasDark = document.documentElement.dataset.theme === 'dark';
          toggleDarkMode();
-         event.currentTarget.setAttribute('aria-pressed', String(!wasDark));
          event.currentTarget.setAttribute('aria-label', `Switch to ${wasDark ? 'dark' : 'light'} mode`);
          event.currentTarget.setAttribute('title', `Switch to ${wasDark ? 'dark' : 'light'} mode`);
        } },
@@ -8680,7 +8685,7 @@ function screenHistory() {
     queueMicrotask(() => modal.focus());
   }
 
-  const tableWrap = $('div', { class: 'card', 'data-ui': 'inline-table-control', style: 'overflow-x:auto;padding:0;' });
+  const tableWrap = $('div', { class: 'card', role: 'table', 'aria-label': 'Transactions', 'data-ui': 'inline-table-control', style: 'overflow-x:auto;padding:0;' });
   if (visible.length === 0) {
     tableWrap.appendChild($('div', { class: 'empty' }, emptyIcon('receipt'), searchQuery ? ' No results for this search.' : activeDay ? ` No entries on ${friendlyDate(activeDay)}.` : ' Nothing here for this filter.'));
   } else {
@@ -8696,7 +8701,7 @@ function screenHistory() {
       $('span', { role: 'columnheader', style: 'text-align:right;' }, 'Amount'),
       $('span', { role: 'columnheader', style: 'text-align:right;', title: 'Balance immediately after this entry' }, 'After entry'),
       $('span', { role: 'columnheader' }, 'Method'),
-      $('span'),
+      $('span', { role: 'columnheader', class: 'sr-only' }, 'Actions'),
     ));
 
     // Split-payment legs sharing a splitId render as one grouped row so a mixed
@@ -8765,17 +8770,17 @@ function screenHistory() {
           for (const id of selectAll) { if (ev.target.checked) selected.add(id); else selected.delete(id); }
           syncBulkBar();
         } })),
-        $('span', { class: 'muted history-date' }, friendlyDate(e.date)),          $('div', { class: 'history-details-wrap' },
+        $('span', { role: 'cell', class: 'muted history-date' }, friendlyDate(e.date)),          $('div', { role: 'cell', class: 'history-details-wrap' },
             $('div', { class: 'history-details' }, e.details || '-',            e.type === 'note' && e.audioData ? $('audio', { controls: '', preload: 'none', src: e.audioData, class: 'history-audio' }) : null,
           ),
           $('div', { class: 'history-category', 'data-ui-field': 'Category', 'data-category': e.category }, categoryLabel(e.category)),
         ),
-        $('span', { class: `display-num history-amount${isCredit ? ' is-credit' : ''}` }, isNote ? 'Note' : (isCredit ? '+' : '') + fmt(totalAmount)),
-        $('span', { class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, isNote ? '-' : fmt(rowBalance)),
-        $('span', { class: 'history-method-wrap' }, ...(isGroup
+        $('span', { role: 'cell', class: `display-num history-amount${isCredit ? ' is-credit' : ''}` }, isNote ? 'Note' : (isCredit ? '+' : '') + fmt(totalAmount)),
+        $('span', { role: 'cell', class: `tnum history-balance${rowBalance >= 0 ? ' is-positive' : ' is-negative'}` }, isNote ? '-' : fmt(rowBalance)),
+        $('span', { role: 'cell', class: 'history-method-wrap' }, ...(isGroup
           ? legs.map(l => $('button', { type: 'button', class: 'pill split-leg', title: 'Edit this slice', 'aria-label': `Edit ${fmt(l.amount)} ${methodShort(l.method)} slice`, onClick: ev => { ev.stopPropagation(); openLegEditor(l); } }, `${fmt(l.amount)} ${methodShort(l.method)}`))
           : [$('span', { class: 'pill history-method' }, methodShort(e.method))])),
-        $('span', { class: 'history-actions' },
+        $('span', { role: 'cell', class: 'history-actions' },
           $('button', { type: 'button', class: 'history-action-btn', title: isGroup ? 'Edit or delete split payment' : 'Edit or delete entry', 'aria-label': (isGroup ? `Edit or delete split ${rowLabel}` : `Edit or delete ${rowLabel}`), onClick: ev => { ev.stopPropagation(); openRow(); } }, 'Edit'),
           $('button', { type: 'button', class: 'history-action-btn history-swipe-delete', 'data-ui-swipe-action': '', 'aria-label': `Delete ${rowLabel}`, onClick: ev => { ev.stopPropagation(); deleteRow(); } }, 'Delete'),
           $('span', { class: 'history-menu-wrap' },
@@ -9035,7 +9040,9 @@ function insightsReady() {
     _insightsPromise = import('./insights.js')
       .then(mod => {
         _insightsModule = mod;
-        render();
+        // Same rule as the Tesco warm-up: importing on intent must not rebuild a
+        // screen the reader is not on (it drops focus and the DOM marks).
+        if (currentRoute() === 'insights') render();
         return mod;
       })
       .catch(err => {
