@@ -35,7 +35,7 @@ import { renderTesco } from './screens/tesco.ts';
 
 declare global {
   interface Window {
-    __cents?: { route: () => Route; shell: string };
+    __cents?: { route: () => Route; shell: string; shared?: () => boolean };
   }
 }
 

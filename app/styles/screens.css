@@ -1123,3 +1123,52 @@
   cursor: pointer;
   min-height: 32px;
 }
+
+/* -- the year in review, and printing it ------------------------------------ */
+
+.year-review { max-width: 560px; }
+
+.year-review-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.year-review-value { font-size: 16px; }
+.year-review-value.is-positive { color: var(--positive); }
+.year-review-value.is-negative { color: var(--negative); }
+.insight-review-btn { margin-left: auto; white-space: nowrap; }
+
+/* Printing the review: the class goes on the BODY, so the print sheet is the
+ * only thing on the page — the app behind it, the nav and the toast stack are
+ * all suppressed, and the sheet loses its chrome so it reads as a document. */
+@media print {
+  body.printing-review #app,
+  body.printing-review #gate,
+  body.printing-review .app-toast,
+  body.printing-review .skip-link { display: none !important; }
+
+  body.printing-review dialog.history-dialog {
+    position: static;
+    display: block;
+    max-width: none;
+    max-height: none;
+    padding: 0;
+    border: 0;
+    background: none;
+    box-shadow: none;
+  }
+
+  body.printing-review .history-dialog-card {
+    border: 0;
+    box-shadow: none;
+    background: none;
+    padding: 0;
+  }
+
+  body.printing-review .add-actions { display: none; }
+}

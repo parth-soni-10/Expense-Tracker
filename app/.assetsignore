@@ -22,6 +22,10 @@ package-lock.json
 tsconfig.json
 node_modules/
 
+# The accessibility harness: it drives the real app in a visible frame, so it
+# is a laptop tool like the roster harness above and never part of the deploy.
+a11y-harness.html
+
 # The dev server's own files.
 serve.sh
 scripts/

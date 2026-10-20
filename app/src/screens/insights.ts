@@ -32,6 +32,7 @@ import {
   methodShort,
 } from '../metrics.ts';
 import { navigate } from '../router.ts';
+import { openYearInReview } from './year-review.ts';
 import type { ScreenContext } from './context.ts';
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -57,15 +58,22 @@ function statCard(label: string, value: string, hint: string): HTMLElement {
   );
 }
 
-/** A labelled row with a proportion bar, shared by both breakdowns. */
+/** A labelled row with a proportion bar, shared by both breakdowns.
+ *
+ *  The bar is a native `<progress>` element, so nothing writes a width from
+ *  script — and the DETAIL is on the row as well as the bar: the `title` is
+ *  what a pointer reads on hover, and the `aria-label` is the same sentence
+ *  for anyone who cannot see it. A chart mark whose value cannot be read is
+ *  a shape, not a figure. */
 function barRow(label: string, amount: number, share: number, caption: string): HTMLElement {
-  return el('div', { class: 'insight-bar-row' },
+  const detail = `${label}: ${fmt(amount)} — ${caption}`;
+  return el('div', { class: 'insight-bar-row', title: detail },
     el('span', { class: 'insight-bar-name' }, label),
     el('progress', {
       class: 'insight-bar',
       max: '100',
       value: String(Math.max(0, Math.min(100, Math.round(share)))),
-      'aria-label': `${label}: ${caption}`,
+      'aria-label': detail,
     }),
     el('span', { class: 'insight-bar-share muted' }, `${Math.round(share)}%`),
     el('span', { class: 'display-num insight-bar-amount' }, fmt(amount)),
@@ -182,6 +190,11 @@ export function renderInsights({ state, params }: ScreenContext): HTMLElement {
     fromInput,
     el('span', { class: 'muted' }, 'and'),
     toInput,
+    el('button', {
+      type: 'button', class: 'btn btn-ghost insight-review-btn',
+      'aria-label': 'Open the year in review',
+      onClick: () => openYearInReview(state),
+    }, 'Year in review'),
   ), presetRow);
 
   /* ── the short version ──────────────────────────────────────────────────── */

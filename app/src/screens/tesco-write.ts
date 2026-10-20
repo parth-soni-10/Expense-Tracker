@@ -225,7 +225,7 @@ export function buildAddShiftCard(ctx: ScreenContext): HTMLElement {
   const dateField = el('input', { type: 'date', class: 'add-input', value: today(), max: today(), 'aria-label': 'Shift date' }) as HTMLInputElement;
   const startField = el('input', { type: 'text', class: 'add-input', placeholder: '09:00', 'aria-label': 'Start time', autocomplete: 'off' }) as HTMLInputElement;
   const endField = el('input', { type: 'text', class: 'add-input', placeholder: '17:00', 'aria-label': 'End time', autocomplete: 'off' }) as HTMLInputElement;
-  const hoursField = el('input', { type: 'text', class: 'add-input', inputmode: 'decimal', placeholder: 'hours', 'aria-label': 'Hours of pay', autocomplete: 'off' }) as HTMLInputElement;
+  const hoursField = el('input', { type: 'text', class: 'add-input', inputmode: 'decimal', placeholder: 'hours', 'aria-label': 'Hours of pay for this shift', autocomplete: 'off' }) as HTMLInputElement;
   const specialField = el('input', { type: 'checkbox', class: 'add-check', 'aria-label': 'Special rate' }) as HTMLInputElement;
   const status = el('p', { class: 'add-status', role: 'status', 'aria-live': 'polite' });
 
@@ -295,7 +295,7 @@ export function buildAddShiftCard(ctx: ScreenContext): HTMLElement {
 
 export function buildWeekOffCard(ctx: ScreenContext): HTMLElement {
   const dateField = el('input', { type: 'date', class: 'add-input', value: today(), 'aria-label': 'Week off date' }) as HTMLInputElement;
-  const hoursField = el('input', { type: 'text', class: 'add-input', inputmode: 'decimal', value: '7', 'aria-label': 'Hours of pay', autocomplete: 'off' }) as HTMLInputElement;
+  const hoursField = el('input', { type: 'text', class: 'add-input', inputmode: 'decimal', value: '7', 'aria-label': 'Hours of pay for the week off', autocomplete: 'off' }) as HTMLInputElement;
   const status = el('p', { class: 'add-status', role: 'status', 'aria-live': 'polite' });
 
   const add = (): void => {

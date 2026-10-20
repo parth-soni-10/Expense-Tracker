@@ -41,6 +41,7 @@ const GUARDS = [
   'check-app-shell.mjs',       // an installed copy behaves like an app
   'check-app-figures.mjs',     // the ported shell's vendored figures and kit: copies, load order, policy, offline shell
   'check-a11y.mjs',            // the accessibility harness still audits everything
+  'check-a11y-app.mjs',        // the ported shell's own harness: every route, every sheet
   'check-mobile-layout.mjs',   // a figure cannot leave the box it is drawn in
   'check-css-tokens.mjs',      // the stylesheets' tokens stay in step
   'test-integrity.mjs',        // storage/merge cannot lose or corrupt data
@@ -54,6 +55,7 @@ const GUARDS = [
   'test-profile-surface.mjs',   // a link may not redirect the device; the admin's door is the owner's
   'test-sync-surface.mjs',      // the credential stays on the device, the mirror is a backup, the routes answer to both names
   'test-app-surface.mjs',       // the manifest points at live routes, back closes a sheet and not the lock
+  'test-figures-review.mjs',    // the figures are the ledger's, motion is exact and reducible, the review prints
   'test-metrics.mjs',          // the ported ledger arithmetic agrees with the frozen document
   'test-data-portability.mjs', // the Data sheet's size, counts, planned merge and cash re-anchor
   'test-history-edit.mjs',     // the History edit path: fields, history, grouped rows, storage and checkpoints

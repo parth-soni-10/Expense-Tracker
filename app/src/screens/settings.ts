@@ -83,7 +83,11 @@ export function openSettings(ctx: ScreenContext, { onLock, onSwitch }: SettingsO
   const paintTheme = (): void => {
     const dark = currentTheme() === 'dark';
     themeButton.textContent = dark ? 'Use light' : 'Use dark';
-    themeButton.setAttribute('aria-label', dark ? 'Use the light theme' : 'Use the dark theme');
+    // NOT "Use the dark theme" — the header carries a control with that exact
+    // name, and two controls in one view sharing an accessible name is a bug:
+    // a screen reader hears the same words twice with nothing to tell them
+    // apart. This one says what it does HERE.
+    themeButton.setAttribute('aria-label', dark ? 'Switch the appearance to light' : 'Switch the appearance to dark');
   };
   // One handler, one flip. The vendored kit's own switch-mode is NOT mounted
   // on this button: two handlers on one control would each read the theme and
@@ -169,11 +173,11 @@ export function openSettings(ctx: ScreenContext, { onLock, onSwitch }: SettingsO
     el('div', { class: 'card settings-card' },
       el('div', { class: 'eyebrow' }, 'Money'),
       row('Payment methods', 'Add one, or take one out of the pickers.', el('button', {
-        type: 'button', class: 'btn btn-ghost',
+        type: 'button', class: 'btn btn-ghost', 'aria-label': 'Manage payment methods',
         onClick: () => openMethodManager(ctx),
       }, 'Manage')),
       row('Recurring', 'The bills and paydays on repeat.', el('button', {
-        type: 'button', class: 'btn btn-ghost',
+        type: 'button', class: 'btn btn-ghost', 'aria-label': 'Manage recurring bills',
         onClick: () => openRecurringManager(ctx),
       }, 'Manage')),
     ),

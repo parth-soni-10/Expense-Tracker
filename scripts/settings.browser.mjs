@@ -137,7 +137,7 @@ try {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const sheet = page.locator('dialog#settings-sheet');
   await sheet.waitFor({ timeout: 5000 });
-  const sheetToggle = sheet.getByRole('button', { name: /Use the (dark|light) theme/ });
+  const sheetToggle = sheet.getByRole('button', { name: /Switch the appearance to (dark|light)/ });
   check('the sheet carries a theme control', await sheetToggle.count() === 1);
   await sheetToggle.click();
   eq('the sheet control flips the theme once', await page.evaluate(() => document.documentElement.dataset.theme), 'dark');
