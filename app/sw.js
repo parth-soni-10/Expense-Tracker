@@ -9,7 +9,7 @@
  * built entry, its stylesheets and the external boot scripts — rather than the
  * root app's module graph.
  */
-const CACHE = 'cents-app-v3';
+const CACHE = 'cents-app-v4';
 // The build this device was last served on a navigation, so a redeploy can be
 // told apart from a first visit. Its own cache: `activate` sweeps every other
 // cache but deliberately not this one, because it has to outlive the deploy it
@@ -24,6 +24,15 @@ const SHELL = [
   '/dist/main.js',
   '/styles.css',
   '/ui.css',
+  '/ui.js',
+  // The dashboard figures: the kernel, the mount and one file per figure. They
+  // are deferred scripts on every load, so an offline dashboard needs them warm
+  // or the three cards stay empty.
+  '/hairline/kernel.js',
+  '/hairline/mount.js',
+  '/hairline/balance-tide.js',
+  '/hairline/envelope-garden.js',
+  '/hairline/receipt-constellation.js',
   '/styles/shell.css',
   '/styles/dashboard.css',
   '/styles/screens.css',

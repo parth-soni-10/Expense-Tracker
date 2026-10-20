@@ -123,10 +123,10 @@ Headline figures **count when they change**: the month total, the running balanc
 
 ## Checks
 
-Twenty-three pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all twenty-three in order and **stops at the first failure**. That single command is also what CI calls:
+Twenty-eight pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all twenty-eight in order and **stops at the first failure**. That single command is also what CI calls:
 
 ```
-node scripts/run-guards.mjs            # all twenty-three, in order
+node scripts/run-guards.mjs            # all twenty-eight, in order
 node scripts/check-worker-config.mjs   # wrangler.toml + functions/_router.js: the Pages project, the route table the browser calls, the KV binding, that the removed daily reminder has stayed removed, that no secret sits in a committed file, the CI wiring, and the docs below
 node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
 node scripts/test-image-hygiene.mjs    # the image guard catches what it was written to catch: planted fixtures for every forbidden call, every tombstone, the walk's depth and its skip list
@@ -136,6 +136,7 @@ node scripts/check-freshness.mjs       # a deploy reaches the device: every asse
 node scripts/check-icon-refs.mjs       # every icon lookup resolves (a miss renders an empty element, silently)
 node scripts/check-boot-payload.mjs    # what the app parses before first paint stays the shell + the pay arithmetic; every lazy import() resolves
 node scripts/check-app-shell.mjs       # an installed copy behaves like an app: the manifest identifies it, every icon and screenshot is really there at the size it claims, a launcher shortcut and the share target point at routes the router still has, Android's back gesture closes the top sheet without ever dismissing the lock, and the page cannot be pull-to-refreshed
+node scripts/check-app-figures.mjs     # the ported shell's vendored layer: the five Hairline files and the UI kit are byte-identical copies of their sources, the figure scripts load in an order that works and before the bundle, nothing in them writes a style the strict policy would refuse, the worker warms every script and stylesheet the document loads, and the dashboard still creates the three hosts its bridge mounts
 node scripts/check-a11y.mjs            # the a11y harness still covers every route, menu level and menu modal; no icon-only nav control is unnamed
 node scripts/check-mobile-layout.mjs   # a stat value reaches its card formatted and sized for its own length; the card and the value cannot spill it; six dock tabs compress instead of hanging off the screen
 node scripts/check-css-tokens.mjs      # the stylesheet is a closed system: every custom property read is defined, every @keyframes is animated by something, and the braces balance
@@ -145,6 +146,8 @@ node scripts/test-parity-money.mjs     # the money rules a typed line goes throu
 node scripts/test-load-existing.mjs    # a document the shipping app wrote loads in the ported core and round-trips unchanged (the frozen fixture is built by scripts/make-cents-fixture.mjs)
 node scripts/test-undo-journal.mjs     # a delete applies at once, is journalled in localStorage, and restores exactly after a reload
 node scripts/test-metrics.mjs          # the ported ledger arithmetic: what counts as spending, checkpoint-aware balances, gift cards, cash and the projection, checked against the frozen document
+node scripts/test-data-portability.mjs # the Data sheet's own numbers: the size and count it prints, a restore that is planned before it is offered, newest-wins with tombstones, and the Cash re-anchor a restored ledger needs
+node scripts/test-history-edit.mjs     # the History edit path: every field the form offers is written, the replaced version is recorded where checkpoint balances and merges read it, a refusal writes nothing, and a transfer/split row stays one payment
 node scripts/check-pin-screens.mjs     # the browser leg below still loads that fixture, in a fresh context, behind the test PIN under the production CSP — and stays a hand-run leg rather than a CI dependency
 node scripts/test-profiles.mjs         # profiles stay isolated, and their cloud credentials never fall back
 node scripts/test-tesco.mjs            # the pay/tax engine still matches the workbook's figures
@@ -161,13 +164,22 @@ Gate C's browser half has the same constraint and a different answer, because it
 
 ```
 node scripts/pin-screens.browser.mjs    # by hand, before the cutover
+node scripts/data-sheet.browser.mjs     # by hand: the ported app's Data sheet, in Chromium, under app/_headers
+node scripts/history-edit.browser.mjs   # by hand: the History editor itself — open, edit, save, refuse, edit a transfer
+node scripts/dashboard-figures.browser.mjs # by hand: the ported dashboard's three figures and the kit, under app/_headers
 ```
+
+The figures' leg is the newest hand-run browser check, and the only one that proves a *picture*: it serves the ported `app/` under `app/_headers`, so the strict policy is enforced while the figures draw, and then checks what a screenshot cannot — that all three hosts mounted their own figure, that the geometry is real (paths with extent, nothing outside the 400×320 viewBox), that pointing at a tide column reads a date and a balance, that the kit installed on the dashboard's own hosts (`animated-counter` × 4, `budget-card`, `warm-tooltip`), that the counter settles on €29.47 — counted by hand from the fixture — that a budget edit repaints without stacking a second set of figures, that no style attribute appears anywhere in the screen, and that the console reports no CSP refusal at 1280 or 390, reduced motion included. 41 checks.
+
+The Data sheet's leg is the second hand-run browser check. It serves the ported `app/` (not the shipping root app) with that directory's own `_headers` applied, seeds a document behind the lock, and drives the sheet the way a person would — read the four facts, export both files, restore a backup, import a CSV, map and import a bank statement, reset and undo it, and recover a quarantined copy — 35 checks, and it is kept out of `run-guards.mjs` for the same reason the PIN leg is: Playwright is not a dependency of this repo.
 
 Playwright is not a dependency of this repo, and adding it would put a browser download in front of every deploy, so the leg is deliberately outside `run-guards.mjs` and CI. It resolves Playwright from `$CENTS_PLAYWRIGHT`, this repo, or the shared tooling project's install (`../design-system`) in this workspace, and it **fails** rather than skips when it cannot find it. `check-pin-screens.mjs` is what keeps a hand-run leg honest: it pins the fixture, the real key, the test PIN, the fresh context, the frozen clock, the production CSP, the loopback-only origin and the synthetic-ledger rule, and it fails if the leg is dropped from README/CLAUDE.md or quietly moved into the dependency-free suite.
 
 Accessibility is audited the same way, because a Node script cannot read a rendered DOM: open `a11y-harness.html` on the served app and it drives the real thing in an iframe through every route and every surface that *opens* (the menu and its drill-downs, and the modals they reach — never a click inside an open modal, so the ledger it audits is untouched), reporting per surface the four defects a rebuild quietly reintroduces: a control with no accessible name, two controls in one scope sharing an `aria-label` (an addressed identity here, not a label), a form field with no label, and an `<img>` with no `alt`. Keep its tab in the foreground: the app defers its render to an animation frame and a background tab is throttled, so a hidden harness audits nothing. `check-a11y.mjs` is what stops the harness from quietly ceasing to cover the app: it asserts the surfaces against `seed.js`'s tabs, against every menu level the app can drill into and against every modal the menu opens, and it fails if the harness's verdict stops counting any of the four defects.
 
 `.github/workflows/guards.yml` runs the same suite on every push, under the Node version the suite needs. That matters for one specific reason: the deploy reads `wrangler.toml` before any of this code runs, so a broken config can never be reported by a check that runs later — the only signal is a failed deploy. CI is the earliest place it can be caught, and `check-worker-config.mjs` catches most of that class statically, with no wrangler install needed.
+
+`.github/workflows/components.yml` runs the **component manifest** check on every push and pull request. The manifest lives in the design system's repo and lists which of its 27 components this app renders on which of eight route states, with a floor per route — claims about *this* repository that would otherwise only be re-proved by hand. The job is the design system's reusable workflow, invoked from here: it checks out `design-system`, then checks this repo out at the pushed commit into the directory `scripts/paths.ts` resolves for `cents`, serves the app under its own `_headers` (the CSP included — the boot script is hash-pinned and does not run without it), and runs `verify:components --site cents` against that server. It needs `github.com/<owner>/design-system` to exist and be readable by this repo's token; until it is published the workflow files are inert, and `check-worker-config.mjs` fails if this file stops calling the shared job or stops naming `site: cents`.
 
 If you edit one of the inline scripts in `index.html`, re-hash it in the CSP in `_headers`: `check-csp-hashes` prints the exact hash to paste, and the browser would otherwise refuse to run that script in production only (no CSP is sent locally).
 

@@ -39,6 +39,7 @@ const GUARDS = [
   'check-icon-refs.mjs',       // every icon name app.js looks up exists
   'check-boot-payload.mjs',    // the boot path stays the shell and the arithmetic
   'check-app-shell.mjs',       // an installed copy behaves like an app
+  'check-app-figures.mjs',     // the ported shell's vendored figures and kit: copies, load order, policy, offline shell
   'check-a11y.mjs',            // the accessibility harness still audits everything
   'check-mobile-layout.mjs',   // a figure cannot leave the box it is drawn in
   'check-css-tokens.mjs',      // the stylesheets' tokens stay in step
@@ -47,6 +48,8 @@ const GUARDS = [
   'test-load-existing.mjs',    // a document written by the old app loads in the port
   'test-undo-journal.mjs',     // a delete applies at once, survives a reload and restores exactly
   'test-metrics.mjs',          // the ported ledger arithmetic agrees with the frozen document
+  'test-data-portability.mjs', // the Data sheet's size, counts, planned merge and cash re-anchor
+  'test-history-edit.mjs',     // the History edit path: fields, history, grouped rows, storage and checkpoints
   'check-pin-screens.mjs',     // the browser leg that loads it behind the PIN stays honest (it needs Playwright, so it runs by hand)
   'test-profiles.mjs',         // profiles stay isolated
   'test-tesco.mjs',            // the pay/tax engine still matches the workbook

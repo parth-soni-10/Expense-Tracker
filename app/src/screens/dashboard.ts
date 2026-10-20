@@ -7,9 +7,13 @@
  * Every figure comes from `src/metrics.ts`, so a number on this screen cannot
  * disagree with the same number on Balances or Insights.
  *
+ * The three Hairline figures are here too: the balance tide, the month's budget
+ * envelopes and the newest receipts, mounted from the same numbers this render
+ * already computed (src/figures.ts owns the vendored kernel's handles).
+ *
  * What is deliberately not here yet (tracked in docs/CENTS_PARITY.md, not
  * claimed by this file): recurring items, the Tesco pay card, the paper-voucher
- * notice, the three Hairline figures and the balance rows — those are slices 3–5.
+ * notice and the balance rows — those are slices 3–4.
  *
  * Class-only: the served app runs under `style-src 'self'`, so nothing writes a
  * style attribute. Layout that the old screen expressed inline lives in
@@ -19,6 +23,7 @@ import type { CentsSettings, CentsState, Entry } from '../../lib/types.ts';
 import { CATEGORIES } from '../../lib/seed.ts';
 import { el } from '../dom.ts';
 import { friendlyDate, fmt, monthKey, monthLabel, parseAmount, today } from '../format.ts';
+import { paintFigures, type FigureData } from '../figures.ts';
 import {
   GIFT_CARD_IDS,
   catTotalsForEntries,
@@ -60,9 +65,16 @@ function svg<K extends keyof SVGElementTagNameMap>(tag: K, props: Record<string,
  *  renders them: `screen readers hear the label, the hint explains the term`. */
 function stat(label: string, value: string, tone: '' | 'positive' | 'negative', hint: string, href?: string): HTMLElement {
   const figure = el('span', { class: 'display-num pulse-figure-value' }, value);
-  const valueEl = el('div', { class: `display-num pulse-figure${tone ? ` is-${tone}` : ''}` },
-    href ? el('a', { class: 'pulse-figure-link', href, 'aria-label': `${label} details` }, figure) : figure,
-  );
+  const host = href
+    ? el('a', { class: 'pulse-figure-link', href, 'aria-label': `${label} details` }, figure)
+    : figure;
+  // Every pulse figure is the kit's counter: it counts up to the value this
+  // render computed and then restores that exact text, so the number never
+  // disagrees with the ledger, and a reader who asked for less motion lands on
+  // it immediately. The anchor is the host where the figure links somewhere, so
+  // the accessible name and the counted text are the same node.
+  host.setAttribute('data-ui', 'animated-counter');
+  const valueEl = el('div', { class: `display-num pulse-figure${tone ? ` is-${tone}` : ''}` }, host);
   return el('div', { class: 'pulse-stat' },
     el('div', { class: 'eyebrow', title: hint }, label, el('span', { class: 'pulse-hint', 'aria-hidden': 'true' }, '\u24d8')),
     valueEl,
@@ -162,6 +174,10 @@ export function renderDashboard({ state, save, refresh }: DashboardContext): HTM
     value: String(summary.budget || ''),
     placeholder: '-',
     'aria-label': 'Monthly budget in euros',
+    // The field saves a quarter second after typing stops, which is worth saying
+    // out loud on hover rather than leaving the reader to press Enter and hope.
+    'data-ui': 'warm-tooltip',
+    'data-ui-tip': 'Saves a moment after you stop typing',
     oninput: (event: Event) => {
       const field = event.target as HTMLInputElement;
       if (!commitBudget(field.value)) {
@@ -265,7 +281,14 @@ export function renderDashboard({ state, save, refresh }: DashboardContext): HTM
   /* ── budget bar ────────────────────────────────────────────────────────── */
 
   if (summary.budget > 0) {
-    root.append(el('div', { class: 'card budget-card' },
+    root.append(el('div', {
+      class: 'card budget-card',
+      // The kit's budget-card reads the percent and the bar off the card itself,
+      // so the number above and the bar below cannot describe different months.
+      'data-ui': 'budget-card',
+      'data-ui-percent': summary.percent.toFixed(1),
+      'data-ui-label': 'Spent of budget',
+    },
       el('div', { class: 'row between' },
         el('span', { class: 'eyebrow' }, 'Spent of budget'),
         el('a', { class: 'btn-link', href: '#insights' }, 'Where it went →'),
@@ -276,7 +299,7 @@ export function renderDashboard({ state, save, refresh }: DashboardContext): HTM
         max: '100',
         value: summary.percent.toFixed(1),
         'aria-label': 'Spent of budget',
-        dataset: { ui: 'budget-card', percent: String(summary.percent) },
+        'data-ui-bar': '',
       }),
       el('div', { class: 'budget-facts' },
         el('span', null, 'Income ', el('strong', { class: 'is-positive' }, fmt(summary.incomeSum))),
@@ -309,9 +332,55 @@ export function renderDashboard({ state, save, refresh }: DashboardContext): HTM
   if (monthsUnderBudget >= 1) chips.push(el('span', { class: 'pill', title: 'Months where spending stayed within budget' }, `${monthsUnderBudget} month${monthsUnderBudget === 1 ? '' : 's'} under budget`));
   if (chips.length) root.append(el('div', { class: 'dashboard-full milestone-chips' }, ...chips));
 
-  /* ── this month by category, and the recent ledger ─────────────────────── */
+  /* ── the ledger drawn ───────────────────────────────────────────────────── */
 
   const catTotals = catTotalsForEntries(settings, summary.expenses);
+  const ordered = [...entries]
+    .filter((entry) => entry.type !== 'note')
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || (String(a.id) < String(b.id) ? 1 : -1));
+  // Each figure is fed the numbers this render already computed: the net worth
+  // points above (plus today), this month's category budgets against the same
+  // totals the "By category" panel lists, and the newest entries in the order
+  // the Recent panel shows them. Nothing is read twice, so a figure cannot
+  // disagree with the card beside it.
+  const tidePoints = summary.points.slice(-13).map((point) => ({ date: point.date, balance: point.balance }));
+  const tideLast = tidePoints[tidePoints.length - 1];
+  if (!tideLast || tideLast.date < today()) tidePoints.push({ date: today(), balance: summary.balance });
+  const categoryBudgets = (settings as any).categoryBudgets || {};
+  const envelopes = Object.entries(categoryBudgets)
+    .filter(([, limit]) => +(limit as any) > 0)
+    .slice(0, 6)
+    .map(([id, limit]) => ({ label: categoryLabel(settings, id), spent: catTotals[id] || 0, limit: +(limit as any) }));
+
+  const figureCard = (id: string, label: string): HTMLElement => el('figure', { class: 'hairline-card' },
+    el('figcaption', { class: 'eyebrow' }, label),
+    el('div', { class: 'hairline-figure', id }),
+    el('p', { class: 'hairline-read', 'data-hairline-read': '', 'aria-live': 'polite' }, 'rest'),
+  );
+  // `role="group"` is what makes the label mean something: a bare aria-label on
+  // a div is ignored, and the three figures are one section of the page.
+  root.append(el('div', { class: 'figures-card', role: 'group', 'aria-label': 'The ledger drawn' },
+    figureCard('cents-balance-tide', 'Balance tide'),
+    figureCard('cents-envelope-garden', 'Envelope garden'),
+    figureCard('cents-receipt-constellation', 'Receipt constellation'),
+  ));
+  // The hosts are only reachable by id once `main.ts` has appended this root, so
+  // the paint waits a frame. If the figure scripts never loaded, `paintFigures`
+  // draws nothing and says nothing: a dashboard without figures is still the
+  // dashboard.
+  const figures: FigureData = {
+    balances: tidePoints,
+    envelopes,
+    receipts: ordered.slice(0, 9).map((entry) => ({
+      title: String(entry.details || 'Entry'),
+      amount: Number(entry.amount) || 0,
+      date: String(entry.date || ''),
+    })),
+  };
+  requestAnimationFrame(() => paintFigures(figures));
+
+  /* ── this month by category, and the recent ledger ─────────────────────── */
+
   const cats = Object.entries(catTotals).sort((a, b) => b[1] - a[1]);
   const catCard = el('div', { class: 'card dashboard-panel' },
     el('div', { class: 'row between dashboard-panel-head' },
@@ -331,10 +400,7 @@ export function renderDashboard({ state, save, refresh }: DashboardContext): HTM
       })),
   );
 
-  const recent = [...entries]
-    .filter((entry) => entry.type !== 'note')
-    .sort((a, b) => String(b.date).localeCompare(String(a.date)) || (String(a.id) < String(b.id) ? 1 : -1))
-    .slice(0, 5);
+  const recent = ordered.slice(0, 5);
   const recentCard = el('div', { class: 'card dashboard-panel' },
     el('div', { class: 'row between dashboard-panel-head' },
       el('span', { class: 'eyebrow' }, 'Recent'),
