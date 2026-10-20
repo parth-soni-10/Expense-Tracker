@@ -18,9 +18,12 @@ import { readRoute, subscribe, routeHash, type Route, type RouteId } from './rou
 import { showPinLock, showProfilePicker } from './lock.ts';
 import { byId, clear, el } from './dom.ts';
 import { renderAdd } from './screens/add.ts';
+import { openDataSheet } from './screens/data.ts';
 import { renderBalances } from './screens/balances.ts';
 import { renderDashboard } from './screens/dashboard.ts';
 import { renderHistory } from './screens/history.ts';
+import { renderInsights } from './screens/insights.ts';
+import { renderTesco } from './screens/tesco.ts';
 
 declare global {
   interface Window {
@@ -60,6 +63,20 @@ function buildNav(active: RouteId): void {
       'aria-current': id === active ? 'page' : null,
     }, LABELS[id as RouteId]));
   }
+  // Data is not a route: it is the place you go to move your data, and the
+  // shipping app has always kept it out of the tabs (docs/URL_CONTRACT.md has
+  // no `#data`). It sits after them, so the nav still reads as the app.
+  nav.append(el('button', {
+    type: 'button',
+    class: 'app-tab app-data-trigger',
+    'aria-haspopup': 'dialog',
+    onClick: () => openDataSheet({
+      state,
+      params: new URLSearchParams(),
+      save: () => saveState(state),
+      refresh: () => render(readRoute(), { moveFocus: false }),
+    }),
+  }, 'Data'));
 }
 
 function render(route: Route, { moveFocus = true } = {}): void {
@@ -97,9 +114,15 @@ function render(route: Route, { moveFocus = true } = {}): void {
     case 'balances':
       screen.append(renderBalances(context));
       break;
+    case 'insights':
+      screen.append(renderInsights(context));
+      break;
+    case 'tesco':
+      screen.append(renderTesco(context));
+      break;
     default:
-      // tesco/insights are slices 4–5: the heading and the route contract are
-      // already right, and the body says so instead of looking broken.
+      // Every route in the contract renders now; this stays so a route added to
+      // the union without a case says so instead of blanking the screen.
       screen.append(el('p', { class: 'app-notice' }, `${LABELS[route.id]} is not ported yet.`));
   }
 

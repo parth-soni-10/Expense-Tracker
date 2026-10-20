@@ -394,3 +394,476 @@
 @media (prefers-reduced-motion: reduce) {
   .app-toast { animation: none; }
 }
+
+/* ── the Data sheet ──────────────────────────────────────────────────────── */
+/* Data is a sheet, not a route (the shipping app's menu, kept where it was):
+   it answers "where is my ledger" and offers the ways to move it. Class-only,
+   because `style-src 'self'` refuses an inline style attribute. */
+
+.data-dialog {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  width: 100%;
+  max-width: min(560px, calc(100vw - 32px));
+}
+
+.data-dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+
+.data-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: min(82vh, 760px);
+  overflow-y: auto;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+}
+
+@media (max-width: 639px) {
+  .data-card { padding: 18px 16px; }
+}
+
+.data-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.data-title {
+  font-size: 24px;
+  font-weight: 400;
+  margin: 0;
+}
+
+.data-lead {
+  margin: 0 0 4px;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.data-message {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  min-height: 0;
+}
+
+.data-message:empty { margin: 0; }
+
+.data-confirm-text {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* Each fact is one answer about where the data is: a label on the left, the
+   figure on the right, and — when there is one — the sentence that explains
+   it underneath, full width. */
+.data-facts {
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.data-fact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.data-fact-label {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.data-fact-value {
+  font-size: 13px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-fact-note {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.data-fact-note:empty { display: none; }
+
+/* A gap is the one thing on this sheet that colours: the repo copy is not the
+   copy being served. Everything else is a fact, not a warning. */
+.data-fact.is-gap .data-fact-value { color: var(--negative); }
+.data-fact.is-gap .data-fact-note { color: var(--negative); }
+
+.data-actions {
+  display: flex;
+  flex-direction: column;
+  margin-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.data-action {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  width: 100%;
+  min-height: 44px;
+  padding: 12px 6px;
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 0;
+  transition: background-color 0.15s var(--ease-out);
+}
+
+.data-action:hover { background: var(--accent-soft); }
+.data-action:last-child { border-bottom: none; }
+
+.data-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.data-action-note {
+  flex-shrink: 0;
+  max-width: 58%;
+  font-size: 11px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.data-action.is-danger { color: var(--negative); }
+.data-action.is-danger .data-action-note { color: var(--negative); }
+
+/* The picker's input is never shown: the action button opens it, and the OS
+   dialog is the surface. Removing it from the flow rather than `display: none`
+   keeps `input.click()` working in every browser this app supports. */
+.data-file {
+  position: fixed;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+/* ── the bank statement mapper ───────────────────────────────────────────── */
+
+.bank-modes {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.bank-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.bank-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.data-field { display: block; min-width: 0; }
+
+.data-field-label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.data-select {
+  width: 100%;
+  max-width: 220px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.data-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.bank-preview { margin-top: 10px; }
+
+.data-preview-head {
+  margin: 14px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bank-row {
+  display: grid;
+  grid-template-columns: 60px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.bank-date { flex-shrink: 0; }
+.bank-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bank-amount { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ── insights ────────────────────────────────────────────────────────────── */
+
+.insight-range {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.insight-date {
+  width: auto;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.insight-date:focus-visible { border-color: var(--accent); outline: none; }
+
+.insight-presets {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+
+.insight-reset { font-size: 12px; }
+
+.insight-narrative { padding: 24px 16px; margin-bottom: 24px; }
+.insight-narrative-text { font-size: 20px; line-height: 1.35; margin-top: 8px; }
+.insight-narrative-note { font-size: 12px; margin-top: 6px; }
+
+@media (max-width: 639px) {
+  .insight-narrative-text { font-size: 17px; }
+}
+
+.insight-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 24px; }
+
+.insight-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.insight-stat { padding: 16px; }
+.insight-stat-value { font-size: 20px; margin-top: 6px; }
+
+.insight-panel { padding: 24px; margin-bottom: 24px; }
+.insight-panel-head { margin-bottom: 16px; }
+
+@media (max-width: 639px) {
+  .insight-panel { padding: 18px; }
+  .insight-stat-value { font-size: 17px; }
+}
+
+.insight-bars { display: flex; flex-direction: column; gap: 12px; }
+
+.insight-bar-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 40px auto;
+  align-items: center;
+  gap: 8px 12px;
+  font-size: 13px;
+}
+
+.insight-bar-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.insight-bar {
+  display: block;
+  width: 100%;
+  height: 4px;
+  border: none;
+  border-radius: 99px;
+  overflow: hidden;
+  background: var(--line);
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.insight-bar::-webkit-progress-bar { background: var(--line); border-radius: 99px; }
+.insight-bar::-webkit-progress-value { background: var(--accent); border-radius: 99px; }
+.insight-bar::-moz-progress-bar { background: var(--accent); border-radius: 99px; }
+
+.insight-bar-share { font-size: 11px; text-align: right; }
+.insight-bar-amount { text-align: right; font-size: 14px; }
+
+@media (max-width: 479px) {
+  .insight-bar-row { grid-template-columns: minmax(0, 1fr) 42px auto; }
+  .insight-bar { display: none; }
+}
+
+.insight-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 24px;
+  margin-bottom: 24px;
+}
+
+.insight-grid .insight-panel { margin-bottom: 0; }
+
+.insight-density-note { font-size: 12px; margin-top: 4px; }
+.insight-density-body { min-height: 12px; }
+
+.heat-board {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.heat-day,
+.heat-blank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.heat-day[data-level='1'] { background: color-mix(in srgb, var(--accent) 12%, transparent); border-color: transparent; color: var(--ink); }
+.heat-day[data-level='2'] { background: color-mix(in srgb, var(--accent) 26%, transparent); border-color: transparent; color: var(--ink); }
+.heat-day[data-level='3'] { background: color-mix(in srgb, var(--accent) 42%, transparent); border-color: transparent; color: var(--ink); }
+.heat-day[data-level='4'] { background: var(--accent); border-color: transparent; color: var(--bg); }
+
+.heat-blank { border: none; }
+
+.insight-top { margin-top: 4px; font-size: 12px; }
+
+/* ── tesco pay ───────────────────────────────────────────────────────────── */
+
+.tesco-month {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.tesco-month-label { min-width: 0; }
+.tesco-month-name { font-size: 22px; margin-top: 2px; }
+.tesco-month-step { padding: 6px 12px; }
+.tesco-month-now { font-size: 12px; }
+
+.tesco-cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.tesco-cell { padding: 16px; }
+.tesco-cell-value { font-size: 20px; margin-top: 6px; }
+
+.tesco-empty { padding: 24px; }
+
+.tesco-panel { padding: 24px; margin-bottom: 24px; }
+.tesco-panel-head { margin-bottom: 16px; }
+
+@media (max-width: 639px) {
+  .tesco-cell-value { font-size: 17px; }
+  .tesco-panel { padding: 18px; }
+}
+
+.tesco-weeks { display: flex; flex-direction: column; gap: 12px; }
+
+.tesco-week { padding: 16px; }
+.tesco-week-head { margin-bottom: 10px; }
+.tesco-week-state { font-size: 11px; }
+.tesco-week-state.is-paid { border-color: var(--accent); color: var(--accent); }
+
+.tesco-week-figs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tesco-week-figs strong { color: var(--ink); font-weight: 600; }
+.tesco-week-vs { font-weight: 600; }
+.tesco-week-vs.is-negative { color: var(--negative); }
+.tesco-week-vs.is-positive { color: var(--positive); }
+
+.tesco-shift-list { margin-top: 12px; border-top: 1px solid var(--line); }
+
+.tesco-shift {
+  display: grid;
+  grid-template-columns: 82px 96px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.tesco-shift:last-child { border-bottom: none; }
+.tesco-shift-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tesco-shift-pay { text-align: right; }
+
+@media (max-width: 479px) {
+  .tesco-shift { grid-template-columns: 78px 90px auto; }
+  .tesco-shift-note { display: none; }
+}
+
+.tesco-ledger-note { font-size: 12px; }
+.tesco-ledger { margin-top: 4px; }
+
+.tesco-ledger-row {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.tesco-ledger-row:last-child { border-bottom: none; }
+.tesco-ledger-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
