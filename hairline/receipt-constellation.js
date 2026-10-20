@@ -47,11 +47,11 @@ function mount({ stage, svg, read }, value) {
 
   function readDefault() {
     const n = items.length;
-    read.textContent = n ? `${n} recent entries` : 'No entries yet';
+    read.textContent = n ? `${n} recent ${n === 1 ? 'entry' : 'entries'}` : 'No entries yet';
     stage.setAttribute(
       'aria-label',
       n
-        ? `${n} recent entries as points. Point at one to read its details and amount.`
+        ? `${n} recent ${n === 1 ? 'entry' : 'entries'} as ${n === 1 ? 'a point' : 'points'}. Point at ${n === 1 ? 'it' : 'one'} to read its details and amount.`
         : 'No entries have been logged yet.',
     );
   }

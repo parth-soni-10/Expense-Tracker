@@ -50,12 +50,12 @@ function mount({ stage, svg, read }, value) {
     const n = items.length;
     const over = items.filter((x) => x.limit > 0 && x.spent > x.limit).length;
     read.textContent = n
-      ? (over ? `${n} envelopes · ${over} over` : `${n} envelopes · all within budget`)
+      ? (over ? `${n} ${n === 1 ? 'envelope' : 'envelopes'} · ${over} over` : `${n} ${n === 1 ? 'envelope' : 'envelopes'} · all within budget`)
       : 'No category budgets set';
     stage.setAttribute(
       'aria-label',
       n
-        ? `${n} budget envelopes as plants. Point at one to read its category, spend and limit.`
+        ? `${n} budget ${n === 1 ? 'envelope' : 'envelopes'} as ${n === 1 ? 'a plant' : 'plants'}. Point at ${n === 1 ? 'it' : 'one'} to read its category, spend and limit.`
         : 'No category budgets are set yet.',
     );
   }

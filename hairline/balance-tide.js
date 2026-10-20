@@ -59,11 +59,11 @@ function mount({ stage, svg, read }, value) {
   function readDefault() {
     const n = items.length;
     const last = n ? items[n - 1] : null;
-    read.textContent = n ? `${n} days · ${last ? money(last.value) : '—'}` : 'No balance history yet';
+    read.textContent = n ? `${n} ${n === 1 ? 'day' : 'days'} · ${last ? money(last.value) : '—'}` : 'No balance history yet';
     stage.setAttribute(
       'aria-label',
       n
-        ? `The running balance over ${n} days. Point at a column to read its date and balance.`
+        ? `The running balance over ${n} ${n === 1 ? 'day' : 'days'}. Point at a column to read its date and balance.`
         : 'No balance history yet — a few entries will draw the tide.',
     );
   }
