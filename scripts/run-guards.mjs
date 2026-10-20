@@ -47,6 +47,8 @@ const GUARDS = [
   'test-parity-money.mjs',     // quick entry, cents-only precision and split/transfer pairs, run against app.js itself
   'test-load-existing.mjs',    // a document written by the old app loads in the port
   'test-undo-journal.mjs',     // a delete applies at once, survives a reload and restores exactly
+  'test-storage-contract.mjs',  // one write path, the document round-trips, profile data untouched
+  'test-methods.mjs',           // a method survives its own removal; a schedule lands on the day it says
   'test-metrics.mjs',          // the ported ledger arithmetic agrees with the frozen document
   'test-data-portability.mjs', // the Data sheet's size, counts, planned merge and cash re-anchor
   'test-history-edit.mjs',     // the History edit path: fields, history, grouped rows, storage and checkpoints

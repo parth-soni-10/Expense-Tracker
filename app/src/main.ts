@@ -17,8 +17,10 @@ import { getActiveProfileId, hasSessionChoice, listProfiles, setActiveProfileId 
 import { readRoute, subscribe, routeHash, type Route, type RouteId } from './router.ts';
 import { showPinLock, showProfilePicker } from './lock.ts';
 import { byId, clear, el } from './dom.ts';
+import { currentTheme, onThemeChange, toggleTheme } from './theme.ts';
 import { renderAdd } from './screens/add.ts';
 import { openDataSheet } from './screens/data.ts';
+import { openSettings } from './screens/settings.ts';
 import { renderBalances } from './screens/balances.ts';
 import { renderDashboard } from './screens/dashboard.ts';
 import { renderHistory } from './screens/history.ts';
@@ -77,6 +79,20 @@ function buildNav(active: RouteId): void {
       refresh: () => render(readRoute(), { moveFocus: false }),
     }),
   }, 'Data'));
+  // Settings is the same shape: a place you go to change the device, not a
+  // place the app lives. The appearance toggle, the payment methods, the
+  // recurring schedules and the PIN all live behind it.
+  nav.append(el('button', {
+    type: 'button',
+    class: 'app-tab app-settings-trigger',
+    'aria-haspopup': 'dialog',
+    onClick: () => openSettings({
+      state,
+      params: new URLSearchParams(),
+      save: () => saveState(state),
+      refresh: () => render(readRoute(), { moveFocus: false }),
+    }),
+  }, 'Settings'));
 }
 
 function render(route: Route, { moveFocus = true } = {}): void {
@@ -166,6 +182,34 @@ function showGate(): void {
   showPinLock({ state, onUnlock: reveal });
 }
 
+/* ── the theme toggle ──────────────────────────────────────────────────────── */
+
+/** The header's light/dark control.
+ *
+ *  One handler, one flip. The vendored kit's own `switch-mode` is NOT mounted
+ *  on this button: two handlers on one control would each read the theme and
+ *  flip it back, and the button would do nothing. The key is written by
+ *  `app/lib/settings.ts` and read by `app/theme-init.js` before first paint,
+ *  so a device that has chosen dark never flashes light on the way in. */
+function buildThemeToggle(): void {
+  const header = document.querySelector('.app-header');
+  if (!header || header.querySelector('.app-theme-toggle')) return;
+  const button = el('button', {
+    type: 'button',
+    class: 'app-theme-toggle',
+  });
+  const paint = (): void => {
+    const dark = currentTheme() === 'dark';
+    button.textContent = dark ? 'Light' : 'Dark';
+    button.setAttribute('aria-label', dark ? 'Use the light theme' : 'Use the dark theme');
+    button.setAttribute('aria-pressed', dark ? 'true' : 'false');
+  };
+  button.addEventListener('click', () => { toggleTheme(); });
+  onThemeChange(paint);
+  paint();
+  header.append(button);
+}
+
 /* ── the update prompt ────────────────────────────────────────────────────── */
 
 let updateBarShown = false;
@@ -215,6 +259,7 @@ function bootServiceWorker(): void {
 function boot(): void {
   window.__cents = { route: readRoute, shell: '2026-10-20' };
   buildNav(readRoute().id);
+  buildThemeToggle();
   subscribe((route) => render(route));
   bootServiceWorker();
 

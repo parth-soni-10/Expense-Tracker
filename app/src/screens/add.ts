@@ -12,21 +12,18 @@
  * `replaceState`, so Back never steps through a fold or a type change.
  */
 import type { CentsState, Entry } from '../../lib/types.ts';
-import { CATEGORIES, METHODS } from '../../lib/seed.ts';
+import { CATEGORIES } from '../../lib/seed.ts';
 import { uid } from '../../lib/storage.ts';
 import { el } from '../dom.ts';
 import { friendlyDate, monthLabel, parseAmount, today } from '../format.ts';
 import { methodLabel, methodShort } from '../metrics.ts';
+import { methodOptions } from '../../lib/methods.ts';
 import { overPreciseAmount, parseNaturalLanguage, quickEntryLegs, type ParsedEntry } from '../quick-entry.ts';
 import { navigate } from '../router.ts';
 import type { ScreenContext } from './context.ts';
 
 function categoryLabel(id: string): string {
   return CATEGORIES.find((category) => category.id === id)?.label || id;
-}
-
-function everyMethod(id: string): { id: string; label: string } {
-  return METHODS.find((method) => method.id === id) || { id, label: id };
 }
 
 /** One line describing what a parsed entry will write. */
@@ -166,8 +163,11 @@ export function renderAdd({ state, params, save }: ScreenContext): HTMLElement {
   const categorySelect = el('select', { id: 'entry-category', class: 'add-input', 'aria-label': 'Category' },
     ...CATEGORIES.map((category) => el('option', { value: category.id }, category.label)),
   ) as HTMLSelectElement;
+  // The picker offers the methods the document holds, not a static list: a
+  // method the user added is here, and one they took out of the pickers is
+  // not. `methodOptions` is the one list every picker reads.
   const methodSelect = el('select', { id: 'entry-method', class: 'add-input', 'aria-label': 'Payment method' },
-    ...METHODS.map((method) => el('option', { value: method.id }, method.label)),
+    ...methodOptions(state.settings).map((method) => el('option', { value: method.id }, method.label)),
   ) as HTMLSelectElement;
   const formStatus = el('p', { class: 'add-status', role: 'status', 'aria-live': 'polite' });
 
@@ -178,7 +178,7 @@ export function renderAdd({ state, params, save }: ScreenContext): HTMLElement {
     incomeTab.setAttribute('aria-pressed', type === 'credit' ? 'true' : 'false');
     expenseTab.classList.toggle('is-on', type === 'expense');
     incomeTab.classList.toggle('is-on', type === 'credit');
-    methodSelect.replaceChildren(...METHODS
+    methodSelect.replaceChildren(...methodOptions(state.settings)
       .filter((method) => (type === 'credit' ? ['AIB', 'Revolut', 'RS'].includes(method.id) : true))
       .map((method) => el('option', { value: method.id }, method.label)));
     if (type === 'credit') methodSelect.value = 'AIB';
@@ -288,7 +288,7 @@ export function renderAdd({ state, params, save }: ScreenContext): HTMLElement {
     amountField.value = parsed.amount ? parsed.amount.toFixed(2) : '';
     dateField.value = String(parsed.date || today());
     categorySelect.value = String(parsed.category || 'misc');
-    if (METHODS.some((method) => method.id === parsed.method)) methodSelect.value = String(parsed.method);
+    if (methodOptions(state.settings).some((method) => method.id === parsed.method)) methodSelect.value = String(parsed.method);
     type = parsed.type === 'credit' ? 'credit' : 'expense';
     syncTabs();
   }

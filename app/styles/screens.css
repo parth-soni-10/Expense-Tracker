@@ -351,6 +351,11 @@
 
 .app-toast {
   position: fixed;
+  /* A popover's user-agent stylesheet centres itself with `inset: 0` and
+   * `margin: auto`; this toast is pinned to the bottom instead, so both are
+   * cleared here. */
+  inset: auto;
+  margin: 0;
   left: 50%;
   bottom: 24px;
   transform: translateX(-50%);
@@ -867,3 +872,81 @@
 
 .tesco-ledger-row:last-child { border-bottom: none; }
 .tesco-ledger-detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* -- settings, payment methods, recurring ----------------------------------
+ *
+ * Three surfaces, one visual language: a row is a label and a note on the
+ * left, the control on the right, and the row wraps on a narrow screen rather
+ * than squeezing the note into a column of two words.
+ */
+
+.settings-card { margin-bottom: 12px; }
+.settings-card:last-child { margin-bottom: 0; }
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-row:last-child { border-bottom: none; }
+.settings-row-text { min-width: 0; }
+.settings-row-label { font-size: 14px; font-weight: 500; }
+.settings-row-note { font-size: 12px; margin-top: 2px; }
+.settings-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.settings-actions .add-input { max-width: 140px; }
+
+@media (max-width: 479px) {
+  .settings-row { flex-direction: column; align-items: stretch; }
+  .settings-actions { justify-content: flex-end; }
+}
+
+.method-lead { font-size: 12px; margin: 0 0 12px; }
+.method-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.method-group { margin-top: 8px; }
+
+.method-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.method-row.is-hidden { opacity: 0.6; }
+.method-row-text { min-width: 0; }
+.method-row-label { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.method-row-meta { font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; }
+.method-row-action { flex-shrink: 0; min-height: 32px; font-size: 12px; }
+.method-add { margin-bottom: 6px; }
+.method-add .add-input { flex: 1; min-width: 0; }
+
+.recurring-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.recurring-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.recurring-row-text { min-width: 0; }
+.recurring-row-label { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.recurring-row-meta { font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; }
+.recurring-row-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.recurring-row-actions .btn { min-height: 32px; padding: 0 10px; font-size: 12px; }
+.recurring-form { display: flex; flex-direction: column; gap: 8px; }
+.recurring-suggestion { margin-bottom: 12px; }
+.recurring-suggestion p { font-size: 12px; margin: 6px 0 10px; }
+
+@media (max-width: 479px) {
+  .recurring-row { flex-direction: column; align-items: stretch; }
+  .recurring-row-actions { justify-content: flex-end; }
+}

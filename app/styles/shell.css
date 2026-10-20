@@ -266,3 +266,22 @@
 /* ── the profile picker's tiles (styles.css carries the grid) ─────────────── */
 
 .gate-card .profile-grid { margin-bottom: 4px; }
+
+/* The header's light/dark control. A real button with a name, so it is
+ * reachable and announced — an icon alone would need an aria-label and a
+ * sighted user would have to guess which way round it was. */
+.app-theme-toggle {
+  margin-left: auto;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  cursor: pointer;
+  min-height: 28px;
+}
+
+.app-theme-toggle:hover { border-color: var(--muted); }

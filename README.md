@@ -123,10 +123,10 @@ Headline figures **count when they change**: the month total, the running balanc
 
 ## Checks
 
-Twenty-eight pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all twenty-eight in order and **stops at the first failure**. That single command is also what CI calls:
+Thirty pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all thirty in order and **stops at the first failure**. That single command is also what CI calls:
 
 ```
-node scripts/run-guards.mjs            # all twenty-eight, in order
+node scripts/run-guards.mjs            # all thirty, in order
 node scripts/check-worker-config.mjs   # wrangler.toml + functions/_router.js: the Pages project, the route table the browser calls, the KV binding, that the removed daily reminder has stayed removed, that no secret sits in a committed file, the CI wiring, and the docs below
 node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
 node scripts/test-image-hygiene.mjs    # the image guard catches what it was written to catch: planted fixtures for every forbidden call, every tombstone, the walk's depth and its skip list
@@ -145,6 +145,8 @@ node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or r
 node scripts/test-parity-money.mjs     # the money rules a typed line goes through: the quick-entry parser (lifted from app.js and executed, not copied), cents-only precision (a third decimal is refused, never truncated or rounded), and the split/transfer groups that must survive a save/load round trip
 node scripts/test-load-existing.mjs    # a document the shipping app wrote loads in the ported core and round-trips unchanged (the frozen fixture is built by scripts/make-cents-fixture.mjs)
 node scripts/test-undo-journal.mjs     # a delete applies at once, is journalled in localStorage, and restores exactly after a reload
+node scripts/test-storage-contract.mjs  # the storage contract: one write path for the document (saveState, plus the one named admin path), the document round-trips field-for-field, the undo survives a reload, and no test or code path writes profile data it was not asked to
+node scripts/test-methods.mjs           # the payment methods the user owns (a removal is a tombstone, `false` is a value, a record keeps its own method) and the recurring schedules (a monthly rule lands on the same day every time, and every date walk is bounded)
 node scripts/test-metrics.mjs          # the ported ledger arithmetic: what counts as spending, checkpoint-aware balances, gift cards, cash and the projection, checked against the frozen document
 node scripts/test-data-portability.mjs # the Data sheet's own numbers: the size and count it prints, a restore that is planned before it is offered, newest-wins with tombstones, and the Cash re-anchor a restored ledger needs
 node scripts/test-history-edit.mjs     # the History edit path: every field the form offers is written, the replaced version is recorded where checkpoint balances and merges read it, a refusal writes nothing, and a transfer/split row stays one payment
@@ -168,6 +170,7 @@ node scripts/app-shell.browser.mjs      # by hand: the served app/ shell — gat
 node scripts/data-sheet.browser.mjs     # by hand: the ported app's Data sheet, in Chromium, under app/_headers
 node scripts/history-edit.browser.mjs   # by hand: the History editor itself — open, edit, save, refuse, edit a transfer
 node scripts/dashboard-figures.browser.mjs # by hand: the ported dashboard's three figures and the kit, under app/_headers
+node scripts/settings.browser.mjs     # by hand: the Settings sheet, the payment-method manager, the recurring manager and the theme toggle
 ```
 
 The shell's own leg begins before any screen exists: it boots `app/` as a first-time visitor (empty storage, nothing controlling the document), refuses a wrong PIN, opens with `100901`, walks all six hash routes and their `aria-current` tabs, and then proves the worker — that the active cache name is the version `sw.js` declares, that the cache holds exactly its `SHELL` list and nothing else, and that an offline reload still reaches the gate. 49 checks, `node scripts/app-shell.browser.mjs`.
@@ -175,6 +178,8 @@ The shell's own leg begins before any screen exists: it boots `app/` as a first-
 The figures' leg is the newest hand-run browser check, and the only one that proves a *picture*: it serves the ported `app/` under `app/_headers`, so the strict policy is enforced while the figures draw, and then checks what a screenshot cannot — that all three hosts mounted their own figure, that the geometry is real (paths with extent, nothing outside the 400×320 viewBox), that pointing at a tide column reads a date and a balance, that the kit installed on the dashboard's own hosts (`animated-counter` × 4, `budget-card`, `warm-tooltip`), that the counter settles on €29.47 — counted by hand from the fixture — that a budget edit repaints without stacking a second set of figures, that no style attribute appears anywhere in the screen, and that the console reports no CSP refusal at 1280 or 390, reduced motion included. 41 checks.
 
 The Data sheet's leg is the second hand-run browser check. It serves the ported `app/` (not the shipping root app) with that directory's own `_headers` applied, seeds a document behind the lock, and drives the sheet the way a person would — read the four facts, export both files, restore a backup, import a CSV, map and import a bank statement, reset and undo it, and recover a quarantined copy — 35 checks, and it is kept out of `run-guards.mjs` for the same reason the PIN leg is: Playwright is not a dependency of this repo.
+
+The settings leg is the one that drives the surfaces a Node guard cannot reach. It proves the **theme flips once** and that the header's control and the sheet's control agree, that the choice **survives a reload** and that a device whose key says light reads as *light*; that a method the user **adds** reaches the entry picker, that one they **take out** leaves the pickers and nothing else — its id stays valid, the history that named it keeps naming it, and the entry still validates — and that it can be **restored** as an explicit `false` rather than an absent key; and that a **recurring** rule is scheduled, that **Paid** logs the occurrence once and advances the schedule so the same charge cannot be paid twice, and that the toast's Undo takes both back. 42 checks. It found two real defects while it was being written: a sheet dismissed with **Escape** left its element in the DOM, so the next one to open duplicated its id; and the toast's Undo sat **under** an open sheet, because a modal sheet is in the browser's top layer and the top layer always paints above the normal flow — so the toast is now hosted by the topmost open sheet, and a sheet that closes hands the offer back to the body.
 
 Playwright is not a dependency of this repo, and adding it would put a browser download in front of every deploy, so the leg is deliberately outside `run-guards.mjs` and CI. It resolves Playwright from `$CENTS_PLAYWRIGHT`, this repo, or the shared tooling project's install (`../design-system`) in this workspace, and it **fails** rather than skips when it cannot find it. `check-pin-screens.mjs` is what keeps a hand-run leg honest: it pins the fixture, the real key, the test PIN, the fresh context, the frozen clock, the production CSP, the loopback-only origin and the synthetic-ledger rule, and it fails if the leg is dropped from README/CLAUDE.md or quietly moved into the dependency-free suite.
 

@@ -36,7 +36,12 @@ export interface Entry {
 export interface CentsSettings {
   customCategories?: Array<{ id: string; label?: string }>;
   customMethods?: Array<{ id: string; label?: string }>;
-  methodHidden?: string[];
+  /** `{ [methodId]: true|false }` — whether each method is out of the pickers.
+   *  A flag rather than a removal, and `false` is a VALUE rather than an
+   *  absent key: the settings merge is a per-key spread, which can overwrite
+   *  a key but never delete one, so a restore written as a deletion could
+   *  never beat the other device's `true`. */
+  methodHidden?: Record<string, boolean>;
   categoryBudgets?: Record<string, number>;
   enabledTabs?: string[];
   deletedEntryIds?: string[];

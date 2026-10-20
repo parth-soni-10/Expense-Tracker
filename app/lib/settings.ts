@@ -17,6 +17,39 @@ const KEY = () => nsKey('sync');
 const PRIVACY_KEY = () => nsKey('privacy');
 const BIOMETRIC_KEY = () => nsKey('bio');
 
+/* The appearance choice, and the ONE key that is deliberately not namespaced
+ * per profile: the theme is a property of the DEVICE, not of a ledger, so a
+ * second profile on the same phone is not a second light/dark choice. It is
+ * also not part of the document, so it is never synced and never travels with
+ * a backup — which is the same rule the sync settings follow.
+ *
+ * `cents-theme` is the only key and `data-theme` is the only attribute. Light
+ * is the default: the stylesheet's `:root` is the light palette and
+ * `[data-theme="dark"]` overrides it, so the attribute is only written for a
+ * device that has chosen dark. `app/theme-init.js` reads this same key before
+ * the stylesheets and the bundle run, so a device that has chosen dark never
+ * flashes light on the way in.
+ */
+const THEME_KEY = 'cents-theme';
+
+export function getTheme(): 'light' | 'dark' {
+  try {
+    return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light';
+  } catch {
+    return 'light';
+  }
+}
+
+/** Remember the theme. A device that cannot remember it still shows it now;
+ *  the next visit starts from the default again. */
+export function setTheme(theme: 'light' | 'dark'): void {
+  try {
+    localStorage.setItem(THEME_KEY, theme === 'dark' ? 'dark' : 'light');
+  } catch {
+    /* read-only storage: the choice is still in effect for this session */
+  }
+}
+
 /**
  * The endpoint a device uses when it has not been pointed somewhere else.
  *
