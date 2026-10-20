@@ -123,12 +123,13 @@ Headline figures **count when they change**: the month total, the running balanc
 
 ## Checks
 
-Twenty-one pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all twenty-one in order and **stops at the first failure**. That single command is also what CI calls:
+Twenty-two pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all twenty-two in order and **stops at the first failure**. That single command is also what CI calls:
 
 ```
-node scripts/run-guards.mjs            # all twenty-one, in order
+node scripts/run-guards.mjs            # all twenty-two, in order
 node scripts/check-worker-config.mjs   # wrangler.toml + functions/_router.js: the Pages project, the route table the browser calls, the KV binding, that the removed daily reminder has stayed removed, that no secret sits in a committed file, the CI wiring, and the docs below
 node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
+node scripts/test-image-hygiene.mjs    # the image guard catches what it was written to catch: planted fixtures for every forbidden call, every tombstone, the walk's depth and its skip list
 node scripts/check-image-hygiene.mjs   # no photo can enter the app: the roster-photo pipeline stays deleted, and no shipped file can capture or hold an image
 node scripts/check-csp-hashes.mjs      # every inline boot script is hashed in the CSP
 node scripts/check-freshness.mjs       # a deploy reaches the device: every asset revalidates, the worker is network-first, the build baseline a redeploy is detected against lives in Cache Storage rather than in the worker's own memory, and no .assetsignore rule can remove a file the app loads

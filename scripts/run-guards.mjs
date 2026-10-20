@@ -32,7 +32,8 @@ import { fileURLToPath } from 'node:url';
 const GUARDS = [
   'check-worker-config.mjs',   // the config every other guard reads
   'check-sw-shell.mjs',        // every sw.js SHELL entry exists on disk
-  'check-image-hygiene.mjs',   // the roster-OCR code cannot persist the photo
+  'test-image-hygiene.mjs',    // the image guard still catches what it was written to catch
+  'check-image-hygiene.mjs',   // no image can enter the app: the OCR pipeline stays deleted
   'check-csp-hashes.mjs',      // every inline boot script is hashed in the CSP
   'check-freshness.mjs',       // a deploy always reaches the device
   'check-icon-refs.mjs',       // every icon name app.js looks up exists
@@ -43,6 +44,7 @@ const GUARDS = [
   'check-css-tokens.mjs',      // the stylesheets' tokens stay in step
   'test-integrity.mjs',        // storage/merge cannot lose or corrupt data
   'test-load-existing.mjs',    // a document written by the old app loads in the port
+  'check-pin-screens.mjs',     // the browser leg that loads it behind the PIN stays honest (it needs Playwright, so it runs by hand)
   'test-profiles.mjs',         // profiles stay isolated
   'test-tesco.mjs',            // the pay/tax engine still matches the workbook
   'test-sync.mjs',             // the sync contract still round-trips the state
