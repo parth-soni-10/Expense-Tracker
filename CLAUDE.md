@@ -128,7 +128,12 @@ profiles.js       per-profile namespacing (nsKey) + the admin tab/access policy
 seed.js           category/method/settings defaults (edit here for forward-compat)
 index.html        boot scripts (theme, SW, diagnostics) — 5 inline scripts, CSP-hashed
 styles.css        design system (CSS variables: --ink, --line, --radius, emerald accent)
-sw.js             service worker (network-first, same-origin cache only, cache 'cents-v25';
+ui.js             the local ui-kit runtime vendored from design-system/ui-kit/ (installs every
+                  data-ui component in the document and exposes the kit's public API)
+ui.css            the kit's styles, themed through cents-theme onto this app's variables
+components.js     the Cents screen layer: builds the kit's components around this app's own
+                  state and data (dashboard figures, add form, history rows, insights charts)
+sw.js             service worker (network-first, same-origin cache only, cache 'cents-v28';
                   the build baseline a redeploy is detected against lives in 'cents-build')
 wrangler.toml     assets + function routes, the KV binding, [vars], the secrets to set
 _headers          the header policy, CSP script hashes included
@@ -144,6 +149,7 @@ serve.sh          local static server
 
 ## Conventions
 - Commits: concise imperative summaries ("Fix …", "Add …", "Exclude … from …"), no conventional-commit prefixes, pushed straight to `main`.
+- **The component layer is the ui-kit, vendored once — never a second design system.** `ui.js` and `ui.css` are copied verbatim from `design-system/ui-kit/` (re-vendor, do not hand-edit; the kit is the source of truth), and `components.js` holds only Cents-specific glue: it builds the kit's components around this app's state and data. A host marks an instance with `data-ui="<id>"`, and the kit's `install` writes the same id into `data-component`, so “which components are on this route” is answerable from the DOM rather than from this file. Styling is `ui.css` + `styles.css` themed through `cents-theme`; there is no `components.css` here. Behaviour rules live in the kit, not in the screen: the Time Undo contract (`time-undo-action` is the kit's one slot), `LayoutGroup` ids scoped per screen, reduced motion handled in `ui.css`, and every new kit file added to `sw.js`'s `SHELL` so a first offline open is complete.
 - Amounts are euros as numbers validated to 2dp (`Math.round(a*100)/100 === a`); never silently round imported money.
 - Budget calculations exclude load/withdraw balance adjustments and Revolut Savings (`RS`) transactions — check existing filters before touching budget math.
 - Setup links carry encrypted tokens; the endpoint whitelist + post-unlock confirm dialog are security invariants — never bypass them.
