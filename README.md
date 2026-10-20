@@ -123,10 +123,10 @@ Headline figures **count when they change**: the month total, the running balanc
 
 ## Checks
 
-Twenty-two pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all twenty-two in order and **stops at the first failure**. That single command is also what CI calls:
+Twenty-three pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all twenty-three in order and **stops at the first failure**. That single command is also what CI calls:
 
 ```
-node scripts/run-guards.mjs            # all twenty-two, in order
+node scripts/run-guards.mjs            # all twenty-three, in order
 node scripts/check-worker-config.mjs   # wrangler.toml + functions/_router.js: the Pages project, the route table the browser calls, the KV binding, that the removed daily reminder has stayed removed, that no secret sits in a committed file, the CI wiring, and the docs below
 node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
 node scripts/test-image-hygiene.mjs    # the image guard catches what it was written to catch: planted fixtures for every forbidden call, every tombstone, the walk's depth and its skip list
@@ -141,6 +141,7 @@ node scripts/check-mobile-layout.mjs   # a stat value reaches its card formatted
 node scripts/check-css-tokens.mjs      # the stylesheet is a closed system: every custom property read is defined, every @keyframes is animated by something, and the braces balance
 
 node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or resurrect data (including the payment methods you own, the one date rule, and the document's own shape)
+node scripts/test-parity-money.mjs     # the money rules a typed line goes through: the quick-entry parser (lifted from app.js and executed, not copied), cents-only precision (a third decimal is refused, never truncated or rounded), and the split/transfer groups that must survive a save/load round trip
 node scripts/test-load-existing.mjs    # a document the shipping app wrote loads in the ported core and round-trips unchanged (the frozen fixture is built by scripts/make-cents-fixture.mjs)
 node scripts/check-pin-screens.mjs     # the browser leg below still loads that fixture, in a fresh context, behind the test PIN under the production CSP — and stays a hand-run leg rather than a CI dependency
 node scripts/test-profiles.mjs         # profiles stay isolated, and their cloud credentials never fall back

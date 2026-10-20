@@ -43,6 +43,7 @@ const GUARDS = [
   'check-mobile-layout.mjs',   // a figure cannot leave the box it is drawn in
   'check-css-tokens.mjs',      // the stylesheets' tokens stay in step
   'test-integrity.mjs',        // storage/merge cannot lose or corrupt data
+  'test-parity-money.mjs',     // quick entry, cents-only precision and split/transfer pairs, run against app.js itself
   'test-load-existing.mjs',    // a document written by the old app loads in the port
   'check-pin-screens.mjs',     // the browser leg that loads it behind the PIN stays honest (it needs Playwright, so it runs by hand)
   'test-profiles.mjs',         // profiles stay isolated

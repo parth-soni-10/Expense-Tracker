@@ -4995,6 +4995,10 @@ function daysInMonth(key) {
 function parseNaturalLanguage(text) {
   const raw = String(text || '').trim();
   if (!raw) return null;
+  // Money is stored in cents, so a third decimal is refused rather than
+  // truncated: the number on the ledger has to be the number that was typed.
+  const overPrecise = overPreciseAmount(raw);
+  if (overPrecise) return { error: `${overPrecise} has more decimals than euros have cents - round it to two places first.` };
   const lower = raw.toLowerCase();
 
   // ---- Date: today, yesterday, "N days ago", weekday names ----
@@ -5354,6 +5358,59 @@ function nextContentToken(tokens, from) {
     if (nt && isContentToken(nt)) return nt;
   }
   return null;
+}
+
+/** The first euro-looking token in `raw` that carries more decimals than money
+ *  has. Amounts are stored in cents, so a third decimal is not a rounding
+ *  detail - it is a typo, and the parser used to TRUNCATE it silently ("lidl
+ *  4.477" was read as 4.47) while the storage validator would drop the row it
+ *  produced. Callers refuse the line instead. Thousands grouping is not a
+ *  fraction: "1,200" and "1,200.50" pass, and a date ("12.07.2026") is never
+ *  money. A dot with three digits stays a decimal, which is how parseAmount
+ *  itself reads "1.200" - the comma is the thousands separator here. */
+function overPreciseAmount(raw) {
+  for (const token of String(raw || '').match(/\d[\d.,]*/g) || []) {
+    const text = token.replace(/[.,]+$/, '');
+    if (/^\d{1,2}[.,]\d{1,2}[.,]\d{2,4}$/.test(text)) continue;       // a date, not money
+    if (/^\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?$/.test(text)) continue;   // 1,200 / 1,200.50
+    if (/^\d{1,3}(?:\.\d{3}){2,}$/.test(text)) continue;             // 1.200.000
+    const cut = Math.max(text.lastIndexOf(','), text.lastIndexOf('.'));
+    if (cut < 0) continue;                                           // whole euros
+    if (/^\d{3,}$/.test(text.slice(cut + 1))) return text;
+  }
+  return null;
+}
+
+/** The ledger rows a parsed quick entry becomes. Pure, so the two-leg transfer,
+ *  the N-leg split and the single entry are asserted directly (see
+ *  scripts/test-parity-money.mjs) instead of only being reachable through the
+ *  Add screen's DOM: the parser decides what was said, this decides what the
+ *  ledger receives, and the two halves are checked apart. */
+function quickEntryLegs(parsed) {
+  if (!parsed || parsed.error) return [];
+  const note = 'Created with natural-language input';
+  if (parsed.type === 'transfer') {
+    // Funding a gift card with a payment account is a two-leg transfer: the
+    // payment account is debited and the card is credited, sharing one id.
+    const transferId = uid();
+    const base = { createdAt: nowIso(), date: parsed.date, category: 'misc', details: parsed.details, amount: parsed.amount, note, transferId };
+    return [
+      { ...base, id: uid(), type: 'expense', method: parsed.transfer.from },
+      { ...base, id: uid(), type: 'credit', method: parsed.transfer.to },
+    ];
+  }
+  if (parsed.split && parsed.split.length >= 2) {
+    // Mixing payment methods produces grouped single-method legs sharing a
+    // splitId; they render as one row in history and budget sums them once.
+    const splitId = uid();
+    const createdAt = nowIso();
+    return parsed.split.map(s => ({
+      id: uid(), createdAt, date: parsed.date, type: parsed.type,
+      category: parsed.category, details: parsed.details, amount: s.amount,
+      method: s.method, note, splitId,
+    }));
+  }
+  return [{ id: uid(), createdAt: nowIso(), date: parsed.date, type: parsed.type, category: parsed.category, details: parsed.details, amount: parsed.amount, method: parsed.method, note }];
 }
 
 function duplicateGroups(entries = state.entries) {
@@ -6427,6 +6484,8 @@ function formView({ initial = null, initialType = null, onTypeChange = null, onS
       }]);
       return;
     }
+    const overPrecise = overPreciseAmount(data.amount);
+    if (overPrecise) { toast(`${overPrecise} has more decimals than euros have cents - round it to two places first.`); amountInput.focus(); return; }
     const amt = parseAmount(data.amount);
     if (!Number.isFinite(amt) || amt <= 0) { toast('Enter a valid amount.'); amountInput.focus(); return; }
     if (amt > 100000) { toast('Amount looks too large - double check.'); amountInput.focus(); return; }
@@ -6445,6 +6504,10 @@ function formView({ initial = null, initialType = null, onTypeChange = null, onS
     }
     if (splitOn && splitRows.length >= 2) {
       const slices = splitRows.map(r => ({ method: r.method, amount: parseAmount(r.amount) }));
+      // A slice is entered by hand like any other amount, so it is held to the
+      // same cent rule instead of arriving pre-rounded.
+      const overPreciseSlice = splitRows.map(r => overPreciseAmount(r.amount)).find(Boolean);
+      if (overPreciseSlice) { toast(`${overPreciseSlice} has more decimals than euros have cents - round it to two places first.`); return; }
       if (slices.some(s => !Number.isFinite(s.amount) || s.amount <= 0)) { toast('Enter a positive slice amount for every split line.'); return; }
       const sum = Math.round(slices.reduce((a, s) => a + s.amount, 0) * 100) / 100;
       if (Math.abs(sum - amt) > 0.001) { toast(`Slices total ${fmt(sum)} but the entry amount is ${fmt(amt)} - make them match.`); return; }
@@ -8191,36 +8254,19 @@ function screenAdd() {
   const addQuick = () => {
     const parsed = parseNaturalLanguage(quickInput.value);
     if (!parsed || parsed.error) { toast(parsed?.error || 'Describe an entry first.'); quickInput.focus(); return; }
-    if (parsed.type === 'transfer') {
-      // Funding a gift card with a payment account is a two-leg transfer: the
-      // payment account is debited and the card is credited, sharing one id.
-      const pairId = uid();
-      const fromEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'expense', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.from, note: 'Created with natural-language input', transferId: pairId };
-      const toEntry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: 'credit', category: 'misc', details: parsed.details, amount: parsed.amount, method: parsed.transfer.to, note: 'Created with natural-language input', transferId: pairId };
-      commitAdded([fromEntry, toEntry], `${parsed.details} transfer`, () => {
-        toast('Gift card loaded - transfer created from your description.'); location.hash = '#dashboard';
-      });
-      return;
-    }
-    if (parsed.split && parsed.split.length >= 2) {
-      // Mixing payment methods produces grouped single-method legs sharing a
-      // splitId; they render as one row in history and budget sums them once.
-      const group = { id: uid(), createdAt: nowIso() };
-      const splitId = uid();
-      const legs = parsed.split.map(s => ({
-        id: uid(), createdAt: group.createdAt, date: parsed.date, type: parsed.type,
-        category: parsed.category, details: parsed.details, amount: s.amount,
-        method: s.method, note: 'Created with natural-language input', splitId,
-      }));
-      commitAdded(legs, `${parsed.details} split payment`, () => {
-        toast('Split payment created from your description.'); location.hash = '#dashboard';
-      });
-      return;
-    }
-    const entry = { id: uid(), createdAt: nowIso(), date: parsed.date, type: parsed.type, category: parsed.category, details: parsed.details, amount: parsed.amount, method: parsed.method, note: 'Created with natural-language input' };
-    if (parsed.method === 'Cash') cashAutoFollow();
-    commitAdded([entry], entry.details || 'entry', () => {
-      toast('Entry created from your description.'); location.hash = '#dashboard';
+    const legs = quickEntryLegs(parsed);
+    const isTransfer = parsed.type === 'transfer';
+    const isSplit = legs.length > 1 && !isTransfer;
+    const single = legs.length === 1 ? legs[0] : null;
+    if (single?.method === 'Cash') cashAutoFollow();
+    const label = isTransfer ? `${parsed.details} transfer`
+      : isSplit ? `${parsed.details} split payment`
+      : (single.details || 'entry');
+    commitAdded(legs, label, () => {
+      toast(isTransfer ? 'Gift card loaded - transfer created from your description.'
+        : isSplit ? 'Split payment created from your description.'
+        : 'Entry created from your description.');
+      location.hash = '#dashboard';
     });
   };
   const restoreVoiceLabel = () => { voiceInputBtn.textContent = ''; voiceInputBtn.append(iconSpan('mic', 'sm'), ' Voice'); };
