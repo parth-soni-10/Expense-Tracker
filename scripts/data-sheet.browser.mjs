@@ -72,7 +72,7 @@ try {
   await page.goto(`${base}/index.html`);
   await page.locator('input[aria-label="PIN"]').waitFor({ timeout: 15000 });
   await page.locator('input[aria-label="PIN"]').fill('100901');
-  await page.locator('.pin-lock').waitFor({ state: 'detached', timeout: 15000 });
+  await page.locator('#app').waitFor({ state: 'visible', timeout: 15000 });
   await page.locator('.net-worth-head .display-num').waitFor({ timeout: 15000 });
 
   // Data lives in the nav, beside the tabs, and opens a sheet.
@@ -193,7 +193,7 @@ try {
   await page.evaluate(() => localStorage.setItem('cents:p/personal/quarantine', '{"entries": [broken'));
   await page.reload();
   await page.locator('input[aria-label="PIN"]').fill('100901');
-  await page.locator('.pin-lock').waitFor({ state: 'detached' });
+  await page.locator('#app').waitFor({ state: 'visible' });
   await page.getByRole('button', { name: 'Data', exact: true }).click();
   await page.locator('dialog#data-sheet').waitFor();
   check('an unreadable copy is offered back', (await page.locator('dialog#data-sheet').innerText()).includes('Recover unreadable copy'));

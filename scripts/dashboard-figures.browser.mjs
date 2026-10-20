@@ -85,7 +85,7 @@ async function unlock(page) {
   await page.goto(`${base}/index.html`);
   await page.locator('input[aria-label="PIN"]').waitFor({ timeout: 15000 });
   await page.locator('input[aria-label="PIN"]').fill('100901');
-  await page.locator('.pin-lock').waitFor({ state: 'detached', timeout: 15000 });
+  await page.locator('#app').waitFor({ state: 'visible', timeout: 15000 });
   await page.locator('.net-worth-head .display-num').waitFor({ timeout: 15000 });
   // The figures paint on the frame after the screen mounts; wait for the tide's
   // own aria-label, which only exists once a figure has mounted.

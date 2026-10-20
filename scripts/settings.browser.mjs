@@ -84,9 +84,20 @@ page.on('pageerror', (e) => pageErrors.push(e.message));
 page.on('console', (m) => { if (m.type() === 'error' && /Refused to|Content Security Policy/i.test(m.text())) cspRefusals.push(m.text()); });
 
 const unlock = async () => {
+  // With more than one profile the boot asks who is tracking FIRST, and the
+  // pick lands on that profile's lock. The picker names each profile, so the
+  // pick is made by name rather than by position.
+  const picker = page.locator('.profile-tile');
+  if (await picker.count()) {
+    await picker.first().click();
+    await page.waitForTimeout(400);
+  }
   await page.locator('input[aria-label="PIN"]').waitFor({ timeout: 15000 });
   await page.locator('input[aria-label="PIN"]').fill('100901');
-  await page.locator('.pin-lock').waitFor({ state: 'detached', timeout: 15000 });
+  // The app becomes VISIBLE when the lock is done with it. Waiting for the
+  // gate to be hidden would not do: an empty gate has no size, so the browser
+  // calls it hidden before the lock is even up.
+  await page.locator('#app').waitFor({ state: 'visible', timeout: 15000 });
 };
 
 /** Close every open sheet. They are real modals, so one covers the next and
@@ -281,6 +292,19 @@ try {
   await page.waitForTimeout(600);
   check('the PIN of your own does', await page.locator('input[aria-label="PIN"]').count() === 0);
 
+  // And a RESET puts the default back, so the rest of this leg can still
+  // unlock. The claim is that the DEVICE credential is gone: the app falls
+  // back to the built-in PIN when there is none.
+  await closeSheets();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('dialog#settings-sheet').waitFor({ timeout: 5000 });
+  await page.getByRole('button', { name: 'Reset PIN' }).click();
+  await page.waitForTimeout(300);
+  const afterReset = await page.evaluate(() => Object.keys(localStorage));
+  check('a reset clears the device credential',
+    !afterReset.some((k) => k.startsWith('cents:p/personal/privacy')), afterReset.join(', '));
+  await closeSheets();
+
   // A hidden window is COVERED, never locked: the app-switcher snapshot is
   // taken while hidden, and a tab switch is not an absence.
   await page.evaluate(() => {
@@ -326,6 +350,42 @@ try {
   const tabs = samsDoc?.settings?.enabledTabs || [];
   check('a tab change is written to THAT profile\'s document',
     wasOn ? !tabs.includes('tesco') : tabs.includes('tesco'), JSON.stringify(tabs));
+
+  /* -- the back gesture and the share target ------------------------------- */
+
+  // Android's back gesture closes the top sheet, the way Escape does.
+  await closeSheets();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.locator('dialog#settings-sheet').waitFor({ timeout: 5000 });
+  await page.evaluate(() => history.back());
+  await page.waitForTimeout(500);
+  check('a back press closes the top sheet', await page.locator('dialog#settings-sheet').count() === 0);
+
+  /* -- a shared text lands in the quick entry -------------------------------- */
+
+  // The URL differs from the current one by a query, so this is a real
+  // navigation. There is deliberately NO reload after it: the first boot
+  // already took the query out of the address — that is the rule — so a
+  // reload here would load a page with no share in it at all.
+  await page.goto(`${base}/index.html?text=${encodeURIComponent('coffee 3.50 cash')}#add`);
+  const sharePending = await page.evaluate(() => (window.__cents && window.__cents.shared) ? window.__cents.shared() : null);
+  check('the shared text is read out of the address at boot', sharePending === true, String(sharePending));
+  await unlock();
+  await page.locator('#quick-entry').waitFor({ timeout: 10000 });
+  await page.waitForTimeout(400);
+  const sharedValue = await page.locator('#quick-entry').inputValue();
+  check('a shared text lands in the quick entry', sharedValue === 'coffee 3.50 cash', sharedValue);
+  check('and the query is dropped from the address',
+    !(await page.evaluate(() => location.search)).includes('text='),
+    await page.evaluate(() => location.search));
+  await page.reload();
+  await unlock();
+  await page.locator('#quick-entry').waitFor({ timeout: 10000 });
+  await page.waitForTimeout(400);
+  check('so a reload does not prefill the same share again',
+    (await page.locator('#quick-entry').inputValue()) === '',
+    await page.locator('#quick-entry').inputValue());
+
   /* ── the shell is still clean ──────────────────────────────────────────── */
 
   const styled = await page.evaluate(() => [...document.querySelectorAll('#screen [style], dialog [style]')]

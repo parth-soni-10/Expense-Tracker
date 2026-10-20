@@ -85,7 +85,7 @@ page.on('request', (r) => requested.push(r.url()));
 const unlock = async () => {
   await page.locator('input[aria-label="PIN"]').waitFor({ timeout: 15000 });
   await page.locator('input[aria-label="PIN"]').fill('100901');
-  await page.locator('.pin-lock').waitFor({ state: 'detached', timeout: 15000 });
+  await page.locator('#app').waitFor({ state: 'visible', timeout: 15000 });
 };
 const tescoState = () => page.evaluate(() => JSON.parse(localStorage.getItem('cents:p/personal/state')));
 

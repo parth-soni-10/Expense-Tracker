@@ -2,7 +2,7 @@
   "id": "/",
   "name": "cents. — expense tracker",
   "short_name": "cents.",
-  "description": "A local-first expense tracker. Log spending by typing it, track balances, budgets and gift cards, and read Tesco payslips from a photo of the roster. Your ledger lives on your device.",
+  "description": "A local-first expense tracker. Log spending by typing it, track balances, budgets, gift cards and your recurring bills, and read your Tesco Pay weeks. Your ledger lives on your device.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -48,7 +48,7 @@
     {
       "name": "Tesco Pay",
       "short_name": "Tesco",
-      "description": "Shifts, payslips and the roster photo reader",
+      "description": "Shifts, payslips and your pay weeks",
       "url": "/#tesco",
       "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
     },

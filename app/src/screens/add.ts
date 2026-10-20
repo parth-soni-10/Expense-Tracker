@@ -20,6 +20,8 @@ import { methodLabel, methodShort } from '../metrics.ts';
 import { methodOptions } from '../../lib/methods.ts';
 import { overPreciseAmount, parseNaturalLanguage, quickEntryLegs, type ParsedEntry } from '../quick-entry.ts';
 import { navigate } from '../router.ts';
+import { takeSharedText } from '../share.ts';
+import { toast } from '../toast.ts';
 import type { ScreenContext } from './context.ts';
 
 function categoryLabel(id: string): string {
@@ -92,9 +94,20 @@ export function renderAdd({ state, params, save }: ScreenContext): HTMLElement {
     );
   };
 
+  // Text shared in from another app goes into the QUICK entry, and it is
+  // consumed ONCE — the share may have landed while the app was locked, so it
+  // waits for this screen. Nothing is stored: the preview names what the line
+  // will become, and the user still presses Add.
+  const shared = takeSharedText();
+  if (shared) {
+    input.value = shared;
+    renderPreview();
+    queueMicrotask(() => { if (input.isConnected) input.focus(); });
+    toast('Shared into the quick entry - check the preview, then Add.');
+  }
+
   const addQuick = (): void => {
-    const raw = input.value.trim();
-    if (!raw) {
+    const raw = input.value.trim();    if (!raw) {
       status.textContent = 'Type what you spent, for example “coffee 3.50 cash”.';
       status.className = 'add-status is-error';
       return;

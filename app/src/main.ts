@@ -20,6 +20,8 @@ import { byId, clear, el } from './dom.ts';
 import { toast } from './toast.ts';
 import { currentTheme, onThemeChange, toggleTheme } from './theme.ts';
 import { startIdleLock, stopIdleLock, wireIdleLock } from './idle-lock.ts';
+import { wireBackGesture } from './back-gesture.ts';
+import { hasSharedText, readSharedText } from './share.ts';
 import { renderAdd } from './screens/add.ts';
 import { openDataSheet } from './screens/data.ts';
 import { openSettings } from './screens/settings.ts';
@@ -258,7 +260,12 @@ function switchProfile(id: string): void {
     return;
   }
   state = loadState();
-  render(readRoute());
+  // The pick records this session's answer, so the picker is no longer the
+  // gate — and a different profile is a different document and a different
+  // PIN, so the LOCK takes its place, and it is that profile's lock. Without
+  // this the picker would sit there over the new profile's ledger, which is
+  // exactly the screen that must not be readable before the PIN.
+  showPinLock({ state, onUnlock: reveal });
 }
 
 /* ── the update prompt ────────────────────────────────────────────────────── */
@@ -308,14 +315,17 @@ function bootServiceWorker(): void {
 /* ── boot ─────────────────────────────────────────────────────────────────── */
 
 function boot(): void {
-  window.__cents = { route: readRoute, shell: '2026-10-20' };
-  // The link is read and taken out of the address bar BEFORE anything else:
-  // a credential must never sit in a URL a user can copy or a screenshot can
-  // catch.
+  window.__cents = { route: readRoute, shell: '2026-10-20', shared: () => hasSharedText() };
+  // The shared text is read FIRST, because the setup-link handler below
+  // rewrites the address — and it must take the whole query with it, so that
+  // a credential never sits in a URL a user can copy or a screenshot can
+  // catch. Reading the share after that would find an empty query.
+  readSharedText();
   applySetupLinkIfPresent();
   buildNav(readRoute().id);
   buildThemeToggle();
   wireIdleLock(lockNow);
+  wireBackGesture();
   subscribe((route) => render(route));
   bootServiceWorker();
 

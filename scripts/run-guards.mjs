@@ -53,6 +53,7 @@ const GUARDS = [
   'test-lock.mjs',              // the lock: PBKDF2 on the device, the idle clock, the cover
   'test-profile-surface.mjs',   // a link may not redirect the device; the admin's door is the owner's
   'test-sync-surface.mjs',      // the credential stays on the device, the mirror is a backup, the routes answer to both names
+  'test-app-surface.mjs',       // the manifest points at live routes, back closes a sheet and not the lock
   'test-metrics.mjs',          // the ported ledger arithmetic agrees with the frozen document
   'test-data-portability.mjs', // the Data sheet's size, counts, planned merge and cash re-anchor
   'test-history-edit.mjs',     // the History edit path: fields, history, grouped rows, storage and checkpoints
