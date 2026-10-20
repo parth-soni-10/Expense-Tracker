@@ -1,93 +1,158 @@
 #!/usr/bin/env node
 /**
- * Guards the "the roster photo is never stored" promise, across every file that
- * can hold the photo's pixels.
+ * Guards the "no roster photo ever enters this app, so none can be stored"
+ * promise, now that the photo pipeline is gone.
  *
- * This is a lint, not a proof: it fails the deploy if the OCR code grows a
- * persistence call or loses one of the release steps, so a future edit cannot
- * quietly start keeping the user's photo. The runtime side of the promise (no
- * image ever leaves memory) is covered by construction in ocrRosterRow() and the
- * reader's read path — decode to a bitmap, draw the read's region and read it
- * back, hand those pixels to a prep worker, release the bitmap, zero the canvas,
- * terminate the workers.
+ * History, because the shape of this guard is a decision and not a leftover: the
+ * roster OCR used to read a photographed sheet, and this lint walked the three
+ * files that could hold its pixels (the reader, the prep worker, the shared pixel
+ * layer) for a persistence call or a missing release step. Commit `97fb40f`
+ * removed the whole pipeline — engine pool, tesseract, camera modal, file input,
+ * prep workers, `ocr-pixels.js`, `ocr-harness.html`, `vendor/tesseract/` — and kept
+ * the pure text side (`parseRosterWords`, `columnAnchors`, `resolveColumnDates`,
+ * `rosterColumnBounds`, pinned in `scripts/test-tesco.mjs`). A lint that still
+ * named those files would fail on their absence and, worse, would pass a
+ * re-introduced camera: it only ever looked at the reader.
  *
- * The file list is the point: the photo used to live in exactly one file, and when
- * preparation moved off the main thread (ocr-prep-worker.js) two more files started
- * holding pixels — the worker that thresholds and encodes them, and the pixel layer
- * both of them share (ocr-pixels.js). A guard that only read tesco.js would have
- * gone on passing while the worker grew a cache of its own.
+ * So the guard inverts. It is now two pins:
+ *
+ *   1. The pipeline stays deleted. The files that held the photo are tombstones:
+ *      if one comes back, the decision above was undone and this fails.
+ *   2. No shipped file can capture or hold an image at all. The scan is the
+ *      whole shipped surface, not a list of files, because the way a pipeline
+ *      returns is a new module beside the old one. `file.text()`, the workbook
+ *      reader and the CSV import are untouched by this: what is forbidden is
+ *      pixels (canvas read/write, encoded copies, blobs, off-main-thread pixel
+ *      surfaces) and capture (camera, file-input capture), not reading text.
+ *
+ * `tesco.js`'s no-storage rule survives the removal and is the one non-image pin
+ * here: the module takes storage as function arguments (`foldGet`/`foldSet` reach
+ * it through the screen's `ctx`) and writes none itself. That is how the fold
+ * preference is kept out of device storage, so the rule is kept — and it is
+ * exactly the rule that failed the first time someone reached for `localStorage`
+ * inside it.
+ *
+ * This is a lint, not a proof. The runtime side of the promise is structural now:
+ * there is no capture path to leave a photo in memory.
  *
  * Run standalone:  node scripts/check-image-hygiene.mjs
  * Also a step in scripts/run-guards.mjs.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-// Calls that would mean the picked image (or its pixels) can outlive the scan.
-const FORBIDDEN = [
-  ['toDataURL', 'canvas data URL (an encoded copy of the image)'],
-  ['localStorage', 'browser storage'],
-  ['sessionStorage', 'browser storage'],
-  ['indexedDB', 'browser storage'],
+const root = fileURLToPath(new URL('../', import.meta.url));
+
+// Files and directories that held the photo, and must not exist again.
+const TOMBSTONES = [
+  'ocr-prep-worker.js',
+  'ocr-pixels.js',
+  'ocr-harness.html',
+  'vendor/tesseract',
+];
+
+// Calls that would mean an image can be captured or its pixels held. Each is a
+// separate way the promise dies, so each says why.
+const IMAGE = [
+  ['getUserMedia', 'a live camera'],
+  ['capture=', 'the camera attribute on a file input'],
+  ['toDataURL', 'an encoded copy of a canvas (or of the photo on it)'],
   ['createObjectURL', 'a URL that can be fetched and cached'],
-  ['FileReader', 'an alternate read path that bypasses the canvas'],
-  ['fetch(', 'a network request for the picked file'],
+  ['FileReader', 'an alternate read path for a picked file'],
+  ['drawImage', 'a photo drawn into a canvas'],
+  ['getImageData', 'a canvas read back as pixels'],
+  ['putImageData', 'pixels written into a canvas'],
+  ['convertToBlob', 'an encoded image blob'],
+  ['OffscreenCanvas', 'a pixel surface off the main thread'],
+  ['ImageData', 'a pixel buffer'],
+  ['new Worker(', 'a worker holding the pixels'],
+  ['tesseract', 'the OCR engine'],
 ];
 
-// Steps that must exist, and calls that must not, each doing part of the promise.
-// They differ per file: the reader owns the decode, the preview canvas, the file
-// input and the whole pool teardown; the prep worker is handed a read's pixels and
-// must only threshold and encode them.
-//
-// The worker's own forbidden list is the invariant that cost a scenario: it must
-// not draw the photo and read it back. A worker's `drawImage` does not resample a
-// source rectangle the way the reader's does — ±1 grey level on 0.6 % of a 12 MP
-// strip, and up to three levels on a pre-cut image — which is enough to move the
-// cell crops and flip a marginal read (`blurry`). So the draw and the readback
-// stay on the reader's thread, where the engine is handed the image it has always
-// been handed, and a `getImageData` here would mean they had moved back.
-const FILES = [
-  {
-    file: '../tesco.js',
-    required: [
-      ['bitmap.close()', 'release the decoded bitmap'],
-      ['canvas.width = 0', 'zero the working canvas'],
-      ['disposeOcrWorker()', 'destroy the workers that held the pixels'],
-      ["input.value = ''", 'clear the file input so it retains no reference'],
-    ],
-  },
-  {
-    file: '../ocr-prep-worker.js',
-    required: [
-      ['putImageData', 'write the pixels it was handed into a surface of its own'],
-      ['convertToBlob', 'encode them for the engine'],
-    ],
-    forbidden: [['getImageData', 'read a canvas back in the worker — the draw belongs on the reader\u2019s thread, where the image is the one the engine has always been handed']],
-  },
-  { file: '../ocr-pixels.js', required: [] },
-];
+// The one image-adjacent call the app legitimately makes: `downloadText` builds a
+// text download from memory (CSV, JSON). There are no image bytes in it, so it is
+// allowed by exact shape and only in that file — a second `createObjectURL` there,
+// or any in another file, is a fetched copy of something and fails below.
+const ALLOWED_OBJECT_URL = {
+  file: 'storage.js',
+  shape: 'URL.createObjectURL(new Blob([text], { type: mime }))',
+};
+
+// A module that must not write device storage, and why — see the header. `fetch(`
+// is here for the same reason the reader's file list once carried it: the module
+// is given what it needs, it does not go and get it.
+const NO_STORAGE = {
+  file: 'tesco.js',
+  forbidden: [
+    ['localStorage', 'device storage — take it as a function argument (foldGet/foldSet) instead'],
+    ['sessionStorage', 'device storage — take it as a function argument instead'],
+    ['indexedDB', 'device storage — take it as a function argument instead'],
+    ['fetch(', 'a network call — the screen is handed what it needs by app.js'],
+  ],
+};
+
+// The shipped surface. Everything the browser can load is scanned; the
+// directories below are either not shipped (scripts/, .pages-dist/ build output,
+// docs) or not ours to change (vendor/, node_modules/).
+const SRC_EXTENSIONS = ['.js', '.mjs', '.html'];
+const SKIP_DIRECTORIES = new Set(['.git', '.github', 'node_modules', 'scripts', 'vendor', '.pages-dist', '.wrangler', 'docs', 'tests']);
+
+const shippedFiles = (directory) => {
+  const found = [];
+  for (const entry of readdirSync(directory).sort()) {
+    const path = join(directory, entry);
+    if (statSync(path).isDirectory()) {
+      if (!SKIP_DIRECTORIES.has(entry)) found.push(...shippedFiles(path));
+      continue;
+    }
+    if (SRC_EXTENSIONS.some(extension => entry.endsWith(extension))) found.push(path);
+  }
+  return found;
+};
 
 let failed = 0;
-for (const { file, required, forbidden = [] } of FILES) {
-  const raw = readFileSync(new URL(file, import.meta.url), 'utf8');
-  // Drop whole-line // comments so prose explaining *why* the photo is never
-  // fetched cannot read as a violation. Deliberately line-anchored: a block
-  // comment strip is not safe here (a `/*` sequence elsewhere in the source can
-  // swallow real code), and the cost of missing a wrapped comment is a clear
-  // false positive, not a blind guard.
-  const src = raw.replace(/^[ \t]*\/\/.*$/gm, '');
-  const name = file.replace(/^\.\.\//, '');
-  for (const [needle, why] of [...FORBIDDEN, ...forbidden]) {
+
+for (const tombstone of TOMBSTONES) {
+  if (existsSync(join(root, tombstone))) {
+    console.error(`check-image-hygiene: ${tombstone} is back — the roster-photo pipeline was removed on purpose (97fb40f); this app reads no images.`);
+    failed++;
+  }
+}
+
+for (const path of shippedFiles(root)) {
+  const name = relative(root, path).replace(/\\/g, '/');
+  const raw = readFileSync(path, 'utf8');
+  // Drop whole-line // comments so prose explaining *why* there is no image path
+  // cannot read as a violation (tesco.js still explains what it no longer does).
+  // Deliberately line-anchored: a block-comment strip is not safe here (a `/*`
+  // sequence elsewhere in the source can swallow real code), and the cost of
+  // missing a wrapped comment is a clear false positive, not a blind guard.
+  let src = raw.replace(/^[ \t]*\/\/.*$/gm, '');
+  if (name === ALLOWED_OBJECT_URL.file) {
+    const allowed = src.split(ALLOWED_OBJECT_URL.shape).length - 1;
+    const objectUrls = src.split('createObjectURL').length - 1;
+    if (allowed !== objectUrls) {
+      console.error(`check-image-hygiene: ${name} builds an object URL that is not the text download \`${ALLOWED_OBJECT_URL.shape}\` (${objectUrls} call(s), ${allowed} of them that shape) — a URL made from anything else can outlive the file it came from.`);
+      failed++;
+    }
+    src = src.split(ALLOWED_OBJECT_URL.shape).join('');
+  }
+  for (const [needle, why] of IMAGE) {
     if (src.includes(needle)) {
-      console.error(`check-image-hygiene: ${name} must not use ${needle} (${why}).`);
+      console.error(`check-image-hygiene: ${name} must not use ${needle} (${why}). No photo enters this app; keep it that way.`);
       failed++;
     }
   }
-  for (const [needle, why] of required) {
-    if (!src.includes(needle)) {
-      console.error(`check-image-hygiene: ${name} is missing ${needle} — needs to ${why}.`);
-      failed++;
+  if (name === NO_STORAGE.file) {
+    for (const [needle, why] of NO_STORAGE.forbidden) {
+      if (src.includes(needle)) {
+        console.error(`check-image-hygiene: ${name} must not use ${needle} (${why}).`);
+        failed++;
+      }
     }
   }
 }
+
 if (failed) process.exit(1);
-console.log(`check-image-hygiene: OK — the roster photo is never persisted (${FILES.map(f => f.file.replace(/^\.\.\//, '')).join(', ')}), no storage or network path exists.`);
+console.log(`check-image-hygiene: OK — no capture or pixel path exists in the shipped code, and the OCR pipeline stays deleted (${TOMBSTONES.join(', ')}). ${NO_STORAGE.file} writes no device storage.`);

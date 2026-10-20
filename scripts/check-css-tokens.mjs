@@ -45,7 +45,7 @@ const fails = [];
 
 /** Every module that can carry an inline style or a class-list lookup. */
 const SOURCES = [
-  'styles.css', 'index.html', 'app.js', 'insights.js', 'tesco.js', 'ocr-pixels.js',
+  'styles.css', 'index.html', 'app.js', 'insights.js', 'tesco.js',
   'app/lib/tesco-pay.ts', 'app/lib/storage.ts', 'app/lib/settings.ts',
   'app/lib/profiles.ts', 'app/lib/sync.ts', 'app/lib/sync-merge.ts',
 ].filter(existsSync);

@@ -220,10 +220,14 @@ ok('Escape stays the modals\' own business (isTopModal)',
 ok('the trap is built with focus-trap\'s own factory',
   /focusTrap\.createFocusTrap\(top, \{/.test(appSrc), true);
 // Tabbing inside a modal must not be able to reach the page behind it, and the two
-// modal systems (app.js's and tesco.js's) both produce `.modal-bg`.
+// modal systems (app.js's and tesco.js's) both produce `.modal-bg` — the class is
+// the observer's handle, so a module that swapped it for a class of its own would
+// silently escape the trap. The count is a floor, not a census: the OCR removal
+// took tesco.js's camera modal with it, leaving the shift editor, and a screen that
+// grows another sheet should not fail this.
 ok('both modules produce the same modal element for the observer to see',
   (appSrc.match(/class: 'modal-bg'/g) || []).length >= 15
-  && (tescoSrc.match(/class: 'modal-bg'/g) || []).length >= 2, true);
+  && (tescoSrc.match(/class: 'modal-bg'/g) || []).length >= 1, true);
 ok('and tesco.js appends them through app.js\'s own stackModal',
   /stackModal\(bg\)/.test(tescoSrc), true);
 // The workbook import reaches SheetJS through the one lazy loader, with the path

@@ -61,20 +61,6 @@ https://:version.:project.pages.dev/*
 /fonts/*
   Cache-Control: no-cache, must-revalidate
 
-# The roster-OCR language model: an explicit type for the same reason as the
-# wasm rule below, and no-cache so a model swap is never masked — the 2.9 MB
-# revalidates as a cheap 304 rather than being re-downloaded.
-/vendor/tesseract/*.gz
-  Content-Type: application/gzip
-  Cache-Control: no-cache, must-revalidate
-
-# WebAssembly core for the roster OCR. `Content-Type: application/wasm` is not
-# cosmetic: the browser's streaming compiler refuses a mislabelled response
-# ("Incorrect response MIME type. Expected 'application/wasm'").
-/vendor/tesseract/*.wasm
-  Content-Type: application/wasm
-  Cache-Control: no-cache, must-revalidate
-
 # Web App Manifest — Chrome expects a JSON MIME type before it treats the site
 # as installable, so it is explicit rather than left to the extension table.
 /manifest.json
