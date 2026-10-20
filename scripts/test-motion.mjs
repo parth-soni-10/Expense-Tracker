@@ -309,7 +309,10 @@ ok('and no card follows the cursor around',
 // a headless bridge emits no hover), but the contract between the attributes the
 // charts emit and the selectors the scopes are wired for can be, and it is the
 // half that goes wrong silently.
-const emitted = new Set([...src.matchAll(/'?(data-[\w-]*tip)'\s*:/g)].map(m => m[1]));
+// The component layer's own tooltip text is `data-ui-tip`; it is not a chart
+// mark and no wireChartTips() scope should ever cover it, so the namespace is
+// excluded rather than reported as an unwired chart attribute.
+const emitted = new Set([...src.matchAll(/'?(data-(?!ui-)[\w-]*tip)'\s*:/g)].map(m => m[1]));
 const delegates = [...src.matchAll(/wireChartTips\([^,]+,\s*'([^']+)'/g)].map(m => m[1]);
 ok('the charts emit at least one tip attribute', emitted.size >= 1, true);
 ok('and every one of them is covered by a wired scope',

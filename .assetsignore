@@ -65,6 +65,10 @@ a11y-harness.html
 *.csv
 *.xlsx
 data*.json
+# A scraped text dump that appeared in the working tree during the roster-OCR
+# work. The assets directory is the repository root, so an unlisted local dump
+# would be downloadable at its own URL.
+tesco_full.txt
 
 # The new Cents app: the cutover target. Its source, typed logic core and
 # tsconfig are development files while the old root app serves, so none of it
