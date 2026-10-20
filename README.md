@@ -123,10 +123,10 @@ Headline figures **count when they change**: the month total, the running balanc
 
 ## Checks
 
-Thirty-three pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all thirty-three in order and **stops at the first failure**. That single command is also what CI calls:
+Thirty-four pure-Node guardrails run in CI, and they are what you run before a deploy; `run-guards.mjs` runs all thirty-four in order and **stops at the first failure**. That single command is also what CI calls:
 
 ```
-node scripts/run-guards.mjs            # all thirty-three, in order
+node scripts/run-guards.mjs            # all thirty-four, in order
 node scripts/check-worker-config.mjs   # wrangler.toml + functions/_router.js: the Pages project, the route table the browser calls, the KV binding, that the removed daily reminder has stayed removed, that no secret sits in a committed file, the CI wiring, and the docs below
 node scripts/check-sw-shell.mjs        # every offline-shell entry exists on disk
 node scripts/test-image-hygiene.mjs    # the image guard catches what it was written to catch: planted fixtures for every forbidden call, every tombstone, the walk's depth and its skip list
@@ -150,6 +150,7 @@ node scripts/test-methods.mjs           # the payment methods the user owns (a r
 node scripts/test-tesco-sheet.mjs      # the Tesco sheet's own two tables, run against the SHIPPING source: the ported rules answer exactly like tesco.js does, and the round trip loses no shift, no week off and no bank figure
 node scripts/test-lock.mjs             # the lock: the PIN is PBKDF2 with a fresh salt on the DEVICE, the idle clock is five minutes and the only time-based lock, a hidden window is covered and never locked, and the credential is namespaced per profile
 node scripts/test-profile-surface.mjs  # the profile surfaces: a setup link may not redirect the device (only the site's own path or an endpoint the device already trusts), the switch names the account and does not reload, and the admin's door is the owner's password
+node scripts/test-sync-surface.mjs     # the cloud sync surfaces: the credential is device-local and per profile, the mirror is a BACKUP that never gates a save, the mirror states are a closed vocabulary, feedback writes only fb: keys, and every route answers to both of its spellings
 node scripts/test-metrics.mjs          # the ported ledger arithmetic: what counts as spending, checkpoint-aware balances, gift cards, cash and the projection, checked against the frozen document
 node scripts/test-data-portability.mjs # the Data sheet's own numbers: the size and count it prints, a restore that is planned before it is offered, newest-wins with tombstones, and the Cash re-anchor a restored ledger needs
 node scripts/test-history-edit.mjs     # the History edit path: every field the form offers is written, the replaced version is recorded where checkpoint balances and merges read it, a refusal writes nothing, and a transfer/split row stays one payment
