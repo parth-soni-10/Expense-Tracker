@@ -3,7 +3,10 @@
    CSP is script-src 'self' with no inline allowance. */
 (function () {
   var stored = localStorage.getItem('cents-theme');
-  if (stored !== 'light') document.documentElement.dataset.theme = 'dark';
+  // Light is the default: the stylesheet's `:root` is the light palette and
+  // `[data-theme="dark"]` overrides it, so the attribute is only written
+  // for a device that has chosen dark.
+  if (stored === 'dark') document.documentElement.dataset.theme = 'dark';
 
   var schemeMeta = document.querySelector('meta[name="color-scheme"]');
   var themeMeta = document.querySelector('meta[name="theme-color"]');

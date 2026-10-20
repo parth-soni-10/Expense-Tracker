@@ -6,9 +6,8 @@
    This module exists so the app shell can have its figures without
    the rest of Tesco Pay. The dashboard shows a month's hours, an
    anticipated net and what the bank has received, and those come
-   from here — but the screen, the roster-photo reader, the pixel
-   pipeline and the workbook importer (tesco.js) are ~240 KB that a
-   session may never need. app.js therefore imports THIS file on
+   from here — but the screen and the workbook importer (tesco.js) are
+   weight a session may never need. app.js therefore imports THIS file on
    boot and fetches tesco.js on the first visit to #tesco, which
    scripts/test-boot-payload.mjs pins.
 

@@ -60,8 +60,12 @@ check('it installs with no browser chrome', manifest.display === 'standalone', S
 check('and declares a fallback for a platform that cannot do standalone',
   Array.isArray(manifest.display_override) && manifest.display_override[0] === 'standalone',
   JSON.stringify(manifest.display_override));
+// The installed splash and the status bar are the first paint, so they are the
+// DEFAULT theme's background — light (#F5F5F2) since the theme default flipped,
+// with dark reached by `data-theme`. Pinned here because the manifest is not
+// read by any stylesheet: a mismatch shows as a dark flash around a light app.
 check('the splash and status bar use the app background',
-  manifest.background_color === '#101210' && manifest.theme_color === '#101210',
+  manifest.background_color === '#F5F5F2' && manifest.theme_color === '#F5F5F2',
   `${manifest.background_color} / ${manifest.theme_color}`);
 check('the description is short enough to survive an install prompt',
   typeof manifest.description === 'string' && manifest.description.length > 20 && manifest.description.length <= 320,
@@ -98,6 +102,36 @@ check('and with the short name, which is what a browser composes with when it sh
 check('the iOS home-screen label is the same short name the launcher shows',
   metaContent('apple-mobile-web-app-title') === manifest.short_name,
   `"${metaContent('apple-mobile-web-app-title')}" vs "${manifest.short_name}"`);
+
+// ---------------------------------- 1c. the default theme, in every file that sets it
+// The manifest colours above are what an installed copy shows before any HTML
+// exists; the document's own metas and its pre-paint script decide the first
+// frame the app paints. Light is the default, so the only value either script
+// may write is `dark`, and only for a device that chose it. The failure this
+// pins is precisely the one that made the default dark: a script that reads
+// "not light" as "dark", which also turns a junk stored value into a dark first
+// paint. The served shell keeps its own copy of the rule and its own document,
+// so both documents and both scripts are asserted together.
+const readsDarkAsOptIn = (src) =>
+  /cents-theme/.test(src) && /===\s*'dark'/.test(src) && !/!==\s*'light'/.test(src);
+check('the pre-paint script applies dark only when the device chose it',
+  readsDarkAsOptIn(html),
+  'index.html’s theme script no longer reads cents-theme as "dark unless told otherwise"');
+check('index.html ships a light colour-scheme and status bar',
+  metaContent('color-scheme') === 'light' && metaContent('theme-color') === '#F5F5F2',
+  `${metaContent('color-scheme')} / ${metaContent('theme-color')}`);
+const shellInit = read('app/theme-init.js');
+const shellHtml = read('app/index.html');
+const shellMeta = (name) => {
+  const m = shellHtml.match(new RegExp(`<meta name="${name}" content="([^"]*)"`));
+  return m ? m[1] : '';
+};
+check('the served shell applies the same default before its first paint',
+  readsDarkAsOptIn(shellInit),
+  'app/theme-init.js does not agree with the shipping app');
+check('and its document ships the same light metas',
+  shellMeta('color-scheme') === 'light' && shellMeta('theme-color') === '#F5F5F2',
+  `${shellMeta('color-scheme')} / ${shellMeta('theme-color')}`);
 
 // ------------------------------------------------- 2. icons that are really there
 /** The PNG header's own width/height, so a declared `sizes` cannot lie. */

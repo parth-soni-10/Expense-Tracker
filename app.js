@@ -10125,7 +10125,7 @@ function render() {
       card: isDark ? '#171A17' : '#FFFFFF',
       line: isDark ? '#272B26' : '#E3E3DC',
       ink: isDark ? '#E8EBE5' : '#161712',
-      muted: isDark ? '#8C928A' : '#6E6E67',
+      muted: isDark ? '#8C928A' : '#67675F',
       soft: isDark ? '#1C2A20' : '#E9F2EC',
       softBorder: isDark ? '#2E3D33' : '#BFD6C9',
       kbdBg: isDark ? '#161916' : '#ECECE7',
@@ -10182,12 +10182,14 @@ function _render() {
   const main = document.getElementById('app');
   if (!main) return;
   const focusedField = captureFocusedField();
-    // Init dark mode + season on first render - dark is the default
+    // Init theme on first render - light is the default, and `data-theme="dark"`
+    // is the only value written (an absent attribute is light, everywhere else
+    // in this file the same way).
   if (!document.documentElement.dataset.themeInit) {
     document.documentElement.dataset.themeInit = '1';
     try {
       const saved = localStorage.getItem('cents-theme');
-      document.documentElement.dataset.theme = saved === 'light' ? '' : 'dark';
+      document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : '';
     } catch(e) {}
   }
   // Keep the app mount completely empty while locked. The PIN overlay is
