@@ -61,7 +61,7 @@ const TYPES_OK      = new Set(['expense', 'credit', 'transfer', 'note']);
 const FINANCIAL_TYPES = new Set(['expense', 'credit']);
 // Keep enough immutable versions to cover long-lived reconciliation history
 // without allowing an accidental edit loop to grow local state forever.
-const MAX_MUTATION_HISTORY = 1000;
+export const MAX_MUTATION_HISTORY = 1000;
 
 /** Let validateEntry accept custom-category ids that the user added at runtime. */
 export function updateAllowedCategories(ids) {

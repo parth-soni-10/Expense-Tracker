@@ -80,10 +80,17 @@ export const IMAGE = [
 
 // The one image-adjacent call the app legitimately makes: `downloadText` builds a
 // text download from memory (CSV, JSON). There are no image bytes in it, so it is
-// allowed by exact shape and only in that file — a second `createObjectURL` there,
-// or any in another file, is a fetched copy of something and fails below.
+// allowed by exact shape and only in the files that carry that one call — a second
+// `createObjectURL` there, or any in another file, is a fetched copy of something
+// and fails below.
+//
+// The bundle is listed beside the source because it is what the browser actually
+// loads, and the Data sheet's exports put `downloadText` in it: esbuild keeps the
+// call's shape, so the built file contains exactly this text download and nothing
+// else. Without the bundle here the scan would fail on every build that includes
+// an export — a rule that fires on the one allowed call is a rule nobody can keep.
 export const ALLOWED_OBJECT_URL = {
-  file: 'storage.js',
+  files: ['storage.js', 'app/dist/main.js'],
   shape: 'URL.createObjectURL(new Blob([text], { type: mime }))',
 };
 
@@ -146,7 +153,7 @@ export function inspectShippedCode(treeRoot = root) {
     // sequence elsewhere in the source can swallow real code), and the cost of
     // missing a wrapped comment is a clear false positive, not a blind guard.
     let src = raw.replace(/^[ \t]*\/\/.*$/gm, '');
-    if (name === ALLOWED_OBJECT_URL.file) {
+    if (ALLOWED_OBJECT_URL.files.includes(name)) {
       const allowed = src.split(ALLOWED_OBJECT_URL.shape).length - 1;
       const objectUrls = src.split('createObjectURL').length - 1;
       if (allowed !== objectUrls) {

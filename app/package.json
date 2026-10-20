@@ -7,6 +7,9 @@
     "typecheck": "tsc -p tsconfig.json",
     "build": "esbuild src/main.ts --bundle --format=esm --target=es2022 --outdir=dist --entry-names=[name]"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "devDependencies": {
     "esbuild": "^0.28.2",
     "typescript": "^5.9.0"

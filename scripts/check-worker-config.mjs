@@ -531,6 +531,32 @@ if (!existsSync(workflow)) {
   }
 }
 
+// ---- 9b. the manifest check runs where its subject changes ------------------
+// The manifest is the design system's, but every floor in it is a claim about
+// this repo, so the run that proves it has to start here and the job that
+// performs it lives one repo away. Two things can quietly undo that: deleting
+// this workflow (the check goes back to being a hand-run), or editing it so it
+// stops calling the shared job (it then checks something else, or nothing, while
+// still going green).
+const components = new URL('.github/workflows/components.yml', root);
+if (!existsSync(components)) {
+  fail('.github/workflows/components.yml is gone. The design-system manifest floors are claims about this repo,'
+    + ' and the only thing that re-proves them was this job; without it a card deleted from a screen is found by nobody.');
+} else {
+  // Comments stripped for the same reason as above: this file explains the
+  // arrangement in prose, and prose must not be able to satisfy the check.
+  const yml = readFileSync(components, 'utf8').replace(/^[ 	]*#.*$/gm, '');
+  const reusable = /uses:\s*[\w.-]+\/design-system\/\.github\/workflows\/components\.yml@/.exec(yml);
+  if (!reusable) {
+    fail('.github/workflows/components.yml no longer calls the design-system reusable components workflow'
+      + ' (`uses: <owner>/design-system/.github/workflows/components.yml@<ref>`). A local copy of the verifier would'
+      + ' be a second design system, and a job that does something else is not this check.');
+  }
+  if (!/^\s*site:\s*cents\s*$/m.test(yml)) {
+    fail('.github/workflows/components.yml does not pass `site: cents`, so the run would verify (or fail on) a slug that is not this app.');
+  }
+}
+
 // ---- 10. the README is the install guide ------------------------------------
 const readme = read('README.md');
 const undocumentedEnv = [...readEnv].filter(name => !readme.includes(name));

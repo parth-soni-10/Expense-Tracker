@@ -175,6 +175,18 @@ ok('the tombstone list still names the four removed surfaces', TOMBSTONES,
   const allowed = said({ 'storage.js': `export const download = (text, mime) => ${ALLOWED_OBJECT_URL.shape};\n` });
   ok('the text download in storage.js is allowed', allowed, []);
 
+  // The bundle is the same one call, in the file a browser actually loads. The
+  // Data sheet's export path puts `downloadText` in it (measured: the built
+  // main.js contains exactly this shape, once).
+  const bundled = said({ 'app/dist/main.js': `function downloadText(filename, text, mime = "text/plain") {\n  const url = ${ALLOWED_OBJECT_URL.shape};\n  return url;\n}\n` });
+  ok('the same text download in the built bundle is allowed', bundled, []);
+  ok('and the allowance names both files, not a wildcard', ALLOWED_OBJECT_URL.files,
+    ['storage.js', 'app/dist/main.js']);
+
+  const bundledImage = said({ 'app/dist/main.js': 'const url = URL.createObjectURL(new Blob([pixels], { type: \'image/png\' }));\n' });
+  ok('an object URL over image bytes in the bundle still fails',
+    bundledImage.some(message => message.includes('must not use createObjectURL')), true);
+
   const imageBlob = said({ 'storage.js': 'export const download = url => URL.createObjectURL(new Blob([data], { type: \'image/png\' }));\n' });
   ok('a same-shaped object URL over image bytes fails',
     imageBlob.some(message => message.includes('is not the text download')), true);

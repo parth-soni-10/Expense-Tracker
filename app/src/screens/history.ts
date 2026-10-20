@@ -14,6 +14,7 @@ import { CATEGORIES, METHODS } from '../../lib/seed.ts';
 import { uid } from '../../lib/storage.ts';
 import { deleteEntries, latestUndo, restoreUndoJournal, trackAction } from '../actions.ts';
 import { el } from '../dom.ts';
+import { applyEntryEdit } from './entry-edit.ts';
 import { friendlyDate, fmt, parseAmount, today } from '../format.ts';
 import { categoryLabel, methodLabel, methodShort } from '../metrics.ts';
 import { navigate } from '../router.ts';
@@ -157,39 +158,23 @@ export function renderHistory({ state, params, save, refresh }: ScreenContext): 
     const message = el('p', { class: 'add-status', role: 'status' });
 
     const commit = (): void => {
-      const value = parseAmount(amount.value);
-      if (!Number.isFinite(value) || value <= 0) {
-        message.textContent = 'Enter an amount greater than zero.';
+      // The rules live in `entry-edit.ts` so a guard can run them: validation,
+      // the grouped-row amount arithmetic, and the replaced version each leg
+      // records (the core reads that history back for checkpoint balances and
+      // for sync ordering — see the module's header).
+      const result = applyEntryEdit(row.entries, {
+        details: details.value,
+        amount: parseAmount(amount.value),
+        date: date.value,
+        category: category.value,
+        method: method.value,
+        note: note.value,
+      }, { today: today() });
+      if (!result.ok) {
+        message.textContent = result.error;
         message.className = 'add-status is-error';
         return;
       }
-      if (date.value > today() || !/^\d{4}-\d{2}-\d{2}$/.test(date.value)) {
-        message.textContent = 'Pick a date that is not in the future.';
-        message.className = 'add-status is-error';
-        return;
-      }
-      // A grouped row keeps its group id, and the typed amount is the GROUP's
-      // total: a transfer keeps both legs equal (or it stops being a transfer),
-      // a split takes the difference on its first leg.
-      const others = row.entries.slice(1).reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0);
-      if (row.entries[0].splitId && value - others <= 0) {
-        message.textContent = `The other legs already total ${fmt(others)} — the first leg would be zero or less.`;
-        message.className = 'add-status is-error';
-        return;
-      }
-      const isTransfer = Boolean(row.entries[0].transferId);
-      const isSplit = Boolean(row.entries[0].splitId);
-      for (const entry of row.entries) {
-        entry.details = details.value.trim() || 'Entry';
-        entry.category = category.value;
-        entry.date = date.value;
-        entry.note = note.value.trim();
-        entry.method = method.value;
-        entry.updatedAt = new Date().toISOString();
-        if (isTransfer) entry.amount = value;
-      }
-      if (isSplit) row.entries[0].amount = Math.round((value - others) * 100) / 100;
-      if (!isTransfer && !isSplit) row.entries[0].amount = value;
       const ok = save();
       toast(ok ? `Updated ${details.value.trim() || 'the entry'}.` : 'Could not save on this device.');
       dialog.close();
