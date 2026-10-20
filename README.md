@@ -164,10 +164,13 @@ Gate C's browser half has the same constraint and a different answer, because it
 
 ```
 node scripts/pin-screens.browser.mjs    # by hand, before the cutover
+node scripts/app-shell.browser.mjs      # by hand: the served app/ shell — gate, six hashes, versioned worker, offline boot
 node scripts/data-sheet.browser.mjs     # by hand: the ported app's Data sheet, in Chromium, under app/_headers
 node scripts/history-edit.browser.mjs   # by hand: the History editor itself — open, edit, save, refuse, edit a transfer
 node scripts/dashboard-figures.browser.mjs # by hand: the ported dashboard's three figures and the kit, under app/_headers
 ```
+
+The shell's own leg begins before any screen exists: it boots `app/` as a first-time visitor (empty storage, nothing controlling the document), refuses a wrong PIN, opens with `100901`, walks all six hash routes and their `aria-current` tabs, and then proves the worker — that the active cache name is the version `sw.js` declares, that the cache holds exactly its `SHELL` list and nothing else, and that an offline reload still reaches the gate. 49 checks, `node scripts/app-shell.browser.mjs`.
 
 The figures' leg is the newest hand-run browser check, and the only one that proves a *picture*: it serves the ported `app/` under `app/_headers`, so the strict policy is enforced while the figures draw, and then checks what a screenshot cannot — that all three hosts mounted their own figure, that the geometry is real (paths with extent, nothing outside the 400×320 viewBox), that pointing at a tide column reads a date and a balance, that the kit installed on the dashboard's own hosts (`animated-counter` × 4, `budget-card`, `warm-tooltip`), that the counter settles on €29.47 — counted by hand from the fixture — that a budget edit repaints without stacking a second set of figures, that no style attribute appears anywhere in the screen, and that the console reports no CSP refusal at 1280 or 390, reduced motion included. 41 checks.
 
