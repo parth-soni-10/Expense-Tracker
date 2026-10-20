@@ -49,6 +49,7 @@ const GUARDS = [
   'test-undo-journal.mjs',     // a delete applies at once, survives a reload and restores exactly
   'test-storage-contract.mjs',  // one write path, the document round-trips, profile data untouched
   'test-methods.mjs',           // a method survives its own removal; a schedule lands on the day it says
+  'test-tesco-sheet.mjs',       // the ported sheet answers exactly like the shipping source
   'test-metrics.mjs',          // the ported ledger arithmetic agrees with the frozen document
   'test-data-portability.mjs', // the Data sheet's size, counts, planned merge and cash re-anchor
   'test-history-edit.mjs',     // the History edit path: fields, history, grouped rows, storage and checkpoints

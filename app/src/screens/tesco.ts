@@ -1,25 +1,26 @@
-/* Tesco Pay: the pay-month snapshot, the pay weeks and the shifts behind them.
+/* Tesco Pay: the pay-month snapshot, the pay weeks, the sheet, and the ways
+ * into both.
  *
  * The engine is not here — `app/lib/tesco-pay.ts` is the ported engine (rates,
  * Sunday premium, PAYE/USC/PRSI/pension, week starts, pay dates) and
- * `scripts/test-tesco.mjs` holds it against the workbook. This screen is the
- * surface: it reads `state.tesco` through that engine, so every figure here is
- * the one the workbook and the dashboard would compute, and a week's money is
- * simulated once per week rather than prorated across a month boundary.
+ * `app/lib/tesco-sheet.ts` is the sheet's own two tables (one row per shift, a
+ * tax table of pay runs) with the rules they import and export by. This screen
+ * is the surface: it reads `state.tesco` through those two, so every figure
+ * here is the one the workbook and the dashboard would compute, and a week's
+ * money is simulated once per week rather than prorated across a month
+ * boundary.
  *
- * Ported from `screenTesco()` in tesco.js. What it keeps: the month the reader
- * is looking at (`?month=`, defaulting to this month), the four figures the rest
- * of the app quotes for it (hours, anticipated net, received, and what is still
- * expected), and the pay weeks the month contains, each with its own hours, gross
- * and what it did against the estimate. It is read-only on purpose: writing a
- * shift or a payslip the app cannot yet import a roster for is a different
- * batch's job, and a write path without the import half would be a way to make
- * the ledger disagree with the sheet it came from.
+ * The write side lives in `screens/tesco-write.ts`, and it is a separate file
+ * because it is a separate job: this one renders what is stored, that one
+ * changes it. The rules both obey are the rules the ported modules own — a
+ * hand edit is validated by the same rules an import is, so an edit can never
+ * write a row the importer would have refused.
  *
- * What is not here: the shift form, the payslip editor, the week-off card, the
- * workbook/CSV import and export, and the ledger write for a received payment.
- * All of them are `tesco.js` features in their own right and are recorded in
- * docs/DEFERRED_TESTS.md rather than sketched.
+ * What is not here, and why: the roster-photo reader and the word-list parser
+ * that read a photographed grid were both removed from the shipping app on
+ * purpose (`97fb40f`, and batch 34 for the parser), and `scripts/check-image-
+ * hygiene.mjs` pins that absence. A roster now arrives by Quick entry, the
+ * shift form or the workbook/CSV import.
  */
 import type { CentsSettings } from '../../lib/types.ts';
 import { el } from '../dom.ts';
@@ -30,10 +31,27 @@ import {
   monthSummary,
   payDateOf,
   r2,
+  receivedByPayDate,
   simulateTax,
+  weekStartOf,
   weekVsEstimate,
 } from '../../lib/tesco-pay.ts';
 import { navigate } from '../router.ts';
+import { trackAction } from '../actions.ts';
+import { toast } from '../toast.ts';
+import {
+  buildAddShiftCard,
+  buildBankPayEditor,
+  buildDataCard,
+  buildPayslipActions,
+  buildQuickEntryCard,
+  buildRatesCard,
+  buildShiftActions,
+  buildWeekOffCard,
+  fillTescoPayDate,
+  recordTescoPayToLedger,
+  tescoState,
+} from './tesco-write.ts';
 import type { ScreenContext } from './context.ts';
 
 const MONTH = /^\d{4}-\d{2}$/;
@@ -61,16 +79,15 @@ function shiftWhen(shift: Record<string, any>): string {
   return shift.hours != null ? `${shift.hours}h booked` : '—';
 }
 
-export function renderTesco({ state, params }: ScreenContext): HTMLElement {
-  const settings: CentsSettings = state.settings || {};
-  const tesco = state.tesco || { shifts: [], payslips: [], deletedShiftIds: [], deletedPayslipIds: [] };
-  const shifts = Array.isArray(tesco.shifts) ? tesco.shifts : [];
-  const payslips = Array.isArray(tesco.payslips) ? tesco.payslips : [];
-  const overrides = (settings.tescoRates || {}) as Record<string, number>;
-  const rates = { ...TESCO_RATE_DEFAULTS, ...overrides };
+export function renderTesco(ctx: ScreenContext): HTMLElement {
+  const settings: CentsSettings = ctx.state.settings || {};
+  const stored = tescoState(ctx);
+  const shifts = stored.shifts;
+  const payslips = stored.payslips;
+  const rates = stored.rates;
   const root = el('div', { class: 'page-section tesco-section' });
 
-  const requested = params.get('month') || '';
+  const requested = ctx.params.get('month') || '';
   const key = MONTH.test(requested) && Number.isFinite(Date.parse(`${requested}-01T00:00:00Z`))
     ? requested
     : monthKey(today());
@@ -78,7 +95,7 @@ export function renderTesco({ state, params }: ScreenContext): HTMLElement {
   const now = today();
 
   const go = (next: string): void => {
-    const query = new URLSearchParams(params);
+    const query = new URLSearchParams(ctx.params);
     query.set('month', next);
     navigate('tesco', query, { replace: true });
   };
@@ -116,11 +133,18 @@ export function renderTesco({ state, params }: ScreenContext): HTMLElement {
     cell(gap >= 0 ? 'Still to come' : 'Over the estimate', fmt(Math.abs(gap)), gap >= 0 ? '' : 'negative'),
   ));
 
+  /* ── the ways in: quick entry, a form, a week off ───────────────────────── */
+
+  root.append(el('div', { class: 'tesco-write-grid' },
+    buildQuickEntryCard(ctx),
+    buildAddShiftCard(ctx),
+    buildWeekOffCard(ctx),
+  ));
+
   if (!shifts.length) {
     root.append(el('div', { class: 'card empty tesco-empty' },
-      el('p', { class: 'muted' }, 'No shifts yet. The pay weeks appear here once a shift is logged.'),
+      el('p', { class: 'muted' }, 'No shifts yet. Add one above, and the pay weeks appear here.'),
     ));
-    return root;
   }
 
   /* ── the pay weeks this month contains ──────────────────────────────────── */
@@ -147,9 +171,6 @@ export function renderTesco({ state, params }: ScreenContext): HTMLElement {
         el('span', null, 'Gross ', el('strong', null, fmt(week.gross))),
         el('span', null, 'Est. net ', el('strong', null, sim ? fmt(sim.net) : '—')),
         el('span', null, 'Pay date ', el('strong', null, payDateOf(week.weekStart))),
-        week.bankPaid != null
-          ? el('span', null, 'Bank ', el('strong', null, fmt(week.bankPaid)))
-          : null,
         vs
           ? el('span', { class: `tesco-week-vs ${vs.delta < 0 ? 'is-negative' : 'is-positive'}` },
             `${vs.delta < 0 ? '−' : '+'}${fmt(Math.abs(vs.delta))} vs est ${vs.against}`)
@@ -166,7 +187,10 @@ export function renderTesco({ state, params }: ScreenContext): HTMLElement {
             if (shift.hours != null) return `${shift.hours}h`;
             return '—';
           })()),
+        buildShiftActions(ctx, shift),
       ))),
+      // The week's own net, typed off a bank statement — never derived.
+      buildBankPayEditor(ctx, week.weekStart),
     ));
   }
 
@@ -178,15 +202,58 @@ export function renderTesco({ state, params }: ScreenContext): HTMLElement {
     monthWeeks.length ? weekList : el('div', { class: 'empty' }, 'No pay week starts in this month.'),
   ));
 
+  /* ── the tax table: one row per pay run ─────────────────────────────────── */
+
+  if (payslips.length) {
+    const slipRows = el('div', { class: 'tesco-slips' });
+    for (const payslip of [...payslips].sort((a, b) => String(b.weekStart).localeCompare(String(a.weekStart)))) {
+      const total = (Number(payslip.paye) || 0) + (Number(payslip.usc) || 0)
+        + (Number(payslip.prsi) || 0) + (Number(payslip.futureFund) || 0);
+      slipRows.append(el('div', { class: 'tesco-slip' },
+        el('span', { class: 'tesco-slip-week' }, String(payslip.weekStart)),
+        el('span', { class: 'tesco-slip-date muted' }, `paid ${payDateOf(weekStartOf(String(payslip.weekStart)))}`),
+        el('span', { class: 'tesco-slip-tax muted' },
+          `PAYE ${fmt(Number(payslip.paye) || 0)} · USC ${fmt(Number(payslip.usc) || 0)} · PRSI ${fmt(Number(payslip.prsi) || 0)}`),
+        el('span', { class: 'display-num' }, fmt(total)),
+        buildPayslipActions(ctx, payslip),
+      ));
+    }
+    root.append(el('div', { class: 'card tesco-panel' },
+      el('div', { class: 'row between tesco-panel-head' },
+        el('span', { class: 'eyebrow' }, `Tax figures · ${payslips.length}`),
+        el('span', { class: 'muted' }, 'One row per pay run'),
+      ),
+      slipRows,
+    ));
+  }
+
+  /* ── the rules, and the file in and out ─────────────────────────────────── */
+
+  root.append(el('div', { class: 'tesco-write-grid' },
+    buildRatesCard(ctx),
+    buildDataCard(ctx),
+  ));
+
   /* ── what the ledger already knows ──────────────────────────────────────── */
 
-  const paidIn = (state.entries || []).filter((entry) => {
+  const paidIn = (ctx.state.entries || []).filter((entry) => {
     const day = String(entry.date || '');
     return inMonth(day) && day <= now && entry.type === 'credit'
       && /tesco/i.test(String(entry.details || ''));
   });
   const landed = paidIn.reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0);
-  root.append(el('div', { class: 'card tesco-panel' },
+
+  // The ledger's side: the pay the tab already knows about, written into the
+  // ledger so the money reaches Balances without anyone pressing Fill. The
+  // rules — create only where the ledger is silent, follow the recorded figure
+  // while the line is still the one this app wrote, and never bring a deleted
+  // line back — live in `tescoPayLedgerWrites`.
+  const recorded = receivedByPayDate(stored.shifts, stored.payslips, rates, today());
+  const fillable = Object.keys(recorded)
+    .filter((date) => inMonth(date) && date <= now && Number(recorded[date].amount) > 0)
+    .sort();
+
+  const ledgerPanel = el('div', { class: 'card tesco-panel' },
     el('div', { class: 'row between tesco-panel-head' },
       el('span', { class: 'eyebrow' }, 'Pay in the ledger'),
       el('a', { class: 'btn-link', href: `#history?q=tesco` }, 'Open History'),
@@ -202,7 +269,51 @@ export function renderTesco({ state, params }: ScreenContext): HTMLElement {
         )))
       : el('p', { class: 'muted tesco-ledger-note' },
         'No Tesco income has landed this month yet. A payment recorded on the Add screen appears here.'),
-  ));
+  );
 
+  if (fillable.length) {
+    const fillList = el('div', { class: 'tesco-fill-list' });
+    for (const date of fillable) {
+      fillList.append(el('div', { class: 'tesco-fill-row' },
+        el('span', { class: 'tesco-slip-week' }, date),
+        el('span', { class: 'muted' }, fmt(Number(recorded[date].amount))),
+        el('button', {
+          type: 'button', class: 'btn btn-ghost', 'aria-label': `Put the pay of ${date} in the ledger`,
+          onClick: () => {
+            const result = fillTescoPayDate(ctx, date);
+            if (!result.ok) { toast(result.note || 'That week has nothing to record.'); return; }
+            toast(result.note || 'Recorded.', { label: 'Undo', run: () => { ctx.refresh(); } });
+            ctx.refresh();
+          },
+        }, 'Put in ledger'),
+      ));
+    }
+    ledgerPanel.append(el('div', { class: 'tesco-fill' },
+      el('div', { class: 'eyebrow' }, 'Not in the ledger yet'),
+      fillList,
+      el('div', { class: 'add-actions' },
+        el('button', {
+          type: 'button', class: 'btn btn-primary',
+          onClick: () => {
+            const written = recordTescoPayToLedger(ctx);
+            if (!written) { toast('The ledger already has these.'); return; }
+            const before = JSON.parse(JSON.stringify((ctx.state as any).entries || []));
+            const step = trackAction(ctx.save, {
+              label: 'Record the Tesco pay in the ledger',
+              undo: () => { written.undo(); },
+            });
+            toast(written.note, { label: 'Undo', run: () => { step.undo(); ctx.refresh(); } });
+            void before;
+            ctx.refresh();
+          },
+        }, 'Record all of them'),
+      ),
+    ));
+  }
+
+  root.append(ledgerPanel);
+
+  void settings;
+  void TESCO_RATE_DEFAULTS;
   return root;
 }

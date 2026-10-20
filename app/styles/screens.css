@@ -950,3 +950,110 @@
   .recurring-row { flex-direction: column; align-items: stretch; }
   .recurring-row-actions { justify-content: flex-end; }
 }
+
+/* -- Tesco Pay, the write side ----------------------------------------------
+ *
+ * The sheet is a set of cards: quick entry, a form, a week off, the rate card,
+ * and the file in and out. The grid collapses to one column on a phone,
+ * because a card with a preview line and a form in it is a card that wants the
+ * width of the screen.
+ */
+
+.tesco-write-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin-bottom: var(--page-gap, 12px);
+}
+
+.tesco-card { margin-bottom: 0; }
+.tesco-card-note { font-size: 12px; margin: 8px 0 0; }
+
+.tesco-quick-text { width: 100%; min-height: 76px; resize: vertical; }
+.tesco-quick-preview { margin: 8px 0; display: flex; flex-direction: column; gap: 4px; }
+
+.tesco-quick-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.tesco-quick-row:last-child { border-bottom: none; }
+.tesco-quick-row.is-bad { color: var(--negative); }
+.tesco-quick-date { font-variant-numeric: tabular-nums; }
+.tesco-quick-when { min-width: 0; overflow-wrap: anywhere; }
+
+.tesco-rates-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.tesco-rate-field { display: flex; flex-direction: column; gap: 4px; }
+.tesco-derived { font-size: 11px; color: var(--muted); }
+
+.tesco-file-row { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.tesco-file-input { padding: 6px; }
+
+.tesco-row-actions { display: inline-flex; align-items: center; gap: 10px; flex-shrink: 0; }
+.tesco-row-actions .btn-link { font-size: 12px; min-height: 28px; }
+
+.tesco-bankpay {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.tesco-bankpay .add-input { max-width: 120px; }
+.tesco-bankpay .add-status { margin: 0; }
+
+.tesco-slips { display: flex; flex-direction: column; }
+
+.tesco-slip {
+  display: grid;
+  grid-template-columns: 96px 100px minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.tesco-slip:last-child { border-bottom: none; }
+.tesco-slip-week { font-variant-numeric: tabular-nums; }
+.tesco-slip-tax { overflow-wrap: anywhere; }
+
+.add-check-row { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.add-check { width: 16px; height: 16px; }
+
+@media (max-width: 479px) {
+  .tesco-quick-row { grid-template-columns: 88px minmax(0, 1fr); }
+  .tesco-quick-row .display-num { grid-column: 2; }
+  .tesco-slip { grid-template-columns: 88px minmax(0, 1fr) auto; }
+  .tesco-slip-tax { grid-column: 1 / -1; }
+}
+
+.tesco-fill { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.tesco-fill-list { display: flex; flex-direction: column; margin: 6px 0 10px; }
+
+.tesco-fill-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.tesco-fill-row:last-child { border-bottom: none; }
+.tesco-fill-row .btn { min-height: 30px; padding: 0 10px; font-size: 12px; }
