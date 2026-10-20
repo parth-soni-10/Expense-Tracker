@@ -1,0 +1,252 @@
+/* The served app shell: chrome, the privacy gate and the update bar.
+   Class-only on purpose — the app runs under `style-src 'self'`, so no rule here
+   depends on an inline style attribute, and every colour is a token from
+   styles.css so the two themes stay one decision. */
+
+/* ── chrome ───────────────────────────────────────────────────────────────── */
+
+.app-shell {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: var(--page-gap, 24px) 20px 48px;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 24px;
+}
+
+.app-brand {
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.app-brand::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 3px;
+  border-radius: 1px;
+  background: var(--accent);
+  vertical-align: 2px;
+}
+
+.app-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.app-tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 13px;
+  text-decoration: none;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.app-tab:hover { color: var(--ink); }
+
+.app-tab.is-current {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+
+.app-screen {
+  outline: none;
+  min-height: 40vh;
+}
+
+.app-title {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 12px;
+}
+
+.app-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+
+.app-notice {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+
+.app-params { font-size: 13px; margin: 0 0 14px; }
+
+.app-foot {
+  margin-top: 40px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+/* ── the gate (lock and profile picker) ───────────────────────────────────── */
+
+.gate {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.gate-bg { display: contents; }
+
+.gate-card {
+  width: 100%;
+  max-width: 360px;
+  padding: 28px 24px 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+
+.gate-card-wide { max-width: 420px; }
+
+.gate-brand {
+  font-size: 32px;
+  font-weight: 400;
+  margin: 0 0 4px;
+}
+
+.gate-brand::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 3px;
+  border-radius: 1px;
+  background: var(--accent);
+  vertical-align: 2px;
+}
+
+.gate-title {
+  font-size: 18px;
+  margin: 20px 0 4px;
+}
+
+.gate-msg {
+  font-size: 13px;
+  min-height: 20px;
+  margin: 12px 0;
+}
+
+.gate-hint {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0 0 4px;
+}
+
+.gate-input {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 20px;
+  letter-spacing: 0.3em;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.gate-input:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.gate-pin, .gate-bio { display: grid; gap: 8px; }
+.gate-pin[hidden], .gate-bio[hidden] { display: none; }
+
+.gate-btn { width: 100%; }
+
+/* ── update bar ───────────────────────────────────────────────────────────── */
+
+.update-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 10050;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: var(--shadow-lg);
+  font-size: 13px;
+  animation: update-bar-in 0.18s ease-out;
+}
+
+.update-text { color: var(--ink); }
+.update-btn { padding: 6px 12px; font-size: 12px; }
+
+@keyframes update-bar-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-bar { animation: none; }
+  .app-tab, .gate-input { transition: none; }
+}
+
+/* ── boot failure ─────────────────────────────────────────────────────────── */
+
+.boot-fail {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: var(--bg);
+}
+
+.boot-fail[hidden] { display: none; }
+
+.boot-card {
+  max-width: 520px;
+  padding: 32px 36px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-md);
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.boot-mark { font-size: 22px; margin: 0 0 6px; }
+.boot-title { font-size: 26px; font-weight: 600; margin: 0 0 10px; }
+.noscript { padding: 24px; font-size: 14px; }
+
+/* ── the profile picker's tiles (styles.css carries the grid) ─────────────── */
+
+.gate-card .profile-grid { margin-bottom: 4px; }
