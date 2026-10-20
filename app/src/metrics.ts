@@ -11,7 +11,7 @@
  * they loaded; the functions only read it.
  */
 import type { CentsSettings, CentsState, Entry } from '../lib/types.ts';
-import { METHODS } from '../lib/seed.ts';
+import { CATEGORIES, METHODS } from '../lib/seed.ts';
 import { daysInMonth, localDateKey, monthKey, previousMonthKey, today } from './format.ts';
 
 export const ACCOUNT_METHOD_IDS = ['AIB', 'Revolut', 'RS'];
@@ -48,6 +48,14 @@ export function methodShort(settings: CentsSettings, id: string): string {
 
 export function methodLabel(settings: CentsSettings, id: string): string {
   return methodById(settings, id)?.label || id;
+}
+
+/** Category names come from the built-ins plus the document's own additions. */
+export function categoryLabel(settings: CentsSettings, id: string): string {
+  const custom = Array.isArray(settings?.customCategories) ? settings.customCategories : [];
+  const found = [...CATEGORIES, ...custom.map((c) => ({ id: String(c.id), label: String(c.label || c.id) }))]
+    .find((category) => category.id === id);
+  return found?.label || id;
 }
 
 /** Balance methods, normalised to one sorted array per method. */

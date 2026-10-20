@@ -261,6 +261,62 @@ check('a pair whose legs disagree is not kept as a transfer',
 check('  both legs stay visible as transactions',
   mismatched.entries.every(e => e.type === 'expense' || e.type === 'credit'));
 
+// ---- the port must answer exactly what the shipping parser answers ---------
+//
+// `app/src/quick-entry.ts` is what the served shell will run, and it is a copy
+// of the block lifted above. A copy drifts; this comparison is what makes drift
+// fail here instead of in a user's ledger. Both parsers see the same clock
+// (today's real date), so a date derived from "yesterday" agrees too.
+
+const ported = await import('../app/src/quick-entry.ts');
+const COMPARE_LINES = [
+  'lidl groceries 4.47 revolut',
+  'coffee 3.50 cash',
+  'Spent €18.50 at Tesco from Revolut yesterday',
+  'rent 1,200',
+  '2 × 4.50',
+  'salary 2500 received',
+  'aldi 12.40 cash',
+  '10 cash 14 revolut',
+  'transfer 50 from AIB to Revolut',
+  'put 20 on my aldi gift card',
+  'bought a Tesco giftcard worth 24 euros using Revolut',
+  'pint of Guinness 6.20 aib',
+  '3 days ago dinner 22.90 revolut',
+  'rent 850 from AIB',
+  'lidl 4.477',
+  'no amount here',
+  'tesco load 20',
+  'lidl loaded 15',
+  'top up my phone at Tesco 20',
+  'bus fare 2,20 leap',
+];
+
+const shape = (parsed) => JSON.stringify(parsed ?? null);
+for (const line of COMPARE_LINES) {
+  const shipped = parseNaturalLanguage(line);
+  const fresh = ported.parseNaturalLanguage(line);
+  check(`the ported parser agrees on "${line}"`, shape(shipped) === shape(fresh), `${shape(fresh)} vs ${shape(shipped)}`);
+}
+
+// And the rows built from a parsed line agree field for field, ids and clock
+// aside (both sides are handed the same deterministic id/clock sources).
+let portCounter = 0;
+const portId = () => `port-${++portCounter}`;
+counter = 0;
+for (const line of ['lidl groceries 4.47 revolut', 'transfer 50 from AIB to Revolut', '10 cash 14 revolut']) {
+  const a = quickEntryLegs(parseNaturalLanguage(line));
+  const b = ported.quickEntryLegs(ported.parseNaturalLanguage(line), portId, '2026-10-20T09:00:00.000Z');
+  const normalise = (legs) => JSON.stringify(legs.map((leg) => ({
+    ...leg,
+    id: undefined,
+    transferId: leg.transferId ? 'group' : undefined,
+    splitId: leg.splitId ? 'group' : undefined,
+    createdAt: undefined,
+  })));
+  check(`the ported leg builder agrees on "${line}"`, normalise(a) === normalise(b), `${normalise(b)} vs ${normalise(a)}`);
+}
+
 // ---- verdict ----------------------------------------------------------------
 
 store.clear();

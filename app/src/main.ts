@@ -17,7 +17,10 @@ import { getActiveProfileId, hasSessionChoice, listProfiles, setActiveProfileId 
 import { readRoute, subscribe, routeHash, type Route, type RouteId } from './router.ts';
 import { showPinLock, showProfilePicker } from './lock.ts';
 import { byId, clear, el } from './dom.ts';
+import { renderAdd } from './screens/add.ts';
+import { renderBalances } from './screens/balances.ts';
 import { renderDashboard } from './screens/dashboard.ts';
+import { renderHistory } from './screens/history.ts';
 
 declare global {
   interface Window {
@@ -72,15 +75,32 @@ function render(route: Route, { moveFocus = true } = {}): void {
   const params = route.params.toString();
   if (params) screen.append(el('p', { class: 'app-params muted' }, `${LABELS[route.id]} · ${params}`));
 
-  // The screens land one slice at a time (docs/CATCHUP_PLAN.md batch 21). The
-  // dashboard is the first: it is the landing route and the only one every
-  // profile always sees, so an unimplemented shell still has a real home.
-  if (route.id === 'dashboard') {
-    screen.append(renderDashboard({
-      state,
-      save: () => saveState(state),
-      refresh: () => render(readRoute(), { moveFocus: false }),
-    }));
+  // Screens land one slice at a time (docs/CATCHUP_PLAN.md batch 21). Every
+  // screen gets the same four things — the document, the route's query, the one
+  // save path, and a redraw — so no screen owns storage or navigation.
+  const context = {
+    state,
+    params: route.params,
+    save: () => saveState(state),
+    refresh: () => render(readRoute(), { moveFocus: false }),
+  };
+  switch (route.id) {
+    case 'dashboard':
+      screen.append(renderDashboard({ state, save: context.save, refresh: context.refresh }));
+      break;
+    case 'add':
+      screen.append(renderAdd(context));
+      break;
+    case 'history':
+      screen.append(renderHistory(context));
+      break;
+    case 'balances':
+      screen.append(renderBalances(context));
+      break;
+    default:
+      // tesco/insights are slices 4–5: the heading and the route contract are
+      // already right, and the body says so instead of looking broken.
+      screen.append(el('p', { class: 'app-notice' }, `${LABELS[route.id]} is not ported yet.`));
   }
 
   if (moveFocus) {

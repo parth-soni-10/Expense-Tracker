@@ -1,0 +1,396 @@
+/* Add / History / Balances — the parts of the old screens that were inline.
+ *
+ * `style-src 'self'` means a screen may not write a style attribute, so the
+ * sizing and spacing those screens carried inline are classes here. Values come
+ * from the tokens styles.css defines; nothing here is a new colour or a second
+ * type scale.
+ */
+
+/* ── shared bits ──────────────────────────────────────────────────────────── */
+
+.add-card {
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 639px) {
+  .add-card { padding: 18px 16px; }
+}
+
+.add-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.add-hint { font-size: 12px; }
+
+.add-quick {
+  width: 100%;
+  min-height: 62px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
+.add-quick:focus-visible,
+.add-input:focus-visible,
+.history-search:focus-visible,
+.checkpoint-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.add-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.add-preview:empty { margin: 0; }
+
+.add-preview-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.add-preview-details { font-weight: 600; }
+.add-preview-meta { font-size: 12px; }
+.add-preview-date { flex-shrink: 0; }
+
+.add-status {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  min-height: 0;
+}
+
+.add-status:empty { margin: 0; }
+.add-status.is-error { color: var(--negative); }
+.add-status.is-ok { color: var(--positive); }
+
+.add-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+
+.add-tabs { display: flex; gap: 6px; }
+
+.add-form[hidden] { display: none; }
+
+.add-label {
+  display: block;
+  margin: 14px 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.add-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.add-input[aria-invalid='true'] { border-color: var(--negative); }
+
+.add-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0 14px;
+}
+
+/* A pill that is currently chosen: the same look the shipping app gives a
+   pressed segmented control. */
+.pill.is-on,
+.pill[aria-pressed='true'] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* ── history ─────────────────────────────────────────────────────────────── */
+
+.history-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.history-search {
+  flex: 1 1 220px;
+  min-width: 160px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.history-months {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.history-month { flex-shrink: 0; }
+
+.history-summary {
+  margin: 0 0 14px;
+  font-size: 12px;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ledger-row {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) 104px auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.ledger-row:last-child { border-bottom: none; }
+
+@media (max-width: 767px) {
+  .ledger-row {
+    grid-template-columns: 68px minmax(0, 1fr) auto;
+    gap: 8px;
+  }
+  .ledger-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+
+.ledger-date { font-size: 12px; }
+.ledger-what { min-width: 0; }
+.ledger-detail { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; }
+.ledger-group-pill { font-size: 9px; padding: 3px 8px; }
+.ledger-amount { text-align: right; font-size: 15px; }
+
+.ledger-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.ledger-action {
+  padding: 5px 10px;
+  font-size: 12px;
+  min-height: 32px;
+}
+
+/* A transfer is money moving, not money spent: it reads muted, never red. */
+.ledger-amount.is-transfer { color: var(--muted); }
+
+.ledger-action.is-danger { color: var(--negative); }
+.ledger-action.is-danger:hover { border-color: var(--negative); }
+.ledger-action[aria-pressed='true'] { border-color: var(--accent); color: var(--accent); }
+
+.history-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 24px;
+}
+
+@media (max-width: 639px) {
+  .history-empty { padding: 18px 16px; }
+}
+
+.history-dialog {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  max-width: min(480px, calc(100vw - 32px));
+  width: 100%;
+}
+
+.history-dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+
+.history-dialog-card {
+  display: block;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  background: var(--card);
+}
+
+/* ── balances ────────────────────────────────────────────────────────────── */
+
+.balances-summary { margin: 0 0 14px; font-size: 12px; }
+
+.balances-card {
+  padding: 24px;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 639px) {
+  .balances-card { padding: 18px 16px; }
+}
+
+.balances-head { margin-bottom: 14px; }
+.balances-sub { font-size: 11px; margin-top: 3px; }
+
+.balance-list { display: flex; flex-direction: column; }
+
+.checkpoint-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.checkpoint-row:last-child { border-bottom: none; }
+.checkpoint-what { min-width: 0; }
+.checkpoint-name { font-weight: 500; }
+.checkpoint-meta { font-size: 11px; margin-top: 2px; }
+.checkpoint-figures { text-align: right; }
+.checkpoint-amount { font-size: 16px; }
+.checkpoint-share { font-size: 10px; }
+
+.checkpoint-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.checkpoint-action {
+  padding: 5px 10px;
+  font-size: 12px;
+  min-height: 32px;
+}
+
+.checkpoint-action.is-danger { color: var(--negative); }
+
+.checkpoint-editor {
+  grid-column: 1 / -1;
+  padding: 14px;
+  margin-top: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card-2, transparent);
+}
+
+.checkpoint-editor[hidden] { display: none; }
+
+.checkpoint-editor-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.checkpoint-input {
+  flex: 1 1 130px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.checkpoint-hint { font-size: 11px; margin: 10px 0 0; }
+.checkpoint-message { display: block; font-size: 12px; margin-top: 8px; }
+.checkpoint-message.is-error { color: var(--negative); }
+
+.checkpoint-row-gift { grid-template-columns: minmax(0, 1fr) auto; }
+
+@media (max-width: 639px) {
+  .checkpoint-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .checkpoint-actions { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
+/* ── the toast ───────────────────────────────────────────────────────────── */
+
+.app-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 9000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(520px, calc(100vw - 32px));
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  box-shadow: var(--shadow-md);
+  font-size: 13px;
+  animation: app-toast-in 0.18s var(--ease-out);
+}
+
+.app-toast-message { flex: 1; min-width: 0; }
+.app-toast-action { padding: 4px 12px; font-size: 12px; flex-shrink: 0; }
+
+.app-toast-close {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 8px;
+}
+
+.app-toast-close:hover { color: var(--ink); }
+
+@keyframes app-toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-toast { animation: none; }
+}

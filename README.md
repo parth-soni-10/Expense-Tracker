@@ -143,6 +143,7 @@ node scripts/check-css-tokens.mjs      # the stylesheet is a closed system: ever
 node scripts/test-integrity.mjs        # storage/merge cannot lose, corrupt or resurrect data (including the payment methods you own, the one date rule, and the document's own shape)
 node scripts/test-parity-money.mjs     # the money rules a typed line goes through: the quick-entry parser (lifted from app.js and executed, not copied), cents-only precision (a third decimal is refused, never truncated or rounded), and the split/transfer groups that must survive a save/load round trip
 node scripts/test-load-existing.mjs    # a document the shipping app wrote loads in the ported core and round-trips unchanged (the frozen fixture is built by scripts/make-cents-fixture.mjs)
+node scripts/test-undo-journal.mjs     # a delete applies at once, is journalled in localStorage, and restores exactly after a reload
 node scripts/test-metrics.mjs          # the ported ledger arithmetic: what counts as spending, checkpoint-aware balances, gift cards, cash and the projection, checked against the frozen document
 node scripts/check-pin-screens.mjs     # the browser leg below still loads that fixture, in a fresh context, behind the test PIN under the production CSP — and stays a hand-run leg rather than a CI dependency
 node scripts/test-profiles.mjs         # profiles stay isolated, and their cloud credentials never fall back
