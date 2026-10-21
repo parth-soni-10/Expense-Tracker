@@ -8421,6 +8421,15 @@ function screenHistory() {
   catCounts.all = frameEntries.length;
 
   const filterRow = $('div', { class: 'no-print', style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 12px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
+  // The category row is a single-choice group: let Jelly Radio carry the
+  // spring, the roving tab stop and the arrow keys; the pills keep their skin.
+  filterRow.setAttribute('data-jelly-radio', '');
+  filterRow.setAttribute('data-jelly-bare', '');
+  filterRow.setAttribute('data-jelly-size', 'sm');
+  filterRow.setAttribute('data-jelly-radius', '999');
+  filterRow.setAttribute('data-jelly-swell', '0.08');
+  filterRow.setAttribute('data-jelly-barge', '2');
+  filterRow.setAttribute('data-jelly-shrink', '0.03');
   filterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;' }, 'Category'));
   filterRow.appendChild($('button', { type: 'button', class: 'pill pill-cat', 'data-id': 'all', 'data-active': activeCat === 'all' ? 'true' : 'false', 'aria-pressed': activeCat === 'all' ? 'true' : 'false', onClick: () => update({ cat: 'all' }) }, `All · ${catCounts.all || 0}`));
   for (const c2 of allCategories()) {

@@ -11,7 +11,7 @@
  * Network-first: every request tries the network and only falls back to a
  * cached copy when offline. It never serves stale content while online.
  */
-const CACHE = 'cents-v30';
+const CACHE = 'cents-v31';
 // The build this device was last served on a navigation, so a redeploy can be
 // told apart from a first visit. Its OWN cache, and `activate` deliberately does
 // not sweep it: the shell cache above is versioned and a bump has to delete it,
@@ -34,6 +34,8 @@ const SHELL = [
   '/styles.css',
   '/glide-select.css',
   '/glide-select.js',
+  '/jelly-radio.css',
+  '/jelly-radio.js',
   '/seed.js',
   '/settings.js',
   '/storage.js',
