@@ -30,6 +30,15 @@
   src: url('fonts/ibm-plex-mono-500-latin.woff2') format('woff2');
 }
 :root {
+  /* Motion: the shared tiers and easings every site declares, so a duration
+     is mapped to a tier rather than written into a rule. */
+  --motion-duration-micro: 100ms;
+  --motion-duration-standard: 200ms;
+  --motion-duration-complex: 400ms;
+  --motion-duration-page: 600ms;
+  --motion-ease-enter: cubic-bezier(.16, 1, .3, 1);
+  --motion-ease-exit: cubic-bezier(.7, 0, .84, 0);
+  --motion-ease-transform: cubic-bezier(.4, 0, .2, 1);
   --bg: #F5F5F2;
   --bg-deep: #ECECE7;
   --card: #FFFFFF;

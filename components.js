@@ -33,7 +33,11 @@ function upgradeTesco() {
   value.setAttribute('data-ui-value', '');
   cell.setAttribute('role', 'button');
   cell.setAttribute('tabindex', '0');
-  cell.setAttribute('aria-label', `Anticipated net pay ${value.textContent}. Jump to pay weeks.`);
+      // The visible text of the cell is part of its name: a control whose name
+    // does not contain the text beside it fails WCAG 2.5.3 (Label in Name),
+    // and this cell prints a label AND a value.
+    const cellText = (cell.textContent || '').replace(/\s+/g, ' ').trim();
+    cell.setAttribute('aria-label', cellText + ' — anticipated net pay. Jump to pay weeks.');
 
   // The same figure the card already prints; this only takes a reader to the
   // weeks it is made of. The real fold button remains the keyboard path there.

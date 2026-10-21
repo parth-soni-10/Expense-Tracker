@@ -254,14 +254,14 @@
       /* z-index above every overlay: the lock screen mounts at 10000 and
          onboarding at 10001, so the splash must sit above both to keep the
          auth box from painting over the logo while it is still drawing in. */
-      #splash { --splash-line: #161712; position: fixed; inset: 0; z-index: 100000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: #F5F5F2; color: #157A4A; }
+      #splash { --splash-line: #161712; --splash-ink: #161712; position: fixed; inset: 0; z-index: 100000; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; background: #F5F5F2; color: #157A4A; }
       #splash .splash-mark { width: 52px; height: 52px; }
       #splash .splash-mark svg { width: 100%; height: 100%; display: block; }
       #splash .splash-mark path { fill: none; stroke-width: 2.6; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 0; }
       #splash .splash-mark .c   { animation: splash-draw-c  .7s cubic-bezier(0.3, 0.7, 0.4, 1) .04s forwards; }
       #splash .splash-mark .l1  { animation: splash-draw-l1 .28s cubic-bezier(0.3, 0.7, 0.4, 1) .74s forwards; }
       #splash .splash-mark .l2  { animation: splash-draw-l2 .28s cubic-bezier(0.3, 0.7, 0.4, 1) .88s forwards; }
-      #splash .splash-name { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 15px; letter-spacing: 0.02em; color: #161712; opacity: 1; animation: splash-name-in .45s ease 1.02s forwards; }
+      #splash .splash-name { font-family: 'Space Grotesk', system-ui, sans-serif; font-weight: 600; font-size: 15px; letter-spacing: 0.02em; color: var(--splash-ink); opacity: 1; animation: splash-name-in .45s ease 1.02s forwards; }
       #splash .splash-dot { color: #157A4A; }
       /* Settle pulse: once the mark has drawn and the wordmark has landed
          (~1.5s), the logo breathes once - a gentle scale bump with a soft
@@ -289,7 +289,7 @@
         45%  { filter: drop-shadow(0 0 14px currentColor); }
         100% { filter: drop-shadow(0 0 0 transparent); }
       }
-      [data-theme="dark"] #splash { --splash-line: #E8EBE5; background: #101210; color: #35B877; }
+      [data-theme="dark"] #splash { --splash-line: #E8EBE5; --splash-ink: #E8EBE5; background: #101210; color: #35B877; }
       [data-theme="dark"] #splash .splash-name { color: #E8EBE5; }
       [data-theme="dark"] #splash .splash-dot { color: #35B877; }
       @media (prefers-reduced-motion: no-preference) {
