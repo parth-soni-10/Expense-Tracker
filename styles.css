@@ -34,7 +34,7 @@
   --bg-deep: #ECECE7;
   --card: #FFFFFF;
   --ink: #161712;
-  --muted: #67675F;
+  --muted: #6E6E67;
   --line: #E3E3DC;
   --accent: #157A4A;
   --accent-soft: #E9F2EC;
@@ -2344,8 +2344,6 @@ p, li, .muted { text-wrap: pretty; }
   /* Stacked full-width rows are the primary touch target on a phone. */
   .profile-row .profile-row-actions .btn { flex: 1; min-height: 44px; }
 }
-
-/* ============================================================
    Hairline figures — the dashboard's ledger, drawn.
    The engine's palette is mapped onto this site's tokens here; nothing is
    injected at runtime, so the stylesheet stays the only style source. Three
@@ -2389,8 +2387,6 @@ p, li, .muted { text-wrap: pretty; }
 .hairline-card .nf.lo { stroke: var(--line); stroke-width: 1; }
 .hairline-card .nf.hi { stroke: var(--ink); stroke-width: 1.4; }
 .hairline-card .dash { stroke-dasharray: 2 3; opacity: 0.6; }
-
-/* ============================================================
    Component kit bridge
    The kit names its tokens --ui-*, with neutral fallbacks for a page that has
    not adopted the design system. Cents has its own scale, so point the kit at
@@ -2484,15 +2480,5 @@ p, li, .muted { text-wrap: pretty; }
 .cents-update-bar { position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 80; display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 520px; margin: 0 auto; padding: 12px 14px; background: var(--card); border: 1px solid var(--accent); border-radius: var(--radius-lg); box-shadow: var(--shadow-xl); font-size: 13px; }
 .cents-update-bar[hidden] { display: none; }
 .cents-update-bar button { font: inherit; font-size: 12px; font-weight: 600; padding: 7px 14px; border: 0; border-radius: 999px; background: var(--accent); color: var(--card); cursor: pointer; }
-/* The motion tiers, declared here as the new app/ declares them in
-   app/styles.css. The live root app had no tier at all, so every
-   duration in it was a raw number and the reduced-motion check could
-   not tell a still animation from a moved one. */
-:root {
-  --motion-duration-micro: 100ms;
-  --motion-duration-standard: 200ms;
-  --motion-duration-complex: 400ms;
-  --motion-duration-page: 600ms;
-  --motion-ease-enter: cubic-bezier(.16, 1, .3, 1);
-  --motion-ease-exit: cubic-bezier(.7, 0, .84, 0);
-}
+=======
+=======

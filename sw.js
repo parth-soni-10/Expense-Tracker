@@ -11,7 +11,7 @@
  * Network-first: every request tries the network and only falls back to a
  * cached copy when offline. It never serves stale content while online.
  */
-const CACHE = 'cents-v28';
+const CACHE = 'cents-v29';
 // The build this device was last served on a navigation, so a redeploy can be
 // told apart from a first visit. Its OWN cache, and `activate` deliberately does
 // not sweep it: the shell cache above is versioned and a bump has to delete it,
@@ -32,11 +32,6 @@ const SHELL = [
   '/index.html',
   '/app.js',
   '/styles.css',
-  // The local ui-kit layer: every screen renders through these three, and they
-  // are imported on boot, so a cold offline open needs them warm too.
-  '/ui.css',
-  '/ui.js',
-  '/components.js',
   '/seed.js',
   '/settings.js',
   '/storage.js',
@@ -53,12 +48,6 @@ const SHELL = [
   // The bank statement mapper, reached only from the Data menu — deferred for
   // the same reason every screen is, and warm so an offline import still works.
   '/bank-import.js',
-  '/hairline/kernel.js',
-  '/hairline/mount.js',
-  '/hairline/balance-tide.js',
-  '/hairline/envelope-garden.js',
-  '/hairline/receipt-constellation.js',
-  '/hairline/figures.js',
   // The PWA manifest and icons: not a screen, but the only files the browser
   // asks for by itself, before any line of this code runs.
   '/manifest.json',

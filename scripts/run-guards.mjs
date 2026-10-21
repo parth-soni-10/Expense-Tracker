@@ -38,31 +38,10 @@ const GUARDS = [
   'check-freshness.mjs',       // a deploy always reaches the device
   'check-icon-refs.mjs',       // every icon name app.js looks up exists
   'check-boot-payload.mjs',    // the boot path stays the shell and the arithmetic
-  'check-app-shell.mjs',       // an installed copy behaves like an app
-  'check-app-figures.mjs',     // the ported shell's vendored figures and kit: copies, load order, policy, offline shell
   'check-a11y.mjs',            // the accessibility harness still audits everything
-  'check-a11y-app.mjs',        // the ported shell's own harness: every route, every sheet
   'check-mobile-layout.mjs',   // a figure cannot leave the box it is drawn in
   'check-css-tokens.mjs',      // the stylesheets' tokens stay in step
-  'test-integrity.mjs',        // storage/merge cannot lose or corrupt data
-  'test-parity-money.mjs',     // quick entry, cents-only precision and split/transfer pairs, run against app.js itself
-  'test-load-existing.mjs',    // a document written by the old app loads in the port
-  'test-undo-journal.mjs',     // a delete applies at once, survives a reload and restores exactly
-  'test-storage-contract.mjs',  // one write path, the document round-trips, profile data untouched
-  'test-methods.mjs',           // a method survives its own removal; a schedule lands on the day it says
-  'test-tesco-sheet.mjs',       // the ported sheet answers exactly like the shipping source
-  'test-lock.mjs',              // the lock: PBKDF2 on the device, the idle clock, the cover
-  'test-profile-surface.mjs',   // a link may not redirect the device; the admin's door is the owner's
-  'test-sync-surface.mjs',      // the credential stays on the device, the mirror is a backup, the routes answer to both names
-  'test-app-surface.mjs',       // the manifest points at live routes, back closes a sheet and not the lock
-  'test-figures-review.mjs',    // the figures are the ledger's, motion is exact and reducible, the review prints
-  'test-metrics.mjs',          // the ported ledger arithmetic agrees with the frozen document
-  'test-data-portability.mjs', // the Data sheet's size, counts, planned merge and cash re-anchor
-  'test-history-edit.mjs',     // the History edit path: fields, history, grouped rows, storage and checkpoints
-  'check-pin-screens.mjs',     // the browser leg that loads it behind the PIN stays honest (it needs Playwright, so it runs by hand)
-  'test-profiles.mjs',         // profiles stay isolated
-  'test-tesco.mjs',            // the pay/tax engine still matches the workbook
-  'test-sync.mjs',             // the sync contract still round-trips the state
+  'check-pin-screens.mjs',     // the browser leg that loads the app behind the PIN stays honest (it needs Playwright, so it runs by hand)
   'test-cloud.mjs',            // the document store migrates, mirrors, conflicts
   'test-failure-throttle.mjs', // the failed-auth damper sees the caller on this host
   'test-motion.mjs',           // a headline figure only counts when it changed

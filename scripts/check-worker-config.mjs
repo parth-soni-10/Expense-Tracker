@@ -95,7 +95,7 @@ const scriptsDir = new URL('scripts/', root);
 
 // The Node the suite itself needs (ESM-by-syntax-detection for this repo's plain
 // .js modules), and the floor CI must run one of its legs on: README.md says so,
-// and app/package.json's `engines` is where the shell gets it from.
+// and the note in CLAUDE.md is where it is written down.
 const MIN_NODE = 22;
 
 // Variables that are configuration, not credentials: they name a private repo
@@ -469,7 +469,7 @@ for (const route of routes) {
 // a device actually gets cannot drift apart. A hardcoded literal in the object
 // would leave the constant decorative: shown in the Sync screen, ignored by
 // every request.
-const settingsSrc = read('app/lib/settings.ts');
+const settingsSrc = read('settings.js');
 const defaultEndpoint = /export const DEFAULT_SYNC_ENDPOINT = '([^']+)'/.exec(settingsSrc)?.[1];
 if (!defaultEndpoint) {
   fail('settings.js declares no DEFAULT_SYNC_ENDPOINT — this guard cannot tell which route the app calls, and neither can a reader.');
@@ -530,8 +530,8 @@ if (!existsSync(workflow)) {
      claim about one Node: a guard that leans on module-resolution or type-
      stripping behaviour that moved between releases looks green until something
      runs it elsewhere. So the suite runs on at least two legs, one of which is
-     MIN_NODE — the floor app/package.json's `engines` and the app-shell job
-     build against, and the version this repo was developed on.
+     MIN_NODE — the floor this repo was developed on, and the oldest runtime
+     its `engines` note promises.
 
      Both the matrix and the setup-node step are read from the `guards` job
      alone. A matrix found anywhere in the file could be another job's, and the

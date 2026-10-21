@@ -61,7 +61,7 @@ if (!existsSync(join(root, HARNESS))) {
 }
 const harness = read(HARNESS);
 const app = read('app.js');
-const seed = read('app/lib/seed.ts');
+const seed = read('seed.js');
 const ignore = read('.assetsignore');
 
 // ---- 1./2. what the harness drives, against what the app has

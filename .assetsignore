@@ -70,12 +70,11 @@ data*.json
 # would be downloadable at its own URL.
 tesco_full.txt
 
-# The new Cents app is NOT listed here, and that is the cutover. The build
-# command now stages app/ as the document root, and the stager reads the
-# ignore file FROM the assets directory it is given - so app/.assetsignore is
-# the policy that applies, and this one is only the rollback's. Reverting
-# this commit puts the app/ line back, and with it the old app as the one
-# that is published.
+# The new Cents app: the cutover target. Its source, typed logic core and
+# tsconfig are development files while the old root app serves, so none of it
+# may be downloadable. The cutover commit removes this line together with the
+# flip to app/ as the assets directory — the two must move as one.
+app/
 
 # Standard noise
 .DS_Store

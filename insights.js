@@ -252,17 +252,9 @@ export function screenInsights() {
   ));
 
   // Month-by-month grouped bars: spending vs income over the last 12 months
-  c.appendChild($('div', { class: 'card', 'data-ui': 'analytics-chart', 'data-ui-label': 'Month by month', style: 'padding:24px 16px;margin-bottom:24px;' },
+  c.appendChild($('div', { class: 'card', style: 'padding:24px 16px;margin-bottom:24px;' },
     $('div', { class: 'eyebrow', style: 'margin-bottom:20px;' }, 'Month by month'),
     monthOverMonthChart(),
-  ));
-
-  // A year at a glance, from the ledger's own dates: no new data, no new query.
-  // It is a reading, not a control — the table below remains the way in.
-  const loggedDates = state.entries.filter(e => e.type !== 'note').map(e => e.date);
-  c.appendChild($('div', { class: 'card', 'data-ui': 'github-activity', 'data-ui-dates': loggedDates.join(','), style: 'padding:24px 16px;margin-bottom:24px;' },
-    $('div', { class: 'eyebrow' }, 'Entries logged · 12 months'),
-    $('div', { class: 'muted', style: 'font-size:11px;margin-top:3px;' }, 'Each cell is a day with at least one entry. Hover for the count.'),
   ));
 
   // Category mix over time - stacked areas, so the shape of spending is readable
@@ -349,12 +341,6 @@ export function screenInsights() {
   // Year-in-review button
   c.appendChild($('div', { style: 'text-align:center;padding:16px 0;' },
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: openYearInReview }, iconSpan('chart', 'md'), 'Year in review'),
-  ));
-
-  // A long screen needs one way back that is not the scrollbar. The kit shows
-  // it only past 400px, so it never floats over the top of the page.
-  c.appendChild($('div', { class: 'ui-island', 'data-ui': 'scroll-island' },
-    $('button', { type: 'button', class: 'btn btn-ghost', 'data-ui-action': 'top' }, iconSpan('arrow-up', 'sm'), 'Back to top'),
   ));
 
   return c;
