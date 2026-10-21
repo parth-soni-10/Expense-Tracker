@@ -392,6 +392,20 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
   box-shadow: var(--ring);
 }
 
+/* The Type row is adopted by Rubber Segment (see screenHistory in app.js).
+ * The thumb is the accent fill, so the chosen pill keeps only its ink and lets
+ * the thumb show through — that is what makes the stretch visible as it
+ * crosses the gap between two types. */
+[data-rubber-segment] {
+  --rs-thumb: var(--accent);
+}
+[data-rubber-segment] .pill-cat {
+  background: transparent;
+}
+[data-rubber-segment] .pill-cat[data-active="true"] {
+  box-shadow: none;
+}
+
 /* ============================================================
    Header
    ============================================================ */

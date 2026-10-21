@@ -8463,6 +8463,22 @@ function screenHistory() {
   const typeCounts = { all: frameEntries.length, expense: 0, credit: 0, transfer: 0, note: 0 };
   for (const e of frameEntries) if (typeCounts[e.type] !== undefined) typeCounts[e.type] += 1;
   const typeFilterRow = $('div', { class: 'no-print', style: 'display:flex;flex-wrap:wrap;gap:6px;padding:0 0 16px;border-bottom:1px solid var(--line);margin-bottom:8px;' });
+  // The type row is the second single-choice group in History, so it takes
+  // Rubber Segment: the thumb stretches across the gap before it lands on the
+  // new type, instead of springing like the category row above it. The pills
+  // keep their skin; the chosen one drops its own fill so the accent thumb
+  // shows through (see the rule in styles.css). The row is rebuilt on every
+  // filter change, so the key lets the new instance remember the old seat and
+  // animate from it.
+  typeFilterRow.setAttribute('data-rubber-segment', '');
+  typeFilterRow.setAttribute('role', 'group');
+  typeFilterRow.setAttribute('aria-label', 'Filter history by type');
+  typeFilterRow.setAttribute('data-rs-key', 'history-type');
+  typeFilterRow.setAttribute('data-rs-size', 'sm');
+  typeFilterRow.setAttribute('data-rs-inset', '0');
+  typeFilterRow.setAttribute('data-rs-radius', '6');
+  typeFilterRow.setAttribute('data-rs-stretch', '80');
+  typeFilterRow.setAttribute('data-rs-squash', '2');
   typeFilterRow.appendChild($('span', { class: 'eyebrow', style: 'align-self:center;margin-right:4px;font-size:10px;' }, 'Type'));
   const TYPE_PILLS = [['all', 'All'], ['expense', 'Spending'], ['credit', 'Income'], ['transfer', 'Transfers'], ['note', 'Notes']];
   for (const [value, label] of TYPE_PILLS) {
