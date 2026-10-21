@@ -2519,3 +2519,21 @@ p, li, .muted { text-wrap: pretty; }
 .glide-select__option {
   font-size: 13.5px;
 }
+
+/* Split rows pair a method picker with a slice-amount input. The picker takes
+   the space the native select used to fill instead of the whole width. */
+.split-leg .glide-select {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.split-leg .glide-select .glide-select__trigger {
+  height: 36px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.split-leg .glide-select__menu {
+  min-width: 170px;
+}

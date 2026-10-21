@@ -852,7 +852,7 @@ function showOnboarding() {
     } else {
       titleEl.textContent = 'Your main account';
       subEl.textContent = 'Where most of your money lives. Set its current balance to reconcile against.';
-      const select = $('select', { 'aria-label': 'Main account', style: inputStyle });
+      const select = $('select', { 'aria-label': 'Main account', 'data-glide': true, 'data-glide-menu-width': '200', style: inputStyle });
       ACCOUNT_METHOD_IDS.forEach(id => select.append($('option', { value: id }, methodLabel(id))));
       const balance = $('input', { type: 'text', inputmode: 'decimal', placeholder: 'Current balance', 'aria-label': 'Current balance', autocomplete: 'off', style: inputStyle, onFocus: focusRing });
       bodyEl.replaceChildren(field('Account', select), field('Current balance', balance));
@@ -6328,14 +6328,14 @@ function formView({ initial = null, onSubmit, onCancel }) {
     splitRows.forEach((r, i) => {
       // Numbered per row: every slice used to share one aria-label, which is an
       // addressed identity here, not a caption (see the convention in CLAUDE.md).
-      const sel = $('select', { 'aria-label': `Split method ${i + 1}` });
+      const sel = $('select', { 'aria-label': `Split method ${i + 1}`, 'data-glide': true, 'data-glide-size': 'sm', 'data-glide-menu-width': '170' });
       appendMethodOptions(sel, SLICE_METHODS, r.method);
       sel.value = r.method;
       sel.onchange = () => { r.method = sel.value; };
       const amt = $('input', { type: 'text', inputmode: 'decimal', value: r.amount, 'aria-label': `Slice amount ${i + 1}`, placeholder: 'slice €', autocomplete: 'off', style: 'width:106px;text-align:right;' });
       amt.oninput = () => { r.amount = amt.value; };
       const rm = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;', 'aria-label': `Remove slice ${i + 1}`, onClick: () => { if (splitRows.length > 1) { splitRows.splice(i, 1); redrawSplit(); } } }, '×');
-      splitWrap.appendChild($('div', { style: 'display:flex;align-items:center;gap:6px;margin-bottom:8px;' }, sel, amt, splitRows.length > 1 ? rm : $('span', {})));
+      splitWrap.appendChild($('div', { class: 'split-leg', style: 'display:flex;align-items:center;gap:6px;margin-bottom:8px;' }, sel, amt, splitRows.length > 1 ? rm : $('span', {})));
     });
     const add = $('button', { type: 'button', class: 'btn-link', style: 'font-size:11px;', onClick: () => { splitRows.push({ method: 'Cash', amount: '' }); redrawSplit(); } }, '+ Add slice');
     splitWrap.appendChild($('div', { style: 'text-align:right;' }, add));
@@ -7788,7 +7788,7 @@ function openNewRecurring(existing = null, onClosed = null) {
     $('label', { class: 'eyebrow', style: 'display:block;margin-bottom:4px;' }, 'Category'),
     catSel,
   );
-  const freqSel = $('select', { 'aria-label': 'Frequency', onChange: (e) => { data.frequency = e.target.value; dayLabel.textContent = freqDayLabel(e.target.value); } },
+  const freqSel = $('select', { 'aria-label': 'Frequency', 'data-glide': true, 'data-glide-menu-width': '180', onChange: (e) => { data.frequency = e.target.value; dayLabel.textContent = freqDayLabel(e.target.value); } },
     $('option', { value: 'monthly', selected: '' }, 'Monthly'),
     $('option', { value: 'weekly' }, 'Weekly'),
     $('option', { value: 'fortnightly' }, 'Fortnightly'),
@@ -7800,7 +7800,7 @@ function openNewRecurring(existing = null, onClosed = null) {
   // needs to know which day its run starts from — but it says which it means.
   const freqDayLabel = (freq) => (freq === 'monthly' || freq === 'yearly') ? 'Day of month' : 'Start day';
   const dayLabel = $('span', null, 'Day of month');
-  const daySel = $('select', { 'aria-label': 'Day', onChange: (e) => data.dayOfMonth = +e.target.value },
+  const daySel = $('select', { 'aria-label': 'Day', 'data-glide': true, 'data-glide-menu-width': '120', onChange: (e) => data.dayOfMonth = +e.target.value },
     ...Array.from({ length: 31 }, (_, i) => $('option', { value: i + 1 }, String(i + 1))),
   );
   const noteInput = $('input', { type: 'text', placeholder: 'optional', 'aria-label': 'Note', onInput: (e) => data.note = e.target.value });
@@ -9183,7 +9183,7 @@ function openLegEditor(leg) {
   const onEsc = ev => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onEsc, true);
 
-  const sel = $('select', { 'aria-label': 'Slice method', style: 'width:100%;' });
+  const sel = $('select', { 'aria-label': 'Slice method', 'data-glide': true, 'data-glide-menu-width': '240', style: 'width:100%;' });
   appendMethodOptions(sel, methodPickerIds(leg.method), leg.method);
   sel.value = leg.method;
   const amt = $('input', { type: 'text', inputmode: 'decimal', value: String(leg.amount), 'aria-label': 'Slice amount', autocomplete: 'off', style: 'width:100%;text-align:right;' });
@@ -9264,12 +9264,12 @@ function openSplitEditor(legs) {
     rows.forEach((r, i) => {
       // Numbered per row, like the quick-capture split above: two slices must not
       // answer to one aria-label.
-      const sel = $('select', { 'aria-label': `Split method ${i + 1}`, onchange: () => { r.method = sel.value; } });
+      const sel = $('select', { 'aria-label': `Split method ${i + 1}`, 'data-glide': true, 'data-glide-size': 'sm', 'data-glide-menu-width': '170', onchange: () => { r.method = sel.value; } });
       appendMethodOptions(sel, methodPickerIds(r.method), r.method);
       sel.value = r.method;
       const amt = $('input', { type: 'text', inputmode: 'decimal', value: r.amount, 'aria-label': `Slice amount ${i + 1}`, autocomplete: 'off', style: 'width:110px;text-align:right;', oninput: (ev) => { r.amount = ev.target.value; updateTotal(); } });
       const rm = $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:5px 9px;font-size:11px;', 'aria-label': `Remove slice ${i + 1}`, onClick: () => { if (rows.length <= 1) return; rows = rows.filter(x => x !== r); redraw(); updateTotal(); } }, 'Remove');
-      listWrap.appendChild($('div', { style: 'display:flex;align-items:center;gap:8px;min-width:0;' }, sel, amt, rows.length > 1 ? rm : null));
+      listWrap.appendChild($('div', { class: 'split-leg', style: 'display:flex;align-items:center;gap:8px;min-width:0;' }, sel, amt, rows.length > 1 ? rm : null));
     });
   }
   redraw();
