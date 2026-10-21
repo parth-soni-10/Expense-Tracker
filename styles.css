@@ -2484,3 +2484,15 @@ p, li, .muted { text-wrap: pretty; }
 .cents-update-bar { position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 80; display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 520px; margin: 0 auto; padding: 12px 14px; background: var(--card); border: 1px solid var(--accent); border-radius: var(--radius-lg); box-shadow: var(--shadow-xl); font-size: 13px; }
 .cents-update-bar[hidden] { display: none; }
 .cents-update-bar button { font: inherit; font-size: 12px; font-weight: 600; padding: 7px 14px; border: 0; border-radius: 999px; background: var(--accent); color: var(--card); cursor: pointer; }
+/* The motion tiers, declared here as the new app/ declares them in
+   app/styles.css. The live root app had no tier at all, so every
+   duration in it was a raw number and the reduced-motion check could
+   not tell a still animation from a moved one. */
+:root {
+  --motion-duration-micro: 100ms;
+  --motion-duration-standard: 200ms;
+  --motion-duration-complex: 400ms;
+  --motion-duration-page: 600ms;
+  --motion-ease-enter: cubic-bezier(.16, 1, .3, 1);
+  --motion-ease-exit: cubic-bezier(.7, 0, .84, 0);
+}
