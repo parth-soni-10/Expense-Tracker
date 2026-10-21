@@ -71,6 +71,7 @@
 
   <!-- Fonts are self-hosted in /fonts (see the @font-face rules in styles.css)
        so the app makes no third-party connection on load. -->
+  <link rel="stylesheet" href="glide-select.css">
   <link rel="stylesheet" href="styles.css">
 
   <!-- Critical-path preloads: kick off the big module download and the main
@@ -417,6 +418,7 @@
        the download itself fails), so the boot critical path is just
        styles.css + app.js and the module's tiny static imports. All
        integrations degrade gracefully. -->
+  <script src="glide-select.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

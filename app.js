@@ -6291,7 +6291,7 @@ function formView({ initial = null, onSubmit, onCancel }) {
   // Named methodLabelEl so it doesn't shadow the global methodLabel(id) helper.
   const methodLabelEl = $('label', { class: 'eyebrow', for: 'f-method' }, 'Method');
   const methodOpts = () => (isCredit() ? creditMethods : allMethods());
-  const methodSel = $('select', { 'aria-label': 'Payment method', id: 'f-method', onChange: (e) => data.method = e.target.value });
+  const methodSel = $('select', { 'aria-label': 'Payment method', id: 'f-method', 'data-glide': true, 'data-glide-menu-width': '220', onChange: (e) => data.method = e.target.value });
   const methodSection = $('div');
   function rebuildMethodOpts() {
     methodLabelEl.textContent = isCredit() ? 'Income sent to' : 'Method';
@@ -6353,8 +6353,8 @@ function formView({ initial = null, onSubmit, onCancel }) {
   methodSection.append(methodLabelEl, methodSel, splitToggle, splitWrap);
 
   // Transfer From / To dropdowns
-  const transferFromSel = $('select', { 'aria-label': 'From account', onChange: (e) => data.transferFrom = e.target.value });
-  const transferToSel = $('select', { 'aria-label': 'To account', onChange: (e) => data.transferTo = e.target.value });
+  const transferFromSel = $('select', { 'aria-label': 'From account', 'data-glide': true, 'data-glide-menu-width': '220', onChange: (e) => data.transferFrom = e.target.value });
+  const transferToSel = $('select', { 'aria-label': 'To account', 'data-glide': true, 'data-glide-menu-width': '220', onChange: (e) => data.transferTo = e.target.value });
   function rebuildTransferOpts() {
     const fromIds = methodPickerIds(data.transferFrom);
     const toIds = methodPickerIds(data.transferTo);
@@ -7776,10 +7776,12 @@ function openNewRecurring(existing = null, onClosed = null) {
 
   const amtInput = $('input', { type: 'text', inputmode: 'decimal', placeholder: '0.00', 'aria-label': 'Amount', onInput: (e) => data.amount = e.target.value });
   const descInput = $('input', { type: 'text', placeholder: 'e.g. Rent, Netflix', 'aria-label': 'Description', onInput: (e) => data.details = e.target.value });
-  const methodSel = $('select', { 'aria-label': 'Method', onChange: (e) => data.method = e.target.value },
+  // data-glide turns these into GlideSelect chips; the <select> is still the
+  // control the sheet reads, which is why its onChange above stays untouched.
+  const methodSel = $('select', { 'aria-label': 'Method', 'data-glide': true, 'data-glide-menu-width': '240', onChange: (e) => data.method = e.target.value },
     ...methodPickerIds(data.method).map(id => $('option', { value: id }, methodLabel(id))),
   );
-  const catSel = $('select', { 'aria-label': 'Category', onChange: (e) => data.category = e.target.value },
+  const catSel = $('select', { 'aria-label': 'Category', 'data-glide': true, 'data-glide-menu-width': '240', onChange: (e) => data.category = e.target.value },
     ...allCategories().map(c => $('option', { value: c.id }, c.label)),
   );
   const catRow = $('div', { style: 'margin-bottom:14px;' },
