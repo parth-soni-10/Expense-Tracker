@@ -10022,12 +10022,12 @@ function _render() {
   const main = document.getElementById('app');
   if (!main) return;
   const focusedField = captureFocusedField();
-    // Init dark mode + season on first render - dark is the default
+    // Init the theme on first render - light is the default
   if (!document.documentElement.dataset.themeInit) {
     document.documentElement.dataset.themeInit = '1';
     try {
       const saved = localStorage.getItem('cents-theme');
-      document.documentElement.dataset.theme = saved === 'light' ? '' : 'dark';
+      document.documentElement.dataset.theme = saved === 'dark' ? 'dark' : '';
     } catch(e) {}
   }
   // Keep the app mount completely empty while locked. The PIN overlay is
