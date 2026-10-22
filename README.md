@@ -18,7 +18,7 @@ A calm, private expense tracker that runs in your browser — no app store, no a
 - **Tesco Pay** — log shifts by quick entry, roster photo or workbook import, with paid hours, Sunday pay, an Irish PAYE/USC/PRSI estimate and pay tracked per week.
 - **Light or dark** — the app opens light; the choice is remembered on the device.
 - **Optional sync** — off by default, so nothing leaves the browser unless you turn it on.
-- **Profiles** — one deployment, an account per person, each with its own entries, PIN and tab access.
+- **Profiles** — one deployment, an account per person, each with its own entries, optional PIN and tab access.
 
 ## How it works
 

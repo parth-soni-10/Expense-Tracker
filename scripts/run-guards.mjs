@@ -46,6 +46,7 @@ const GUARDS = [
   'test-failure-throttle.mjs', // the failed-auth damper sees the caller on this host
   'test-motion.mjs',           // a headline figure only counts when it changed
   'test-ui-libs.mjs',          // the vendored UI libraries still behave
+  'test-tesco-holiday.mjs',    // holiday hours: 8% a week, posted on the Thursday, and never counted twice
 ];
 
 const root = fileURLToPath(new URL('../', import.meta.url));

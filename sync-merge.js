@@ -176,6 +176,11 @@ function mergeSettings(localSettings = {}, cloudSettings = {}, cloudFresher) {
     // tescoWeekNos is per-week too: a week number typed on either device
     // survives, and the fresher side wins a clash for the same week.
     tescoWeekNos: { ...(older.tescoWeekNos || {}), ...(newer.tescoWeekNos || {}) },
+    // The holiday balance is three scalars in one object, so it merges key by
+    // key rather than as a block: a balance re-set on the phone and a week's
+    // holiday typed on the laptop are different facts about different fields,
+    // and a block replace would silently drop one of them.
+    tescoHoliday: { ...(older.tescoHoliday || {}), ...(newer.tescoHoliday || {}) },
     // tescoPayLedger is what the ledger has already been told about Tesco pay,
     // per pay date — the line this app wrote and the figure it wrote it at.
     // Per-key LWW, like methodHidden, and a date only ONE side has survives the

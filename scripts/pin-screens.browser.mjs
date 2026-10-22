@@ -18,8 +18,11 @@
  *     no credential. The only things it ever holds are the fixture and the
  *     default profile the app itself creates.
  *   · The document is written under `cents:p/personal/state` — the real key —
- *     and the app is then navigated to as a first-time visitor arrives: locked,
- *     with the built-in PIN.
+ *     and a PIN is seeded under `cents:p/personal/privacy` the way the Privacy
+ *     lock screen stores one: PBKDF2 with the app's own iteration count. There
+ *     is no built-in PIN to unlock with any more, so a leg that wants a lock
+ *     has to make one — and a run with no seeded credential is asserted to open
+ *     without one.
  *   · The clock is pinned inside the fixture's own month. The fixture is frozen
  *     (October 2026), so a dashboard keyed on "this month" would go blank the
  *     moment the calendar moved past it; `page.clock.setFixedTime` a day after
@@ -46,6 +49,7 @@
  * static server over this checkout.
  */
 import { createServer } from 'node:http';
+import { pbkdf2Sync, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, join, resolve, sep } from 'node:path';
@@ -57,7 +61,12 @@ const root = resolve(here, '..');
    the frozen document itself is what runs by default. */
 const FIXTURE = resolve(here, process.env.CENTS_FIXTURE || 'fixtures/expense-tracker-v1.schema2.json');
 const KEY = 'cents:p/personal/state';
-const PIN = '100901'; /* the built-in default; a fresh context stores no personal PIN */
+const PRIVACY_KEY = 'cents:p/personal/privacy';
+/* A PIN this run invents. The app ships no credential of its own, so the lock
+   this leg exercises is one it seeds exactly as the Privacy lock screen would;
+   `check-pin-screens.mjs` holds the iteration count to app.js's. */
+const PIN = 'test4242';
+const PBKDF2_ITERATIONS = 310_000;
 const MINUS = '\u2212';
 
 const fixture = JSON.parse(readFileSync(FIXTURE, 'utf8'));
@@ -93,16 +102,11 @@ const aiBalance = checkpoint.balance + methodSum('AIB');
 const savingsBalance = methodSum('RS');
 const mainBalance = methodSum('Revolut');
 const netWorth = aiBalance + savingsBalance + mainBalance;
-/* The envelope figure counts funded category budgets and says whether any is
-   over; both halves are derivable from the document, so a regenerated fixture
-   with a different budget state is judged on what it actually says. */
+/* Funded category budgets: the by-category card shows each one beside the
+   target it is measured against, so the target is asserted from the document
+   rather than from a percentage this leg would have to recompute. */
 const fundedBudgets = Object.entries(fixture.settings.categoryBudgets || {})
   .filter(([, limit]) => +limit > 0);
-const envelopes = fundedBudgets.length;
-const overBudget = fundedBudgets.filter(([id, limit]) => (categoryTotals[id] || 0) > +limit).length;
-const envelopeRead = `${envelopes} envelope${envelopes === 1 ? '' : 's'} · ${overBudget ? `${overBudget} over` : 'all within budget'}`;
-/* The constellation shows the newest non-note entries, at most nine. */
-const recentCount = Math.min(9, entries.filter(e => e.type !== 'note').length);
 /* A split pair renders as one grouped row, keyed by the shared split id; an
    ordinary entry is its own row. */
 const rowKey = e => e.splitId || e.id;
@@ -240,13 +244,16 @@ try {
   equal('a fresh context starts with empty storage', (await page.evaluate(() => Object.keys(localStorage))).length, 0);
   equal('no profile registry exists before the fixture is loaded', await page.evaluate(() => localStorage.getItem('cents:profiles')), null);
 
-  /* 2. Load the frozen document under the real key, then arrive as a visitor
-        with no personal PIN. */
+  /* 2. Load the frozen document under the real key, and seed a PIN of this
+        run's own — the app has no credential to fall back on. */
+  const salt = randomUUID();
+  const hash = pbkdf2Sync(PIN, salt, PBKDF2_ITERATIONS, 32, 'sha256').toString('hex');
   await page.evaluate(([key, raw]) => localStorage.setItem(key, raw), [KEY, JSON.stringify(fixture)]);
+  await page.evaluate(([key, raw]) => localStorage.setItem(key, raw), [PRIVACY_KEY, JSON.stringify({ hash, salt, kdf: 'pbkdf2' })]);
   await page.goto(`${base}/`, { waitUntil: 'networkidle' });
   await page.locator('input[aria-label="PIN"]').waitFor({ timeout: 15000 });
-  equal('the app opens locked', await page.locator('.pin-lock').count(), 1);
-  includes('the lock screen names the built-in test PIN', await page.locator('.pin-lock').innerText(), PIN);
+  equal('the app opens locked when a PIN is set', await page.locator('.pin-lock').count(), 1);
+  check('the lock screen does not print any PIN', !(await page.locator('.pin-lock').innerText()).includes(PIN));
   await page.locator('input[aria-label="PIN"]').fill(PIN);
   await page.locator('.pin-lock').waitFor({ state: 'detached', timeout: 15000 });
   await page.locator('.net-worth-head .display-num').waitFor({ timeout: 15000 });
@@ -270,12 +277,19 @@ try {
   includes('paper vouchers are the stored count', dash, `Vouchers ${money(vouchers)}`);
   includes('the leading category total is on the dashboard', dash, money(topCategory[1]));
 
-  const reads = await page.locator('.hairline-read').allInnerTexts();
-  equal('three figures mount', reads.length, 3);
-  check('balance tide reads the net worth', /^\d+ days · /.test(reads[0]) && reads[0].endsWith(grouped(netWorth)),
-    `got ${JSON.stringify(reads[0])}, expected the money part to be ${grouped(netWorth)}`);
-  equal('envelope garden reads the funded budgets and their state', reads[1], envelopeRead);
-  equal('receipt constellation counts the newest non-note entries', reads[2], `${recentCount} recent entries`);
+  /* The read-outs: one Pulse card, whose spent figure is the month's spending
+     and whose runway figure is a whole number of days. (These used to check
+     the Hairline three-figure strip, removed with the redesign — the card that
+     carries the same job is checked instead of the surface that no longer
+     exists.) */
+  const pulse = page.locator('.financial-pulse');
+  equal('one pulse card mounts', await pulse.count(), 1);
+  const pulseText = (await pulse.innerText()).replace(/\s+/g, ' ').trim();
+  check("the pulse card's spent figure is the month's spending",
+    pulseText.includes(`SPENT\u24be ${money(spend)}`) && /RUNWAY\u24be \d+ days/.test(pulseText),
+    `got ${JSON.stringify(pulseText.slice(0, 220))}, expected ${money(spend)} spent and a runway in whole days`);
+  includes('the by-category card measures a funded category against its own target',
+    dash, `of ${money(fundedBudgets[0][1])}`);
 
   /* 4. History — the same rows, with the split pair grouped and the tombstone
         gone. */
@@ -353,7 +367,7 @@ try {
 
   /* 9. Nothing else was written, and the document was not altered. */
   const keys = (await page.evaluate(() => Object.keys(localStorage))).sort();
-  equal('the context holds only the document and the default profile', JSON.stringify(keys), JSON.stringify([KEY, 'cents:profiles'].sort()));
+  equal('the context holds only the document, its PIN and the default profile', JSON.stringify(keys), JSON.stringify([KEY, PRIVACY_KEY, 'cents:profiles'].sort()));
   const stored = await page.evaluate(key => localStorage.getItem(key), KEY);
   equal('the stored document still deep-equals the fixture', canonical(JSON.parse(stored)), canonical(fixture));
   const profiles = await page.evaluate(() => {
@@ -362,7 +376,7 @@ try {
   const profileIds = Array.isArray(profiles?.profiles) ? profiles.profiles.map(p => p.id) : [];
   check('the registry holds no profile but the default', profileIds.every(id => id === 'personal'), profileIds.join(','));
   check('the registry carries no PIN or credential', !profiles || (!('pinHash' in profiles) && !('credential' in profiles)));
-  check('no other profile document was created', keys.every(k => k === KEY || k === 'cents:profiles'), keys.join(','));
+  check('no other profile document was created', keys.every(k => k === KEY || k === PRIVACY_KEY || k === 'cents:profiles'), keys.join(','));
 
   equal('no page error', pageErrors.length, 0);
   equal('no CSP refusal', cspRefusals.length, 0);

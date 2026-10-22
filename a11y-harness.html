@@ -25,9 +25,10 @@
 
   It drives only surfaces that OPEN (nav links, the menu and its drill-downs, the
   modal openers) and never clicks anything inside an open modal, so it cannot
-  change the ledger it is auditing. The app must be unlocked: it types the
-  default PIN (100901) if a lock screen is up, and says so plainly if a custom PIN
-  is set on the device.
+  change the ledger it is auditing. The app must be unlocked: a device with no
+  PIN opens straight into the session, and if a lock screen IS up this page says
+  so rather than guessing — there is no built-in PIN to type any more, and the
+  one the device holds is not this page's to know.
 
   It also has to run in a state a user can actually BE in. A first run puts the
   setup overlay over everything, and nothing in the menu is reachable behind it —
@@ -406,23 +407,11 @@ function escapeHtml(text) {
 }
 
 async function unlock() {
-  const type = () => {
-    const lock = doc().querySelector('.pin-lock-bg input[aria-label="PIN"]');
-    if (!lock) return false;
-    lock.value = '100901';
-    const InputEvent = win().Event;
-    lock.dispatchEvent(new InputEvent('input', { bubbles: true }));
-    return true;
-  };
-  if (!type()) return 'no lock screen';
-  const first = await until(() => !doc().querySelector('.pin-lock-bg'), { timeout: 4000 });
-  if (first) return 'unlocked with the default PIN';
-  // One retry before the note blames the device: a dispatch can race a
-  // just-committed document (or a slow verify can outlast the wait above), and
-  // a lost race must not report "a custom PIN is set" — the next reset would
-  // overwrite the note anyway, but the run's final line is the one people read.
-  if (type()) await until(() => !doc().querySelector('.pin-lock-bg'), { timeout: 6000 });
-  return doc().querySelector('.pin-lock-bg') ? 'COULD NOT UNLOCK (a custom PIN is set on this device)' : 'unlocked with the default PIN';
+  // Nothing to type and nothing to guess: the app has no built-in credential, so
+  // either this device has a PIN (the audit cannot proceed without it) or it has
+  // none and opens on its own.
+  if (!doc().querySelector('.pin-lock-bg input[aria-label="PIN"]')) return 'no lock screen';
+  return 'COULD NOT UNLOCK (a PIN is set on this device - clear it in Privacy & security, then run again)';
 }
 
 (async function run() {

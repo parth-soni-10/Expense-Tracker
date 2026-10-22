@@ -11,7 +11,7 @@ import { listProfiles, activeProfile, createProfile, renameProfile, deleteProfil
 // The Tesco Pay ENGINE only: what the dashboard's Tesco line needs. The screen,
 // the roster reader, the photo pipeline and the workbook importer live in
 // tesco.js and are fetched on the first visit to #tesco (see tescoScreen()).
-import { monthSummary, TESCO_RATE_DEFAULTS, TESCO_PAY_METHOD, weekStartOf, shiftPay, r2, isoLocal, receivedByPayDate, tescoPayLedgerWrites, tescoPayWriteWindow } from './tesco-pay.js';
+import { monthSummary, holidayBalance, TESCO_RATE_DEFAULTS, TESCO_PAY_METHOD, weekStartOf, shiftPay, r2, isoLocal, receivedByPayDate, tescoPayLedgerWrites, tescoPayWriteWindow } from './tesco-pay.js';
 
 // ---------- optional UI libraries (vendor/*) ----------
 // Every integration below degrades gracefully: if a vendor file fails to
@@ -338,32 +338,36 @@ async function hashPinPlain(pin) {
   return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-// Site-wide default credential. Every device boots locked and unlocks with
-// this built-in PIN ("100901") until a personal PIN is saved on that device.
-// It is a plain SHA-256 like the legacy device-hash path, so verification
-// needs no salt. By design this is casual-access protection - the default is
-// visible in the shipped source.
-const DEFAULT_PIN_HASH = '3bc83f9bf0224554bd08d03d598a4c44d7eda855bbf034131e48d1dba72d5d7d'; // SHA-256("100901")
-const DEFAULT_PIN_PLAIN = '100901'; // used only when Web Crypto is unavailable (plain-HTTP contexts)
-
+// There is no built-in PIN, and no shipped credential of any kind. A device is
+// locked only when a PIN exists on it: the device-only hash in settings.js, or
+// — for a document written before that storage existed — the legacy in-state
+// hash. No PIN means NO LOCK, which is the whole of the rule: nothing in the
+// source can open somebody's ledger, and there is no default whose advice
+// ("set your own PIN") the app has to keep repeating.
 function getPinCredential() {
   const devicePin = getPrivacyPin();
-  if (devicePin.hash) return { ...devicePin, isDefault: false };
+  if (devicePin.hash) return devicePin;
   const legacyHash = state?.settings?.pinHash;
   if (typeof legacyHash === 'string' && /^[a-f0-9]{64}$/i.test(legacyHash)) {
-    return { salt: null, hash: legacyHash.toLowerCase(), isDefault: false };
+    return { salt: null, hash: legacyHash.toLowerCase(), kdf: null };
   }
-  return { salt: null, hash: DEFAULT_PIN_HASH, isDefault: true };
+  return null;
 }
 
+/** Is this device locked? Only while it holds a credential to check.
+ *
+ *  Cached for the session, because this is read on every render AND on every
+ *  interaction — resetIdleLock is bound to pointerdown, keydown, wheel and
+ *  touchstart — and each uncached answer is a localStorage read plus a JSON
+ *  parse. Only three things can change it: a PIN being set, a PIN being removed,
+ *  and a profile switch (the credential is namespaced per profile), and each of
+ *  those clears the cache where it happens. */
+let pinLockCache = null;
 function hasPinLock() {
-  // The privacy lock is always on: every device opens locked, using the
-  // built-in "100901" PIN until a personal PIN is set there.
-  return true;
+  if (pinLockCache === null) pinLockCache = !!getPinCredential();
+  return pinLockCache;
 }
-function hasCustomPin() {
-  return !getPinCredential().isDefault;
-}
+function forgetPinLock() { pinLockCache = null; }
 
 // ---------- Biometric unlock (fingerprint / Face ID) ----------
 // Uses the Web Authentication API with the platform authenticator, so on
@@ -505,9 +509,9 @@ function completeUnlock() {
 }
 
 // ---------- device PIN throttle ----------
-// The lock is casual-access protection — the default PIN ships in the source —
-// but "casual" is not "none": an unlocked phone handed to someone else is a
-// guessing machine without this. Same shape as the server's failureThrottle
+// The lock is casual-access protection, not a vault — but "casual" is not
+// "none": an unlocked phone handed to someone else is a guessing machine
+// without this, and every PIN now belongs to one device only. Same shape as the server's failureThrottle
 // (netlify/functions/lib/auth.mjs): a SLIDING window of failures, after which
 // the door stops answering until the oldest one ages out. In-memory on
 // purpose — a counter in localStorage is a counter the guesser can delete, and
@@ -528,7 +532,10 @@ function pinThrottleRemaining(now = Date.now()) {
 function pinFailure() { pinFailures.push(Date.now()); }
 
 function showPinLock() {
-  if (pinUnlocked || pinOverlay) return;
+  // A caller that does not check first still cannot invent a lock: with no
+  // credential there is nothing to ask for, and an overlay would be a door with
+  // no lock behind it.
+  if (pinUnlocked || pinOverlay || !hasPinLock()) return;
   const label = biometricLabel();
   // new-password (not off): tells desktop browsers this is not a credential
   // field, so the phone-registered passkey/fingerprint credential synced into
@@ -536,17 +543,10 @@ function showPinLock() {
   // PIN-only, biometrics stay mobile.
   const input = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'PIN', 'aria-label': 'PIN', style: 'width:100%;text-align:center;letter-spacing:.35em;font-size:24px;' });
   const message = $('p', { class: 'muted', style: 'font-size:13px;text-align:center;min-height:20px;margin:12px 0;' }, 'Enter your PIN.');
-  // The default PIN is a device-wide secret nobody is told: setup offers
-  // "Keep the default PIN" without ever printing it, and the only page that
-  // named it was Privacy settings — which needs the PIN to reach. So while the
-  // stored credential IS the default, the lock screen says what it is.
-  const defaultPinHint = getPinCredential().isDefault
-    ? $('p', { class: 'muted', style: 'font-size:12px;text-align:center;margin:0 0 4px;line-height:1.5;' },
-        `Still the default PIN: ${DEFAULT_PIN_PLAIN}. Set your own in \u2630 \u2192 Privacy lock.`)
-    : null;
   // Verify a candidate PIN against the stored credential. Returns true on match.
   const verifyPin = async (value) => {
     const saved = getPinCredential();
+    if (!saved) return false;
     try {
       if (saved.salt !== null) {
         if (saved.kdf === 'pbkdf2') {
@@ -563,13 +563,14 @@ function showPinLock() {
         }
         return legacyOk;
       } else if (globalThis.crypto?.subtle) {
-        // Plain SHA-256 path (legacy hashes and the built-in default).
+        // Plain SHA-256 path: a legacy unsalted hash, which a document could
+        // still carry. Nothing writes one any more.
         return (await hashPinPlain(value)) === saved.hash;
       } else {
-        // No Web Crypto (plain-HTTP context): the built-in default credential
-        // is casual protection, so verify it by direct comparison. Personal
-        // salted hashes cannot be checked without Web Crypto.
-        return saved.isDefault && value === DEFAULT_PIN_PLAIN;
+        // No Web Crypto (plain-HTTP context): a credential that needs it cannot
+        // be checked at all. The message below says so rather than pretending
+        // the PIN was wrong.
+        return false;
       }
     } catch (err) {
       return false;
@@ -659,7 +660,6 @@ function showPinLock() {
       $('p', { class: 'eyebrow', style: 'margin:0;' }, 'Privacy lock'),
       $('p', { class: 'serif', style: 'font-size:18px;margin:20px 0 4px;' }, 'Welcome back.'),
       message,
-      defaultPinHint,
       bioArea,
       pinArea,
     ),
@@ -725,15 +725,15 @@ function showPinLock() {
 
 // ---------- first-run onboarding ----------
 // A short three-step setup shown on a genuinely fresh install (no entries, no
-// checkpoints, no personal PIN). It replaces the old "boot locked with the
-// default 100901 PIN and land on a dense dashboard" experience: choose a PIN,
-// set a monthly budget, and pick one main account with its opening balance.
-// Every step can be skipped, so the flow never blocks access - the app's
-// existing defaults stay in place and onboarding is marked complete either way.
+// checkpoints, no PIN). It offers a PIN, a monthly budget, and one main account
+// with its opening balance — but every step, the PIN included, can be skipped,
+// and skipping the PIN leaves the app unlocked rather than a built-in
+// credential holding it shut. Onboarding is marked complete either way; it
+// never blocks access.
 function needsOnboarding() {
   if (state.settings.onboarded) return false;
   if (state.entries.length > 0) return false;
-  if (hasCustomPin()) return false;
+  if (hasPinLock()) return false;
   return !Object.values(state.settings.balanceCheckpoints || {}).some(points => Array.isArray(points) && points.length > 0);
 }
 
@@ -786,11 +786,12 @@ function showOnboarding() {
     pinOverlay = null;
     render();
     startInitSync();
-    // Skipped the PIN step? The toast is the moment the overlay is gone and a
-    // message can actually be seen, so this is where the default is stated.
-    toast(hasCustomPin()
+    // Skipping the PIN step is a real choice with a visible consequence — no
+    // PIN means no lock — so the toast names it once, where it can be read,
+    // instead of leaving the user to discover it on the next reload.
+    toast(hasPinLock()
       ? 'cents. is ready. Add an expense any time.'
-      : `cents. is ready. Your PIN is ${DEFAULT_PIN_PLAIN} \u2014 change it in \u2630 \u2192 Privacy lock.`);
+      : 'cents. is ready. No PIN is set, so cents. opens without a lock \u2014 set one any time in \u2630 \u2192 Privacy & security.');
     flushNotices();
     if (pendingSetupLinkToast) { toast(pendingSetupLinkToast); pendingSetupLinkToast = null; }
     if (pendingSetupLink) queueMicrotask(confirmPendingSetupLink);
@@ -799,28 +800,29 @@ function showOnboarding() {
     setDots();
     if (step === 0) {
       titleEl.textContent = 'Choose your PIN';
-      subEl.textContent = 'Locks cents. on this device. Any 4-20 letters or numbers.';
+      subEl.textContent = 'Locks cents. on this device. Any 4-20 letters or numbers — or skip to leave it open.';
       const pin = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'PIN', 'aria-label': 'New PIN', style: inputStyle, onFocus: focusRing });
       const confirm = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'Repeat PIN', 'aria-label': 'Repeat PIN', style: inputStyle, onFocus: focusRing });
       bodyEl.replaceChildren(field('New PIN', pin), field('Repeat PIN', confirm));
       primaryEl.textContent = 'Continue';
-      // The button names the PIN it keeps. Before this, the one place the
-      // default was written down was Privacy settings — behind the lock it
-      // guards — so a user who skipped this step had no way to learn it.
-      skipEl.textContent = `Keep the default PIN (${DEFAULT_PIN_PLAIN})`;
+      // Skipping leaves NO PIN, and therefore no lock. There is no default to
+      // fall back to, which is why the button says what it does rather than
+      // naming a credential the app used to ship.
+      skipEl.textContent = 'Skip — no lock';
       primaryEl.onclick = async () => {
         const value = pin.value.trim();
-        if (!value) { subEl.textContent = 'Choose a PIN, or tap "Keep the default PIN".'; pin.focus(); return; }
+        if (!value) { subEl.textContent = 'Choose a PIN, or tap "Skip — no lock".'; pin.focus(); return; }
         if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { subEl.textContent = 'Use 4-20 letters or numbers.'; pin.focus(); return; }
         if (value !== confirm.value.trim()) { subEl.textContent = 'The PINs do not match.'; confirm.focus(); return; }
         try {
           if (!globalThis.crypto?.getRandomValues) throw new Error('no crypto');
           const salt = globalThis.crypto.randomUUID?.() || Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
           if (!setPrivacyPin(await hashPin(value, salt), salt, 'pbkdf2')) { subEl.textContent = 'Could not save the PIN on this device.'; return; }
+          forgetPinLock();
           if (state.settings?.pinHash) delete state.settings.pinHash;
           advance();
         } catch {
-          subEl.textContent = 'PIN security is unavailable in this browser - you can keep the default.';
+          subEl.textContent = 'PIN security is unavailable in this browser - you can skip the PIN.';
         }
       };
       skipEl.onclick = advance;
@@ -874,6 +876,11 @@ function showOnboarding() {
 }
 
 function lockApp() {
+  // With no PIN there is no lock to take back: a caller that asked anyway (the
+  // menu row is hidden, but the undo/back paths are not the only callers) must
+  // leave the session as it is rather than marking it locked behind a screen
+  // that will never ask for anything.
+  if (!hasPinLock()) return;
   pinUnlocked = false;
   render();
   showPinLock();
@@ -912,7 +919,10 @@ let idleTimer = null;
 function resetIdleLock() {
   if (idleTimer !== null) clearTimeout(idleTimer);
   idleTimer = null;
-  if (!pinUnlocked) return;
+  // A session with no PIN is never "unlocked" in the sense that matters here:
+  // there is nothing to re-lock, and arming a timer that calls lockApp() would
+  // leave pinUnlocked false with no overlay to explain it.
+  if (!pinUnlocked || !hasPinLock()) return;
   idleTimer = setTimeout(() => {
     idleTimer = null;
     if (pinUnlocked) lockApp();
@@ -1250,6 +1260,9 @@ function loadProfileIntoApp() {
   updateAllowedCategories([...CATEGORIES, ...(state.settings.customCategories || [])].map(c => c.id));
   updateAllowedMethods(everyMethod().map(m => m.id));
   clearBalanceCaches();
+  // The privacy credential is namespaced by profile, so the next profile's lock
+  // state is a different answer to the same question.
+  forgetPinLock();
   pinUnlocked = false;
   // In-memory state that belongs to the profile we are leaving. `_undoStack`
   // is the important one: it holds live closures over the previous profile's
@@ -1266,10 +1279,12 @@ function loadProfileIntoApp() {
   window.scrollTo({ top: 0 });
 }
 
-/** The surface the active profile opens on: first-run setup, or its lock. */
+/** The surface the active profile opens on: first-run setup, its lock — or,
+ *  with no PIN on the device, nothing at all, straight into the session. */
 function showProfileEntry() {
   if (needsOnboarding()) showOnboarding();
-  else showPinLock();
+  else if (hasPinLock()) showPinLock();
+  else completeUnlock();
 }
 
 function showProfilePicker({ cancellable = false } = {}) {
@@ -1288,8 +1303,7 @@ function showProfilePicker({ cancellable = false } = {}) {
         if (p.id !== active) { switchToProfile(p.id); return; }
         // Re-opening the current profile → its lock (data is already loaded).
         close();
-        if (needsOnboarding()) showOnboarding();
-        else showPinLock();
+        showProfileEntry();
       },
     },
       profileAvatar(p, 64),
@@ -1345,8 +1359,13 @@ function showProfilePicker({ cancellable = false } = {}) {
 function showProfileGate() {
   applySetupLinkIfPresent();
   if (listProfiles().length > 1 && !hasSessionChoice()) { showProfilePicker({ cancellable: false }); return; }
-  if (needsOnboarding()) showOnboarding();
-  else if (hasPinLock()) showPinLock();
+  // The three states a device can be in, and the third is the one this gate
+  // used to have no branch for: a PIN exists (lock it), no PIN but a first run
+  // (onboard it), or neither — in which case the session opens now, because the
+  // work that waits behind a lock has nothing to wait for.
+  if (needsOnboarding()) { showOnboarding(); return; }
+  if (hasPinLock()) { showPinLock(); return; }
+  completeUnlock();
 }
 
 // ---------- admin panel: the people you share cents. with, and their tabs ----------
@@ -1699,13 +1718,20 @@ function openPinSettings() {
   const onKey = ev => { if (ev.key === 'Escape') { if (!isTopModal(bg)) return; ev.preventDefault(); close(); } };
   document.addEventListener('keydown', onKey, true);
   bg.appendChild(modal); document.body.appendChild(bg);
-  const custom = hasCustomPin();
-  const pin = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: custom ? 'New PIN (leave blank to keep)' : 'Your PIN', 'aria-label': 'New PIN' });
+  const hadPin = hasPinLock();
+  const pin = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: hadPin ? 'New PIN (leave blank to keep)' : 'Your PIN', 'aria-label': 'New PIN' });
   const confirm = $('input', { type: 'password', maxlength: '20', autocomplete: 'new-password', placeholder: 'Repeat PIN', 'aria-label': 'Repeat PIN' });
-  const status = $('p', { class: 'muted', style: 'font-size:12px;min-height:18px;' }, custom ? 'Your PIN is stored as a one-way hash on this device. This protects casual access, not localStorage or DevTools.' : 'The default PIN is 100901 and works on every device. Set a personal PIN here to replace it on this device.');
+  const status = $('p', { class: 'muted', style: 'font-size:12px;min-height:18px;' }, hadPin ? 'Your PIN is stored as a one-way hash on this device. This protects casual access, not localStorage or DevTools.' : 'No PIN is set, so cents. opens without a lock on this device. Set one here to lock it.');
   const save = async () => {
     const value = pin.value.trim();
-    if (!value && custom) { close(); return; }
+    // Blank keeps the PIN that is already there — and with none there is nothing
+    // to keep, so the field has to be filled before the app can lock at all.
+    if (!value) {
+      if (hadPin) { close(); return; }
+      status.textContent = 'Enter a PIN to lock the app.';
+      pin.focus();
+      return;
+    }
     if (!/^[a-zA-Z0-9]{4,20}$/.test(value)) { status.textContent = 'Use 4-20 letters or numbers.'; pin.focus(); return; }
     if (value !== confirm.value.trim()) { status.textContent = 'The PINs do not match.'; confirm.focus(); return; }
     try {
@@ -1713,10 +1739,13 @@ function openPinSettings() {
       const salt = globalThis.crypto.randomUUID?.() || Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16))).map(b => b.toString(16).padStart(2, '0')).join('');
       const saved = setPrivacyPin(await hashPin(value, salt), salt, 'pbkdf2');
       if (!saved) { status.textContent = 'Could not save the PIN on this device.'; return; }
+      forgetPinLock();
       // Remove any legacy in-state fallback once the device-only credential is
       // definitely stored, so exports/sync cannot retain stale PIN material.
       if (state.settings?.pinHash) delete state.settings.pinHash;
-      persist(); pinUnlocked = true; resetIdleLock(); close(); toast(custom ? 'PIN changed.' : 'Personal PIN set - the default no longer unlocks this device.'); render();
+      persist(); pinUnlocked = true; resetIdleLock(); close();
+      toast(hadPin ? 'PIN changed.' : 'PIN set - cents. locks on this device from now on.');
+      render();
     } catch (err) {
       status.textContent = 'PIN security is unavailable in this browser.';
     }
@@ -1725,22 +1754,27 @@ function openPinSettings() {
   const bioRow = $('div', { style: 'display:none;align-items:center;justify-content:space-between;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);' });
   modal.append(
     $('div', { style: 'display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;' }, $('h2', { class: 'serif', style: 'font-size:28px;font-weight:400;' }, 'Privacy lock'), $('button', { type: 'button', class: 'btn-link', onClick: close }, 'Close')),
-    $('p', { class: 'serif', style: 'font-size:16px;' }, custom ? 'Change or reset your PIN.' : 'The app locks on every device by default.'),
+    $('p', { class: 'serif', style: 'font-size:16px;' }, hadPin ? 'Change or remove your PIN.' : 'Set a PIN to lock cents. on this device.'),
     $('div', { style: 'display:flex;flex-direction:column;gap:12px;margin:20px 0;' }, pin, confirm),
     status,
     bioRow,
     $('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:18px;' },
-      custom ? $('button', { type: 'button', class: 'btn btn-danger', onClick: () => {
-        if (!clearPrivacyPin()) { toast('Could not reset the PIN on this device.'); return; }
+      // There is no default to reset TO. Removing the PIN is the way back to an
+      // unlocked app, and it is the only thing that should ever remove a
+      // credential — so a fingerprint registered behind it goes too.
+      hadPin ? $('button', { type: 'button', class: 'btn btn-danger', onClick: () => {
+        if (!clearPrivacyPin()) { toast('Could not remove the PIN on this device.'); return; }
+        forgetPinLock();
+        clearBiometricCredential();
         if (state.settings?.pinHash) delete state.settings.pinHash;
         persist();
         pinUnlocked = true;
         resetIdleLock();
         close();
-        toast('Reset to the default PIN (100901).');
+        toast('PIN removed - cents. opens without a lock on this device.');
         render();
-      } }, 'Reset to default PIN') : null,
-      $('button', { type: 'button', class: 'btn btn-primary', onClick: save }, custom ? 'Save PIN' : 'Set PIN'),
+      } }, 'Remove PIN') : null,
+      $('button', { type: 'button', class: 'btn btn-primary', onClick: save }, hadPin ? 'Save PIN' : 'Set PIN'),
     ),
   );
   queueMicrotask(() => pin.focus());
@@ -4408,6 +4442,31 @@ function accountProjectionText(methodId, horizonDays = 30) {
 // landed (`TESCO_PAY_METHOD`, the bank), and a ledger that already holds lines
 // written when it was the card must keep counting as the fallback, or the amount
 // would silently drop to zero for everyone who filled a Thursday before the fix.
+/**
+ * The dashboard's Tesco card, on demand: re-derive the month and put the tab's
+ * recorded pay into the ledger in the same tap.
+ *
+ * The card itself is computed from `state` on every render, so what a refresh
+ * adds is the second half — the Balances lines — plus a repaint that does not
+ * depend on a navigation happening in between (the tab's payslip fields settle
+ * on a timer, so the last edit is not always followed by a render of its own).
+ * Recording is recordTescoPayToLedger, the same call a Tesco commit makes: the
+ * two cannot disagree about when a week becomes money, its window and its rules
+ * are unchanged, and its undo is one named step. Nothing here writes anything
+ * for a week with no recorded figure — that is an estimate, and an estimate in
+ * the ledger is a number the user never watches arrive.
+ */
+function refreshTescoPay() {
+  const ledger = recordTescoPayToLedger();
+  if (ledger) {
+    trackAction(ledger.undo, 'Tesco pay to Balances');
+    toast(`${ledger.note} Refreshed from Tesco Pay.`, ledger.undo, 'Undo');
+  } else {
+    toast('Tesco Pay is in step — no recorded pay is missing from Balances.');
+  }
+  render();
+}
+
 function lastTescoPayAmount() {
   const lastTesco = [...state.entries].reverse().find(e => e.type === 'credit' && e.details === 'Tesco pay' && !isBalanceAdjustmentEntry(e));
   return lastTesco ? lastTesco.amount : 0;
@@ -6042,9 +6101,11 @@ function buildMenuLevel(id) {
     list.append(menuRowEl({ icon: 'appearance', label: 'Dark', active: dark, check: dark, onClick: () => setTheme(true) }));
     list.append(menuRowEl({ icon: 'appearance', label: 'Light', active: !dark, check: !dark, onClick: () => setTheme(false) }));
   } else if (id === 'privacy') {
-    list.append(menuInfoRow('Privacy lock', 'On'));
-    list.append(menuRowEl({ icon: 'lock', label: hasCustomPin() ? 'Change PIN' : 'Set PIN', onClick: () => { closeAppMenu(); openPinSettings(); } }));
-    list.append(menuRowEl({ icon: 'lock', label: 'Lock app now', onClick: () => { closeAppMenu(); lockApp(); } }));
+    list.append(menuInfoRow('Privacy lock', hasPinLock() ? 'On' : 'Off'));
+    list.append(menuRowEl({ icon: 'lock', label: hasPinLock() ? 'Change PIN' : 'Set PIN', onClick: () => { closeAppMenu(); openPinSettings(); } }));
+    // Nothing to lock with when no PIN is set: the row would be a button that
+    // changes nothing, and the state it names would be a lie.
+    if (hasPinLock()) list.append(menuRowEl({ icon: 'lock', label: 'Lock app now', onClick: () => { closeAppMenu(); lockApp(); } }));
   } else if (id === 'sync') {
     const s = getSyncSettings();
     const st = syncStatus();
@@ -7035,14 +7096,36 @@ function screenDashboard() {
     // after tax, and what the bank has paid in so far. The words match the tab's
     // own stat card, because they are the same three figures.
     const tescoMonth = monthSummary(tescoShifts, (state.tesco && state.tesco.payslips) || [], tescoRates, now.getFullYear(), now.getMonth(), isoLocal(now));
-    screen.appendChild($('a', { href: '#tesco', class: 'card', style: 'display:flex;align-items:center;gap:12px;text-decoration:none;color:inherit;margin-bottom:24px;' },
-      iconSpan('briefcase', 'md'),
-      $('div', { style: 'flex:1;min-width:0;' },
-        $('div', { style: 'font-weight:600;font-size:13px;' }, 'Tesco Pay'),
-        $('div', { class: 'muted', style: 'font-size:12px;margin-top:2px;' },
-          `${tescoMonth.hours}h this month · ${fmt(tescoMonth.anticipated)} anticipated (est. net) · ${fmt(tescoMonth.received)} received`),
+    // The holiday balance the tab's card computes, from the same engine and the
+    // same stored tables — so the dashboard cannot disagree with the screen it
+    // links to about a figure the user reads off a payslip. Only once a balance
+    // is set up: an unconfigured document has nothing to show, not a 0.00h that
+    // would read as "no holiday earned".
+    const tescoHoliday = holidayBalance(tescoShifts, state.settings.tescoHoliday, tescoRates, isoLocal(now));
+    // The card is a link and a control, so it is a div holding both: a button
+    // inside an anchor is invalid HTML and its click would navigate instead of
+    // running. The whole left side is still one tap to the tab.
+    screen.appendChild($('div', { class: 'card', style: 'display:flex;align-items:center;gap:12px;margin-bottom:24px;' },
+      $('a', { href: '#tesco', style: 'display:flex;align-items:center;gap:12px;flex:1;min-width:0;text-decoration:none;color:inherit;' },
+        iconSpan('briefcase', 'md'),
+        $('div', { style: 'flex:1;min-width:0;' },
+          $('div', { style: 'font-weight:600;font-size:13px;' }, 'Tesco Pay'),
+          $('div', { class: 'muted', style: 'font-size:12px;margin-top:2px;' },
+            `${tescoMonth.hours}h this month · ${fmt(tescoMonth.anticipated)} anticipated (est. net) · ${fmt(tescoMonth.received)} received`,
+            tescoHoliday.configured ? ` · ${Number(tescoHoliday.outstanding).toFixed(2)}h holiday` : ''),
+        ),
+        $('span', { class: 'muted', style: 'font-size:11px;' }, 'Open →'),
       ),
-      $('span', { class: 'muted', style: 'font-size:11px;' }, 'Open →'),
+      // Refresh re-derives this line from the tab's own tables and runs the
+      // ledger recording, so a week that was recorded over there is money in
+      // Balances without waiting for another Tesco edit.
+      $('button', {
+        type: 'button', class: 'btn btn-ghost',
+        style: 'font-size:11px;padding:4px 10px;gap:5px;flex-shrink:0;',
+        'aria-label': 'Refresh Tesco Pay',
+        title: 'Recompute this card from Tesco Pay, and write any recorded pay to Balances',
+        onClick: refreshTescoPay,
+      }, iconSpan('refresh', 'sm'), 'Refresh'),
     ));
   }
 
@@ -8670,7 +8753,7 @@ function screenHistory() {
     queueMicrotask(() => modal.focus());
   }
 
-  const tableWrap = $('div', { class: 'card', style: 'overflow-x:auto;padding:0;' });
+  const tableWrap = $('div', { class: 'card history-table', style: 'overflow-x:auto;padding:0;' });
   if (visible.length === 0) {
     tableWrap.appendChild($('div', { class: 'empty' }, emptyIcon('receipt'), searchQuery ? ' No results for this search.' : activeDay ? ` No entries on ${friendlyDate(activeDay)}.` : ' Nothing here for this filter.'));
   } else {

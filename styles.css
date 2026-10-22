@@ -2269,6 +2269,39 @@ p, li, .muted { text-wrap: pretty; }
 @media (min-width: 640px) { .tesco-rates-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (min-width: 950px) { .tesco-rates-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); } }
 
+/* Holiday ledger — the balance's working, line by line. Three columns: the day,
+   what moved, and the movement above the balance after it (a statement's shape;
+   the two figures are one right-aligned cell so a long row cannot push the
+   running balance out of the card). `minmax(0, 1fr)` on the middle column is what
+   lets "8% of 7.00h · week of 4 Oct" wrap instead of widening the grid. */
+.tesco-ledger-wrap { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); }
+.tesco-ledger-toggle { font-size: 12px; }
+.tesco-ledger-body { margin-top: 6px; }
+.tesco-ledger-caption { font-size: 11px; line-height: 1.5; margin: 0 0 6px; }
+.tesco-ledger { list-style: none; margin: 0; padding: 0; }
+.tesco-ledger-row {
+  display: grid; grid-template-columns: 76px minmax(0, 1fr) auto;
+  gap: 2px 10px; align-items: baseline; padding: 4px 0;
+  font-size: 12px; line-height: 1.4;
+}
+.tesco-ledger-row + .tesco-ledger-row { border-top: 1px solid var(--line); }
+.tesco-ledger-date { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* A movement from another year: the year sits under the day it belongs to, not
+   beside it — the date column is 62px at 320px, where "Thu 30 Jul 2025" would
+   run into the movement text beside it. */
+.tesco-ledger-year { display: block; font-size: 10px; line-height: 1.2; opacity: .8; }
+.tesco-ledger-what { min-width: 0; }
+.tesco-ledger-figure { display: flex; flex-direction: column; align-items: flex-end; text-align: right; font-variant-numeric: tabular-nums; }
+.tesco-ledger-delta { font-weight: 600; }
+.tesco-ledger-row.is-credit .tesco-ledger-delta { color: var(--positive); }
+.tesco-ledger-row.is-weekOff .tesco-ledger-delta,
+.tesco-ledger-row.is-typed .tesco-ledger-delta { color: var(--negative); }
+.tesco-ledger-balance { font-size: 11px; color: var(--muted); }
+.tesco-ledger-row:last-child .tesco-ledger-balance { color: var(--ink); }
+@media (max-width: 359px) {
+  .tesco-ledger-row { grid-template-columns: 62px minmax(0, 1fr) auto; gap: 2px 8px; }
+}
+
 @media (max-width: 639px) {
   .tesco-stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
   .tesco-stat-value { font-size: 16px; }

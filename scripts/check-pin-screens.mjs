@@ -56,10 +56,21 @@ if (!existsSync(join(root, LEG))) {
     if (!leg.includes(needle)) fail(`${LEG} no longer contains ${JSON.stringify(needle)} — ${why}`);
   };
 
-  // 1./2. the document, the key, the PIN, the fresh context.
+  // 1./2. the document, the key, the PIN the leg seeds, the fresh context.
   require('fixtures/expense-tracker-v1.schema2.json', 'the leg must load the frozen fixture, not a document of its own.');
   require('cents:p/personal/state', 'the document is written under the key the app actually reads.');
-  require('100901', 'the built-in test PIN is how a fresh context unlocks the app.');
+  // The app ships no credential, so the leg has to make one. What matters is
+  // that it makes it the way the app does — its own PIN, stored as PBKDF2 under
+  // the device-only key — or the lock it exercises is not the lock users meet.
+  require('cents:p/personal/privacy', 'the seeded PIN must live under the device-only key the app reads, not in the document.');
+  require('pbkdf2Sync(', 'the seeded credential must be derived with the KDF the app verifies.');
+  require('randomUUID()', 'the salt must be per-run, exactly as the Privacy lock screen writes it.');
+  require("kdf: 'pbkdf2'", 'a seeded credential without its kdf marker would be verified as the legacy unsalted shape.');
+  const iterations = /const PBKDF2_ITERATIONS = ([\d_]+);/.exec(leg)?.[1]?.replace(/_/g, '');
+  const appIterations = /const PBKDF2_ITERATIONS = ([\d_]+);/.exec(read('app.js'))?.[1]?.replace(/_/g, '');
+  if (!iterations) fail(`${LEG} no longer pins PBKDF2_ITERATIONS — the seeded hash would silently stop matching the app's KDF.`);
+  else if (iterations !== appIterations) fail(`${LEG} seeds PBKDF2 at ${iterations} iterations but app.js hashes at ${appIterations} — the seeded PIN could never unlock.`);
+  if (leg.includes('100901')) fail(`${LEG} still knows the old built-in PIN — the app has no default credential to fall back on.`);
   require('browser.newContext(', 'a fresh context is the whole point: no device, no profile, no PIN of a real user.');
   require('a fresh context starts with empty storage', 'the empty-storage assertion is what proves the context is fresh.');
   require('cents:profiles', 'the leg must assert the profile registry it leaves behind.');
@@ -112,6 +123,33 @@ if (!existsSync(join(root, FIXTURE))) {
       }
     }
   }
+}
+
+// 8. The model behind the lock: no shipped credential, and no lock without one.
+//    This is the half that regrows silently — a fallback hash is two lines and
+//    looks helpful — so it is pinned in the app's own source, and in every page
+//    that drives it (the harness used to type the default).
+const appSrc = read('app.js');
+for (const [file, why] of [['app.js', 'the app'], ['a11y-harness.html', 'the a11y harness'], ['index.html', 'the document']]) {
+  if (/100901/.test(read(file))) fail(`${file} still contains the old built-in PIN 100901 — ${why} must get its credential from the device, not from the source.`);
+}
+if (/Keep the default PIN|Still the default PIN|Reset to default PIN|default no longer unlocks/.test(appSrc)) {
+  fail('app.js still carries default-PIN copy — there is no default to keep, name or reset to.');
+}
+if (!/function getPinCredential\(\) \{[\s\S]*?\n  return null;\n\}/.test(appSrc)) {
+  fail('getPinCredential() has no null branch — a device with no PIN would be handed a credential it does not have.');
+}
+if (!/function hasPinLock\(\) \{\n  if \(pinLockCache === null\) pinLockCache = !!getPinCredential\(\);\n  return pinLockCache;\n\}/.test(appSrc)) {
+  fail('hasPinLock() no longer answers the device credential — nothing else may decide whether the app is locked.');
+}
+if (!/if \(hasPinLock\(\)\) \{ showPinLock\(\); return; \}\n  completeUnlock\(\);/.test(appSrc)) {
+  fail('the boot gate lost its no-PIN branch — with no credential the session must open, or sync and the undo offer wait behind a lock nobody can answer.');
+}
+if (!appSrc.includes("'Skip — no lock'")) {
+  fail('setup no longer offers a PIN-less start — skipping used to keep a default that no longer exists.');
+}
+if (/if \(!pinUnlocked \|\| !hasPinLock\(\)\) return;/.test(appSrc) === false) {
+  fail('resetIdleLock no longer checks for a PIN — a no-PIN session would arm a lock timer that can never show a lock screen.');
 }
 
 if (problems.length) {

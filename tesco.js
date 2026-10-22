@@ -44,6 +44,7 @@ import {
   weekStartOf, payDateOf, weekNumberOf, payslipWeekNumberOf, isoWeekNumber,
   nextWeekStart, buildPayWeeks, weekBankWrite, monthSummary, lifetimeTotals, payslipTotal,
   weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites, tescoPayWriteWindow, TESCO_PAY_METHOD,
+  HOLIDAY_ACCRUAL_PCT, HOLIDAY_DEFAULT, holidayBalance,
 } from './tesco-pay.js';
 export {
   TESCO_RATE_DEFAULTS, r2, pad2, isoLocal, todayIso, parseHM, fmtHM, isoToUtcMidnight, dateOk,
@@ -51,6 +52,7 @@ export {
   weekStartOf, payDateOf, weekNumberOf, payslipWeekNumberOf, isoWeekNumber,
   nextWeekStart, buildPayWeeks, weekBankWrite, monthSummary, lifetimeTotals, payslipTotal,
   weekVsEstimate, receivedByPayDate, tescoPayLedgerWrites, tescoPayWriteWindow, TESCO_PAY_METHOD,
+  HOLIDAY_ACCRUAL_PCT, HOLIDAY_DEFAULT, holidayBalance,
 };
 
 
@@ -918,6 +920,190 @@ export function screenTesco(ctx) {
     return $('div', { class: 'tesco-stat' },
       $('div', { style: 'font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em;' }, label),
       value,
+    );
+  }
+
+  // ----- holiday hours -----
+  // 8% of each pay week's hours, posted on the Thursday that week is paid. All
+  // of the arithmetic is holidayBalance's (tesco-pay.js, harness-pinned); this
+  // card is the reading of it plus the one figure only the user knows — the
+  // balance Tesco showed them, on a day they read it. The week already inside
+  // that figure is never counted again, which is why a balance set on a Thursday
+  // starts accruing from the NEXT one.
+  screen.appendChild(buildHolidayCard());
+
+  function buildHolidayCard() {
+    const holiday = () => ({ ...HOLIDAY_DEFAULT, ...(ctx.getState().settings.tescoHoliday || {}) });
+    // Two decimals, because a holiday balance is read against a payslip — "2.4h"
+    // leaves the reader to decide whether that is 2.40 or 2.04.
+    const hoursText = (v) => `${r2(Number(v) || 0).toFixed(2)}h`;
+    const valueEl = $('div', { class: 'display-num', style: 'font-size:28px;line-height:1.1;margin-top:2px;' });
+    const sumEl = $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;margin-top:4px;' });
+    const takenEl = $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;' });
+    const nextEl = $('div', { class: 'muted', style: 'font-size:12px;line-height:1.5;margin-top:6px;' });
+
+    // The working, line by line — the opening figure, each Thursday's credit,
+    // each week off and the typed figure, with the balance after each. Every
+    // row comes from holidayBalance's own `ledger`: this card formats, it never
+    // adds. A long history is folded away, and the fold is remembered per device
+    // like the rest of this screen's folds (chrome, not document state).
+    const ledgerBody = $('div', { id: 'tesco-holiday-ledger', class: 'tesco-ledger-body' });
+    let ledgerOpen = null;
+    try { if (typeof ctx.foldGet === 'function') ledgerOpen = ctx.foldGet('holiday-ledger', null); } catch { ledgerOpen = null; }
+    const setLedgerOpen = (open, remember = true) => {
+      ledgerOpen = open;
+      ledgerBody.style.display = open ? '' : 'none';
+      ledgerToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      const n = ledgerBody.querySelectorAll('.tesco-ledger-row').length;
+      ledgerToggle.textContent = open
+        ? 'Hide the holiday ledger'
+        : `Show the holiday ledger · ${n} movement${n === 1 ? '' : 's'}`;
+      if (remember) {
+        try { if (typeof ctx.foldSet === 'function') ctx.foldSet('holiday-ledger', open); } catch { /* storage unavailable */ }
+      }
+    };
+    const ledgerToggle = $('button', {
+      type: 'button', class: 'btn-link tesco-ledger-toggle',
+      'aria-controls': ledgerBody.id, 'aria-expanded': 'true',
+      onClick: () => setLedgerOpen(!ledgerOpen),
+    });
+    // A typed taken figure has no day of its own: it is one adjustment, not a
+    // movement on a date, so its row says so rather than borrowing today's. A
+    // row from another year keeps the compact day and month (the column is 62px
+    // on a 320px phone) and puts the year under it, where it cannot widen the
+    // row past the card.
+    const ledgerDate = (row) => {
+      if (row.kind === 'typed') return ['Typed'];
+      const date = `${weekdayShort(row.date)} ${prettyDate(row.date)}`;
+      return row.date.slice(0, 4) === isoLocal(now).slice(0, 4)
+        ? [date]
+        : [date, $('span', { class: 'tesco-ledger-year' }, row.date.slice(0, 4))];
+    };
+    const ledgerRow = (row) => {
+      const what = row.kind === 'opening' ? 'Opening balance, as Tesco showed it'
+        : row.kind === 'credit' ? `${HOLIDAY_ACCRUAL_PCT}% of ${hoursText(row.workedHours)} · week of ${prettyDate(row.weekStart)}`
+          : row.kind === 'weekOff' ? 'Week off'
+            : 'Taken, typed in';
+      const delta = `${row.hours < 0 ? '\u2212' : '+'}${hoursText(Math.abs(row.hours))}`;
+      return $('li', { class: `tesco-ledger-row is-${row.kind}` },
+        $('span', { class: 'tesco-ledger-date' }, ...ledgerDate(row)),
+        $('span', { class: 'tesco-ledger-what' }, what),
+        $('span', { class: 'tesco-ledger-figure' },
+          // The opening row IS the balance it opens with: printing it twice (as
+          // a movement and as the running total) would read as two figures.
+          row.kind === 'opening' ? null : $('span', { class: 'tesco-ledger-delta' }, delta),
+          $('span', { class: 'tesco-ledger-balance' }, $('span', { class: 'sr-only' }, 'Balance '), hoursText(row.balance)),
+        ),
+      );
+    };
+    function paintLedger(b) {
+      ledgerBody.replaceChildren();
+      const rows = b.configured ? b.ledger : [];
+      if (!rows.length) {
+        ledgerToggle.style.display = 'none';
+        ledgerBody.style.display = 'none';
+        return;
+      }
+      ledgerToggle.style.display = '';
+      const list = $('ol', { class: 'tesco-ledger', 'aria-label': 'Holiday balance, movement by movement' },
+        ...rows.map(ledgerRow),
+      );
+      ledgerBody.append(
+        $('p', { class: 'muted tesco-ledger-caption' }, 'Oldest first. The last balance is the figure above.'),
+        list);
+      // Short histories are worth showing unasked; a year of Thursdays is not.
+      if (ledgerOpen === null) setLedgerOpen(rows.length <= 8, false);
+      else setLedgerOpen(ledgerOpen, false);
+    }
+
+    function paintHoliday() {
+      const b = holidayBalance(shifts(), holiday(), rates, isoLocal(now));
+      valueEl.textContent = b.configured ? hoursText(b.outstanding) : '—';
+      // A negative is real — holiday taken ahead of what has been earned — and
+      // it is the one state worth colouring, so it cannot be read as a typo.
+      valueEl.style.color = b.configured && b.outstanding < 0 ? 'var(--negative)' : '';
+      paintLedger(b);
+      if (!b.configured) {
+        sumEl.textContent = `Set the hours Tesco shows today. From there this card adds ${HOLIDAY_ACCRUAL_PCT}% of each week's hours on the Thursday that week is paid, and takes off the holiday you use.`;
+        takenEl.textContent = '';
+        nextEl.textContent = '';
+        return;
+      }
+      sumEl.textContent = `${hoursText(b.anchorHours)} on ${prettyDateLong(b.anchorDate)} + ${hoursText(b.accrued)} accrued − ${hoursText(b.taken)} taken`;
+      takenEl.textContent = `Taken: ${hoursText(b.takenAutomatic)} from weeks off, ${hoursText(b.manualTaken)} typed below`;
+      nextEl.textContent = !b.next ? ''
+        : b.next.hours > 0
+          ? `Next: ${HOLIDAY_ACCRUAL_PCT}% of ${b.next.hours}h for the week of ${prettyDate(b.next.weekStart)} — +${hoursText(b.next.credit)} on ${prettyDateLong(b.next.payDate)}`
+          : `Next posting is ${prettyDateLong(b.next.payDate)} — no hours on file for the week of ${prettyDate(b.next.weekStart)} yet.`;
+    }
+    paintHoliday();
+    derivedRefreshers.push(paintHoliday);
+
+    // Committed on change, never per keystroke: the commit re-renders the screen
+    // (see the week number and the bank cell), and an input rebuilt on every
+    // digit has no caret to keep.
+    const write = (patch) => {
+      ctx.getState().settings.tescoHoliday = { ...holiday(), ...patch };
+      persist(); render();
+    };
+    // Enter commits, exactly as it does in the week card's bank cell: these fields
+    // commit on change, and the change event only fires when the field is left —
+    // so a figure typed and followed by Enter would otherwise sit uncommitted
+    // until something else moved the caret.
+    const commitOnEnter = e => { if (e.key === 'Enter') e.target.blur(); };
+    const openIn = $('input', {
+      type: 'number', min: '0', max: '1000', step: '0.01', inputmode: 'decimal',
+      // Blank, not 0: an empty field says "not set yet" where a 0 would claim a
+      // balance of nothing.
+      value: holiday().anchorHours || '', placeholder: '35.10',
+      // Named for whose figure it is. The number above this card is the app's
+      // outstanding balance; this one is Tesco's, on a day — which is why it is
+      // an opening figure and not a second reading of the same thing.
+      'aria-label': 'Holiday balance from Tesco', class: 'tesco-in', style: 'width:100%;',
+      onKeydown: commitOnEnter,
+      onChange: e => {
+        const raw = String(e.target.value).trim();
+        const n = raw === '' ? 0 : Number(raw);
+        if (!Number.isFinite(n) || n < 0) return;
+        // The first balance typed is dated today, because that is what it is: what
+        // Tesco shows now. The date field beside it is how an older figure — one
+        // read off a payslip — is given the day it was true.
+        write({ anchorHours: r2(n), anchorDate: holiday().anchorDate || isoLocal(now) });
+      },
+    });
+    const dateIn = $('input', {
+      type: 'date', value: holiday().anchorDate, 'aria-label': 'Holiday balance date', class: 'tesco-in', style: 'width:100%;',
+      onChange: e => { if (dateOk(e.target.value)) write({ anchorDate: e.target.value }); },
+    });
+    const takenIn = $('input', {
+      type: 'number', min: '0', max: '1000', step: '0.01', inputmode: 'decimal',
+      value: holiday().taken || '', placeholder: '0',
+      'aria-label': 'Holiday hours taken', class: 'tesco-in', style: 'width:100%;',
+      onKeydown: commitOnEnter,
+      onChange: e => {
+        const raw = String(e.target.value).trim();
+        const n = raw === '' ? 0 : Number(raw);
+        if (!Number.isFinite(n) || n < 0) return;
+        write({ taken: r2(n) });
+      },
+    });
+    const field = (label, input) => $('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted);flex:1 1 120px;min-width:0;' },
+      $('span', null, label), input);
+
+    return $('div', { class: 'card' },
+      $('div', { class: 'tesco-card-title' }, 'Holiday hours', iconSpan('clock', 'md')),
+      valueEl,
+      sumEl,
+      takenEl,
+      nextEl,
+      $('div', { class: 'tesco-form-row', style: 'margin-top:12px;' },
+        field('Hours Tesco shows', openIn),
+        field('As of', dateIn),
+        field('Taken (typed)', takenIn),
+      ),
+      $('div', { class: 'muted', style: 'font-size:11px;line-height:1.5;margin-top:2px;' },
+        `A week off written on this tab comes off automatically on the day it starts. Type anything else Tesco has recorded as taken — the two are added together.`),
+      $('div', { class: 'tesco-ledger-wrap' }, ledgerToggle, ledgerBody),
     );
   }
 

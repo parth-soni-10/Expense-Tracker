@@ -685,6 +685,7 @@ export function validateState(s) {
     categoryBudgets: normalizeCategoryBudgets(rawSettings.categoryBudgets, CATEGORIES_OK),
     tescoRates: normalizeTescoRates(safeSettings.tescoRates),
     tescoWeekNos: normalizeWeekNos(safeSettings.tescoWeekNos),
+    tescoHoliday: normalizeTescoHoliday(safeSettings.tescoHoliday),
     tescoPayLedger: normalizeTescoPayLedger(safeSettings.tescoPayLedger),
     enabledTabs: normalizeEnabledTabs(safeSettings.enabledTabs),
   };
@@ -736,6 +737,24 @@ function normalizeWeekNos(raw) {
     n++;
   }
   return out;
+}
+// The holiday balance (settings.tescoHoliday): the hours Tesco showed on one
+// day, and any holiday used that the tab's own weeks off do not account for.
+// Three scalars, each bounded — the balance is a figure the user read off a
+// payslip, so "unreadable" reads as "not set up" (anchorDate empty) rather than
+// as 0 hours accrued from the beginning of time. See holidayBalance in
+// tesco-pay.js for what is derived from it.
+function normalizeTescoHoliday(raw) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const hours = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 && n <= 1000 ? Math.round(n * 100) / 100 : 0;
+  };
+  return {
+    anchorDate: isValidCheckpointDate(String(src.anchorDate || '')) ? src.anchorDate : '',
+    anchorHours: hours(src.anchorHours),
+    taken: hours(src.taken),
+  };
 }
 
 export function loadState() {

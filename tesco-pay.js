@@ -616,3 +616,177 @@ export function lifetimeTotals(shifts, payslips, rates, today = todayIso()) {
   return { hours: r2(hours), anticipated: r2(anticipated), received: receivedTotal(weeks, rates, today) };
 }
 export function payslipTotal(p) { return r2((+p.paye || 0) + (+p.usc || 0) + (+p.prsi || 0) + (+p.futureFund || 0)); }
+
+// ---------- holiday hours ----------
+/**
+ * Holiday accrues at 8% of the hours worked — the statutory rate for a rota
+ * whose hours vary (four working weeks a year, banked as you earn them).
+ *
+ * The clock and the amount are different things, and the difference is the
+ * whole rule: a pay week runs Sunday → Saturday, its pay date is that week's
+ * Sunday + 11 days (`payDateOf`), and the credit lands ON that Thursday. So
+ * "every Thursday, 8% of the previous week's hours" is one pay week at a time —
+ * the Thursday the week is paid is the Thursday its holiday is posted, which is
+ * why this needs no second schedule of its own.
+ */
+export const HOLIDAY_ACCRUAL_PCT = 8;
+
+/** The shape a document with no holiday balance has: nothing to accrue from
+ *  yet. `anchorDate` empty is what "not set up" reads as (see holidayBalance). */
+export const HOLIDAY_DEFAULT = Object.freeze({ anchorDate: '', anchorHours: 0, taken: 0 });
+
+function isoAddDays(iso, days) {
+  const d = isoToUtcMidnight(iso);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+// Pay dates are Thursdays (week start + 11), so the next credit is the next
+// Thursday — read off the calendar rather than off the weeks on file, because
+// the week that is about to be paid may have no shifts entered yet and the
+// card still has to say when the next posting is.
+function nextThursdayAfter(iso) {
+  const d = isoToUtcMidnight(iso);
+  do { d.setUTCDate(d.getUTCDate() + 1); } while (d.getUTCDay() !== 4);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * The holiday balance: what has accrued since the opening figure, minus what has
+ * been taken.
+ *
+ * `holiday` is `settings.tescoHoliday` — `{ anchorDate, anchorHours, taken }`:
+ * the balance Tesco showed on a day, and any hours used that the tab's own weeks
+ * off do not account for. Three rules, and the third is the one that keeps the
+ * opening figure honest:
+ *
+ *   * a week's credit is 8% of the hours that week paid (`buildPayWeeks`'
+ *     hours, so a row stating its own hours is credited what it was paid for),
+ *     posted on `payDateOf(weekStart)`;
+ *   * a credit counts only once its Thursday has come round — a shift entered
+ *     ahead of the rota, or a week still in progress, has not been earned yet —
+ *     and only when that Thursday is AFTER `anchorDate`, because the opening
+ *     figure is the balance as it stood that day: replaying the week already
+ *     inside it would count the same hours twice. That is why the balance of
+ *     35.10 set on a Thursday accrues again from the NEXT Thursday;
+ *   * taken holiday is a week-off row (hours and no clock times — what booking
+ *     holiday looks like here, see shiftPay) that has come round by today, dated
+ *     after the anchor, plus the manual figure. A row with clock times is work,
+ *     and it is already in the week's credit: subtracting it as well would take
+ *     the same hours twice. A week off still ahead is booked, not used.
+ *
+ * The returned `ledger` is the same arithmetic written out line by line — the
+ * opening figure, every posted credit, every week off and the typed figure,
+ * each with the balance after it — so a balance read off a payslip can be
+ * checked movement by movement instead of trusted as a total. It is built HERE
+ * and not in the card for the reason this module exists: a card that assembles
+ * its own rows is a second set of rules. Its last row's `balance` IS
+ * `outstanding` (pinned in the harness), and the typed figure has no date —
+ * it is one adjustment, not a movement on a day.
+ *
+ * Nothing here writes, and nothing throws: a document with junk in the holiday
+ * slot reads as "not set up" rather than as a balance of NaN.
+ */
+export function holidayBalance(shifts, holiday, rates, today = todayIso()) {
+  const src = holiday && typeof holiday === 'object' && !Array.isArray(holiday) ? holiday : HOLIDAY_DEFAULT;
+  const hoursOf = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 && n <= 1000 ? r2(n) : 0;
+  };
+  const anchorDate = dateOk(src.anchorDate) ? src.anchorDate : '';
+  const anchorHours = hoursOf(src.anchorHours);
+  const manualTaken = hoursOf(src.taken);
+  // An unusable clock is not a claim that time has passed (the same rule
+  // dateOk enforces everywhere): with no day, nothing has been posted yet.
+  const day = dateOk(today) ? today : '';
+  // The rows are filtered before any arithmetic: buildPayWeeks assumes a record
+  // with a date (it is handed the document's validated tables everywhere else),
+  // and this function is also read by a harness and by a card that must never
+  // throw — a null row or a day that does not exist is simply not a week.
+  const rows = (Array.isArray(shifts) ? shifts : [])
+    .filter(s => s && typeof s === 'object' && !Array.isArray(s) && dateOk(s.date));
+  const creditOf = (hours) => r2(Number(hours) * HOLIDAY_ACCRUAL_PCT / 100);
+
+  // Hours WORKED per pay week. A week off is paid hours but not worked hours,
+  // so its row is excluded from the base: accruing 8% of a holiday would have
+  // the balance earn holiday for being spent, which is the one direction this
+  // arithmetic must never round in the user's favour. The same rows are the
+  // "taken" side below, so the two can never both count the same week.
+  const worked = new Map();
+  for (const s of rows) {
+    if (!(s.start && s.end) && statedHours(s.hours) != null) continue;
+    const pay = shiftPay(s, rates);
+    if (!pay || !(pay.hours > 0)) continue;
+    const ws = weekStartOf(s.date);
+    worked.set(ws, r2((worked.get(ws) || 0) + pay.hours));
+  }
+  const weeks = [...worked.entries()]
+    .map(([weekStart, hours]) => ({ weekStart, payDate: payDateOf(weekStart), hours, credit: creditOf(hours) }))
+    .sort((a, b) => a.payDate.localeCompare(b.payDate) || a.weekStart.localeCompare(b.weekStart));
+
+  const posted = !anchorDate || !day ? [] : weeks.filter(w => w.payDate > anchorDate && w.payDate <= day);
+  const accrued = r2(posted.reduce((sum, w) => sum + w.credit, 0));
+
+  const weekOff = rows.filter(s => s && typeof s === 'object' && dateOk(s.date)
+    && !(s.start && s.end) && statedHours(s.hours) != null);
+  // Taken means taken: a week off dated in the future is booked, not used, so it
+  // comes off when its week arrives rather than when it was typed in.
+  const takenAutomatic = !anchorDate || !day
+    ? 0
+    : r2(weekOff.filter(s => s.date > anchorDate && s.date <= day).reduce((sum, s) => sum + statedHours(s.hours), 0));
+  const taken = r2(takenAutomatic + manualTaken);
+
+  // The working, oldest first. One list of dated movements, sorted by date (a
+  // credit before a week off that starts on the same day: the money is posted
+  // on that Thursday, the holiday starts on it), then the undated typed figure.
+  const ledger = [];
+  if (anchorDate) {
+    let running = anchorHours;
+    const dated = [
+      ...posted.filter(w => w.credit > 0).map(w => ({
+        date: w.payDate, order: 0, kind: 'credit', weekStart: w.weekStart, workedHours: w.hours, hours: w.credit,
+      })),
+      ...weekOff
+        .filter(s => s.date > anchorDate && s.date <= day && statedHours(s.hours) > 0)
+        .map(s => ({ date: s.date, order: 1, kind: 'weekOff', hours: r2(-statedHours(s.hours)) })),
+    ].sort((a, b) => a.date.localeCompare(b.date)
+      || a.order - b.order
+      || String(a.weekStart || '').localeCompare(String(b.weekStart || '')))
+      // `order` is the sort's tie-break, not part of a movement.
+      .map(({ order, ...row }) => row);
+    ledger.push({ kind: 'opening', date: anchorDate, hours: anchorHours, balance: r2(running) });
+    for (const row of dated) {
+      running = r2(running + row.hours);
+      ledger.push({ ...row, balance: running });
+    }
+    if (manualTaken > 0) {
+      running = r2(running - manualTaken);
+      ledger.push({ kind: 'typed', date: '', hours: r2(-manualTaken), balance: running });
+    }
+  }
+
+  // The next posting, whether or not its week has any hours on file yet: the
+  // week a Thursday pays starts eleven days before it (`PAY_LAG_DAYS`).
+  let next = null;
+  if (anchorDate && day) {
+    const payDate = nextThursdayAfter(day);
+    const weekStart = isoAddDays(payDate, -PAY_LAG_DAYS);
+    const week = weeks.find(w => w.weekStart === weekStart) || null;
+    next = { payDate, weekStart, hours: week ? week.hours : 0, credit: week ? week.credit : 0 };
+  }
+
+  return {
+    configured: !!anchorDate,
+    anchorDate,
+    anchorHours,
+    accrued,
+    takenAutomatic,
+    manualTaken,
+    taken,
+    // A negative is a real state (holiday taken ahead of what has been earned).
+    outstanding: anchorDate ? r2(anchorHours + accrued - taken) : 0,
+    ledger,
+    // Newest first, for a card that wants to show its working.
+    credits: posted.slice().reverse(),
+    next,
+  };
+}

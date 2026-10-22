@@ -145,6 +145,11 @@
       "fce3f693-d029-4627-bfc0-0d2b53a038b7"
     ],
     "tescoRates": {},
+    "tescoHoliday": {
+      "anchorDate": "",
+      "anchorHours": 0,
+      "taken": 0
+    },
     "tescoWeekNos": {
       "2026-10-05": 41
     },
