@@ -5867,11 +5867,11 @@ function renderHeader() {
         // Wide enough screens get the word, so the button doesn't read as a
         // second profile chip sitting next to the real one.
         $('span', { class: 'admin-trigger-label', 'aria-hidden': 'true' }, 'Admin')) : null,
-      $('button', { class: 'dark-toggle', type: 'button', title: 'Toggle dark mode', 'aria-label': 'Toggle dark mode', 'aria-pressed': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', onClick: (event) => {
-         const wasDark = document.documentElement.dataset.theme === 'dark';
+      $('button', { class: 'dark-switch', type: 'button', role: 'switch', title: 'Dark mode', 'aria-label': 'Dark mode', 'aria-checked': document.documentElement.dataset.theme === 'dark' ? 'true' : 'false', 'data-squish-switch': '', 'data-ss-bare': '', 'data-ss-size': 'sm', onClick: (event) => {
          toggleDarkMode();
-         event.currentTarget.setAttribute('aria-label', `Switch to ${wasDark ? 'dark' : 'light'} mode`);
-         event.currentTarget.setAttribute('title', `Switch to ${wasDark ? 'dark' : 'light'} mode`);
+         const dark = document.documentElement.dataset.theme === 'dark';
+         event.currentTarget.setAttribute('aria-checked', String(dark));
+         event.currentTarget.setAttribute('title', dark ? 'Switch to light mode' : 'Switch to dark mode');
        } },
         $('span', { class: 'icon-sun', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>' }),
         $('span', { class: 'icon-moon', 'aria-hidden': 'true', innerHTML: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>' }),

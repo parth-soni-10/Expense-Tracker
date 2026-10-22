@@ -494,6 +494,19 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
 .dark-toggle:active, .menu-trigger:active, .admin-trigger:active { transform: scale(0.9); }
 .dark-toggle svg, .admin-trigger svg { display: block; width: 17px; height: 17px; }
 
+/* Dark mode is a switch now. 8px of padding keeps the tap target at 40px tall
+   beside the 40px menu circle, and data-ss-bare hides the old sun/moon SVGs. */
+.dark-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 2px;
+  flex: none;
+  --ss-track: #d5d8d1;
+  --ss-track-on: #157a4a;
+  --ss-thumb-color: #ffffff;
+}
+[data-theme="dark"] .dark-switch { --ss-track: #2b2e29; --ss-track-on: #35b877; --ss-thumb-color: #f2f4ee; }
+
 /* The owner's admin shortcut names itself once the header has room for the
    word; on phones it stays a circle to keep the header one line. */
 .admin-trigger-label { display: none; font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }

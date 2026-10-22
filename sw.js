@@ -27,6 +27,8 @@ const BUILD_KEY = '/__cents-build';
 // Note: this array is read by check-sw-shell.mjs and check-boot-payload.mjs with
 // a naive quoted-string scan, so keep comments out of it (an apostrophe inside
 // would pair with a real opening quote and shred the list).
+// The last of the four kit pairs is the header's theme switch: app.js builds it
+// on the boot path, so both files have to be warm for a cold offline open.
 const SHELL = [
   '/',
   '/index.html',
@@ -38,6 +40,8 @@ const SHELL = [
   '/jelly-radio.js',
   '/rubber-segment.css',
   '/rubber-segment.js',
+  '/squish-switch.css',
+  '/squish-switch.js',
   '/seed.js',
   '/settings.js',
   '/storage.js',
