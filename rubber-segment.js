@@ -26,6 +26,9 @@
  *   data-rs-stretch="100"     how far the thumb stretches, percentage
  *   data-rs-squash="3"        landing overshoot, px
  *   data-rs-speed="1"         duration multiplier (2 = twice as fast)
+ *   data-rs-axis="y"          vertical stack: the thumb travels down the group
+ *   data-rs-keys="page"       the host already moves the selection with the
+ *                             arrow keys; do not add a second handler
  *   data-rs-tone="light|dark" thumb colour preset
  *   data-rs-key="…"           identity kept across re-renders (see below)
  *   data-rs-aria-label="…"    accessible name if the group has none
@@ -107,6 +110,8 @@
 
     var size = options.size || group.getAttribute('data-rs-size') || 'md';
     var s = SIZES[size] || SIZES.md;
+    this.vertical = (options.axis || group.getAttribute('data-rs-axis')) === 'y';
+    this.pageKeys = (options.keys || group.getAttribute('data-rs-keys')) === 'page';
     this.cfg = {
       inset: num(group, 'data-rs-inset', 3),
       radius: num(group, 'data-rs-radius', 10),
@@ -198,6 +203,7 @@
       requestAnimationFrame(function () { self.sync(); });
     });
 
+    if (this.pageKeys) return;
     this.group.addEventListener('keydown', function (event) {
       var chip = event.target.closest ? event.target.closest('.rubber-segment__chip') : null;
       if (!chip) return;
@@ -259,23 +265,45 @@
   /* offsetLeft is already measured from the padding edge, which is the same
    * origin an absolutely positioned thumb's `left: 0` uses — subtracting the
    * padding here would shift the thumb by exactly that padding. */
+  /* l/w are the extent along the axis the thumb travels (x for a row, y for a
+   * stack); t/h are the cross-axis box the thumb has to cover. Keeping the
+   * same four numbers in both orientations is what lets the spring, the reach
+   * and the squash share one implementation. */
   RubberSegment.prototype.measure = function () {
     for (var i = 0; i < this.items.length; i++) {
       var el = this.items[i];
-      this.boxes[i] = {
-        l: el.offsetLeft,
-        w: el.offsetWidth,
-        t: el.offsetTop,
-        h: el.offsetHeight,
-      };
+      this.boxes[i] = this.vertical
+        ? { l: el.offsetTop, w: el.offsetHeight, t: el.offsetLeft, h: el.offsetWidth }
+        : { l: el.offsetLeft, w: el.offsetWidth, t: el.offsetTop, h: el.offsetHeight };
     }
   };
 
   RubberSegment.prototype.sync = function () {
     var at = this.activeIndex();
-    if (at === this.sel) { this.restate(); return; }
+    if (at < 0 || !this.group.offsetWidth) return;
+    var before = this.boxes[this.sel];
+    // The page may have shown or hidden a chip since the last measure (a
+    // status chip that only appears once its count is known), which moves every
+    // seat after it. Re-measure before deciding where the thumb belongs.
+    this.measure();
+    var now = this.boxes[at];
+    if (at === this.sel) {
+      this.restate();
+      if (now && before && (now.l !== before.l || now.w !== before.w || now.t !== before.t || now.h !== before.h)) {
+        this.left = now.l;
+        this.right = now.l + now.w;
+        this.vl = 0;
+        this.vr = 0;
+        this.paint();
+      }
+      return;
+    }
     this.sel = at;
-    this.remember();
+    // Hold the seat until the thumb lands. A page may update its chips in
+    // place and then rebuild the row a frame later; committing the new seat
+    // here would hand that rebuilt row a seat that already matches, and the
+    // stretch would be cut off before anyone saw it.
+    this.rememberAfter = this.keys[at];
     this.apply(at, false);
   };
 
@@ -297,11 +325,25 @@
     if (index < 0 || index >= this.items.length) return;
     this.sel = index;
     this.restate();
-    this.remember();
+    this.rememberAfter = this.keys[index];
     this.apply(index, false);
   };
 
   RubberSegment.prototype.settle = function () {
+    if (!this.items.length) return;
+    // A row that is built before it is inserted (or inside a hidden panel) has
+    // no geometry to measure yet. Wait for it instead of committing a seat
+    // measured at zero, which would cost the animation when it does appear.
+    if (!this.group.isConnected || !this.group.offsetWidth) {
+      var self = this;
+      if (this.waiting) return;
+      this.waiting = true;
+      requestAnimationFrame(function () {
+        self.waiting = false;
+        if (self.group.isConnected && self.group.offsetWidth) self.settle();
+      });
+      return;
+    }
     this.measure();
     if (!this.owns) this.sel = this.activeIndex();
     this.restate();
@@ -338,13 +380,23 @@
     var inset = this.cfg.inset;
     var l = Math.max(0, this.left);
     var r = Math.max(l, this.right);
+    group.style.setProperty('--rs-inset', inset + 'px');
+    // The thumb takes the cross-axis box of the chip it has landed on rather
+    // than the group's: a row often carries a label or a bottom rule, and a
+    // stack often has padding, that would otherwise stretch the thumb into a
+    // lozenge behind every chip.
+    var box = this.boxes[this.sel];
+    if (this.vertical) {
+      group.style.setProperty('--rs-y', l.toFixed(2) + 'px');
+      group.style.setProperty('--rs-hh', Math.max(0, r - l).toFixed(2) + 'px');
+      if (box) {
+        group.style.setProperty('--rs-left', box.t + 'px');
+        group.style.setProperty('--rs-thick', box.h + 'px');
+      }
+      return;
+    }
     group.style.setProperty('--rs-x', l.toFixed(2) + 'px');
     group.style.setProperty('--rs-w', Math.max(0, r - l).toFixed(2) + 'px');
-    group.style.setProperty('--rs-inset', inset + 'px');
-    // The thumb takes the height of the chip it has landed on rather than the
-    // group's: a filter row often carries a label or a bottom rule that would
-    // otherwise stretch the thumb into a lozenge behind every pill.
-    var box = this.boxes[this.sel];
     if (box) {
       group.style.setProperty('--rs-top', box.t + 'px');
       group.style.setProperty('--rs-thigh', box.h + 'px');
