@@ -52,6 +52,13 @@ const SOURCES = [
 
 const css = read('styles.css');
 
+/* Other first-party stylesheets that deliberately read this file's tokens.
+   The kit sheets are standalone (their rules cannot live in styles.css) but a
+   --sc-* hook declared in the theme blocks below is consumed by
+   slide-commit.css, so it is live, not a rename that missed its last reader. */
+const THEME_CONSUMERS = ['slide-commit.css'].filter(existsSync);
+const consumerText = THEME_CONSUMERS.map(read).join('\n');
+
 /* ── 1. custom properties ──────────────────────────────────────────────────── */
 
 const defined = new Set();
@@ -84,7 +91,7 @@ const declaredInThemes = new Set();
 for (const block of tokenBlocks) {
   for (const m of block.matchAll(/(--[a-z0-9-]+)\s*:/gi)) declaredInThemes.add(m[1]);
 }
-const unreadTokens = [...declaredInThemes].filter((name) => !usedNoFallback.has(name) && !new RegExp(`var\\(\\s*${name}\\s*[,)]`).test(css));
+const unreadTokens = [...declaredInThemes].filter((name) => !usedNoFallback.has(name) && !new RegExp(`var\\(\\s*${name}\\s*[,)]`).test(css + '\n' + consumerText));
 if (unreadTokens.length) {
   problems.push(`declared in a theme block and never read:\n    ${unreadTokens.join(', ')}`);
 }

@@ -6091,7 +6091,17 @@ function buildMenuLevel(id) {
     }
     list.append(menuRowEl({ icon: 'data', label: 'Reset all data', danger: true, onClick: async () => {
       closeAppMenu();
-      if (!(await swalConfirm({ title: 'Reset all data?', text: 'This clears every entry, balance checkpoint, and setting on this device. Continue?', confirmButtonText: 'Reset', danger: true }))) return;
+      // A slide, not a button: this is the one action in the app that erases
+      // everything, and a gesture that can only finish deliberately is a
+      // stronger guard than a Confirm that sits under the thumb.
+      if (!(await SlideCommit.ask({
+        title: 'Reset all data?',
+        text: 'This clears every entry, balance checkpoint, and setting on this device. Continue?',
+        label: 'Slide to reset',
+        busy: 'Resetting\u2026',
+        done: 'Reset',
+        doneText: 'Every entry cleared.',
+      }))) return;
       // One destructive action, one undo step — and the journal carries the
       // whole ledger, because unlike an entry deletion there is no per-item
       // shape to serialise. Written BEFORE the reset (the tombstone it writes

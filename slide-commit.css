@@ -1,0 +1,308 @@
+/* Slide Commit — the sheet, the rail and the done pill.
+ *
+ * Colour comes from six hooks so a site can hand over its own palette without
+ * overriding a rule:
+ *   --sc-sheet-bg, --sc-sheet-ink, --sc-sheet-muted, --sc-sheet-line,
+ *   --sc-sheet-rail, --sc-sheet-accent, --sc-sheet-on-accent
+ * Anything unset falls back to the light warm neutral below, so the component
+ * is legible on a page that says nothing at all.
+ */
+
+.sc-scrim {
+  --sc-paper: var(--sc-sheet-bg, #fbf9f4);
+  --sc-ink: var(--sc-sheet-ink, #1c1915);
+  --sc-muted: var(--sc-sheet-muted, #6d655a);
+  --sc-line: var(--sc-sheet-line, rgba(28, 25, 21, 0.14));
+  --sc-rail: var(--sc-sheet-rail, rgba(28, 25, 21, 0.06));
+  --sc-accent: var(--sc-sheet-accent, #a8402c);
+  --sc-on-accent: var(--sc-sheet-on-accent, #fff);
+
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(16, 14, 11, 0.44);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  animation: sc-fade 180ms ease-out both;
+  font-family: inherit;
+  color-scheme: light;
+}
+
+.sc-scrim.is-closing {
+  animation: sc-fade-out 160ms ease-in both;
+}
+
+.sc-sheet {
+  width: min(420px, 100%);
+  padding: 22px 22px 16px;
+  border: 1px solid var(--sc-line);
+  border-radius: 22px;
+  background: var(--sc-paper);
+  color: var(--sc-ink);
+  box-shadow:
+    0 24px 60px -22px rgba(10, 8, 6, 0.5),
+    0 1px 0 rgba(255, 255, 255, 0.6) inset;
+  animation: sc-rise 220ms cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+
+.sc-title {
+  margin: 0;
+  text-transform: none;
+  /* Sites style h2 (and often set its colour); the dialog's title is content,
+     not a page heading, so it states its own ink. */
+  color: var(--sc-ink);
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+}
+
+.sc-text {
+  margin: 8px 0 0;
+  text-transform: none;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--sc-muted);
+}
+
+/* ---- the rail ---------------------------------------------------------- */
+
+.sc-track {
+  --sc-p: 0;
+  --sc-x: 0px;
+  --sc-w: 0px;
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 58px;
+  margin: 18px 0 0;
+  padding: 0;
+  border: 1px solid var(--sc-line);
+  border-radius: 999px;
+  background: var(--sc-rail);
+  color: var(--sc-ink);
+  font: inherit;
+  font-size: 13.5px;
+  letter-spacing: 0.005em;
+  cursor: grab;
+  overflow: hidden;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sc-track:focus-visible {
+  outline: 2px solid var(--sc-accent);
+  outline-offset: 3px;
+}
+
+.sc-track.is-dragging { cursor: grabbing; }
+
+.sc-fill {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 1px;
+  width: var(--sc-w);
+  border-radius: 999px;
+  background: var(--sc-accent);
+  opacity: 0.14;
+  transition: width 200ms cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+.sc-label {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0 62px;
+  color: var(--sc-muted);
+  text-align: center;
+  line-height: 1.2;
+  pointer-events: none;
+  opacity: calc(1 - var(--sc-p) * 1.7);
+  transition: opacity 160ms linear, color 160ms linear;
+}
+
+.sc-track.is-armed .sc-label {
+  color: var(--sc-accent);
+  opacity: 1;
+}
+
+.sc-track.is-armed {
+  border-color: var(--sc-accent);
+  box-shadow: inset 0 0 0 1px var(--sc-accent);
+}
+
+.sc-knob {
+  position: absolute;
+  top: 50%;
+  left: 5px;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  margin-top: -23px;
+  border-radius: 50%;
+  background: var(--sc-accent);
+  color: var(--sc-on-accent);
+  transform: translateX(var(--sc-x));
+  transition: transform 200ms cubic-bezier(0.2, 0.9, 0.25, 1), opacity 180ms ease;
+  box-shadow: 0 2px 6px -1px rgba(12, 9, 6, 0.28);
+}
+
+.sc-track.is-dragging .sc-knob,
+.sc-track.is-dragging .sc-fill {
+  transition: none;
+}
+
+.sc-ico {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+}
+
+.sc-ico svg { width: 20px; height: 20px; }
+
+.sc-spinner,
+.sc-ico-check { display: none; }
+
+.sc-spinner {
+  width: 17px;
+  height: 17px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: var(--sc-on-accent);
+  border-radius: 50%;
+}
+
+/* ---- committing -------------------------------------------------------- */
+
+.sc-track.is-committing { cursor: default; }
+
+.sc-track.is-spin .sc-ico-arrow { display: none; }
+.sc-track.is-spin .sc-spinner {
+  display: block;
+  animation: sc-spin 640ms linear infinite;
+}
+
+.sc-track.is-done {
+  background: var(--sc-accent);
+  border-color: var(--sc-accent);
+  box-shadow: 0 6px 18px -8px rgba(12, 9, 6, 0.5);
+}
+
+.sc-track.is-done .sc-fill { opacity: 0; }
+.sc-track.is-done .sc-label {
+  color: var(--sc-on-accent);
+  opacity: 1;
+  font-weight: 600;
+}
+.sc-track.is-done .sc-knob {
+  opacity: 0;
+  transform: translateX(var(--sc-x)) scale(0.6);
+}
+
+.sc-track.is-done .sc-ico-arrow,
+.sc-track.is-done .sc-spinner { display: none; }
+.sc-track.is-done .sc-ico-check { display: grid; }
+
+.sc-ico-check polyline,
+.sc-ico-check path {
+  stroke-dasharray: 26;
+  stroke-dashoffset: 26;
+  animation: sc-tick 320ms ease-out 60ms forwards;
+}
+
+/* ---- the way out ------------------------------------------------------- */
+
+.sc-hint {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--sc-muted);
+  text-align: center;
+}
+
+.sc-cancel {
+  display: block;
+  width: 100%;
+  margin: 8px 0 0;
+  padding: 11px 12px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--sc-muted);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, opacity 200ms ease;
+}
+
+.sc-cancel:hover { background: var(--sc-rail); color: var(--sc-ink); }
+.sc-cancel:focus-visible {
+  outline: 2px solid var(--sc-accent);
+  outline-offset: 2px;
+}
+
+.sc-sheet.is-committed .sc-cancel {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.sc-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes sc-spin { to { transform: rotate(360deg); } }
+
+@keyframes sc-tick { to { stroke-dashoffset: 0; } }
+
+@keyframes sc-fade { from { opacity: 0; } to { opacity: 1; } }
+
+@keyframes sc-fade-out { from { opacity: 1; } to { opacity: 0; } }
+
+@keyframes sc-rise {
+  from { opacity: 0; transform: translateY(10px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+/* A sheet that only fades: the done pill and the tick still change state, they
+   just do not travel. */
+@media (prefers-reduced-motion: reduce) {
+  .sc-scrim,
+  .sc-sheet,
+  .sc-track,
+  .sc-knob,
+  .sc-fill,
+  .sc-label,
+  .sc-cancel {
+    animation: none !important;
+    transition: none !important;
+  }
+  .sc-track.is-spin .sc-spinner {
+    animation: none;
+    border-top-color: rgba(255, 255, 255, 0.35);
+    border-right-color: var(--sc-on-accent);
+  }
+  .sc-ico-check path { animation: none; stroke-dashoffset: 0; }
+}
+
+@media (max-width: 420px) {
+  .sc-sheet { padding: 18px 16px 12px; border-radius: 20px; }
+  .sc-track { height: 54px; }
+  .sc-knob { width: 44px; height: 44px; margin-top: -22px; }
+}

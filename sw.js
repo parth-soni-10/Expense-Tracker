@@ -42,6 +42,8 @@ const SHELL = [
   '/rubber-segment.js',
   '/squish-switch.css',
   '/squish-switch.js',
+  '/slide-commit.css',
+  '/slide-commit.js',
   '/seed.js',
   '/settings.js',
   '/storage.js',
