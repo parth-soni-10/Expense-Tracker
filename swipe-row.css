@@ -1,0 +1,95 @@
+/* Swipe Row — the wrapper, the sliding surface and the pane behind it.
+ *
+ * Colour hooks, all optional:
+ *   --sr-surface-bg, --sr-pane-bg, --sr-ink, --sr-line,
+ *   --sr-danger-bg, --sr-danger-ink, --sr-accent, --sr-radius
+ * The surface must be opaque: it is what hides the pane until the row moves.
+ */
+
+.sr-row {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--sr-radius, 10px);
+  background: var(--sr-pane-bg, #f2f0ea);
+}
+
+.sr-surface {
+  position: relative;
+  z-index: 1;
+  background: var(--sr-surface-bg, #fff);
+  transition: transform 220ms cubic-bezier(0.2, 0.9, 0.25, 1), opacity 160ms ease;
+  touch-action: pan-y;
+  will-change: transform;
+}
+
+.sr-row.is-dragging .sr-surface {
+  transition: none;
+}
+
+.sr-row.is-open .sr-surface {
+  box-shadow: -10px 0 18px -12px rgba(12, 10, 8, 0.35);
+}
+
+/* The row's own controls stay in the DOM for its handlers. On a touch screen
+   the pane is what a person sees and tabs to, so the duplicate is hidden; on a
+   mouse the host's button stays put, because a sideways drag is not how anyone
+   expects to find a single action. */
+@media (pointer: coarse) {
+  .sr-source {
+    display: none !important;
+  }
+}
+
+.sr-pane {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: stretch;
+  z-index: 0;
+}
+
+.sr-action {
+  min-width: 88px;
+  padding: 0 16px;
+  border: 0;
+  border-left: 1px solid var(--sr-line, rgba(24, 22, 18, 0.12));
+  background: var(--sr-pane-bg, #f2f0ea);
+  color: var(--sr-ink, #1c1915);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: filter 120ms ease, background 120ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sr-action:hover { filter: brightness(0.97); }
+
+.sr-action.is-danger {
+  background: var(--sr-danger-bg, #b3261e);
+  color: var(--sr-danger-ink, #fff);
+  border-left-color: transparent;
+}
+
+.sr-action.is-danger:hover { filter: brightness(1.06); }
+
+.sr-action:focus-visible {
+  outline: 2px solid var(--sr-accent, #1d4ed8);
+  outline-offset: -4px;
+}
+
+/* A full swipe is being reached: the first action says so before it fires. */
+.sr-row.is-primed .sr-action:first-child {
+  filter: brightness(1.1);
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.55);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sr-surface,
+  .sr-action {
+    transition: none !important;
+  }
+}

@@ -5768,6 +5768,17 @@ function computeDataHealth(entries) {
 // ---------- router ----------
 const ROUTES = TABS;
 const isNarrow = () => typeof window !== 'undefined' && window.innerWidth < 640;
+// The layout is decided at render — isNarrow() feeds inline sizes, and the
+// History table only adopts its swipe rows in the stacked layout. A phone turned
+// on its side crosses the 640px line without a navigation, so the crossing has
+// to repaint; otherwise the wide table stays inside the kit's narrow wrapper,
+// which clips the columns the card is meant to scroll to.
+let narrowAtLastRender = isNarrow();
+window.addEventListener('resize', () => {
+  if (isNarrow() === narrowAtLastRender) return;
+  narrowAtLastRender = isNarrow();
+  render();
+}, { passive: true });
 const isTiny = () => typeof window !== 'undefined' && window.innerWidth < 480;
 // Which tabs THIS profile may open. The admin (see openAdminPanel) sets it per
 // user in that user's own document, so the setting travels with their data.
@@ -8735,11 +8746,28 @@ function screenHistory() {
         toast(wasExcluded ? 'Back in the budget.' : 'Excluded from the budget.');
         render();
       };
-      const deleteRow = () => {
+      // Delete from the swipe pane. The same tombstone + undo path the editor's
+      // confirm uses, so a gesture cannot destroy anything Undo cannot bring
+      // back. Split groups and transfers are never swipe rows (see `swipeable`):
+      // their delete is a pair or a group, and that choice belongs in the editor
+      // they open into.
+      const deleteRow = async () => {
         if (isGroup) { openRow(); return; }
-        deleteEntryOrTransfer(e.id);
+        const removed = deletionEntriesFor(e.id).map(entry => ({ ...entry }));
+        if (!(await deleteEntryOrTransfer(e.id))) return;
+        trackAction(() => {
+          state.entries.push(...removed);
+          state.entries.sort((a, b) => a.date.localeCompare(b.date) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+          untombstoneIds(removed.map(entry => entry.id));
+          persist();
+        }, `Deleted ${e.details || 'entry'}`, removed);
+        toast('Deleted. Undo it any time with the Undo button.');
       };
-      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-ui': 'swipe-row transaction-list inline-disclosure-menu', 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${rowLabel}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]') || ev.target.closest('[data-ui-field]') || ev.target.closest('[data-ui-menu]') || ev.target.closest('[data-ui-menu-panel]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input') || ev.target.closest('[data-ui-field]') || ev.target.closest('[data-ui-menu]') || ev.target.closest('[data-ui-menu-panel]')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
+      // The gesture is the phone's, not the desk's: the wide table keeps its
+      // visible Edit button and its sideways scroll, and only the stacked
+      // layout gets a row that slides aside to reveal Delete.
+      const swipeable = isNarrow() && !isGroup && !e.transferId;
+      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-ui': 'transaction-list inline-disclosure-menu', ...(swipeable ? { 'data-swipe-row': '', 'data-swipe-label': 'Entry actions', 'data-swipe-full': 'off', 'data-ui': 'swipe-row transaction-list inline-disclosure-menu' } : null), 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${rowLabel}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]') || ev.target.closest('[data-ui-field]') || ev.target.closest('[data-ui-menu]') || ev.target.closest('[data-ui-menu-panel]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input') || ev.target.closest('[data-ui-field]') || ev.target.closest('[data-ui-menu]') || ev.target.closest('[data-ui-menu-panel]')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
         $('span', { role: 'cell', class: 'history-cell-check' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selectAll.every(id => selected.has(id)) ? true : null, 'aria-label': `Select ${rowLabel}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
           for (const id of selectAll) { if (ev.target.checked) selected.add(id); else selected.delete(id); }
           syncBulkBar();
@@ -8756,6 +8784,7 @@ function screenHistory() {
           : [$('span', { class: 'pill history-method' }, methodShort(e.method))])),
         $('span', { role: 'cell', class: 'history-actions' },
           $('button', { type: 'button', class: 'history-action-btn', title: isGroup ? 'Edit or delete split payment' : 'Edit or delete entry', 'aria-label': (isGroup ? `Edit or delete split ${rowLabel}` : `Edit or delete ${rowLabel}`), onClick: ev => { ev.stopPropagation(); openRow(); } }, 'Edit'),
+          swipeable ? $('button', { type: 'button', class: 'history-swipe-delete', 'data-swipe-action': '', 'data-swipe-label': 'Delete', 'data-swipe-tone': 'danger', 'aria-label': `Delete ${rowLabel}`, onClick: ev => { ev.stopPropagation(); void deleteRow(); } }, 'Delete') : null,
         ),
       );
 

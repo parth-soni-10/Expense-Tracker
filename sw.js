@@ -44,6 +44,8 @@ const SHELL = [
   '/squish-switch.js',
   '/slide-commit.css',
   '/slide-commit.js',
+  '/swipe-row.css',
+  '/swipe-row.js',
   '/seed.js',
   '/settings.js',
   '/storage.js',

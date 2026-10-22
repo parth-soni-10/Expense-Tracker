@@ -893,12 +893,39 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
 }
 .history-row.expense-row { border-left-color: var(--line); }
 .history-row.income-row { border-left-color: var(--positive); }
-.history-row:nth-child(even) { background: rgba(16,18,16,0.02); }
-[data-theme="dark"] .history-row:nth-child(even) { background: rgba(255,255,255,0.02); }
+/* Unwrapped rows only: once the swipe kit adopts a row it is its wrapper's
+   second child (the pane is the first), so `nth-child(even)` would match every
+   one of them — and a transparent surface is what lets the pane show through. */
+.history-row:nth-child(even):not(.sr-surface) { background: rgba(16,18,16,0.02); }
+[data-theme="dark"] .history-row:nth-child(even):not(.sr-surface) { background: rgba(255,255,255,0.02); }
 .history-row:hover {
   background: var(--accent-soft) !important;
   box-shadow: inset 0 0 0 1px var(--hairline-a), var(--shadow-sm);
 }
+/* History rows on a phone are a swipe row: the pane behind one reads these
+   hooks (swipe-row.css). The gesture is only adopted in the stacked layout —
+   the 1258px table scrolls sideways on wider screens, and the kit's wrapper
+   clips what it holds, which would hide the Method and Edit columns the card
+   exists to reach. */
+.history-table .sr-row {
+  --sr-surface-bg: var(--card);
+  --sr-pane-bg: var(--accent-soft);
+  --sr-ink: var(--ink);
+  --sr-line: var(--line);
+  --sr-danger-bg: var(--negative);
+  --sr-danger-ink: var(--card);
+  --sr-accent: var(--accent);
+  --sr-radius: 0px;
+}
+/* The zebra stripe lived on .history-row itself. Once the kit wraps a row it is
+   always its wrapper's first child, so the parity has to be read from the
+   wrapper instead — the header row is child 1, so the first data row is even,
+   exactly as before. It moves into the kit's own surface hook: a `background`
+   on .history-row would win over .sr-surface and leave the row translucent,
+   which is exactly how the pane behind it would show through. */
+.history-table .sr-row:nth-child(even) { --sr-surface-bg: color-mix(in srgb, var(--ink) 2%, var(--card)); }
+[data-theme="dark"] .history-table .sr-row:nth-child(even) { --sr-surface-bg: color-mix(in srgb, #fff 2%, var(--card)); }
+
 .history-head-row {
   display: grid;
   grid-template-columns: 42px 112px minmax(280px, 1fr) 128px 124px 176px 240px;
@@ -2481,8 +2508,9 @@ p, li, .muted { text-wrap: pretty; }
 .history-menu button:hover, .history-menu button:focus-visible { background: var(--bg-deep); }
 .history-menu button.is-danger { color: var(--negative); }
 
-/* History: the swipe action sits in the row's own action slot. */
-.history-swipe-delete { color: var(--negative); }
+/* History: the Delete a swipe reveals. It is hidden until the kit takes it
+   over — the pane mirrors this button, so the row never offers two of them. */
+.history-swipe-delete { display: none; }
 
 /* Insights heat grid: the kit's default is GitHub's small squares; here the
    cells carry the ledger's own dates and need only breathe with the card. */
