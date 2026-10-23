@@ -318,7 +318,24 @@ ok('the net worth strip stacks its halves on a phone and caps the trend above it
 ok('and nothing in that strip stretches the sparkline again',
   /net-worth-spark[^>]*flex:1|\.net-worth-spark\s*\{[^}]*flex:\s*1[;\s]/.test(css + app), false);
 
+// ---- 9. a figure the user owns is not hidden by reading zero ----------------
+// The Tesco paper-vouchers pill returned null at €0.00. On a phone that is the
+// only place the figure appears on the dashboard, so a tally of zero looked like
+// a feature that does not exist rather than a count of nothing — and the pill is
+// also the way into the editor that sets it. It is drawn at €0.00 in the same
+// muted ink Cash uses, so the two read alike.
+const vStart = app.indexOf('function voucherWidget() {');
+const vEnd = vStart < 0 ? -1 : app.indexOf('\n}\n', vStart);
+const voucherWidgetSrc = vStart < 0 || vEnd < 0 ? '' : app.slice(vStart, vEnd);
+ok('the voucher pill is on the dashboard', voucherWidgetSrc.startsWith('function voucherWidget() {'), true);
+ok('and the hero draws it beside Cash',
+  /cashWidget\(\),\n\s+voucherWidget\(\),/.test(app), true);
+ok('and zero is a reading of it, not a reason to hide the control',
+  !/if \(amount <= 0\) return null/.test(voucherWidgetSrc), true);
+ok('it is drawn at €0.00 in the muted ink, as Cash is',
+  /color:\$\{over \? 'var\(--negative\)' : 'var\(--muted\)'\}/.test(voucherWidgetSrc), true);
+
 console.log(fails.length
   ? `check-mobile-layout: ${fails.length} FAILED\n\n${fails.join('\n')}`
-  : `check-mobile-layout: OK — ${pass} assertions passed (a figure reaches its card formatted, at a size its own length chose; the card and the value can neither push their track wider nor spill; six dock tabs compress instead of hanging off the screen; a history row's action buttons cannot starve the column its labels sit in, and the account meta line wraps where the row stacks; net worth reads today's checkpoint-aware balance, never the last entry's book value; and the three cards that only break on a wide shell — the month grid, the pulse figures and the net worth strip — keep their measure there)`);
+  : `check-mobile-layout: OK — ${pass} assertions passed (a figure reaches its card formatted, at a size its own length chose; the card and the value can neither push their track wider nor spill; six dock tabs compress instead of hanging off the screen; a history row's action buttons cannot starve the column its labels sit in, and the account meta line wraps where the row stacks; net worth reads today's checkpoint-aware balance, never the last entry's book value; and the three cards that only break on a wide shell — the month grid, the pulse figures and the net worth strip — keep their measure there; and the voucher pill reads €0.00 instead of disappearing)`);
 process.exitCode = fails.length ? 1 : 0;

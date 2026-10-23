@@ -7607,10 +7607,11 @@ function cashWidget() {
  *  turns red and a persistent alert card appears on the dashboard. */
 function voucherWidget() {
   const amount = voucherAmount();
-  // Nothing to report and nothing to click on: an untouched tally of €0.00 is
-  // noise in the hero. The editor it used to point at stays reachable from the
-  // Balances screen, so hiding the figure never hides the control.
-  if (amount <= 0) return null;
+  // Present at €0.00, not hidden by it. It used to vanish when the tally was
+  // zero — on a phone that left no sign the feature existed at all (the pill is
+  // the only place this figure appears on the dashboard), and "not there" read
+  // as "not supported" rather than "nothing recorded". A muted €0.00 says which
+  // of the two it is, and stays the way into the editor.
   const over = amount > VOUCHER_NOTICE_AT;
   const wrapper = $('span', { style: 'position:relative;display:inline-flex;align-items:center;gap:6px;cursor:pointer;', title: 'Tesco paper vouchers - click to edit' },
     $('span', { style: 'font-family:"Space Grotesk",sans-serif;' }, 'Vouchers '),
@@ -9044,9 +9045,9 @@ function screenBalances() {
     ),
   ));
 
-  // Paper vouchers. The hero figure on the dashboard hides itself at €0.00,
-  // so this is where the tally stays editable whether it reads zero or not —
-  // hiding a figure must never hide the control behind it.
+  // Paper vouchers. The dashboard's hero carries the one-line pill (and it now
+  // shows at €0.00 too); this is the fuller view — what the figure is, and what
+  // it deliberately never counts towards.
   const vouchers = voucherAmount();
   c.appendChild($('div', { class: 'card', style: `padding:${isNarrow() ? '18px 16px' : '24px 16px'};margin-bottom:24px;` },
     $('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;' },
