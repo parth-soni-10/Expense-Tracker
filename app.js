@@ -7263,7 +7263,7 @@ function screenDashboard() {
       barEl.style.background = over ? 'var(--negative)' : catBarGradient(cat);
     };
     const startEdit = () => {
-      const input = $('input', { type: 'text', inputmode: 'decimal', value: target ? String(target) : '', 'aria-label': `Monthly target for ${categoryLabel(cat)}`, autocomplete: 'off', style: 'width:62px;border:1px solid var(--accent);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:3px 8px;font-size:12px;text-align:right;' });
+      const input = $('input', { type: 'text', inputmode: 'decimal', 'data-number-input': '', value: target ? String(target) : '', 'aria-label': `Monthly target for ${categoryLabel(cat)}`, autocomplete: 'off', style: 'width:62px;border:1px solid var(--accent);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:3px 8px;font-size:12px;text-align:right;' });
       const commit = raw => {
         const v = parseAmount(raw);
         if (!Number.isFinite(v) || v < 0) { toast('Enter a non-negative number.'); paintDisplay(); return; }
@@ -7277,10 +7277,16 @@ function screenDashboard() {
         else if (e.key === 'Escape') { input.onblur = null; paintDisplay(); }
       };
       input.onblur = () => commit(input.value);
-      rightEl.replaceChildren(
-        input,
-        target > 0 ? $('button', { type: 'button', title: 'Clear this category\'s target', style: 'border:none;background:none;color:var(--negative);font-size:10px;cursor:pointer;padding:0;', onMouseDown: (e) => { e.preventDefault(); input.onblur = null; delete catTargets[cat]; persist(); toast(`Target cleared for ${categoryLabel(cat)}.`); render(); } }, 'Clear') : null,
-      );
+      const clearBtn = target > 0
+        ? $('button', { type: 'button', title: 'Clear this category\'s target', style: 'border:none;background:none;color:var(--negative);font-size:10px;cursor:pointer;padding:0;', onMouseDown: (e) => { e.preventDefault(); input.onblur = null; delete catTargets[cat]; persist(); toast(`Target cleared for ${categoryLabel(cat)}.`); render(); } }, 'Clear')
+        : null;
+      // replaceChildren() turns a null argument into the text "null", so the
+      // button has to be spread in rather than passed as one.
+      rightEl.replaceChildren(...[input, clearBtn].filter(Boolean));
+      // The kit wraps the field in its mirror; do that before focus, because
+      // re-parenting a focused field blurs it — and blur here commits the
+      // target, so opening the editor would save it untouched.
+      if (window.NumberInput) window.NumberInput.mount(input);
       input.focus();
       input.select();
     };
