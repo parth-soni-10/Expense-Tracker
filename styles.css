@@ -929,6 +929,18 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
    which is exactly how the pane behind it would show through. */
 .history-table .sr-row:nth-child(even) { --sr-surface-bg: color-mix(in srgb, var(--ink) 2%, var(--card)); }
 [data-theme="dark"] .history-table .sr-row:nth-child(even) { --sr-surface-bg: color-mix(in srgb, #fff 2%, var(--card)); }
+/* The pinned day bar (timeline-calendar.js). The site header is sticky on
+   desktop and hides itself on the way down, so the bar pins to the window top
+   underneath it: visible while you scroll a long history, covered again when
+   the header comes back on the way up. */
+.history-timeline {
+  --tlc-top: 0;
+  --tlc-bg: var(--bg);
+  --tlc-line: var(--line);
+  --tlc-z: 30;
+  min-width: 0;
+}
+.history-timeline > [data-tl-header] { margin-bottom: 10px; }
 
 .history-head-row {
   display: grid;

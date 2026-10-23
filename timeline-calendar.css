@@ -1,0 +1,91 @@
+/* Timeline Calendar — host-agnostic.
+ *
+ * The host supplies the list and the header element; the kit supplies the
+ * pinned bar's shape and the reveal. Everything host-specific is a custom
+ * property, because a pin offset depends on whatever the host already has
+ * stuck to the top of the window:
+ *
+ *   --tlc-top    where the bar pins (default: the viewport top)
+ *   --tlc-bg     the paper under the pinned bar; must be opaque
+ *   --tlc-line   the hairline under it
+ *   --tlc-z      stacking, for a host whose nav sits above the list
+ */
+
+.tlc[data-tl-header] {
+  position: sticky;
+  top: var(--tlc-top, 0);
+  z-index: var(--tlc-z, 30);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 34px;
+  padding: 9px 0 8px;
+  background: var(--tlc-bg, Canvas);
+  color: inherit;
+}
+
+.tlc[data-tl-header]::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--tlc-line, color-mix(in srgb, currentColor 14%, transparent));
+}
+
+.tlc-caption {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  opacity: .5;
+  white-space: nowrap;
+}
+
+.tlc-caption[hidden] {
+  display: none;
+}
+
+.tlc-label {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -.2px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tlc-count {
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--tlc-line, color-mix(in srgb, currentColor 16%, transparent));
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  opacity: .55;
+  white-space: nowrap;
+}
+
+.tlc-count[hidden] {
+  display: none;
+}
+
+/* The label arrives from under the bar, like the date itself changed. Short:
+   a long fast scroll can pass three groups in a second. */
+@keyframes tlc-in {
+  from { opacity: 0; transform: translateY(.5em); }
+  to { opacity: 1; transform: none; }
+}
+
+.tlc-label.tlc-in {
+  animation: tlc-in 190ms cubic-bezier(.2, .9, .3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tlc-label.tlc-in {
+    animation: none;
+  }
+}

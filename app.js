@@ -8892,7 +8892,9 @@ function screenHistory() {
       // visible Edit button and its sideways scroll, and only the stacked
       // layout gets a row that slides aside to reveal Delete.
       const swipeable = isNarrow() && !isGroup && !e.transferId;
-      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', ...(swipeable ? { 'data-swipe-row': '', 'data-swipe-label': 'Entry actions', 'data-swipe-full': 'off' } : null), 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${rowLabel}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
+      // timeline-calendar.js reads this label, so the pinned bar keeps naming
+      // the day once its row has scrolled under it.
+      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', ...(swipeable ? { 'data-swipe-row': '', 'data-swipe-label': 'Entry actions', 'data-swipe-full': 'off' } : null), 'data-id': isGroup ? item.id : e.id, 'data-tl-label': friendlyDate(e.date), 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${rowLabel}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
         $('span', { role: 'cell', class: 'history-cell-check' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selectAll.every(id => selected.has(id)) ? true : null, 'aria-label': `Select ${rowLabel}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
           for (const id of selectAll) { if (ev.target.checked) selected.add(id); else selected.delete(id); }
           syncBulkBar();
@@ -8916,7 +8918,12 @@ function screenHistory() {
       tableWrap.appendChild(row);
     }
   }
-  c.appendChild(tableWrap);
+  // One pinned date bar over the list: the rows keep their own date cells, but
+  // the day you are in stays legible however far down you are.
+  c.appendChild($('div', { class: 'history-timeline', 'data-timeline-calendar': '' },
+    $('div', { 'data-tl-header': '', 'data-tl-caption': 'History' }),
+    tableWrap,
+  ));
 
   const histSumEl = $('span', { class: 'display-num', style: 'font-size:30px;' }, fmt(expenseSum));
   c.appendChild($('div', { class: 'summary-row' },
