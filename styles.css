@@ -893,7 +893,13 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
   transition: background 0.18s, box-shadow 0.18s;
   border-left: 3px solid transparent;
   content-visibility: auto;
-  contain-intrinsic-size: 54px;
+  /* The intrinsic size is the CONTENT box, so it has to be the row's height
+     minus its 30px padding and 1px rule (69px on the desk). Declared as 54px
+     every offscreen row stood 16px too tall, and the document shrank by ~800px
+     as the history came into view — which moved every jump target out from
+     under the pinned day bar. `auto` also remembers a row's real height once
+     it has been laid out, for the rows that wrap. */
+  contain-intrinsic-size: auto 38px;
 }
 .history-row.expense-row { border-left-color: var(--line); }
 .history-row.income-row { border-left-color: var(--positive); }
@@ -936,6 +942,7 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
 .history-timeline {
   --tlc-top: 0;
   --tlc-bg: var(--bg);
+  --tlc-menu-bg: var(--card);
   --tlc-line: var(--line);
   --tlc-z: 30;
   min-width: 0;
@@ -2049,7 +2056,10 @@ p, li, .muted { text-wrap: pretty; }
     grid-template-rows: auto auto auto;
     gap: 3px 12px;
     padding: 13px 14px;
-    contain-intrinsic-size: 74px;
+    /* Same content-box rule as the desk row: 126px total, minus 26px padding
+       and 1px rule. The old 74px placeholder under-measured every offscreen
+       row and the page grew as it scrolled. */
+    contain-intrinsic-size: auto 99px;
   }
   .history-cell-check { grid-column: 1; grid-row: 1; align-self: start; padding-top: 1px; }
   .history-date { grid-column: 2; grid-row: 1; font-size: 12px; }

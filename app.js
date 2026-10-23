@@ -8927,7 +8927,7 @@ function screenHistory() {
   // One pinned date bar over the list: the rows keep their own date cells, but
   // the day you are in stays legible however far down you are.
   c.appendChild($('div', { class: 'history-timeline', 'data-timeline-calendar': '' },
-    $('div', { 'data-tl-header': '', 'data-tl-caption': 'History' }),
+    $('div', { 'data-tl-header': '', 'data-tl-caption': 'History', 'data-tl-noun': 'day' }),
     tableWrap,
   ));
 

@@ -1,25 +1,22 @@
 /* Timeline Calendar — host-agnostic.
  *
  * The host supplies the list and the header element; the kit supplies the
- * pinned bar's shape and the reveal. Everything host-specific is a custom
- * property, because a pin offset depends on whatever the host already has
- * stuck to the top of the window:
+ * pinned bar's shape, its menu and the reveal. Everything host-specific is a
+ * custom property, because a pin offset depends on whatever the host already
+ * has stuck to the top of the window:
  *
- *   --tlc-top    where the bar pins (default: the viewport top)
- *   --tlc-bg     the paper under the pinned bar; must be opaque
- *   --tlc-line   the hairline under it
- *   --tlc-z      stacking, for a host whose nav sits above the list
+ *   --tlc-top       where the bar pins (default: the viewport top)
+ *   --tlc-bg        the paper under the pinned bar; must be opaque
+ *   --tlc-menu-bg   the menu's paper; must be opaque (default: --tlc-bg)
+ *   --tlc-line      the hairline under it
+ *   --tlc-z         stacking, for a host whose nav sits above the list
  */
 
 .tlc[data-tl-header] {
   position: sticky;
   top: var(--tlc-top, 0);
   z-index: var(--tlc-z, 30);
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
   min-height: 34px;
-  padding: 9px 0 8px;
   background: var(--tlc-bg, Canvas);
   color: inherit;
 }
@@ -32,6 +29,28 @@
   bottom: 0;
   height: 1px;
   background: var(--tlc-line, color-mix(in srgb, currentColor 14%, transparent));
+}
+
+/* The whole bar is the button, so the target is as wide as the list. */
+.tlc-trigger {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  padding: 9px 0 8px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tlc-trigger:focus-visible {
+  outline: 2px solid color-mix(in srgb, currentColor 45%, transparent);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 .tlc-caption {
@@ -48,6 +67,7 @@
 }
 
 .tlc-label {
+  min-width: 0;
   font-size: 15px;
   font-weight: 650;
   letter-spacing: -.2px;
@@ -73,6 +93,105 @@
   display: none;
 }
 
+/* The action lives in the accessible name, not on the bar: the visible line is
+   the date itself. */
+.tlc-hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.tlc-chevron {
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  margin-left: 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  opacity: .45;
+  transform: translateY(-2px) rotate(45deg);
+  transition: transform .18s ease, opacity .18s ease;
+}
+
+.tlc-trigger:hover .tlc-chevron {
+  opacity: .75;
+}
+
+.tlc.is-open .tlc-chevron {
+  opacity: .75;
+  transform: translateY(1px) rotate(225deg);
+}
+
+.tlc-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 6;
+  min-width: min(250px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
+  max-height: min(60vh, 420px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  background: var(--tlc-menu-bg, var(--tlc-bg, Canvas));
+  border: 1px solid var(--tlc-line, color-mix(in srgb, currentColor 16%, transparent));
+  border-radius: 12px;
+  box-shadow: 0 18px 40px -20px rgba(0, 0, 0, .38), 0 2px 8px rgba(0, 0, 0, .08);
+}
+
+.tlc-menu[hidden] {
+  display: none;
+}
+
+.tlc-item {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tlc-item:hover {
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.tlc-item:focus-visible {
+  outline: 2px solid color-mix(in srgb, currentColor 45%, transparent);
+  outline-offset: -2px;
+}
+
+.tlc-item[aria-current="true"] {
+  font-weight: 650;
+}
+
+.tlc-item-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tlc-item-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  opacity: .55;
+}
+
 /* The label arrives from under the bar, like the date itself changed. Short:
    a long fast scroll can pass three groups in a second. */
 @keyframes tlc-in {
@@ -87,5 +206,8 @@
 @media (prefers-reduced-motion: reduce) {
   .tlc-label.tlc-in {
     animation: none;
+  }
+  .tlc-chevron {
+    transition: none;
   }
 }
