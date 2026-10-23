@@ -178,7 +178,7 @@ body:has(#screen) .skip-link { display: block; }
    ring on it would only ever be noise — every operable control keeps one. */
 .screen:focus { outline: none; }
 .btn, .pill, .nav-link, .bottom-tab, .menu-row, .menu-back, .menu-close, .cal-day, .history-action-btn,
-.footer-action, .dark-toggle, .menu-trigger, .admin-trigger, .heat-cell, .history-row, .btn-link {
+.footer-action, .menu-trigger, .admin-trigger, .heat-cell, .history-row, .btn-link {
   -webkit-user-select: none; user-select: none;
 }
 body {
@@ -488,8 +488,8 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
   box-shadow: none;
 }
 
-/* Dark toggle + menu trigger — glass circles */
-.dark-toggle, .menu-trigger, .admin-trigger {
+/* Menu trigger + admin shortcut — glass circles */
+.menu-trigger, .admin-trigger {
   display: inline-flex; align-items: center; justify-content: center;
   width: 40px; height: 40px;
   border: 1px solid var(--line);
@@ -503,12 +503,12 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
      the circles would only re-blur two tiny regions every scroll frame. */
   transition: transform 0.14s var(--ease-out), background 0.15s, border-color 0.15s, box-shadow 0.2s;
 }
-.dark-toggle:hover, .menu-trigger:hover, .admin-trigger:hover { background: var(--bg-deep); box-shadow: var(--shadow-sm); }
-.dark-toggle:active, .menu-trigger:active, .admin-trigger:active { transform: scale(0.9); }
-.dark-toggle svg, .admin-trigger svg { display: block; width: 17px; height: 17px; }
+.menu-trigger:hover, .admin-trigger:hover { background: var(--bg-deep); box-shadow: var(--shadow-sm); }
+.menu-trigger:active, .admin-trigger:active { transform: scale(0.9); }
+.admin-trigger svg { display: block; width: 17px; height: 17px; }
 
 /* Dark mode is a switch now. 8px of padding keeps the tap target at 40px tall
-   beside the 40px menu circle, and data-ss-bare hides the old sun/moon SVGs. */
+   beside the 40px menu circle. */
 .dark-switch {
   display: inline-flex;
   align-items: center;
@@ -527,9 +527,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
   .admin-trigger { width: auto; padding: 0 13px 0 11px; gap: 7px; border-radius: 999px; }
   .admin-trigger-label { display: inline; }
 }
-.dark-toggle .icon-moon svg { fill: currentColor; }
-.dark-toggle .icon-sun svg { stroke: currentColor; }
-
 .nav { display: flex; align-items: center; gap: 6px; flex: 1; justify-content: center; }
 .header-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-left: auto; }
 /* The header row is the SAME box the content sits in. It used to run the full
@@ -1094,19 +1091,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
    Icon morphing system
    ═══════════════════════════════════════════════════════════════ */
 
-/* ── Dark toggle: sun ↔ moon morph ── */
-.dark-toggle .icon-sun,
-.dark-toggle .icon-moon {
-  transition: transform 0.3s cubic-bezier(0.2,0.8,0.2,1), opacity 0.25s;
-  position: absolute; inset: 0;
-  display: flex; align-items: center; justify-content: center;
-}
-.dark-toggle .icon-sun { opacity: 0; transform: rotate(-90deg) scale(0.5); }
-.dark-toggle .icon-moon { opacity: 1; transform: rotate(0deg) scale(1); }
-[data-theme="dark"] .dark-toggle .icon-sun { opacity: 1; transform: rotate(0deg) scale(1); }
-[data-theme="dark"] .dark-toggle .icon-moon { opacity: 0; transform: rotate(90deg) scale(0.5); }
-.dark-toggle { position: relative; }
-
 /* ── Bottom tab bar: icon active-state morph ── */
 .bottom-tab-icon {
   position: relative;
@@ -1369,7 +1353,6 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
 
 .history-row:focus-visible,
 .history-action-btn:focus-visible,
-.dark-toggle:focus-visible,
 .btn:focus-visible,
 .btn-link:focus-visible,
 .pill:focus-visible {
@@ -2116,7 +2099,6 @@ p, li, .muted { text-wrap: pretty; }
 }
 .tesco-stat > .tesco-stat-value { margin-top: auto; padding-top: 2px; }
 .tesco-form-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-.tesco-form-row-spread { align-items: center; justify-content: space-between; }
 .tesco-in {
   padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius);
   background: transparent; color: inherit; font: inherit; font-size: 13px;
@@ -2126,31 +2108,12 @@ p, li, .muted { text-wrap: pretty; }
 .tesco-in-grow { flex: 1 1 160px; }
 .tesco-in-num { width: 84px; }
 .tesco-in-date { width: 148px; }
-.tesco-file { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-.tesco-filelabel { position: relative; overflow: hidden; cursor: pointer; }
-.tesco-progress {
-  height: 3px; background: var(--line); border-radius: 99px;
-  overflow: hidden; margin: 10px 0 0;
-}
-.tesco-progress-fill {
-  height: 100%; width: 0%; background: var(--accent);
-  transition: width 0.25s var(--ease-out);
-}
-.tesco-rowlist { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
-.tesco-row {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius);
-  background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer;
-}
-.tesco-row.active { border-color: var(--accent); background: var(--accent-soft); }
 .tesco-chip {
   font-size: 10px; padding: 2px 6px; border-radius: 99px;
   border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
 }
 .tesco-chip-good { border-color: var(--accent); color: var(--accent); }
 .tesco-chip-warn { border-color: var(--negative); color: var(--negative); }
-.tesco-celledit { display: flex; flex-direction: column; gap: 6px; }
-.tesco-celledit-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .tesco-week {
   border-top: 1px solid var(--line); padding: 12px 0 4px;
 }
@@ -2319,8 +2282,6 @@ p, li, .muted { text-wrap: pretty; }
   .tesco-shift-tail { gap: 5px; }
   .tesco-shift-amt { font-size: 12px; }
   .tesco-shift-bank-in { width: 78px; }
-  .tesco-celledit-row { gap: 4px; }
-  .tesco-celledit-row .tesco-in { padding: 6px 8px; }
 }
 
 /* ============================================================
@@ -2444,143 +2405,26 @@ p, li, .muted { text-wrap: pretty; }
   /* Stacked full-width rows are the primary touch target on a phone. */
   .profile-row .profile-row-actions .btn { flex: 1; min-height: 44px; }
 }
-   Hairline figures — the dashboard's ledger, drawn.
-   The engine's palette is mapped onto this site's tokens here; nothing is
-   injected at runtime, so the stylesheet stays the only style source. Three
-   cards share one row on a wide screen and stack on a phone.
-   ============================================================ */
-.figures-card {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 24px;
-}
-.figures-card .hairline-card:first-child { grid-column: 1 / -1; }
-@media (max-width: 720px) {
-  .figures-card { grid-template-columns: 1fr; }
-  .figures-card .hairline-card:first-child { grid-column: auto; }
-}
-.hairline-card {
-  margin: 0;
-  padding: 14px 12px 10px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
-  background: var(--card);
-  min-width: 0;
-}
-.hairline-figure { width: 100%; aspect-ratio: 5 / 4; }
-.figures-card .hairline-card:first-child .hairline-figure { aspect-ratio: 16 / 6; }
-.hairline-figure svg { display: block; width: 100%; height: 100%; }
-.hairline-read {
-  margin: 6px 2px 0;
-  min-height: 16px;
-  font-size: 11px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-.hairline-card .sil { fill: none; stroke: var(--accent); stroke-width: 1.1; stroke-linejoin: round; }
-.hairline-card .sil.hi { stroke-width: 2; }
-.hairline-card .dot { fill: var(--accent); }
-.hairline-card .dot.off { fill: var(--accent); opacity: 0.55; }
-.hairline-card .nf { fill: none; }
-.hairline-card .nf.lo { stroke: var(--line); stroke-width: 1; }
-.hairline-card .nf.hi { stroke: var(--ink); stroke-width: 1.4; }
-.hairline-card .dash { stroke-dasharray: 2 3; opacity: 0.6; }
-   Component kit bridge
-   The kit names its tokens --ui-*, with neutral fallbacks for a page that has
-   not adopted the design system. Cents has its own scale, so point the kit at
-   it instead of shipping a second palette.
-   ============================================================ */
-[data-ui] {
-  --ui-surface: var(--card);
-  --ui-ink: var(--ink);
-  --ui-ink-mid: var(--muted);
-  --ui-ink-soft: var(--muted);
-  --ui-line: var(--line);
-  --ui-accent: var(--accent);
-  --ui-accent-weak: var(--accent-soft);
-  --ui-radius: var(--radius);
-  --ui-shadow: var(--shadow-lg);
-}
 
-/* The header nav keeps its own pill geometry; only the indicator is the kit's. */
-.nav.ui-gooey > a { padding: 9px 16px; color: var(--muted); }
-.nav.ui-gooey .is-gooey-on { color: var(--accent); }
-.nav.ui-gooey .is-gooey-on::after { left: 16px; right: 16px; bottom: 2px; background: var(--accent); }
 
-/* A Pulse figure that links somewhere is still a figure, not a blue link. */
-.pulse-figure { color: inherit; text-decoration: none; display: inline-flex; align-items: baseline; border-radius: 4px; }
-.pulse-figure:hover, .pulse-figure:focus-visible { color: var(--accent); }
-.pulse-figure:focus-visible { outline: 2px solid var(--accent-fade); outline-offset: 2px; }
-
-/* Budget field: the kit's stepper, in the header's own scale. */
-.budget-field .ui-stepper { gap: 6px; align-items: center; }
-.budget-field .ui-stepper-input { width: 84px; background: transparent; color: inherit; border-color: var(--line); text-align: right; padding: 7px 10px; font-size: 13px; }
-.budget-field .ui-stepper-btn { width: 26px; height: 26px; background: transparent; color: var(--muted); border-color: var(--line); }
-.budget-field .ui-stepper-btn:hover { color: var(--accent); border-color: var(--accent); }
-
-.profile-card { transition: border-color .15s, background .15s; }
-.profile-card:hover { border-color: var(--accent); background: var(--accent-soft); }
-.profile-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-
-.feedback-card textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-fade); }
-
-/* History: the month index sits under the title, not beside the chevrons. */
-.history-title-block { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.history-title-block [data-ui="skiper74"] .ui-months { border-bottom: 0; padding: 2px 0 0; }
-.history-title-block .ui-month { font-size: 11px; padding: 4px 9px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); cursor: pointer; white-space: nowrap; }
-.history-title-block .ui-month.is-on { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-
-/* History: the per-row menu. */
-.history-menu-wrap { position: relative; display: inline-flex; }
-.history-kebab { font-size: 15px; line-height: 1; letter-spacing: 1px; }
-.history-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; display: flex; flex-direction: column; min-width: 168px; padding: 6px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); }
-.history-menu[hidden] { display: none; }
-.history-menu button { text-align: left; font: inherit; font-size: 12px; padding: 7px 10px; background: transparent; color: var(--ink); border: 0; border-radius: 6px; cursor: pointer; }
-.history-menu button:hover, .history-menu button:focus-visible { background: var(--bg-deep); }
-.history-menu button.is-danger { color: var(--negative); }
-
-/* History: the Delete a swipe reveals. It is hidden until the kit takes it
-   over — the pane mirrors this button, so the row never offers two of them. */
+/* History: the Delete a swipe reveals. It is hidden because the pane mirrors
+   this button, so the row never offers two of them. */
 .history-swipe-delete { display: none; }
-
-/* Insights heat grid: the kit's default is GitHub's small squares; here the
-   cells carry the ledger's own dates and need only breathe with the card. */
-[data-ui="github-activity"] .ui-heatmap-grid { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 14px; }
-[data-ui="github-activity"] .ui-heatmap-cell { width: 12px; height: 12px; border-radius: 2px; background: var(--line); }
-[data-ui="github-activity"] .ui-heatmap-cell[data-level="1"] { background: color-mix(in srgb, var(--accent) 22%, var(--line)); }
-[data-ui="github-activity"] .ui-heatmap-cell[data-level="2"] { background: color-mix(in srgb, var(--accent) 45%, var(--line)); }
-[data-ui="github-activity"] .ui-heatmap-cell[data-level="3"] { background: color-mix(in srgb, var(--accent) 70%, var(--line)); }
-[data-ui="github-activity"] .ui-heatmap-cell[data-level="4"] { background: var(--accent); }
-[data-ui="github-activity"] .ui-heatmap-note { margin-top: 8px; font-size: 11px; color: var(--muted); }
-
-/* The chart expand control is the card's own affordance, not a floating chip. */
-[data-ui="analytics-chart"] { position: relative; }
-[data-ui="analytics-chart"] > .ui-chart-expand { position: absolute; top: 14px; right: 14px; }
-[data-ui="analytics-chart"].is-expanded { position: fixed; inset: 16px; z-index: 60; margin: 0; overflow: auto; background: var(--card); box-shadow: var(--shadow-xl); }
 
 /* ============================================================
    Touch targets
-   One shared class plus one coarse-pointer rule, the contract every site uses.
-   Inline links inside a sentence opt out so line rhythm is unchanged.
+   One coarse-pointer rule, the contract every site uses. Inline links inside a
+   sentence opt out so line rhythm is unchanged.
    ============================================================ */
-.touch-target { min-height: 44px; min-width: 44px; }
 @media (pointer: coarse) {
   button, [role="button"], [role="tab"], [role="switch"], [role="radio"], [role="menuitem"],
   input:not([type="checkbox"]):not([type="radio"]), select, textarea, summary,
-  .btn, .pill, .nav-link, .bottom-tab, .history-action-btn, .footer-action, .dark-toggle, .menu-trigger {
+  .btn, .pill, .nav-link, .bottom-tab, .history-action-btn, .footer-action, .menu-trigger {
     min-height: 44px;
   }
-  .history-menu button { min-height: 44px; }
   p a, li a, .muted a, .prose a { min-height: 0; }
 }
 
-/* The update bar: shown once a new worker has taken control (the worker calls
-   skipWaiting on install), never on a first install. */
-.cents-update-bar { position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 80; display: flex; align-items: center; justify-content: space-between; gap: 12px; max-width: 520px; margin: 0 auto; padding: 12px 14px; background: var(--card); border: 1px solid var(--accent); border-radius: var(--radius-lg); box-shadow: var(--shadow-xl); font-size: 13px; }
-.cents-update-bar[hidden] { display: none; }
-.cents-update-bar button { font: inherit; font-size: 12px; font-weight: 600; padding: 7px 14px; border: 0; border-radius: 999px; background: var(--accent); color: var(--card); cursor: pointer; }
 /* --- GlideSelect ----------------------------------------------------------
    The Add/Edit sheet's Method and Category pickers are chips with a gliding
    menu. The native <select> stays in the sheet because its onChange is what

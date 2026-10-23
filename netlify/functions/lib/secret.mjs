@@ -22,18 +22,6 @@
 const NAMES = ['CENTS_SECRET', 'GITHUB_TOKEN'];
 const MIN_SECRET_LENGTH = 16;
 
-/** The names, in the order they are tried — read by the guards and the docs. */
-export const ROOT_SECRET_NAMES = NAMES;
-
-/** The name that is actually configured, or null. Never returns the value. */
-export function rootSecretSource(env = process.env) {
-  for (const name of NAMES) {
-    const value = env[name];
-    if (typeof value === 'string' && value.length >= MIN_SECRET_LENGTH) return name;
-  }
-  return null;
-}
-
 /** The root secret, or `{ ok: false, error }` naming what to set. */
 export function rootSecret(env = process.env) {
   for (const name of NAMES) {

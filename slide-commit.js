@@ -71,10 +71,7 @@
 
   function build(opts, resolve) {
     var prevFocus = doc.activeElement;
-    var prevOverflow = doc.documentElement.style.overflow;
     var label = opts.label || 'Slide to confirm';
-    var done = opts.done || 'Done';
-    var verb = verbOf(opts);
 
     var scrim = make('div', 'sc-scrim');
     var sheet = make('div', 'sc-sheet');
@@ -124,7 +121,12 @@
     scrim.appendChild(sheet);
     doc.body.appendChild(scrim);
 
-    var prev = doc.documentElement.style.overflow;
+    // Taken before the lock is applied, because settle() puts it back: the
+    // reader's own scroll lock (a sheet already open behind this one) has to
+    // survive the dialog closing. It went unrecorded for a while — the restore
+    // read `s.prevOverflow`, which nothing ever wrote, so a slide-to-commit
+    // left the page unscrollable.
+    var prevOverflow = doc.documentElement.style.overflow;
     doc.documentElement.style.overflow = 'hidden';
 
     live = {
@@ -133,7 +135,7 @@
       cancel: cancel, announce: announce, knob: knob,
       phase: 'idle', armed: false, dragging: false,
       pos: 0, max: 0, startX: 0,
-      prevFocus: prevFocus, armTimer: 0, timers: [],
+      prevFocus: prevFocus, prevOverflow: prevOverflow, armTimer: 0, timers: [],
     };
 
     measure(live);
