@@ -35,11 +35,6 @@ https://:version.:project.pages.dev/*
 /*.css
   Cache-Control: no-cache, must-revalidate
 
-# The vendored kit's lockfile: it is not matched by /*.js, and the platform's
-# default would let a changed lock sit in a browser's cache.
-/ui-kit.lock.json
-  Cache-Control: no-cache, must-revalidate
-
 /
   Cache-Control: no-cache, must-revalidate
 

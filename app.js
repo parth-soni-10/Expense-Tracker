@@ -8867,27 +8867,10 @@ function screenHistory() {
       // method are what the two legs of a transfer differ by, so they carry the
       // distinction (and the sign: the money left one account and reached the other).
       const rowLabel = `${e.details || (isNote ? 'note' : 'entry')} \u00b7 ${friendlyDate(e.date)} \u00b7 ${isGroup ? 'split' : methodShort(e.method)} \u00b7 ${(isCredit ? '+' : '') + fmt(totalAmount)}`;
-      // The row's one action was Edit. The kebab adds Duplicate / Exclude /
-      // Delete without a second screen, and touch gets the same Delete by
-      // swiping. Both go through the existing tombstone + undo paths.
-      const duplicateRow = () => {
-        if (isGroup || e.transferId) { openRow(); return; }
-        const copy = { ...e, id: uid(), createdAt: nowIso() };
-        delete copy.history;
-        commitAdded([copy], `${e.details || 'entry'} copy`, () => toast('Duplicated.'));
-      };
-      const toggleBudget = () => {
-        if (isGroup) { openRow(); return; }
-        const wasExcluded = e.budgetExcluded === true;
-        if (wasExcluded) delete e.budgetExcluded; else e.budgetExcluded = true;
-        persist();
-        trackAction(() => {
-          if (wasExcluded) e.budgetExcluded = true; else delete e.budgetExcluded;
-          persist();
-        }, `${wasExcluded ? 'Included' : 'Excluded'} "${e.details || 'entry'}" ${wasExcluded ? 'in' : 'from'} the budget`);
-        toast(wasExcluded ? 'Back in the budget.' : 'Excluded from the budget.');
-        render();
-      };
+      // The row's inline action is Edit; touch gets Delete from the swipe pane.
+      // (A kebab once offered Duplicate and Exclude from the row too. It is gone
+      // — excluding from the budget is the editor's checkbox — and the two
+      // handlers it was the only caller of went with it.)
       // Delete from the swipe pane. The same tombstone + undo path the editor's
       // confirm uses, so a gesture cannot destroy anything Undo cannot bring
       // back. Split groups and transfers are never swipe rows (see `swipeable`):
@@ -8909,7 +8892,7 @@ function screenHistory() {
       // visible Edit button and its sideways scroll, and only the stacked
       // layout gets a row that slides aside to reveal Delete.
       const swipeable = isNarrow() && !isGroup && !e.transferId;
-      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', 'data-ui': 'transaction-list inline-disclosure-menu', ...(swipeable ? { 'data-swipe-row': '', 'data-swipe-label': 'Entry actions', 'data-swipe-full': 'off', 'data-ui': 'swipe-row transaction-list inline-disclosure-menu' } : null), 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${rowLabel}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]') || ev.target.closest('[data-ui-field]') || ev.target.closest('[data-ui-menu]') || ev.target.closest('[data-ui-menu-panel]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input') || ev.target.closest('[data-ui-field]') || ev.target.closest('[data-ui-menu]') || ev.target.closest('[data-ui-menu-panel]')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
+      const row = $('div', { class: `history-row ${rowType}`, role: 'row', tabindex: '0', ...(swipeable ? { 'data-swipe-row': '', 'data-swipe-label': 'Entry actions', 'data-swipe-full': 'off' } : null), 'data-id': isGroup ? item.id : e.id, 'aria-label': `${isGroup ? 'Edit split payment for' : 'Edit entry'} ${rowLabel}`, onClick: (ev) => { if (ev.target.closest('input[data-bulk]')) return; openRow(); }, onKeydown: (ev) => { if (ev.target.closest('input')) return; if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openRow(); } } },
         $('span', { role: 'cell', class: 'history-cell-check' }, $('input', { type: 'checkbox', 'data-bulk': '', checked: selectAll.every(id => selected.has(id)) ? true : null, 'aria-label': `Select ${rowLabel}`, onClick: (ev) => ev.stopPropagation(), onChange: (ev) => {
           for (const id of selectAll) { if (ev.target.checked) selected.add(id); else selected.delete(id); }
           syncBulkBar();
