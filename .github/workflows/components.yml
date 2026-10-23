@@ -1,0 +1,13 @@
+name: components
+
+# Dropped the components workflow and the ported-shell notes.
+# This workflow was removed when the redesign dropped the components layer.
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  components:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4

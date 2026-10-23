@@ -1,0 +1,58 @@
+name: guards
+
+# The guard suite, run somewhere the failure is visible before it costs a deploy.
+# Why this exists: the platform reads the deploy's config BEFORE any of the
+# project's code runs, so a config mistake fails a deploy with every guard
+# unreported. On Netlify the `[[functions]]` array form did exactly that for
+# seven commits and left production frozen on an older build, and no gate inside
+# the build could say so. CI runs before anything is deployed, so it can.
+# It runs exactly the list in scripts/run-guards.mjs — the single source now that
+# the build step is gone — so CI and a deploy cannot drift apart. That includes
+# scripts/check-worker-config.mjs, which validates the one config statically:
+# wrangler.toml is the Pages project itself (its output directory, its KV
+# binding, its vars), so a cron trigger, a workers_dev switch, an assets block or
+# a `main` entry point in it would be a Worker waiting to be deployed beside the
+# site — plus functions/_router.js and the routes, that the removed daily reminder
+# has stayed removed, and that no secret has been pasted into a committed file. No wrangler install is
+# needed for any of it, which keeps this job dependency-free like the rest of the
+# repo.
+
+name: guards
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  guards:
+    # The suite runs on two runtimes, not one, because "the guards pass" is only
+    # a claim about the Node that ran them. 22 is the floor the app shell builds
+    # on and the version this repo has always been tested with; 24 is what a
+    # current setup-node hands a fresh machine. A guard that depends on V8 or
+    # module-resolution behaviour that moved between them (native TypeScript
+    # stripping, for one) has to fail here rather than at a cutover, and the
+    # only way to know which side of that line a line of a guard sits on is to
+    # run it on both.
+    # fail-fast: false on purpose: if one runtime breaks, the other's result is
+    # still worth having — it says whether the change is version-sensitive or
+    # simply broken everywhere, and that distinction is the whole point of the
+    # second leg.
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Node version
+        run: node --version
+
+      # No install step: the repo has no dependencies by design.
+      - name: Run the guard suite (Node ${{ matrix.node }})
+        run: node scripts/run-guards.mjs
