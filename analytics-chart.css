@@ -1,0 +1,177 @@
+/* Analytics Chart — one line, its hairline grid and the tooltip.
+ *
+ * Hooks, all optional:
+ *   --ac-height   plot height (default 168px)
+ *   --ac-accent   the line, its dot and the crosshair
+ *   --ac-area     the wash under the line (default: the accent at 12%)
+ *   --ac-grid     the three hairlines
+ *   --ac-ink      axis labels
+ *   --ac-tip-bg   the tooltip's paper; must be opaque
+ *   --ac-tip-ink  the tooltip's text
+ *   --ac-font     type family
+ *
+ * The tooltip is positioned by the kit through --ac-x / --ac-y and is hidden
+ * until the plot is live, so a chart that is not being read has no floating
+ * box over it. Only the draw-in animates, and reduced motion skips that.
+ */
+
+.ac {
+  --ac-height: 168px;
+  position: relative;
+  display: block;
+  min-width: 0;
+  font-family: var(--ac-font, inherit);
+  color: var(--ac-ink, inherit);
+  outline: none;
+}
+
+.ac:focus-visible {
+  outline: 2px solid var(--ac-accent, currentColor);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+
+.ac-plot {
+  position: relative;
+  height: var(--ac-height);
+  touch-action: pan-y;
+}
+
+.ac-svg {
+  display: block;
+  overflow: visible;
+  width: 100%;
+  height: 100%;
+}
+
+.ac-grid {
+  stroke: var(--ac-grid, color-mix(in srgb, currentColor 12%, transparent));
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.ac-area {
+  fill: var(--ac-area, color-mix(in srgb, var(--ac-accent, currentColor) 12%, transparent));
+  stroke: none;
+}
+
+.ac-line {
+  fill: none;
+  stroke: var(--ac-accent, currentColor);
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.ac-cross {
+  stroke: var(--ac-accent, currentColor);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.ac-dot {
+  fill: var(--ac-tip-bg, Canvas);
+  stroke: var(--ac-accent, currentColor);
+  stroke-width: 2;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.ac-plot.is-live .ac-cross,
+.ac-plot.is-live .ac-dot {
+  opacity: 1;
+}
+
+.ac-axis {
+  fill: var(--ac-ink, currentColor);
+  opacity: .55;
+  font-family: inherit;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+}
+
+.ac-tip {
+  position: absolute;
+  left: var(--ac-x, 0);
+  top: var(--ac-y, 0);
+  z-index: 2;
+  display: grid;
+  gap: 1px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: var(--ac-tip-bg, Canvas);
+  color: var(--ac-tip-ink, inherit);
+  border: 1px solid var(--ac-grid, color-mix(in srgb, currentColor 14%, transparent));
+  box-shadow: 0 10px 24px -14px rgba(0, 0, 0, .45), 0 2px 6px rgba(0, 0, 0, .08);
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+  opacity: 0;
+  white-space: nowrap;
+  transition: opacity 120ms ease;
+}
+
+.ac-plot.is-live .ac-tip {
+  opacity: 1;
+}
+
+.ac-tip-label {
+  font-size: 10.5px;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  opacity: .6;
+}
+
+.ac-tip-value {
+  font-size: 13.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.01em;
+}
+
+/* The series as text, for anyone who would rather read it than trace it. */
+.ac-table {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The focused reading, in words. Visible: it is the keyboard user's tooltip. */
+.ac-live {
+  margin: 6px 0 0;
+  min-height: 1.4em;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ac-ink, currentColor);
+  opacity: .62;
+}
+
+.ac-empty {
+  margin: 0;
+  padding: 18px 0;
+  font-size: 12.5px;
+  color: var(--ac-ink, currentColor);
+  opacity: .55;
+}
+
+@media (max-width: 560px) {
+  .ac { --ac-height: 148px; }
+  .ac-tip { padding: 5px 8px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ac-cross,
+  .ac-dot,
+  .ac-tip {
+    transition: none;
+  }
+}

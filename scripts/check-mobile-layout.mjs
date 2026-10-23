@@ -313,10 +313,10 @@ ok('the pulse figures are 2-up on a phone and 4-up above it, never auto-fit',
   && !/\.pulse-grid\s*\{[^}]*auto-fit/.test(css), true);
 ok('the net worth strip stacks its halves on a phone and caps the trend above it',
   /\.net-worth-strip\s*\{\s*display:\s*flex;\s*flex-direction:\s*column;/.test(css)
-  && /\.net-worth-spark\s*\{\s*flex:\s*0 0 auto;\s*width:\s*320px;\s*\}/.test(mediaBody(css, 'min-width: 640px', '.net-worth-spark') ?? '')
-  && /class: 'net-worth-spark'/.test(app), true);
-ok('and nothing in that strip stretches the sparkline again',
-  /net-worth-spark[^>]*flex:1|\.net-worth-spark\s*\{[^}]*flex:\s*1[;\s]/.test(css + app), false);
+  && /\.net-worth-chart\s*\{\s*flex:\s*0 0 auto;\s*width:\s*320px;\s*\}/.test(mediaBody(css, 'min-width: 640px', '.net-worth-chart') ?? '')
+  && /class: 'net-worth-chart'/.test(app), true);
+ok('and nothing in that strip stretches the chart again',
+  /net-worth-chart[^>]*flex:1|\.net-worth-chart\s*\{[^}]*flex:\s*1[;\s]/.test(css + app), false);
 
 // ---- 9. a figure the user owns is not hidden by reading zero ----------------
 // The Tesco paper-vouchers pill returned null at €0.00. On a phone that is the

@@ -6907,14 +6907,9 @@ function screenDashboard() {
       : points;
     const last30 = trend.slice(-30);
     const vals = last30.map(p => p.balance);
-    const mn = Math.min(...vals), mx = Math.max(...vals);
-    const rng = mx - mn || 1;
     const isUp = vals[vals.length - 1] >= vals[0];
-    const sparkH = 40, sparkW = 300;
-    const step = sparkW / (vals.length - 1);
-    const pathD = vals.map((v, i) => `${i === 0 ? 'M' : 'L'} ${i * step} ${sparkH - ((v - mn) / rng) * (sparkH - 4) - 2}`).join(' ');
-    const areaD = pathD + ` L ${(vals.length - 1) * step} ${sparkH} L 0 ${sparkH} Z`;
     const lastVal = runningBalance;
+    const sparkHost = $('div', { class: 'net-worth-chart' });
     const netWorthEl = $('div', { class: 'display-num', style: `font-size:${isNarrow() ? '16px' : '18px'};color:${lastVal >= 0 ? 'var(--positive)' : 'var(--negative)'};` });
     paintFigure(netWorthEl, 'dashboard-net-worth', lastVal);
     // Read as one card header: the figure it labels on the left, the trend
@@ -6929,11 +6924,24 @@ function screenDashboard() {
         $('div', { class: 'eyebrow' }, 'Net worth'),
         netWorthEl,
       ),
-      $('svg', { viewBox: `0 0 ${sparkW} ${sparkH}`, class: 'net-worth-spark', 'aria-label': 'Net worth trend' },
-        $('path', { d: areaD, style: `fill:${isUp ? 'var(--positive)' : 'var(--negative)'};opacity:0.1;` }),
-        $('path', { d: pathD, style: `fill:none;stroke:${isUp ? 'var(--positive)' : 'var(--negative)'};stroke-width:1.5;stroke-linecap:round;` }),
-      ),
+      sparkHost,
     ));
+    /* The trend is the design system's analytics-chart, not a second sparkline
+       drawn by hand: one series, a tooltip per point, and the same line the other
+       sites use. It colours by direction — the one thing this card's trend was
+       already saying with its stroke — and the kit measures the host itself, so
+       the card being built before it is mounted is not a problem. */
+    if (window.AnalyticsChart) {
+      AnalyticsChart.render(sparkHost, last30.map(p => ({
+        label: new Date(p.date + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }),
+        value: p.balance,
+      })), {
+        label: 'net worth',
+        format: fmt,
+      });
+      sparkHost.style.setProperty('--ac-accent', isUp ? 'var(--positive)' : 'var(--negative)');
+      sparkHost.style.setProperty('--ac-area', isUp ? 'color-mix(in srgb, var(--positive) 12%, transparent)' : 'color-mix(in srgb, var(--negative) 12%, transparent)');
+    }
   }
 
   // Resync button - only shown when sync is configured

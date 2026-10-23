@@ -717,10 +717,19 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
    squeezing the trend into a sliver beside the number. */
 .net-worth-strip { display: flex; flex-direction: column; gap: 10px; }
 .net-worth-head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.net-worth-spark { width: 100%; height: 44px; }
+/* The trend is the analytics-chart kit: it brings its own grid, cursor and
+   tooltip, so this card only names the paper and the height. */
+.net-worth-chart {
+  width: 100%;
+  --ac-height: 132px;
+  --ac-grid: var(--line);
+  --ac-ink: var(--muted);
+  --ac-tip-bg: var(--card);
+  --ac-tip-ink: var(--ink);
+}
 @media (min-width: 640px) {
   .net-worth-strip { flex-direction: row; align-items: center; justify-content: space-between; gap: 24px; }
-  .net-worth-spark { flex: 0 0 auto; width: 320px; }
+  .net-worth-chart { flex: 0 0 auto; width: 320px; }
 }
 @media (max-width: 639px) {
   .dashboard-hero { align-items: flex-start; margin-bottom: var(--page-title-gap); padding: 20px 18px; border-radius: var(--radius-lg); }
