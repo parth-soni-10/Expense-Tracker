@@ -1,0 +1,97 @@
+/* Gooey Nav — host-agnostic liquid pill.
+ *
+ * Set --gn-fill to the colour of the active pill (it defaults to currentColor at
+ * 8% so an unconfigured host still shows a soft shape). The nav's own radius,
+ * height and padding stay the host's business; the blob simply covers whichever
+ * link is active.
+ *
+ * Give it an opaque colour. .gn-goo runs the blob through a blur and an alpha
+ * ramp (the filter that used to fuse a trailing droplet), so anything under
+ * roughly half opacity is thresholded away and the pill never appears — a tint
+ * has to be mixed against the surface it sits on, not left transparent.
+ */
+
+.gooey-nav {
+  position: relative;
+  isolation: isolate;
+}
+
+.gn-svg {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.gn-goo {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  contain: paint;
+}
+
+.gn-blob {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  border-radius: var(--gn-radius, 11px);
+  background: var(--gn-fill, color-mix(in srgb, currentColor 8%, transparent));
+  will-change: left, top, width, height;
+}
+
+.gn-blob {
+  transition:
+    left var(--gn-dur, 380ms) var(--gn-ease, cubic-bezier(.34, 1.2, .42, 1)),
+    top var(--gn-dur, 380ms) var(--gn-ease, cubic-bezier(.34, 1.2, .42, 1)),
+    width var(--gn-dur, 380ms) var(--gn-ease, cubic-bezier(.34, 1.2, .42, 1)),
+    height var(--gn-dur, 380ms) var(--gn-ease, cubic-bezier(.34, 1.2, .42, 1));
+}
+
+/* The reach: the same pill, grown toward the target at a shorter duration, so
+   the move is a pull rather than a jump. */
+.gn-blob.is-stretch {
+  transition-duration: 90ms;
+}
+
+.gn-blob.is-instant {
+  transition: none;
+}
+
+/* No pill is drawn when the nav cannot take one — a closed phone dropdown, a
+   column, a hidden pane. Without this the layer would keep the last desktop
+   rectangle painted over whatever the nav became. */
+.gooey-nav:not(.gn-on) .gn-goo {
+  visibility: hidden;
+}
+
+
+/* While the kit is drawing, the active item's own background steps aside so the
+   two do not stack into a double pill. The item keeps its text colour. */
+/* !important because a host's own active rule usually carries an id
+   (`#site-nav .nav-link.active`), and this one has to lose that fight: the
+   pill is the visible state now. Hosts that want their own shape set
+   --gn-fill / --gn-radius instead of fighting back. */
+.gooey-nav.gn-on > .active,
+.gooey-nav.gn-on > [aria-current='page'],
+.gooey-nav.gn-on > [aria-selected='true'] {
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Everything but the two liquid layers sits above them. A column (a phone
+   dropdown) is not drawn at all — the script takes .gn-on off — so this rule is
+   what puts the host's own active row back in charge there. */
+.gooey-nav > :not(.gn-goo):not(.gn-svg) {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gn-blob {
+    transition: none;
+  }
+}

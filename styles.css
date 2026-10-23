@@ -527,7 +527,14 @@ select:focus { border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-f
   .admin-trigger { width: auto; padding: 0 13px 0 11px; gap: 7px; border-radius: 999px; }
   .admin-trigger-label { display: inline; }
 }
-.nav { display: flex; align-items: center; gap: 6px; flex: 1; justify-content: center; }
+.nav {
+  display: flex; align-items: center; gap: 6px; flex: 1; justify-content: center;
+  /* gooey-nav.js slides the current route's pill between these links; the fill
+     is the same accent-soft the active link used to paint itself with, and the
+     capsule radius is the link's own. */
+  --gn-fill: var(--accent-soft);
+  --gn-radius: 999px;
+}
 .header-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-left: auto; }
 /* The header row is the SAME box the content sits in. It used to run the full
    viewport while `.shell` capped itself at --shell-max, so on a wide screen the

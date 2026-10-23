@@ -46,6 +46,8 @@ const SHELL = [
   '/slide-commit.js',
   '/swipe-row.css',
   '/swipe-row.js',
+  '/gooey-nav.css',
+  '/gooey-nav.js',
   '/seed.js',
   '/settings.js',
   '/storage.js',
