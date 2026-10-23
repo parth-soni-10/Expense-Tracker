@@ -8084,6 +8084,18 @@ function openCashEditor() {
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
     $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
       const total = computeCashTotal(coins);
+      // What the document said before this count. A count is a guess about cash
+      // on hand, and Clear all is one tap away from wiping it — so the save is
+      // taken back from the toast that confirms it, which is the moment the user
+      // sees the figure the hero now reads.
+      const before = {
+        coins: { ...(state.settings.coins || {}) },
+        cashBase: state.settings.cashBase,
+        coinsManual: state.settings.coinsManual,
+      };
+      const beforeCounts = { ...COINS_DEFAULT, ...before.coins };
+      const countsChanged = COINS.some(c =>
+        (Number(coins[String(c.val)]) || 0) !== (Number(beforeCounts[String(c.val)]) || 0));
       state.settings.coins = { ...coins };
       // Reconcile: pin the stored cash base so the home cash balance equals the
       // freshly counted coins, and stop auto-redistributing until the next cash
@@ -8091,7 +8103,17 @@ function openCashEditor() {
       state.settings.cashBase = Math.round((total - sumCashDeltas()) * 100) / 100;
       state.settings.coinsManual = true;
       persist();
-      toast('Cash counts saved.');
+      const undo = () => {
+        state.settings.coins = { ...before.coins };
+        state.settings.cashBase = before.cashBase;
+        state.settings.coinsManual = before.coinsManual;
+        persist();
+        render();
+      };
+      // No Undo on a save that changed no count — a button that puts back what is
+      // already there is noise on a toast that is only saying "saved".
+      if (countsChanged) toast('Cash counts saved.', undo, 'Undo');
+      else toast('Cash counts saved.');
       close();
     } }, 'Save'),
   ));
