@@ -8020,22 +8020,31 @@ function openCashEditor() {
   document.addEventListener('keydown', onEsc, true);
 
   const totalEl = $('span', { class: 'display-num', style: 'font-size:22px;' }, fmt(computeCashTotal(coins)));
+  // The one repaint for the whole breakdown: every row's count and subtotal, the
+  // total, and whether there is anything left for Clear all to clear. Three
+  // places used to be refreshed ad hoc (each row updated the total itself), so a
+  // control that moves every row at once had nowhere to say so.
+  const rowRefreshers = [];
+  const repaint = () => {
+    for (const fn of rowRefreshers) fn();
+    totalEl.textContent = fmt(computeCashTotal(coins));
+    clearAll.disabled = COINS.every(c => !coins[String(c.val)]);
+  };
   const rows = COINS.map(c => {
     const key = String(c.val);
     const countEl = $('span', { style: 'min-width:24px;text-align:center;font-weight:500;' }, String(coins[key]));
     // Per-row subtotal must live in a node we can refresh - computing it once
     // at render froze every row at €0.00 while only the total updated.
     const subEl = $('span', { class: 'muted', style: 'font-size:12px;width:55px;text-align:right;' }, fmt(coins[key] * c.val));
-    const refresh = () => {
+    rowRefreshers.push(() => {
       countEl.textContent = String(coins[key]);
       subEl.textContent = fmt(coins[key] * c.val);
-      totalEl.textContent = fmt(computeCashTotal(coins));
-    };
-    const decr = $('button', { type: 'button', style: 'width:28px;height:28px;border:1px solid var(--line);border-radius:6px;background:transparent;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;justify-content:center;', onClick: () => {
-      if (coins[key] > 0) { coins[key]--; refresh(); }
+    });
+    const decr = $('button', { type: 'button', style: 'width:28px;height:28px;border:1px solid var(--line);border-radius:6px;background:transparent;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;justify-content:center;', 'aria-label': `One fewer ${c.label}`, onClick: () => {
+      if (coins[key] > 0) { coins[key]--; repaint(); }
     } }, '−');
-    const incr = $('button', { type: 'button', style: 'width:28px;height:28px;border:1px solid var(--line);border-radius:6px;background:transparent;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;justify-content:center;', onClick: () => {
-      coins[key]++; refresh();
+    const incr = $('button', { type: 'button', style: 'width:28px;height:28px;border:1px solid var(--line);border-radius:6px;background:transparent;cursor:pointer;font-size:14px;display:inline-flex;align-items:center;justify-content:center;', 'aria-label': `One more ${c.label}`, onClick: () => {
+      coins[key]++; repaint();
     } }, '+');
     return $('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line);' },
       $('span', { style: 'font-size:14px;font-weight:500;width:50px;' }, c.label),
@@ -8048,12 +8057,29 @@ function openCashEditor() {
     $('h2', { style: 'font-family:"Space Grotesk",sans-serif;font-weight:400;font-size:26px;' }, 'Cash breakdown'),
     $('button', { type: 'button', class: 'btn-link', onClick: close, 'aria-label': 'Close' }, 'Close'),
   ));
-  modal.appendChild($('div', { style: 'display:flex;flex-direction:column;margin-bottom:12px;' }, ...rows));
+  const coinList = $('div', { style: 'display:flex;flex-direction:column;margin-bottom:12px;' }, ...rows);
+  modal.appendChild(coinList);
   modal.appendChild($('div', { style: 'display:flex;justify-content:space-between;align-items:center;padding-top:12px;border-top:1px solid var(--line);' },
     $('span', { class: 'eyebrow' }, 'Total'),
     totalEl,
   ));
-  modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;margin-top:18px;' },
+  // Clearing every count is a draft action like the steppers: it moves the rows
+  // and the total, and Save is still what writes a zero to the document. "Clear"
+  // rather than "Reset", because a reset could be read as restoring a count.
+  const clearAll = $('button', { type: 'button', class: 'btn btn-ghost', style: 'margin-right:auto;', 'aria-label': 'Clear every coin count', onClick: () => {
+    // Disabling it once the last count goes is the honest state (there is
+    // nothing left to clear), but a focused button that becomes disabled drops
+    // the caret to the document — the keyboard's next Tab would restart from
+    // the top of the modal. So the coin list takes the focus instead.
+    const hadFocus = document.activeElement === clearAll;
+    for (const c of COINS) coins[String(c.val)] = 0;
+    repaint();
+    if (hadFocus) coinList.querySelector('button')?.focus();
+  } }, 'Clear all');
+  repaint();
+
+  modal.appendChild($('div', { style: 'display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:18px;' },
+    clearAll,
     $('button', { type: 'button', class: 'btn btn-ghost', onClick: close }, 'Cancel'),
     $('button', { type: 'button', class: 'btn btn-primary', onClick: () => {
       const total = computeCashTotal(coins);
