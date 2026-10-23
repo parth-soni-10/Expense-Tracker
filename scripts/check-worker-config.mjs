@@ -49,8 +49,8 @@
  *      `functions/_router.js` — so what has to hold is the other half: the
  *      router hands anything that is not a route to `env.ASSETS.fetch`, since a
  *      request it neither answers nor forwards is a request nothing answers. The two spellings of every endpoint are checked
- *      here too, and the unknown-path-is-a-404 decision now rests on
- *      tools/deploy-pages.mjs generating the upload's 404.html.
+ *      here too, and the unknown-path-is-a-404 decision rests on the repository
+ *      carrying a 404.html, which the upload is staged from the root of.
  *   5. The KV binding, in the config the deploy reads: the durable store. Without
  *      it lib/store.mjs answers `durable: false`, and lib/cloud.mjs then treats
  *      the GITHUB MIRROR as the commit point for someone's expenses instead of a
@@ -88,7 +88,11 @@ import { join } from 'node:path';
 const root = new URL('../', import.meta.url);
 const read = p => readFileSync(new URL(p, root), 'utf8');
 const toml = read('wrangler.toml');
-const stageScript = read('tools/deploy-pages.mjs');
+// The upload is staged from the repository root, so a 404.html here is a
+// 404.html in the deployment. It used to be checked in the staging script that
+// generated one when the root had none; that script is gone (the directory was
+// removed), and the property it existed for is the file itself.
+const authored404 = existsSync(new URL('404.html', root));
 const router = read('functions/_router.js');
 const functionsDir = new URL('netlify/functions/', root);
 const scriptsDir = new URL('scripts/', root);
@@ -352,12 +356,11 @@ if (!/env\.ASSETS\.fetch\(request\)/.test(router)) {
 // The decision the Workers assets layer carried (not_found_handling = "none")
 // has no Pages equivalent: without a 404.html in the upload, Pages answers 200
 // with index.html for every unmatched path — including an asset the app mistyped,
-// which is the blank page this app's hash routing exists to avoid. The staging
-// script writes that file when the assets have none, so the property is pinned to
-// the script that stages the upload rather than to a config key that no longer
-// exists.
-if (!/404\.html/.test(stageScript)) {
-  fail('tools/deploy-pages.mjs no longer writes a 404.html — without one in the upload, Pages answers 200 with index.html for every unknown path, which is what not_found_handling = "none" prevented on the Workers side.');
+// which is the blank page this app's hash routing exists to avoid. The upload is
+// the repository root, so the file is the property — pinned on disk rather than
+// to a config key that no longer exists.
+if (!authored404) {
+  fail('the repository has no 404.html — without one in the upload, Pages answers 200 with index.html for every unknown path, which is what not_found_handling = "none" prevented on the Workers side.');
 }
 // And the keys themselves must not come back: reading one in a config that Pages
 // ignores would look like a live decision while changing nothing.

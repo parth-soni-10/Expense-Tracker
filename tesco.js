@@ -1039,18 +1039,46 @@ export function screenTesco(ctx) {
     paintHoliday();
     derivedRefreshers.push(paintHoliday);
 
-    // Committed on change, never per keystroke: the commit re-renders the screen
-    // (see the week number and the bank cell), and an input rebuilt on every
-    // digit has no caret to keep.
-    const write = (patch) => {
+    // Committed as it is typed, never only when the field is left. The card IS
+    // the reading of the balance, so a field showing 35.10 beside a card reading
+    // 0.00h is the card contradicting the user — and that is exactly what a
+    // `change`-only commit produced: the value was in the input, the figure above
+    // it still said 0.00h, and nothing moved until the caret left the field.
+    //
+    // What is NOT done per keystroke is re-rendering the screen. The card repaints
+    // itself from the value just written (no input is rebuilt, so the caret and
+    // the "35.10" the user typed both stay), the rest of the screen has nothing
+    // to recompute, and the write to storage is debounced — a four-digit figure
+    // lands on disk as one document, not four.
+    let persistTimer = 0;
+    const stopPersistTimer = () => { if (persistTimer) { clearTimeout(persistTimer); persistTimer = 0; } };
+    const put = (patch) => {
       ctx.getState().settings.tescoHoliday = { ...holiday(), ...patch };
-      persist(); render();
+      paintHoliday();
     };
-    // Enter commits, exactly as it does in the week card's bank cell: these fields
-    // commit on change, and the change event only fires when the field is left —
-    // so a figure typed and followed by Enter would otherwise sit uncommitted
-    // until something else moved the caret.
+    const writeLive = (patch) => {
+      put(patch);
+      stopPersistTimer();
+      persistTimer = setTimeout(() => { persistTimer = 0; persist(); }, 300);
+    };
+    // Leaving the field commits the same figure again, this time to storage in the
+    // same task: a balance typed and then abandoned must survive a reload.
+    const write = (patch) => { stopPersistTimer(); put(patch); persist(); };
+    // Enter commits, exactly as it does in the week card's bank cell: the change
+    // event fires when the field is left, and a figure typed and followed by
+    // Enter would otherwise keep the caret — and the pending write — where it is.
     const commitOnEnter = e => { if (e.key === 'Enter') e.target.blur(); };
+    // A number input reports "" for text it cannot read yet ("35."), so an
+    // unreadable intermediate changes nothing and the card keeps the last real
+    // figure; an empty field is still 0 once the user leaves it.
+    const typedHours = (el, commit) => {
+      const raw = String(el.value).trim();
+      if (raw === '') return commit ? 0 : null;
+      const n = Number(raw);
+      // The same ceiling the document keeps (normalizeTescoHoliday): a figure the
+      // validator would zero is refused here, rather than shown and then lost.
+      return Number.isFinite(n) && n >= 0 && n <= 1000 ? r2(n) : null;
+    };
     const openIn = $('input', {
       type: 'number', min: '0', max: '1000', step: '0.01', inputmode: 'decimal',
       // Blank, not 0: an empty field says "not set yet" where a 0 would claim a
@@ -1061,14 +1089,16 @@ export function screenTesco(ctx) {
       // an opening figure and not a second reading of the same thing.
       'aria-label': 'Holiday balance from Tesco', class: 'tesco-in', style: 'width:100%;',
       onKeydown: commitOnEnter,
+      // The first balance typed is dated today, because that is what it is: what
+      // Tesco shows now. The date field beside it is how an older figure — one
+      // read off a payslip — is given the day it was true.
+      onInput: e => {
+        const n = typedHours(e.target, false);
+        if (n !== null) writeLive({ anchorHours: n, anchorDate: holiday().anchorDate || isoLocal(now) });
+      },
       onChange: e => {
-        const raw = String(e.target.value).trim();
-        const n = raw === '' ? 0 : Number(raw);
-        if (!Number.isFinite(n) || n < 0) return;
-        // The first balance typed is dated today, because that is what it is: what
-        // Tesco shows now. The date field beside it is how an older figure — one
-        // read off a payslip — is given the day it was true.
-        write({ anchorHours: r2(n), anchorDate: holiday().anchorDate || isoLocal(now) });
+        const n = typedHours(e.target, true);
+        if (n !== null) write({ anchorHours: n, anchorDate: holiday().anchorDate || isoLocal(now) });
       },
     });
     const dateIn = $('input', {
@@ -1080,11 +1110,13 @@ export function screenTesco(ctx) {
       value: holiday().taken || '', placeholder: '0',
       'aria-label': 'Holiday hours taken', class: 'tesco-in', style: 'width:100%;',
       onKeydown: commitOnEnter,
+      onInput: e => {
+        const n = typedHours(e.target, false);
+        if (n !== null) writeLive({ taken: n });
+      },
       onChange: e => {
-        const raw = String(e.target.value).trim();
-        const n = raw === '' ? 0 : Number(raw);
-        if (!Number.isFinite(n) || n < 0) return;
-        write({ taken: r2(n) });
+        const n = typedHours(e.target, true);
+        if (n !== null) write({ taken: n });
       },
     });
     const field = (label, input) => $('label', { style: 'display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted);flex:1 1 120px;min-width:0;' },

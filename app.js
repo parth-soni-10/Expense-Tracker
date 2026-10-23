@@ -7440,6 +7440,15 @@ function screenDashboard() {
             const dayNum = dt.getDate();
             const statusColor = paid ? 'var(--positive)' : isFuture ? 'var(--muted)' : 'var(--negative)';
             const canFill = !paid && (isPast || isToday);
+            // The line this card is counting for the day, when it is one it wrote.
+            // A paid Thursday used to print its figure and nothing else, so a
+            // wrong amount — the reason anyone opens this card on pay day — could
+            // only be fixed in History by finding the row there. Anything that
+            // merely lands on a Thursday (a salary, a refund) is not Tesco pay and
+            // stays out of reach: the card offers to fix what it recognises.
+            const payLine = paid
+              ? state.entries.find(e => e.date === d && e.type === 'credit' && e.details === 'Tesco pay')
+              : null;
             return $('div', { style: 'display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;' },
               $('div', { style: 'display:flex;align-items:center;gap:12px;' },
                 $('span', { style: `display:inline-block;width:8px;height:8px;border-radius:50%;background:${statusColor};flex-shrink:0;` }),
@@ -7459,6 +7468,10 @@ function screenDashboard() {
                     : "Tesco Pay: that week's gross minus the tax its payslips withheld",
                 }, fmt(payDateAmounts[d].amount)) : null,
                 canFill ? $('button', { type: 'button', class: 'btn btn-primary', style: 'padding:3px 10px;font-size:10px;min-height:24px;', onClick: () => fillThursday(d) }, 'Fill') : null,
+                // Editing goes through the ledger's own editor, so the line is
+                // changed where every other entry is changed (one undo step, the
+                // duplicate gate, the tombstones and a sync revision included).
+                payLine ? $('button', { type: 'button', class: 'btn btn-ghost', style: 'padding:3px 10px;font-size:10px;min-height:24px;', 'aria-label': `Edit Tesco pay for ${friendlyDate(d)}`, title: 'Edit this Tesco pay line', onClick: () => openEdit(payLine.id) }, 'Edit') : null,
               ),
             );
           }),

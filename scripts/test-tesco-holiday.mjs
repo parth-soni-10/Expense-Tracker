@@ -256,6 +256,33 @@ ok('the default document has no balance to accrue from', HOLIDAY_DEFAULT, { anch
   okTrue('and Enter commits them, so a typed figure is not left uncommitted',
     (tesco.match(/onKeydown: commitOnEnter/g) || []).length === 2 && /const commitOnEnter = e => \{ if \(e\.key === 'Enter'\) e\.target\.blur\(\); \}/.test(tesco));
 
+  // The card is the READING of the balance, so a field showing 35.10 beside a
+  // card reading 0.00h is the card contradicting the user — which is what a
+  // `change`-only commit produced. Only `input` has the value while it is being
+  // typed, so that is where the card has to follow from.
+  okTrue('the fields commit as they are typed, not only when left',
+    (tesco.match(/onInput: e => \{\n\s*const n = typedHours\(e\.target, false\);/g) || []).length === 2
+    && /const writeLive = \(patch\) => \{[\s\S]{0,80}put\(patch\);/.test(tesco));
+  const putFn = /const put = \(patch\) => \{([\s\S]*?)\n    \};/.exec(tesco);
+  okTrue('and the card repaints itself, without rebuilding the field being typed in',
+    !!putFn && /paintHoliday\(\)/.test(putFn[1]) && !/render\(\)/.test(putFn[1]));
+  okTrue('the write to storage is debounced, and leaving the field flushes it',
+    /setTimeout\(\(\) => \{ persistTimer = 0; persist\(\); \}, 300\)/.test(tesco)
+    && /const write = \(patch\) => \{ stopPersistTimer\(\); put\(patch\); persist\(\); \}/.test(tesco));
+  okTrue('an unreadable intermediate value changes nothing',
+    /if \(raw === ''\) return commit \? 0 : null;/.test(tesco)
+    && /if \(n !== null\) writeLive\(/.test(tesco));
+
+  // A paid Thursday used to print its figure with no way to touch it, so a wrong
+  // amount could only be fixed by finding the row in History. The card offers the
+  // edit now — but only for the line it is counting, identified by being Tesco
+  // pay, so an unrelated credit landing on a Thursday is left alone.
+  okTrue('a paid Thursday offers Edit on the line the card counted',
+    /const payLine = paid\s*\n\s*\? state\.entries\.find\(e => e\.date === d && e\.type === 'credit' && e\.details === 'Tesco pay'\)\s*\n\s*: null;/.test(app));
+  okTrue('and it opens that entry in the ordinary editor', /onClick: \(\) => openEdit\(payLine\.id\)/.test(app));
+  okTrue('the row action is addressed for the reader',
+    /'aria-label': `Edit Tesco pay for \$\{friendlyDate\(d\)\}`/.test(app));
+
   okTrue('the dashboard card carries the refresh control', /onClick: refreshTescoPay/.test(app));
   // The dashboard's holiday figure must be the tab's, computed by the SAME
   // engine from the same tables — a second arithmetic is a second answer to a
