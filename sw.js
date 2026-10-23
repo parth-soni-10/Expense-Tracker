@@ -48,6 +48,8 @@ const SHELL = [
   '/swipe-row.js',
   '/gooey-nav.css',
   '/gooey-nav.js',
+  '/number-input.css',
+  '/number-input.js',
   '/seed.js',
   '/settings.js',
   '/storage.js',

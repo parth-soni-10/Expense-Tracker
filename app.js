@@ -6968,7 +6968,7 @@ function screenDashboard() {
     ),
     $('div', { class: 'dashboard-actions' },
       $('label', { class: 'eyebrow', for: 'budget-input' }, 'Budget'),
-      $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', value: String(budget || ''), placeholder: '-', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
+      $('input', { id: 'budget-input', type: 'text', inputmode: 'decimal', 'data-number-input': '', value: String(budget || ''), placeholder: '-', 'aria-label': 'Monthly budget in euros', autocomplete: 'off', style: `width:${isNarrow() ? '72px' : '92px'};border:1px solid var(--line);border-radius:var(--radius);background:transparent;color:inherit;font-family:inherit;padding:7px 10px;font-size:13px;text-align:right;transition:border-color .15s;`, onFocus: (e) => e.target.style.borderColor = 'var(--accent)', onBlur: (e) => {
         e.target.style.borderColor = 'var(--line)';
         if (!commitBudget(e.target.value)) { e.target.value = String(budget || ''); toast('Enter a non-negative number.'); }
       }, onKeydown: (e) => { if (e.key === 'Enter') e.target.blur(); } }),
